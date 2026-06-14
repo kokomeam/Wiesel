@@ -118,6 +118,13 @@ export function explanationFor(question: QuizQuestion): string {
       const correct = question.choices.find((c) => c.id === question.correctChoiceId);
       return `The correct answer is "${correct?.text ?? "—"}". Work backwards from the invariant: which option keeps every pointer move justified? The others each break the elimination argument.`;
     }
+    case "multi_select": {
+      const correct = question.choices
+        .filter((c) => question.correctChoiceIds.includes(c.id))
+        .map((c) => `"${c.text}"`)
+        .join(", ");
+      return `Select every option the elimination argument keeps valid: ${correct || "—"}. A partial selection misses part of the invariant.`;
+    }
     case "true_false":
       return `This is ${question.correctAnswer ? "true" : "false"}. Test the claim against the core invariant — each step must provably eliminate a candidate — and the answer falls out.`;
     case "short_answer":

@@ -31,6 +31,7 @@ export type ComponentTypeName =
   | "image_element"
   | "callout_element"
   | "quiz_question"
+  | "rubric_criterion"
   | BlockType;
 
 /** Manifest type for a slide element — images and callouts get their own
@@ -177,11 +178,15 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
     semanticTags: ["reading", "explanation"],
   },
   quiz: {
-    description: "Assessment block containing auto-gradable questions.",
+    description:
+      "Assessment block containing auto-gradable questions plus quiz-level settings (time limit, attempts, shuffle, passing score).",
     allowedChildren: ["quiz_question"],
     allowedActions: [
       "ADD_QUIZ_QUESTION",
       "UPDATE_QUIZ_QUESTION",
+      "DELETE_QUIZ_QUESTION",
+      "REORDER_QUIZ_QUESTION",
+      "UPDATE_QUIZ_SETTINGS",
       "CHANGE_DIFFICULTY",
       "GENERATE_EXPLANATION",
       "UPDATE_BLOCK_TITLE",
@@ -192,9 +197,11 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
   },
   quiz_question: {
     description:
-      "One quiz question: multiple choice, true/false, or short answer, with explanation and difficulty.",
+      "One quiz question: multiple choice, multiple select, true/false, or short answer, carrying points, difficulty, and an explanation.",
     allowedActions: [
       "UPDATE_QUIZ_QUESTION",
+      "DELETE_QUIZ_QUESTION",
+      "REORDER_QUIZ_QUESTION",
       "CHANGE_DIFFICULTY",
       "GENERATE_EXPLANATION",
     ],
@@ -202,16 +209,34 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
   },
   homework: {
     description:
-      "Practice assignment with instructions, exercises, rubrics, and solutions.",
-    allowedChildren: ["exercise"],
+      "Practice assignment with instructions, a deliverable type, exercises, and a leveled grading rubric.",
+    allowedChildren: ["exercise", "rubric_criterion"],
     allowedActions: [
       "ADD_HOMEWORK_EXERCISE",
+      "DELETE_HOMEWORK_EXERCISE",
+      "REORDER_HOMEWORK_EXERCISE",
+      "UPDATE_HOMEWORK_META",
+      "SET_RUBRIC",
+      "ADD_RUBRIC_CRITERION",
+      "UPDATE_RUBRIC_CRITERION",
+      "DELETE_RUBRIC_CRITERION",
+      "REORDER_RUBRIC_CRITERION",
       "UPDATE_TEXT",
       "UPDATE_BLOCK_TITLE",
       "REORDER_BLOCK",
       "DELETE_BLOCK",
     ],
     semanticTags: ["practice", "assignment"],
+  },
+  rubric_criterion: {
+    description:
+      "One rubric criterion with ordered performance levels (label + points) used to grade a homework deliverable.",
+    allowedActions: [
+      "UPDATE_RUBRIC_CRITERION",
+      "DELETE_RUBRIC_CRITERION",
+      "REORDER_RUBRIC_CRITERION",
+    ],
+    semanticTags: ["rubric", "grading"],
   },
   exercise: {
     description: "A single standalone practice exercise with optional hint and solution.",

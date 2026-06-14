@@ -246,13 +246,41 @@ export interface LectureTextBlock extends BaseBlock {
 }
 
 export type QuizDifficulty = "easy" | "medium" | "hard";
-export type QuestionKind = "multiple_choice" | "true_false" | "short_answer";
+export type QuestionKind =
+  | "multiple_choice"
+  | "multi_select"
+  | "true_false"
+  | "short_answer";
+
+/** When learners are shown correct answers / explanations. */
+export type ShowAnswersPolicy = "immediately" | "after_submit" | "after_due" | "never";
+
+/**
+ * Quiz-level behavior. Optional on the block — absent fields resolve to
+ * defaults via resolveQuizSettings() (lib/course/assessments.ts), mirroring
+ * the slide styleResolver's "defaults under explicit overrides" model.
+ */
+export interface QuizSettings {
+  /** Minutes; null/absent = untimed. */
+  timeLimitMinutes?: number | null;
+  /** null/absent = unlimited. */
+  attemptsAllowed?: number | null;
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
+  /** Percent 0..100 needed to pass. */
+  passingScore?: number;
+  whenToShowAnswers?: ShowAnswersPolicy;
+}
 
 interface QuizQuestionBase {
   id: string;
   prompt: string;
   explanation?: string;
   difficulty: QuizDifficulty;
+  /** Score weight; absent = 1 (questionPoints()). */
+  points?: number;
+  /** Optional link to a lesson objective / semantic tag this question assesses. */
+  objectiveId?: string;
 }
 export type QuizQuestion =
   | (QuizQuestionBase & {
@@ -260,11 +288,23 @@ export type QuizQuestion =
       choices: { id: string; text: string }[];
       correctChoiceId: string;
     })
+  | (QuizQuestionBase & {
+      kind: "multi_select";
+      choices: { id: string; text: string }[];
+      /** Every correct choice id; a response must match this set exactly. */
+      correctChoiceIds: string[];
+    })
   | (QuizQuestionBase & { kind: "true_false"; correctAnswer: boolean })
-  | (QuizQuestionBase & { kind: "short_answer"; expectedAnswer: string });
+  | (QuizQuestionBase & {
+      kind: "short_answer";
+      expectedAnswer: string;
+      /** Extra accepted answers (matched case/whitespace-insensitively). */
+      acceptedAnswers?: string[];
+    });
 
 export interface QuizBlock extends BaseBlock {
   type: "quiz";
+  settings?: QuizSettings;
   questions: QuizQuestion[];
 }
 
@@ -275,15 +315,35 @@ export interface HomeworkExercise {
   hint?: string;
   solution?: string;
 }
+
+/** How learners submit their work for a homework block. */
+export type DeliverableType = "text_response" | "file_upload" | "external_link";
+
+/** One performance level within a rubric criterion (e.g. "Excellent" = 4 pts). */
+export interface RubricLevel {
+  id: string;
+  label: string;
+  description?: string;
+  points: number;
+}
 export interface RubricCriterion {
   id: string;
   name: string;
-  points: number;
   description?: string;
+  /** Ordered performance levels; the criterion's max = its highest level. */
+  levels: RubricLevel[];
 }
 export interface HomeworkBlock extends BaseBlock {
   type: "homework";
   instructions: string;
+  deliverableType: DeliverableType;
+  /** ISO-8601; absent = no due date. */
+  dueAt?: string;
+  /** Total points for the assignment. */
+  points?: number;
+  estimatedMinutes?: number;
+  /** Optional link to a lesson objective / semantic tag. */
+  objectiveId?: string;
   exercises: HomeworkExercise[];
   rubric?: RubricCriterion[];
 }

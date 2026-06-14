@@ -357,6 +357,12 @@ const twoPointersLesson: LessonNode = {
         purpose: "Verify the learner can identify when and why two pointers applies.",
         semanticTags: ["assessment", "auto-gradable", "two-pointers"],
       },
+      settings: {
+        timeLimitMinutes: 10,
+        attemptsAllowed: 2,
+        passingScore: 70,
+        whenToShowAnswers: "after_submit",
+      },
       questions: [
         {
           id: "q-tp-1",
@@ -373,6 +379,7 @@ const twoPointersLesson: LessonNode = {
           explanation:
             "Two pointers works because the array is sorted, allowing both ends to move inward with a provable elimination at each step.",
           difficulty: "easy",
+          points: 1,
         },
         {
           id: "q-tp-2",
@@ -383,6 +390,7 @@ const twoPointersLesson: LessonNode = {
           explanation:
             "Never — each step permanently eliminates one element. That monotonic movement is exactly what makes the algorithm O(n).",
           difficulty: "medium",
+          points: 2,
         },
         {
           id: "q-tp-3",
@@ -393,6 +401,7 @@ const twoPointersLesson: LessonNode = {
           explanation:
             "The walk itself is O(n), but sorting first costs O(n log n), which dominates.",
           difficulty: "medium",
+          points: 2,
         },
       ],
     },
@@ -406,6 +415,9 @@ const twoPointersLesson: LessonNode = {
         purpose: "Apply the two-pointer pattern to USACO-style problems independently.",
         semanticTags: ["practice", "assignment", "two-pointers"],
       },
+      deliverableType: "text_response",
+      points: 10,
+      estimatedMinutes: 60,
       instructions:
         "Solve both problems in C++ or Python. For each, write one sentence stating the invariant your pointers maintain before you code. Target: both in under 60 minutes.",
       exercises: [
@@ -430,20 +442,31 @@ const twoPointersLesson: LessonNode = {
         {
           id: "rub-tp-1",
           name: "Correct invariant stated",
-          points: 4,
           description: "The one-sentence invariant is precise and actually maintained by the code.",
+          levels: [
+            { id: "rub-tp-1-l2", label: "Precise", description: "Stated and provably maintained by the loop.", points: 4 },
+            { id: "rub-tp-1-l1", label: "Partial", description: "Stated but imprecise, or only loosely maintained.", points: 2 },
+            { id: "rub-tp-1-l0", label: "Missing", description: "No invariant stated.", points: 0 },
+          ],
         },
         {
           id: "rub-tp-2",
           name: "Linear pointer movement",
-          points: 4,
           description: "No pointer ever moves backwards; complexity is O(n) after sorting.",
+          levels: [
+            { id: "rub-tp-2-l2", label: "Linear", description: "Both pointers move monotonically; O(n) after sorting.", points: 4 },
+            { id: "rub-tp-2-l1", label: "Suboptimal", description: "Correct, but with avoidable extra passes.", points: 2 },
+            { id: "rub-tp-2-l0", label: "Non-linear", description: "Pointers backtrack or the loop is quadratic.", points: 0 },
+          ],
         },
         {
           id: "rub-tp-3",
           name: "Edge cases handled",
-          points: 2,
           description: "Empty windows, duplicate values, and all-equal arrays are correct.",
+          levels: [
+            { id: "rub-tp-3-l1", label: "Handled", description: "Empty, duplicate, and all-equal inputs are correct.", points: 2 },
+            { id: "rub-tp-3-l0", label: "Unhandled", description: "One or more edge cases fail.", points: 0 },
+          ],
         },
       ],
     },

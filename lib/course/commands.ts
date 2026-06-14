@@ -14,6 +14,7 @@ import {
   createLesson,
   createModule,
   createQuestion,
+  createRubricCriterion,
   createSlide,
   newId,
   reidentifySlide,
@@ -26,6 +27,8 @@ import type {
   CourseDocument,
   QuestionKind,
   QuizQuestion,
+  QuizSettings,
+  RubricCriterion,
   ShapeKind,
   Slide,
   SlideBackground,
@@ -112,6 +115,84 @@ export function changeDifficultyPatch(
   questionId?: string
 ): CoursePatch {
   return { action: "CHANGE_DIFFICULTY", blockId, questionId, difficulty };
+}
+
+export function updateQuizSettingsPatch(
+  blockId: string,
+  settings: QuizSettings
+): CoursePatch {
+  return { action: "UPDATE_QUIZ_SETTINGS", blockId, settings };
+}
+
+export function deleteQuestionPatch(blockId: string, questionId: string): CoursePatch {
+  return { action: "DELETE_QUIZ_QUESTION", blockId, questionId };
+}
+
+export function reorderQuestionPatch(
+  blockId: string,
+  questionId: string,
+  toIndex: number
+): CoursePatch {
+  return { action: "REORDER_QUIZ_QUESTION", blockId, questionId, toIndex };
+}
+
+export function updateHomeworkMetaPatch(
+  blockId: string,
+  meta: Extract<CoursePatch, { action: "UPDATE_HOMEWORK_META" }>["meta"]
+): CoursePatch {
+  return { action: "UPDATE_HOMEWORK_META", blockId, meta };
+}
+
+export function deleteExercisePatch(blockId: string, exerciseId: string): CoursePatch {
+  return { action: "DELETE_HOMEWORK_EXERCISE", blockId, exerciseId };
+}
+
+export function reorderExercisePatch(
+  blockId: string,
+  exerciseId: string,
+  toIndex: number
+): CoursePatch {
+  return { action: "REORDER_HOMEWORK_EXERCISE", blockId, exerciseId, toIndex };
+}
+
+export function setRubricPatch(blockId: string, rubric: RubricCriterion[]): CoursePatch {
+  return { action: "SET_RUBRIC", blockId, rubric };
+}
+
+export function addRubricCriterionPatch(
+  blockId: string,
+  name?: string,
+  atIndex?: number
+): CoursePatch {
+  return {
+    action: "ADD_RUBRIC_CRITERION",
+    blockId,
+    criterion: createRubricCriterion(name),
+    atIndex,
+  };
+}
+
+export function updateRubricCriterionPatch(
+  blockId: string,
+  criterionId: string,
+  criterion: RubricCriterion
+): CoursePatch {
+  return { action: "UPDATE_RUBRIC_CRITERION", blockId, criterionId, criterion };
+}
+
+export function deleteRubricCriterionPatch(
+  blockId: string,
+  criterionId: string
+): CoursePatch {
+  return { action: "DELETE_RUBRIC_CRITERION", blockId, criterionId };
+}
+
+export function reorderRubricCriterionPatch(
+  blockId: string,
+  criterionId: string,
+  toIndex: number
+): CoursePatch {
+  return { action: "REORDER_RUBRIC_CRITERION", blockId, criterionId, toIndex };
 }
 
 /* ─────────────────────────── slide lifecycle ──────────────────────────── */

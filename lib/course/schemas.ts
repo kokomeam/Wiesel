@@ -19,7 +19,9 @@ import type {
   LessonBlock,
   LessonNode,
   QuizQuestion,
+  QuizSettings,
   RubricCriterion,
+  RubricLevel,
   Slide,
   SlideBackground,
   SlideElement,
@@ -290,11 +292,24 @@ export const LectureParagraphSchema = z.object({
 
 export const QuizDifficultySchema = z.enum(["easy", "medium", "hard"]);
 
+export const QuizSettingsSchema = z.object({
+  timeLimitMinutes: z.number().positive().nullable().optional(),
+  attemptsAllowed: z.number().int().positive().nullable().optional(),
+  shuffleQuestions: z.boolean().optional(),
+  shuffleOptions: z.boolean().optional(),
+  passingScore: z.number().min(0).max(100).optional(),
+  whenToShowAnswers: z
+    .enum(["immediately", "after_submit", "after_due", "never"])
+    .optional(),
+}) satisfies z.ZodType<QuizSettings>;
+
 const quizQuestionBaseShape = {
   id: z.string(),
   prompt: z.string(),
   explanation: z.string().optional(),
   difficulty: QuizDifficultySchema,
+  points: z.number().min(0).optional(),
+  objectiveId: z.string().optional(),
 };
 
 export const QuizQuestionSchema = z.discriminatedUnion("kind", [
@@ -306,6 +321,12 @@ export const QuizQuestionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...quizQuestionBaseShape,
+    kind: z.literal("multi_select"),
+    choices: z.array(z.object({ id: z.string(), text: z.string() })),
+    correctChoiceIds: z.array(z.string()),
+  }),
+  z.object({
+    ...quizQuestionBaseShape,
     kind: z.literal("true_false"),
     correctAnswer: z.boolean(),
   }),
@@ -313,6 +334,7 @@ export const QuizQuestionSchema = z.discriminatedUnion("kind", [
     ...quizQuestionBaseShape,
     kind: z.literal("short_answer"),
     expectedAnswer: z.string(),
+    acceptedAnswers: z.array(z.string()).optional(),
   }),
 ]) satisfies z.ZodType<QuizQuestion>;
 
@@ -324,11 +346,18 @@ export const HomeworkExerciseSchema = z.object({
   solution: z.string().optional(),
 }) satisfies z.ZodType<HomeworkExercise>;
 
+export const RubricLevelSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  points: z.number(),
+}) satisfies z.ZodType<RubricLevel>;
+
 export const RubricCriterionSchema = z.object({
   id: z.string(),
   name: z.string(),
-  points: z.number(),
   description: z.string().optional(),
+  levels: z.array(RubricLevelSchema),
 }) satisfies z.ZodType<RubricCriterion>;
 
 export const LessonBlockSchema = z.discriminatedUnion("type", [
@@ -346,12 +375,18 @@ export const LessonBlockSchema = z.discriminatedUnion("type", [
   z.object({
     ...baseBlockShape,
     type: z.literal("quiz"),
+    settings: QuizSettingsSchema.optional(),
     questions: z.array(QuizQuestionSchema),
   }),
   z.object({
     ...baseBlockShape,
     type: z.literal("homework"),
     instructions: z.string(),
+    deliverableType: z.enum(["text_response", "file_upload", "external_link"]),
+    dueAt: z.string().optional(),
+    points: z.number().min(0).optional(),
+    estimatedMinutes: z.number().min(0).optional(),
+    objectiveId: z.string().optional(),
     exercises: z.array(HomeworkExerciseSchema),
     rubric: z.array(RubricCriterionSchema).optional(),
   }),

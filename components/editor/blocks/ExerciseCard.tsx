@@ -1,16 +1,18 @@
 "use client";
 
 /**
- * One homework exercise: title, prompt, optional hint, and a solution that
- * stays collapsed until revealed. All edits target homework block fields via
- * UPDATE_TEXT.
+ * One homework exercise (sortable): title, prompt, optional hint, and a
+ * solution that stays collapsed until revealed. Content edits target homework
+ * block fields via UPDATE_TEXT; deletion uses DELETE_HOMEWORK_EXERCISE.
  */
 
 import { useState } from "react";
-import { ChevronRight, Lightbulb } from "lucide-react";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronRight, GripVertical, Lightbulb, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
-import { updateTextPatch } from "@/lib/course/commands";
+import { deleteExercisePatch, updateTextPatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
 import type { HomeworkExercise } from "@/lib/course/types";
 import { InlineText, InlineTextArea } from "../InlineText";
@@ -26,6 +28,8 @@ export function ExerciseCard({
 }) {
   const apply = useEditorStore((s) => s.apply);
   const [showSolution, setShowSolution] = useState(false);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: exercise.id });
 
   function commitField(field: string, value: string) {
     apply(
@@ -39,6 +43,8 @@ export function ExerciseCard({
 
   return (
     <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
       {...aiAttrs({
         component: "homework-exercise",
         type: "exercise",
@@ -48,8 +54,20 @@ export function ExerciseCard({
         purpose: "A practice exercise within a homework assignment.",
         label: `Exercise ${index + 1}: ${exercise.title}`,
       })}
-      className="py-4 first:pt-1 last:pb-1"
+      className={cn(
+        "group/ex relative py-4 pl-6 first:pt-1 last:pb-1",
+        isDragging && "z-10 opacity-80"
+      )}
     >
+      <span
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag to reorder exercise ${index + 1}`}
+        className="absolute left-0 top-5 cursor-grab touch-none text-stone-300 opacity-0 transition-opacity hover:text-stone-500 group-hover/ex:opacity-100"
+      >
+        <GripVertical className="size-3.5" />
+      </span>
+
       <div className="flex items-baseline gap-2">
         <span className="text-xs font-semibold text-stone-400">{index + 1}.</span>
         <InlineText
@@ -59,6 +77,18 @@ export function ExerciseCard({
           onCommit={(v) => commitField("exercise_title", v)}
           className="text-sm font-semibold text-stone-800"
         />
+        <button
+          type="button"
+          title="Delete exercise"
+          aria-label={`Delete exercise ${index + 1}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            apply(deleteExercisePatch(homeworkId, exercise.id), "human");
+          }}
+          className="ml-auto grid size-6 shrink-0 place-items-center rounded-md text-stone-300 opacity-0 transition-opacity hover:bg-rose-50 hover:text-rose-600 group-hover/ex:opacity-100"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
       </div>
       <InlineTextArea
         value={exercise.prompt}
@@ -79,7 +109,10 @@ export function ExerciseCard({
       </div>
       <button
         type="button"
-        onClick={() => setShowSolution((v) => !v)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowSolution((v) => !v);
+        }}
         aria-expanded={showSolution}
         className="mt-2 flex items-center gap-1 text-xs font-medium text-stone-400 transition-colors hover:text-stone-600"
       >

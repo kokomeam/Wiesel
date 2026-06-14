@@ -33,6 +33,8 @@ import {
   LectureToneSchema,
   QuizDifficultySchema,
   QuizQuestionSchema,
+  QuizSettingsSchema,
+  RubricCriterionSchema,
   ShapeKindSchema,
   SlideBackgroundSchema,
   SlideElementSchema,
@@ -210,6 +212,76 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     blockId: z.string(),
     questionId: z.string(),
     explanation: z.string(),
+  }),
+
+  /* ── quiz / homework (assessment enhancements) ── */
+  z.object({
+    action: z.literal("UPDATE_QUIZ_SETTINGS"),
+    blockId: z.string(),
+    /** Merged over the existing settings (partial update). */
+    settings: QuizSettingsSchema,
+  }),
+  z.object({
+    action: z.literal("DELETE_QUIZ_QUESTION"),
+    blockId: z.string(),
+    questionId: z.string(),
+  }),
+  z.object({
+    action: z.literal("REORDER_QUIZ_QUESTION"),
+    blockId: z.string(),
+    questionId: z.string(),
+    toIndex: z.number().int(),
+  }),
+  z.object({
+    action: z.literal("UPDATE_HOMEWORK_META"),
+    blockId: z.string(),
+    /** Only the provided keys are written. */
+    meta: z.object({
+      deliverableType: z.enum(["text_response", "file_upload", "external_link"]).optional(),
+      dueAt: z.string().optional(),
+      points: z.number().min(0).optional(),
+      estimatedMinutes: z.number().min(0).optional(),
+      objectiveId: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("DELETE_HOMEWORK_EXERCISE"),
+    blockId: z.string(),
+    exerciseId: z.string(),
+  }),
+  z.object({
+    action: z.literal("REORDER_HOMEWORK_EXERCISE"),
+    blockId: z.string(),
+    exerciseId: z.string(),
+    toIndex: z.number().int(),
+  }),
+  z.object({
+    action: z.literal("SET_RUBRIC"),
+    blockId: z.string(),
+    rubric: z.array(RubricCriterionSchema),
+  }),
+  z.object({
+    action: z.literal("ADD_RUBRIC_CRITERION"),
+    blockId: z.string(),
+    criterion: RubricCriterionSchema,
+    atIndex: z.number().int().optional(),
+  }),
+  z.object({
+    action: z.literal("UPDATE_RUBRIC_CRITERION"),
+    blockId: z.string(),
+    criterionId: z.string(),
+    criterion: RubricCriterionSchema,
+  }),
+  z.object({
+    action: z.literal("DELETE_RUBRIC_CRITERION"),
+    blockId: z.string(),
+    criterionId: z.string(),
+  }),
+  z.object({
+    action: z.literal("REORDER_RUBRIC_CRITERION"),
+    blockId: z.string(),
+    criterionId: z.string(),
+    toIndex: z.number().int(),
   }),
 
   /* ── slide lifecycle ── */
@@ -635,6 +707,113 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       if (!q) return fail(`Question ${patch.questionId} not found`);
       q.explanation = patch.explanation;
       return { ok: true, summary: "Added an explanation to a quiz question" };
+    }
+
+    case "UPDATE_QUIZ_SETTINGS": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "quiz")
+        return fail(`Quiz ${patch.blockId} not found`);
+      hit.block.settings = { ...hit.block.settings, ...patch.settings };
+      return { ok: true, summary: "Updated quiz settings" };
+    }
+
+    case "DELETE_QUIZ_QUESTION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "quiz")
+        return fail(`Quiz ${patch.blockId} not found`);
+      const idx = hit.block.questions.findIndex((q) => q.id === patch.questionId);
+      if (idx === -1) return fail(`Question ${patch.questionId} not found`);
+      hit.block.questions.splice(idx, 1);
+      return { ok: true, summary: "Deleted quiz question" };
+    }
+
+    case "REORDER_QUIZ_QUESTION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "quiz")
+        return fail(`Quiz ${patch.blockId} not found`);
+      const from = hit.block.questions.findIndex((q) => q.id === patch.questionId);
+      if (from === -1) return fail(`Question ${patch.questionId} not found`);
+      moveItem(hit.block.questions, from, patch.toIndex);
+      return { ok: true, summary: "Reordered quiz question" };
+    }
+
+    case "UPDATE_HOMEWORK_META": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      // Only the provided keys exist on the parsed meta object.
+      Object.assign(hit.block, patch.meta);
+      return { ok: true, summary: "Updated assignment settings" };
+    }
+
+    case "DELETE_HOMEWORK_EXERCISE": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      const idx = hit.block.exercises.findIndex((e) => e.id === patch.exerciseId);
+      if (idx === -1) return fail(`Exercise ${patch.exerciseId} not found`);
+      hit.block.exercises.splice(idx, 1);
+      return { ok: true, summary: "Deleted exercise" };
+    }
+
+    case "REORDER_HOMEWORK_EXERCISE": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      const from = hit.block.exercises.findIndex((e) => e.id === patch.exerciseId);
+      if (from === -1) return fail(`Exercise ${patch.exerciseId} not found`);
+      moveItem(hit.block.exercises, from, patch.toIndex);
+      return { ok: true, summary: "Reordered exercise" };
+    }
+
+    case "SET_RUBRIC": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      hit.block.rubric = patch.rubric;
+      return { ok: true, summary: `Set a ${patch.rubric.length}-criterion rubric` };
+    }
+
+    case "ADD_RUBRIC_CRITERION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      if (!hit.block.rubric) hit.block.rubric = [];
+      insertAt(hit.block.rubric, patch.criterion, patch.atIndex);
+      return { ok: true, summary: `Added rubric criterion '${patch.criterion.name}'` };
+    }
+
+    case "UPDATE_RUBRIC_CRITERION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      const rubric = hit.block.rubric;
+      const idx = rubric?.findIndex((c) => c.id === patch.criterionId) ?? -1;
+      if (!rubric || idx === -1) return fail(`Criterion ${patch.criterionId} not found`);
+      rubric[idx] = { ...patch.criterion, id: patch.criterionId };
+      return { ok: true, summary: "Updated rubric criterion" };
+    }
+
+    case "DELETE_RUBRIC_CRITERION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      const rubric = hit.block.rubric;
+      const idx = rubric?.findIndex((c) => c.id === patch.criterionId) ?? -1;
+      if (!rubric || idx === -1) return fail(`Criterion ${patch.criterionId} not found`);
+      rubric.splice(idx, 1);
+      return { ok: true, summary: "Deleted rubric criterion" };
+    }
+
+    case "REORDER_RUBRIC_CRITERION": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit || hit.block.type !== "homework")
+        return fail(`Homework ${patch.blockId} not found`);
+      const rubric = hit.block.rubric;
+      const from = rubric?.findIndex((c) => c.id === patch.criterionId) ?? -1;
+      if (!rubric || from === -1) return fail(`Criterion ${patch.criterionId} not found`);
+      moveItem(rubric, from, patch.toIndex);
+      return { ok: true, summary: "Reordered rubric criterion" };
     }
 
     /* ── slide lifecycle ── */

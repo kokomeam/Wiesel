@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
+import { rubricTotalPoints } from "@/lib/course/assessments";
 import {
   changeDifficultyPatch,
   commitElementTextPatches,
@@ -522,7 +523,7 @@ export function ContentTab({
       }
       if (typeName === "homework") {
         const block = node as HomeworkBlock;
-        const points = block.rubric?.reduce((sum, r) => sum + r.points, 0) ?? 0;
+        const points = rubricTotalPoints(block.rubric);
         return (
           <Field label="Assignment">
             <p className="text-xs text-stone-600">

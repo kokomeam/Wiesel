@@ -6,6 +6,7 @@
  * uses hand-written ids instead, so server and client renders stay identical.
  */
 
+import { DEFAULT_QUIZ_SETTINGS } from "./assessments";
 import { componentManifest, defaultAIMeta, manifestTypeForElementType } from "./manifest";
 import { defaultFrameFor } from "./slide/geometry";
 import { elementFromPlaceholder, findLayout } from "./slide/layouts";
@@ -19,6 +20,8 @@ import type {
   LessonNode,
   QuestionKind,
   QuizQuestion,
+  RubricCriterion,
+  RubricLevel,
   Slide,
   SlideElement,
   SlideElementType,
@@ -139,6 +142,7 @@ export function createQuestion(kind: QuestionKind): QuizQuestion {
     id: newId("q"),
     prompt: "New question",
     difficulty: "medium" as const,
+    points: 1,
   };
   switch (kind) {
     case "multiple_choice":
@@ -152,6 +156,17 @@ export function createQuestion(kind: QuestionKind): QuizQuestion {
         ],
         correctChoiceId: "",
       };
+    case "multi_select":
+      return {
+        ...base,
+        kind,
+        choices: [
+          { id: newId("c"), text: "Option A" },
+          { id: newId("c"), text: "Option B" },
+          { id: newId("c"), text: "Option C" },
+        ],
+        correctChoiceIds: [],
+      };
     case "true_false":
       return { ...base, kind, correctAnswer: true };
     case "short_answer":
@@ -161,6 +176,23 @@ export function createQuestion(kind: QuestionKind): QuizQuestion {
 
 export function createExercise(title = "New exercise"): HomeworkExercise {
   return { id: newId("ex"), title, prompt: "" };
+}
+
+export function createRubricLevel(label = "New level", points = 0): RubricLevel {
+  return { id: newId("lvl"), label, points };
+}
+
+/** A fresh rubric criterion with a sensible Full / Partial / None ladder. */
+export function createRubricCriterion(name = "New criterion"): RubricCriterion {
+  return {
+    id: newId("rub"),
+    name,
+    levels: [
+      { id: newId("lvl"), label: "Full marks", points: 2 },
+      { id: newId("lvl"), label: "Partial", points: 1 },
+      { id: newId("lvl"), label: "None", points: 0 },
+    ],
+  };
 }
 
 const blockTitles: Record<BlockType, string> = {
@@ -186,9 +218,15 @@ export function createBlock(type: BlockType, order = 0): LessonBlock {
     case "lecture_text":
       return { ...base, type, tone: "beginner", paragraphs: [createParagraph()] };
     case "quiz":
-      return { ...base, type, questions: [] };
+      return { ...base, type, settings: { ...DEFAULT_QUIZ_SETTINGS }, questions: [] };
     case "homework":
-      return { ...base, type, instructions: "", exercises: [] };
+      return {
+        ...base,
+        type,
+        instructions: "",
+        deliverableType: "text_response",
+        exercises: [],
+      };
     case "exercise":
       return { ...base, type, prompt: "" };
     case "example":
