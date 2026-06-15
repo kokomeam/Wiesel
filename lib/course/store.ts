@@ -3,8 +3,13 @@
  *
  * `apply` is the SINGLE mutation entry point for the document: every change,
  * human or AI, is a CoursePatch that gets schema-validated, applied via the
- * pure `applyCoursePatch`, logged, and pushed onto the undo stack. Initial
- * state is the deterministic seed course, so first render is hydration-safe.
+ * pure `applyCoursePatch`, logged, and pushed onto the undo stack.
+ *
+ * Initial state is an empty PLACEHOLDER course (deterministic, hydration-
+ * safe). The studio loads the real course from the database on mount and
+ * calls `hydrate` to install it; edits then persist back (debounced) via
+ * lib/editor/coursePersistence.ts, which reports progress through
+ * `saveStatus`.
  */
 
 "use client";
@@ -18,10 +23,13 @@ import {
   type PatchResult,
 } from "./patches";
 import { findLesson, findSlide, firstLessonId, resolveSelection } from "./queries";
-import { seedCourse } from "./seed";
+import { PLACEHOLDER_COURSE } from "./placeholder";
 import type { CourseDocument, Selection } from "./types";
 
 export type PatchSource = "human" | "ai";
+
+/** Persistence lifecycle, surfaced in the editor header. */
+export type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 export interface PatchLogEntry {
   id: string;
@@ -47,13 +55,19 @@ const UNDO_LIMIT = 100;
 
 interface EditorState {
   doc: CourseDocument;
+  /** DB id of the course being edited (null until hydrated). */
+  courseId: string | null;
   selection: Selection;
   activeLessonId: string;
   patchLog: PatchLogEntry[];
   undoStack: CourseDocument[];
   redoStack: CourseDocument[];
   lastAIResult: AIResult | null;
+  saveStatus: SaveStatus;
+  /** When the last successful save completed (ISO), for the header. */
+  lastSavedAt: string | null;
 
+  hydrate: (doc: CourseDocument, courseId: string) => void;
   select: (sel: Selection) => void;
   openLesson: (lessonId: string) => void;
   apply: (patch: unknown, source: PatchSource) => PatchResult;
@@ -61,6 +75,7 @@ interface EditorState {
   undo: () => void;
   redo: () => void;
   setLastAIResult: (result: AIResult | null) => void;
+  setSaveStatus: (status: SaveStatus, savedAt?: string) => void;
 }
 
 /** If the selection no longer resolves (node deleted), walk up to something
@@ -145,13 +160,33 @@ export const useEditorStore = create<EditorState>()((set, get) => {
   }
 
   return {
-    doc: seedCourse,
-    selection: { kind: "lesson", id: "lesson-two-pointers" },
-    activeLessonId: "lesson-two-pointers",
+    doc: PLACEHOLDER_COURSE,
+    courseId: null,
+    selection: { kind: "course" },
+    activeLessonId: "",
     patchLog: [],
     undoStack: [],
     redoStack: [],
     lastAIResult: null,
+    saveStatus: "idle",
+    lastSavedAt: null,
+
+    /** Install a freshly loaded course; resets history and save state. */
+    hydrate: (doc, courseId) => {
+      const lessonId = firstLessonId(doc) ?? "";
+      set({
+        doc,
+        courseId,
+        selection: lessonId ? { kind: "lesson", id: lessonId } : { kind: "course" },
+        activeLessonId: lessonId,
+        patchLog: [],
+        undoStack: [],
+        redoStack: [],
+        lastAIResult: null,
+        saveStatus: "idle",
+        lastSavedAt: doc.metadata.updatedAt,
+      });
+    },
 
     select: (sel) => set({ selection: sel }),
 
@@ -213,5 +248,8 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       }),
 
     setLastAIResult: (result) => set({ lastAIResult: result }),
+
+    setSaveStatus: (status, savedAt) =>
+      set(status === "saved" && savedAt ? { saveStatus: status, lastSavedAt: savedAt } : { saveStatus: status }),
   };
 });

@@ -95,7 +95,7 @@ function SortableLesson({
   );
 }
 
-function SortableModule({ module }: { module: CourseModule }) {
+function SortableModule({ module, index }: { module: CourseModule; index: number }) {
   const selection = useEditorStore((s) => s.selection);
   const select = useEditorStore((s) => s.select);
   const apply = useEditorStore((s) => s.apply);
@@ -137,10 +137,13 @@ function SortableModule({ module }: { module: CourseModule }) {
         >
           <span
             className={cn(
-              "min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide",
-              selected ? "text-brand-700" : "text-stone-500"
+              "min-w-0 flex-1 truncate text-xs font-semibold tracking-tight",
+              selected ? "text-brand-700" : "text-stone-700"
             )}
           >
+            <span className={selected ? "text-brand-500" : "text-stone-400"}>
+              Module {index + 1}:
+            </span>{" "}
             {module.title}
           </span>
           <span className="shrink-0 text-[11px] text-stone-300">
@@ -272,8 +275,8 @@ export function CourseOutlineSidebar() {
             items={doc.modules.map((m) => m.id)}
             strategy={verticalListSortingStrategy}
           >
-            {doc.modules.map((module) => (
-              <SortableModule key={module.id} module={module} />
+            {doc.modules.map((module, index) => (
+              <SortableModule key={module.id} module={module} index={index} />
             ))}
           </SortableContext>
         </DndContext>

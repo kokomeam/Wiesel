@@ -41,8 +41,8 @@ const blockIcon: Record<BlockType, typeof Presentation> = {
 const blockTypeLabel: Record<BlockType, string> = {
   slide_deck: "Slide deck",
   lecture_text: "Lecture",
-  quiz: "Quiz",
-  homework: "Homework",
+  quiz: "Knowledge check",
+  homework: "Practice exercise",
   exercise: "Exercise",
   example: "Example",
   resource: "Resources",

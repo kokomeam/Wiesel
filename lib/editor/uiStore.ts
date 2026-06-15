@@ -11,6 +11,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { FlowPhase } from "@/lib/course/creationFlow";
 import type { SlideLayoutDef } from "@/lib/course/slide/layouts";
 import type { Slide, SlideElement } from "@/lib/course/types";
 
@@ -75,8 +76,12 @@ interface UIState {
   contextMenu: ContextMenuState | null;
   /** Canvas zoom factor on top of the fit-to-width scale. Not persisted. */
   zoom: number;
+  /** Active creation-flow step (Plan / Create / Publish). null = derive from
+   *  the doc (empty course → Plan, otherwise Create). Not persisted. */
+  activeStep: FlowPhase | null;
 
   togglePanel: (key: PanelKey) => void;
+  setActiveStep: (step: FlowPhase) => void;
   openImageDialog: (req: ImageDialogRequest) => void;
   closeImageDialog: () => void;
   setElementClipboard: (clip: ElementClipboard | null) => void;
@@ -123,9 +128,12 @@ export const useUIStore = create<UIState>()(
       elementClipboard: null,
       contextMenu: null,
       zoom: 1,
+      activeStep: null,
 
       togglePanel: (key) =>
         set((s) => ({ collapsed: { ...s.collapsed, [key]: !s.collapsed[key] } })),
+
+      setActiveStep: (step) => set({ activeStep: step }),
 
       openImageDialog: (req) => set({ imageDialog: req }),
       closeImageDialog: () => set({ imageDialog: null }),

@@ -36,6 +36,7 @@ import { ExerciseCard } from "./ExerciseCard";
 import { RubricEditor } from "./RubricEditor";
 
 const deliverableOptions: { value: DeliverableType; label: string }[] = [
+  { value: "none", label: "None" },
   { value: "text_response", label: "Text" },
   { value: "file_upload", label: "File" },
   { value: "external_link", label: "Link" },
@@ -86,25 +87,6 @@ export function HomeworkEditor({
             }
           />
         </MetaField>
-        <MetaField label="Due">
-          <input
-            type="date"
-            value={block.dueAt ? block.dueAt.slice(0, 10) : ""}
-            aria-label="Due date"
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) =>
-              apply(updateHomeworkMetaPatch(block.id, { dueAt: e.target.value }), "human")
-            }
-            className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300 focus:ring-2 focus:ring-brand-200/60"
-          />
-        </MetaField>
-        <MetaField label="Points">
-          <NumberField
-            value={block.points}
-            aria-label="Total points"
-            onCommit={(n) => apply(updateHomeworkMetaPatch(block.id, { points: n ?? undefined }), "human")}
-          />
-        </MetaField>
         <MetaField label="Est.">
           <NumberField
             value={block.estimatedMinutes}
@@ -115,7 +97,15 @@ export function HomeworkEditor({
             }
           />
         </MetaField>
+        <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-400">
+          <span className="inline-block size-1.5 rounded-full bg-emerald-400" aria-hidden />
+          Self-paced — no points, no due date.
+        </span>
       </div>
+      <p className="text-[11px] text-stone-400">
+        A deliverable is optional: collect a submission for AI / creator feedback,
+        or include a solution below so learners can self-check.
+      </p>
 
       <div>
         <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
@@ -123,8 +113,8 @@ export function HomeworkEditor({
         </p>
         <InlineTextArea
           value={block.instructions}
-          aria-label="Homework instructions"
-          placeholder="What should students do?"
+          aria-label="Practice exercise instructions"
+          placeholder="What should learners practice?"
           onCommit={(v) =>
             apply(
               updateTextPatch(

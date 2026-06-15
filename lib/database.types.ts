@@ -82,6 +82,7 @@ export type Database = {
           description: string | null
           id: string
           level: string | null
+          plan: Json
           price_cents: number
           status: string
           tags: string[]
@@ -97,6 +98,7 @@ export type Database = {
           description?: string | null
           id?: string
           level?: string | null
+          plan?: Json
           price_cents?: number
           status?: string
           tags?: string[]
@@ -112,6 +114,7 @@ export type Database = {
           description?: string | null
           id?: string
           level?: string | null
+          plan?: Json
           price_cents?: number
           status?: string
           tags?: string[]

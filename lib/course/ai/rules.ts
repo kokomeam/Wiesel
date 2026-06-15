@@ -69,9 +69,9 @@ export function suggestionsFor(selection: Selection, doc: CourseDocument): strin
       return ["Add a lesson to this module"];
     case "lesson":
       return [
-        "Add a quiz to this lesson",
+        "Add a knowledge check",
         "Add a worked example",
-        "Add a homework set",
+        "Add a practice exercise",
       ];
     case "slide":
       return [
@@ -92,11 +92,7 @@ export function suggestionsFor(selection: Selection, doc: CourseDocument): strin
       const hit = findBlock(doc, selection.id);
       switch (hit?.block.type) {
         case "quiz":
-          return [
-            "Generate 3 medium questions",
-            "Make this quiz harder",
-            "Add explanations",
-          ];
+          return ["Generate 3 questions", "Add explanations"];
         case "lecture_text":
           return ["Simplify this for beginners", "Add an analogy", "Add an example"];
         case "slide_deck":
@@ -110,7 +106,7 @@ export function suggestionsFor(selection: Selection, doc: CourseDocument): strin
         case "example":
           return ["Make this more concrete", "Add another example"];
         default:
-          return ["Add a quiz to this lesson"];
+          return ["Add a knowledge check"];
       }
     }
   }
@@ -404,13 +400,13 @@ function lessonRules(
   if (!hit) return undefined;
   const order = hit.lesson.blocks.length;
 
-  if (/\bquiz\b/.test(prompt)) {
-    return ok(`Added a quiz with 3 questions to '${hit.lesson.title}'`, [
+  if (/\bquiz\b|knowledge check/.test(prompt)) {
+    return ok(`Added a knowledge check with 3 questions to '${hit.lesson.title}'`, [
       { action: "ADD_BLOCK", lessonId, block: richBlock("quiz", order) },
     ]);
   }
-  if (/\bhomework\b|practice set|assignment/.test(prompt)) {
-    return ok(`Added a homework set to '${hit.lesson.title}'`, [
+  if (/\bhomework\b|practice exercise|practice set|assignment/.test(prompt)) {
+    return ok(`Added a practice exercise to '${hit.lesson.title}'`, [
       { action: "ADD_BLOCK", lessonId, block: richBlock("homework", order) },
     ]);
   }

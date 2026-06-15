@@ -12,6 +12,7 @@ import type {
   AIMeta,
   CourseDocument,
   CourseModule,
+  CoursePlan,
   CourseTheme,
   ElementStyle,
   HomeworkExercise,
@@ -382,7 +383,7 @@ export const LessonBlockSchema = z.discriminatedUnion("type", [
     ...baseBlockShape,
     type: z.literal("homework"),
     instructions: z.string(),
-    deliverableType: z.enum(["text_response", "file_upload", "external_link"]),
+    deliverableType: z.enum(["none", "text_response", "file_upload", "external_link"]),
     dueAt: z.string().optional(),
     points: z.number().min(0).optional(),
     estimatedMinutes: z.number().min(0).optional(),
@@ -449,12 +450,20 @@ export const CourseThemeSchema = z.object({
   }),
 }) satisfies z.ZodType<CourseTheme>;
 
+export const CoursePlanSchema = z.object({
+  category: z.string().optional(),
+  outcomes: z.array(z.string()),
+  prerequisites: z.array(z.string()),
+  teachingStyle: z.string().optional(),
+}) satisfies z.ZodType<CoursePlan>;
+
 export const CourseDocumentSchema = z.object({
   id: z.string(),
   title: z.string(),
   description: z.string().optional(),
   audience: z.string().optional(),
   level: z.enum(["beginner", "intermediate", "advanced"]).optional(),
+  plan: CoursePlanSchema,
   modules: z.array(CourseModuleSchema),
   theme: CourseThemeSchema,
   metadata: z.object({

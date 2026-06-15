@@ -19,9 +19,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
-import { rubricTotalPoints } from "@/lib/course/assessments";
 import {
-  changeDifficultyPatch,
   commitElementTextPatches,
   replaceImagePatch,
   updateElementPatch,
@@ -39,7 +37,6 @@ import type {
   HomeworkBlock,
   LessonNode,
   QuizBlock,
-  QuizDifficulty,
   Selection,
   Slide,
   SlideElement,
@@ -372,7 +369,6 @@ function ElementContent({
   }
 }
 
-const difficulties: QuizDifficulty[] = ["easy", "medium", "hard"];
 
 export function ContentTab({
   selection,
@@ -476,59 +472,29 @@ export function ContentTab({
     case "block": {
       if (typeName === "quiz") {
         const block = node as QuizBlock;
-        const mix = difficulties.map((d) => ({
-          d,
-          n: block.questions.filter((q) => q.difficulty === d).length,
-        }));
         return (
-          <>
-            <Field label="Questions">
-              <p className="text-xs text-stone-600">{block.questions.length} total</p>
-              {block.questions.length > 0 && (
-                <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-stone-100">
-                  {mix.map(
-                    ({ d, n }) =>
-                      n > 0 && (
-                        <div
-                          key={d}
-                          title={`${n} ${d}`}
-                          style={{ width: `${(n / block.questions.length) * 100}%` }}
-                          className={cn(
-                            d === "easy" && "bg-emerald-300",
-                            d === "medium" && "bg-amber-300",
-                            d === "hard" && "bg-rose-300"
-                          )}
-                        />
-                      )
-                  )}
-                </div>
-              )}
-            </Field>
-            <Field label="Set all to">
-              <div className="flex gap-1">
-                {difficulties.map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => apply(changeDifficultyPatch(block.id, d), "human")}
-                    className="rounded-lg bg-stone-50 px-2.5 py-1 text-[11px] font-medium capitalize text-stone-500 transition-colors hover:bg-stone-100"
-                  >
-                    {d}
-                  </button>
-                ))}
-              </div>
-            </Field>
-          </>
+          <Field label="Knowledge check">
+            <p className="text-xs text-stone-600">
+              {block.questions.length} question{block.questions.length === 1 ? "" : "s"}
+            </p>
+            <p className="mt-1 text-[11px] text-stone-400">
+              Ungraded · immediate feedback · never blocks progress.
+            </p>
+          </Field>
         );
       }
       if (typeName === "homework") {
         const block = node as HomeworkBlock;
-        const points = rubricTotalPoints(block.rubric);
+        const collectsDeliverable = !!block.deliverableType && block.deliverableType !== "none";
+        const hasRubric = !!block.rubric && block.rubric.length > 0;
         return (
-          <Field label="Assignment">
+          <Field label="Practice exercise">
             <p className="text-xs text-stone-600">
               {block.exercises.length} exercise{block.exercises.length === 1 ? "" : "s"}
-              {block.rubric ? ` · rubric, ${points} pts` : " · no rubric"}
+              {hasRubric ? " · rubric" : ""}
+            </p>
+            <p className="mt-1 text-[11px] text-stone-400">
+              Self-paced · {collectsDeliverable ? "collects a deliverable" : "no deliverable"}.
             </p>
           </Field>
         );

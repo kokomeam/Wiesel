@@ -214,7 +214,7 @@ export function RubricEditor({ block }: { block: HomeworkBlock }) {
     <div className="rounded-xl bg-stone-50 px-4 py-3">
       <div className="mb-2 flex items-center">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-stone-400">
-          Rubric{rubric.length > 0 ? ` · ${rubricTotalPoints(rubric)} pts` : ""}
+          Rubric (optional){rubric.length > 0 ? ` · ${rubricTotalPoints(rubric)} pts` : ""}
         </p>
         <button
           type="button"
@@ -231,7 +231,7 @@ export function RubricEditor({ block }: { block: HomeworkBlock }) {
 
       {rubric.length === 0 ? (
         <p className="py-2 text-center text-xs text-stone-400">
-          No rubric yet — add a criterion to grade this assignment.
+          No rubric yet — add a criterion to guide feedback or self-checking.
         </p>
       ) : (
         <DndContext

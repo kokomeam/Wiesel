@@ -13,13 +13,18 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { aiAttrs, toolAttrs } from "@/lib/course/aiAttributes";
 import { updateTextPatch } from "@/lib/course/commands";
+import { computeCreationFlow } from "@/lib/course/creationFlow";
 import { registerLintTextMeasurer } from "@/lib/course/lint";
 import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { AICommandBar } from "./AICommandBar";
 import { CollapsedRail } from "./CollapsedRail";
 import { CourseOutlineSidebar } from "./CourseOutlineSidebar";
-import { InlineText } from "./InlineText";
+import { CreationFlowBar } from "./CreationFlowBar";
+import { EditableName } from "./EditableName";
+import { ModulePage } from "./ModulePage";
+import { PlanPage } from "./plan/PlanPage";
+import { PublishPanel } from "./plan/PublishPanel";
 import { InspectorPanel } from "./InspectorPanel";
 import { LessonWorkspace } from "./LessonWorkspace";
 import { CanvasContextMenu } from "./slide/CanvasContextMenu";
@@ -39,14 +44,44 @@ function initials(title: string): string {
   );
 }
 
+/** Live autosave state, replacing the old static "Updated" date. */
+function SaveIndicator({ status }: { status: "idle" | "saving" | "saved" | "error" }) {
+  if (status === "saving") {
+    return (
+      <span className="flex items-center gap-1 text-stone-400">
+        <span className="size-1.5 animate-pulse rounded-full bg-amber-400" />
+        Saving…
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="flex items-center gap-1 text-rose-500">
+        <span className="size-1.5 rounded-full bg-rose-500" />
+        Couldn’t save — retrying
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1 text-stone-400">
+      <span className="size-1.5 rounded-full bg-emerald-400" />
+      {status === "idle" ? "Saved to your account" : "All changes saved"}
+    </span>
+  );
+}
+
 export function CourseEditorShell() {
   const doc = useEditorStore((s) => s.doc);
+  const selection = useEditorStore((s) => s.selection);
   const apply = useEditorStore((s) => s.apply);
   const undo = useEditorStore((s) => s.undo);
   const redo = useEditorStore((s) => s.redo);
   const undoCount = useEditorStore((s) => s.undoStack.length);
   const redoCount = useEditorStore((s) => s.redoStack.length);
   const editCount = useEditorStore((s) => s.patchLog.length);
+  const saveStatus = useEditorStore((s) => s.saveStatus);
+
+  const flow = computeCreationFlow(doc);
 
   const collapsed = useUIStore((s) => s.collapsed);
   const focusMode = useUIStore((s) => s.focusMode);
@@ -54,6 +89,16 @@ export function CourseEditorShell() {
   const enterFocusMode = useUIStore((s) => s.enterFocusMode);
   const exitFocusMode = useUIStore((s) => s.exitFocusMode);
   const resetLayout = useUIStore((s) => s.resetLayout);
+  const activeStep = useUIStore((s) => s.activeStep);
+  const setActiveStep = useUIStore((s) => s.setActiveStep);
+
+  // Default landing: a brand-new (contentless) course opens on Plan; a course
+  // that already has content opens on Create. Explicit stepper clicks override.
+  const courseIsEmpty = doc.modules.every((m) =>
+    m.lessons.every((l) => l.blocks.length === 0)
+  );
+  const effectiveStep = activeStep ?? (courseIsEmpty ? "plan" : "create");
+  const showFlowBar = !(effectiveStep === "create" && focusMode);
 
   useEditorShortcuts();
 
@@ -85,23 +130,23 @@ export function CourseEditorShell() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="min-w-0 max-w-72">
-                <InlineText
+                <EditableName
                   value={doc.title}
                   aria-label="Course title"
                   placeholder="Course title"
                   onCommit={(v) =>
                     apply(updateTextPatch({ kind: "course", field: "title" }, v), "human")
                   }
-                  className="truncate text-sm font-semibold text-stone-900"
+                  className="text-sm font-semibold text-stone-900"
                 />
               </div>
               <Badge tone="amber" dot>
                 Draft
               </Badge>
             </div>
-            <p className="truncate text-xs text-stone-400">
-              <span className="capitalize">{doc.level}</span> · Updated{" "}
-              {doc.metadata.updatedAt.slice(0, 10)}
+            <p className="flex items-center gap-1.5 truncate text-xs text-stone-400">
+              {doc.level && <span className="capitalize">{doc.level} ·</span>}
+              <SaveIndicator status={saveStatus} />
             </p>
           </div>
         </div>
@@ -160,14 +205,36 @@ export function CourseEditorShell() {
             <Eye className="size-3.5" />
             Preview
           </Button>
-          <Button variant="primary" size="sm">
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!flow.readyToPublish}
+            title={
+              flow.readyToPublish
+                ? "Publish your course"
+                : "Add a course title and at least one lesson with content to publish"
+            }
+          >
             <Rocket className="size-3.5" />
             Publish
           </Button>
         </div>
       </div>
 
-      {/* Three columns */}
+      {showFlowBar && (
+        <CreationFlowBar
+          flow={flow}
+          activeStep={effectiveStep}
+          onStepClick={setActiveStep}
+        />
+      )}
+
+      {/* Create = the three-column curriculum editor; Plan & Publish swap in. */}
+      {effectiveStep === "plan" ? (
+        <PlanPage />
+      ) : effectiveStep === "publish" ? (
+        <PublishPanel />
+      ) : (
       <div className="flex min-h-0 flex-1">
         <div className="hidden md:flex">
           {collapsed.outline ? (
@@ -182,7 +249,11 @@ export function CourseEditorShell() {
         </div>
 
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <LessonWorkspace />
+          {selection.kind === "module" ? (
+            <ModulePage moduleId={selection.id} />
+          ) : (
+            <LessonWorkspace />
+          )}
           <AICommandBar />
           {focusMode && (
             <button
@@ -214,6 +285,7 @@ export function CourseEditorShell() {
           )}
         </div>
       </div>
+      )}
 
       <GlobalImageDialog />
       <CanvasContextMenu />

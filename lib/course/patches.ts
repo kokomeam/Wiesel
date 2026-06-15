@@ -181,6 +181,18 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     target: StyleTargetSchema,
     style: z.object({ tone: LectureToneSchema.optional() }),
   }),
+  z.object({
+    action: z.literal("UPDATE_PLAN"),
+    level: z.enum(["beginner", "intermediate", "advanced"]).optional(),
+    plan: z
+      .object({
+        category: z.string().optional(),
+        outcomes: z.array(z.string()).optional(),
+        prerequisites: z.array(z.string()).optional(),
+        teachingStyle: z.string().optional(),
+      })
+      .optional(),
+  }),
 
   /* ── quiz / homework (unchanged from V1) ── */
   z.object({
@@ -237,7 +249,9 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     blockId: z.string(),
     /** Only the provided keys are written. */
     meta: z.object({
-      deliverableType: z.enum(["text_response", "file_upload", "external_link"]).optional(),
+      deliverableType: z
+        .enum(["none", "text_response", "file_upload", "external_link"])
+        .optional(),
       dueAt: z.string().optional(),
       points: z.number().min(0).optional(),
       estimatedMinutes: z.number().min(0).optional(),
@@ -646,6 +660,12 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
         return { ok: true, summary: `Set tone to ${patch.style.tone}` };
       }
       return fail("No applicable style fields for this block");
+    }
+
+    case "UPDATE_PLAN": {
+      if (patch.level !== undefined) next.level = patch.level;
+      if (patch.plan) next.plan = { ...next.plan, ...patch.plan };
+      return { ok: true, summary: "Updated course plan" };
     }
 
     case "ADD_QUIZ_QUESTION": {

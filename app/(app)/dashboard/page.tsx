@@ -15,6 +15,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { AreaChart } from "@/components/charts/AreaChart";
+import { createNewCourse } from "@/app/(app)/studio/actions";
 import {
   courses,
   dashboardStats,
@@ -36,12 +37,12 @@ export default function DashboardPage() {
         title={`Welcome back, ${currentUser.name.split(" ")[0]}`}
         description="Here's what's happening across your courses today."
         actions={
-          <Link href="/studio">
-            <Button>
+          <form action={createNewCourse}>
+            <Button type="submit">
               <Plus className="size-4" />
               New Course
             </Button>
-          </Link>
+          </form>
         }
       />
 

@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CourseGen Pro — Course Studio — Web (Creator + Learner)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..600&family=Geist:wght@300..600&family=Geist+Mono:wght@400;500&display=swap');
+
+  :root{
+    --paper:#faf7f1; --paper-2:#fffdf9; --line:#ece7de; --line-2:#e0d9cb;
+    --ink:#292524; --ink-soft:#57534e; --ink-mute:#78716c; --ink-faint:#a8a29e;
+    --b50:#fff7ed; --b100:#ffedd5; --b200:#fed7aa; --b300:#fdba74; --b400:#fb923c;
+    --b500:#f97316; --b600:#ea580c; --b700:#c2410c; --b800:#9a3412; --b950:#431407;
+    --grad:linear-gradient(135deg,#f59e0b 0%,#ea580c 100%);
+    --emerald:#059669; --emerald-bg:#ecfdf5; --emerald-line:#a7f3d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --rose:#e11d48; --rose-bg:#fff1f2;
+    --sky:#0284c7; --sky-bg:#f0f9ff;
+    --shadow:0 1px 2px rgba(68,48,28,.05); --shadow-md:0 8px 30px rgba(68,48,28,.08);
+    --font-display:'Fraunces',Georgia,'Times New Roman',serif;
+    --font-sans:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+    --font-mono:'Geist Mono',ui-monospace,'SFMono-Regular',monospace;
+    --r:16px;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--font-sans);font-size:15px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  ::selection{background:#fed7aa;color:#431407}
+  a{color:var(--b700);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,.mono{font-family:var(--font-mono);font-size:.86em}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+
+  /* ---------- Masthead ---------- */
+  .mast{position:relative;overflow:hidden;border-bottom:1px solid var(--line);
+    background:radial-gradient(120% 140% at 85% -10%, #fff3e6 0%, var(--paper) 55%);}
+  .mast .wrap{padding:54px 24px 40px}
+  .eyebrow{font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.18em;
+    font-size:11px;color:var(--b700);font-weight:500}
+  h1{font-family:var(--font-display);font-weight:340;font-size:clamp(30px,4.4vw,50px);
+    line-height:1.05;letter-spacing:-.01em;margin:14px 0 10px}
+  h1 .star{color:var(--b600)}
+  .sub{font-size:17px;color:var(--ink-soft);max-width:760px;margin:0}
+  .metarow{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+  .metarow .chip{background:var(--paper-2)}
+
+  /* ---------- Chips / badges / dots ---------- */
+  .chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);
+    border-radius:999px;padding:5px 12px;font-size:12.5px;color:var(--ink-soft);background:#fff}
+  .chip b{color:var(--ink);font-weight:550}
+  .tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;
+    padding:3px 10px;font-size:11.5px;font-weight:500;font-family:var(--font-mono);
+    text-transform:uppercase;letter-spacing:.06em}
+  .tag.brand{background:var(--b50);color:var(--b700);border:1px solid var(--b200)}
+  .tag.ink{background:#f5f5f4;color:var(--ink-soft);border:1px solid var(--line-2)}
+  .tag.ok{background:var(--emerald-bg);color:var(--emerald);border:1px solid var(--emerald-line)}
+  .tag.warn{background:var(--amber-bg);color:var(--amber);border:1px solid #fde68a}
+  .tag.future{background:#f4f4f5;color:#52525b;border:1px dashed #c8c4bb}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .dot.ok{background:var(--emerald)} .dot.draft{background:var(--amber)}
+  .dot.gen{background:var(--b500);box-shadow:0 0 0 0 rgba(249,115,22,.5);animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,.45)}70%{box-shadow:0 0 0 7px rgba(249,115,22,0)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
+
+  /* ---------- TOC ---------- */
+  .toc{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:26px 0 0}
+  .toc a{display:block;border:1px solid var(--line);background:#fff;border-radius:14px;
+    padding:14px 14px;box-shadow:var(--shadow);transition:transform .15s,border-color .15s}
+  .toc a:hover{transform:translateY(-2px);border-color:var(--b300);text-decoration:none}
+  .toc .n{font-family:var(--font-mono);font-size:11px;color:var(--b600)}
+  .toc .t{font-family:var(--font-display);font-size:16px;color:var(--ink);margin-top:4px;line-height:1.2}
+
+  /* ---------- Section ---------- */
+  section{padding:46px 0;border-bottom:1px solid var(--line)}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+  .sec-head .num{font-family:var(--font-mono);font-size:12px;color:var(--b600);
+    border:1px solid var(--b200);background:var(--b50);border-radius:999px;padding:3px 9px}
+  h2{font-family:var(--font-display);font-weight:360;font-size:clamp(24px,3vw,33px);
+    margin:0;letter-spacing:-.01em}
+  h3{font-family:var(--font-display);font-weight:420;font-size:20px;margin:30px 0 10px}
+  h4{font-size:13px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.1em;
+    color:var(--ink-mute);margin:22px 0 10px;font-weight:500}
+  p{margin:10px 0}
+  .lead{font-size:16.5px;color:var(--ink-soft);max-width:840px}
+
+  /* ---------- Cards / grid ---------- */
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--r);
+    padding:20px 22px;box-shadow:var(--shadow)}
+  .card.tint{background:linear-gradient(180deg,#fffaf3,#fff)}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .callout{border-left:3px solid var(--b400);background:var(--b50);
+    border-radius:0 12px 12px 0;padding:14px 18px;margin:16px 0}
+  .callout.thesis{border-color:var(--b600);background:linear-gradient(135deg,#fff4e8,#fff)}
+  .callout.warnbox{border-color:var(--rose);background:var(--rose-bg)}
+  .callout.okbox{border-color:var(--emerald);background:var(--emerald-bg)}
+  .callout h4{margin:0 0 6px;color:var(--ink)}
+  .kpill{font-family:var(--font-display);font-size:30px;line-height:1;color:var(--ink)}
+
+  /* ---------- Tables ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0;
+    background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fbf8f2;font-size:11.5px;font-family:var(--font-mono);text-transform:uppercase;
+    letter-spacing:.06em;color:var(--ink-mute);font-weight:500}
+  tr:last-child td{border-bottom:none}
+  td b{font-weight:560}
+  .strike{color:var(--rose);text-decoration:line-through;text-decoration-thickness:1px}
+  .keep{color:var(--emerald);font-weight:560}
+  .cw-1{width:18%} .cw-2{width:26%}
+
+  /* ---------- Flow diagram ---------- */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:18px 0}
+  .flow .node{flex:1;min-width:170px;border:1px solid var(--line);border-radius:14px;
+    background:#fff;padding:14px 16px;box-shadow:var(--shadow);position:relative}
+  .flow .node .ph{font-family:var(--font-mono);font-size:11px;color:var(--b600);text-transform:uppercase;letter-spacing:.08em}
+  .flow .node .ti{font-family:var(--font-display);font-size:17px;margin:3px 0 6px}
+  .flow .node ul{margin:0;padding-left:16px;font-size:12.5px;color:var(--ink-soft)}
+  .flow .arrow{display:flex;align-items:center;justify-content:center;color:var(--b400);
+    font-size:22px;padding:0 8px;flex:0 0 auto}
+  .gateline{display:flex;align-items:center;gap:10px;margin-top:6px;
+    border:1px dashed var(--emerald-line);background:var(--emerald-bg);border-radius:10px;padding:8px 12px;font-size:12.5px;color:#065f46}
+
+  /* ---------- App window mock ---------- */
+  .surf-label{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);
+    font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--b700);
+    background:var(--b50);border:1px solid var(--b200);border-radius:999px;padding:5px 12px;margin:28px 0 12px}
+  .appwin{border:1px solid var(--line-2);border-radius:16px;overflow:hidden;
+    box-shadow:var(--shadow-md);background:#fff;margin:8px 0 6px}
+  .titlebar{display:flex;align-items:center;gap:8px;padding:9px 14px;
+    background:#f4efe7;border-bottom:1px solid var(--line)}
+  .tb-dot{width:10px;height:10px;border-radius:50%}
+  .tb-dots{display:flex;gap:6px}
+  .tb-url{margin-left:10px;font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);
+    background:#fff;border:1px solid var(--line);border-radius:999px;padding:3px 12px}
+  .tb-spacer{flex:1}
+  .appbody{display:grid;background:var(--paper)}
+
+  /* studio shell */
+  .studio{grid-template-columns:210px 1fr 188px}
+  .pane{padding:14px;border-right:1px solid var(--line);min-height:330px}
+  .pane:last-child{border-right:none}
+  .pane-h{font-family:var(--font-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-mute);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+  .tree{font-size:12.5px}
+  .tree .mod{font-weight:560;color:var(--ink);margin:9px 0 3px;display:flex;align-items:center;gap:6px}
+  .tree .les{color:var(--ink-soft);padding:3px 0 3px 16px;display:flex;align-items:center;gap:6px}
+  .tree .les.sel{color:var(--b700);font-weight:540}
+  .tree .blk{padding:2px 0 2px 30px;font-size:11.5px;color:var(--ink-mute);display:flex;align-items:center;gap:6px}
+  .ic{width:13px;height:13px;border-radius:3px;display:inline-block;flex:0 0 auto}
+
+  /* stepper */
+  .stepper{display:flex;align-items:center;gap:0;padding:11px 16px;background:#fff;border-bottom:1px solid var(--line)}
+  .step{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-mute)}
+  .step .b{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:600;border:1px solid var(--line-2);background:#fff;color:var(--ink-mute)}
+  .step.done .b{background:var(--emerald);border-color:var(--emerald);color:#fff}
+  .step.now .b{background:var(--grad);border-color:transparent;color:#fff}
+  .step.now{color:var(--b700);font-weight:560}
+  .step-sep{flex:1;height:1px;background:var(--line);margin:0 12px;min-width:18px}
+
+  /* checklist rail */
+  .check{font-size:12px}
+  .check .ci{display:flex;gap:8px;align-items:flex-start;padding:6px 0;color:var(--ink-soft)}
+  .check .box{width:15px;height:15px;border-radius:5px;border:1.5px solid var(--line-2);flex:0 0 auto;margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff}
+  .check .box.on{background:var(--emerald);border-color:var(--emerald)}
+  .check .box.now{border-color:var(--b400)}
+  .progbar{height:6px;border-radius:999px;background:#eee7da;overflow:hidden;margin:4px 0 12px}
+  .progbar i{display:block;height:100%;background:var(--grad);border-radius:999px}
+
+  /* generic editor blocks inside workspace */
+  .wsblock{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin-bottom:11px}
+  .wsblock .bh{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .wsblock .bt{font-weight:560;font-size:13px}
+  .btn{display:inline-flex;align-items:center;gap:6px;border-radius:999px;font-size:12px;
+    padding:6px 13px;border:1px solid var(--line-2);background:#fff;color:var(--ink-soft);cursor:default;font-weight:500}
+  .btn.pri{background:var(--grad);color:#fff;border-color:transparent}
+  .btn.ai{background:#fff;color:var(--b700);border-color:var(--b200)}
+  .btn.sm{font-size:11px;padding:4px 10px}
+  .wand{color:var(--b600)}
+  .q{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;background:#fffdf9}
+  .q .qp{font-size:13px;font-weight:540;margin-bottom:7px}
+  .opt{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);padding:3px 0}
+  .radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--line-2);flex:0 0 auto}
+  .radio.on{border-color:var(--emerald);box-shadow:inset 0 0 0 3px var(--emerald)}
+  .expl{font-size:12px;color:#065f46;background:var(--emerald-bg);border:1px solid var(--emerald-line);
+    border-radius:8px;padding:7px 10px;margin-top:7px}
+  .disclosure{border:1px dashed var(--line-2);border-radius:10px;padding:10px 13px;margin-top:10px;background:#faf7f1}
+  .disclosure .dh{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--ink-mute);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em}
+  .fieldrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+  .field{font-size:11.5px;color:var(--ink-mute);background:#fff;border:1px solid var(--line-2);border-radius:8px;padding:5px 9px;display:flex;flex-direction:column;gap:2px;min-width:96px}
+  .field b{color:var(--ink-soft);font-weight:540;font-size:12.5px}
+  .field.off{opacity:.6}
+  .seg{display:inline-flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden;font-size:11.5px}
+  .seg span{padding:4px 11px;color:var(--ink-mute)}
+  .seg span.on{background:var(--b50);color:var(--b700);font-weight:540}
+
+  /* learner card */
+  .learner{padding:18px 20px}
+  .lcard{max-width:560px;margin:0 auto}
+  .toast-ok{display:flex;align-items:center;gap:9px;border:1px solid var(--emerald-line);background:var(--emerald-bg);color:#065f46;border-radius:10px;padding:9px 13px;font-size:13px;margin:10px 0}
+  .toast-soft{display:flex;align-items:center;gap:9px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);border-radius:10px;padding:9px 13px;font-size:13px;margin:6px 0}
+
+  /* analytics */
+  .heatrow{display:flex;align-items:center;gap:10px;font-size:12.5px;margin:7px 0}
+  .heatrow .lab{width:150px;color:var(--ink-soft);flex:0 0 auto}
+  .heatbar{flex:1;height:16px;border-radius:6px;background:#f0ebe1;overflow:hidden;position:relative}
+  .heatbar i{display:block;height:100%}
+  .heatval{width:54px;text-align:right;font-family:var(--font-mono);font-size:11.5px;color:var(--ink-mute);flex:0 0 auto}
+
+  /* acceptance stories */
+  .story{border:1px solid var(--line);border-radius:14px;background:#fff;padding:0;overflow:hidden;margin:14px 0;box-shadow:var(--shadow)}
+  .story .sh{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fbf8f2;border-bottom:1px solid var(--line)}
+  .story .sh .id{font-family:var(--font-mono);font-size:11px;color:#fff;background:var(--grad);border-radius:7px;padding:3px 8px}
+  .story .sh .nm{font-weight:560;font-size:14px}
+  .story .sbody{display:grid;grid-template-columns:1fr 1.3fr 1.3fr;gap:0}
+  .story .col{padding:13px 16px;border-right:1px solid var(--line);font-size:13px}
+  .story .col:last-child{border-right:none}
+  .story .col h5{margin:0 0 6px;font-family:var(--font-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-mute);font-weight:500}
+  .story .col.exp{background:#fcfaf6}
+  .story ol{margin:0;padding-left:16px} .story ul{margin:0;padding-left:16px}
+  .story li{margin:3px 0}
+
+  .desc{background:#fcfaf6;border:1px solid var(--line);border-left:3px solid var(--b300);
+    border-radius:0 12px 12px 0;padding:14px 18px;margin:10px 0 26px;font-size:13.5px}
+  .desc h5{margin:0 0 8px;font-size:12px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--b700)}
+  .desc ul{margin:6px 0;padding-left:18px}
+  .desc li{margin:4px 0}
+  .ref{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-mute)}
+
+  .note{font-size:12.5px;color:var(--ink-mute);font-style:italic}
+  .foot{padding:30px 0 60px;color:var(--ink-mute);font-size:12.5px}
+  hr.soft{border:none;border-top:1px solid var(--line);margin:24px 0}
+
+  @media (max-width:880px){
+    .toc{grid-template-columns:1fr 1fr}
+    .g2,.g3,.g4{grid-template-columns:1fr}
+    .studio{grid-template-columns:1fr}
+    .pane{border-right:none;border-bottom:1px solid var(--line);min-height:0}
+    .story .sbody{grid-template-columns:1fr}
+    .story .col{border-right:none;border-bottom:1px solid var(--line)}
+    .flow .node{min-width:100%}
+    .flow .arrow{transform:rotate(90deg);padding:6px 0}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ MASTHEAD ============ -->
+<header class="mast">
+  <div class="wrap">
+    <div class="eyebrow">Product Requirements · CourseGen Pro</div>
+    <h1>Course Studio<span class="star">*</span> — a familiar builder, a radical AI layer</h1>
+    <p class="sub">The basic course studio, reframed from an academic LMS into a self-paced,
+      low-stakes <b>creator-economy</b> course builder (Udemy / Kajabi / Teachable category).
+      Conventional where it shouldn't surprise anyone; clean hooks where the AI layer — our
+      actual differentiation — attaches.</p>
+    <div class="metarow">
+      <span class="chip"><span class="dot ok"></span> Surfaces: <b>Web — Creator Studio + Learner view</b></span>
+      <span class="chip">Scope: <b>Basic studio only</b></span>
+      <span class="chip">Status: <b>Reframe of shipped build</b></span>
+      <span class="chip">Date: <b>2026-06-14</b></span>
+    </div>
+
+    <nav class="toc">
+      <a href="#s1"><div class="n">01</div><div class="t">Purpose &amp; Goals</div></a>
+      <a href="#s2"><div class="n">02</div><div class="t">Competitive Analysis</div></a>
+      <a href="#s3"><div class="n">03</div><div class="t">Product Approach</div></a>
+      <a href="#s4"><div class="n">04</div><div class="t">Functional Design</div></a>
+      <a href="#s5"><div class="n">05</div><div class="t">User Experience</div></a>
+    </nav>
+  </div>
+</header>
+
+<!-- ============ 1. PURPOSE & GOALS ============ -->
+<section id="s1"><div class="wrap">
+  <div class="sec-head"><span class="num">01</span><h2>Purpose &amp; Goals</h2></div>
+  <p class="lead">CourseGen Pro is <b>"Cursor for courses."</b> AI agents live inside the
+  creation workflow (generate lessons, slides, knowledge checks, exercises, analytics, marketing),
+  every learner gets an AI tutor, and — later — skill agents turn a finished course into an applied
+  assistant (a sales course becomes a sales coach; a coding course a debugging tutor). <b>That AI
+  layer is the niche and the moat.</b></p>
+
+  <div class="callout thesis">
+    <h4>The studio itself is table-stakes — and that is the point</h4>
+    Course structure, lessons, slides, quizzes, and exercises are <b>not</b> the differentiator.
+    Every competitor already has a competent one. The studio's job is to be <b>instantly familiar
+    and frictionless</b> to anyone who has built an online course before — a faithful replica of the
+    category's conventions — so the AI layer is the only thing that feels new.
+    <div style="margin-top:10px;font-family:var(--font-display);font-size:19px;color:var(--b800)">
+      Be conventional where we don't differentiate; radical where we do.</div>
+  </div>
+
+  <h3>The mental-model error this PRD corrects</h3>
+  <div class="grid g2">
+    <div class="callout warnbox" style="margin:6px 0">
+      <h4>✗ What the current build models — an academic LMS</h4>
+      <p style="margin:6px 0">Canvas / Blackboard / Moodle. Quizzes with <b>time limits, attempt
+      caps, passing scores, difficulty tags</b>; homework with <b>points and due dates</b>.
+      A senior reviewer's reaction: <i>"this looks like software for a university registrar, not a
+      Udemy creator."</i> The polish is real; the category is wrong — which is exactly why it doesn't
+      read as production-level.</p>
+    </div>
+    <div class="callout okbox" style="margin:6px 0">
+      <h4>✓ What it should model — a creator-economy course</h4>
+      <p style="margin:6px 0">Udemy / Kajabi / Teachable. <b>Self-paced, low-stakes</b>,
+      "pace yourself," "check your understanding." Learners are <b>adults who bought a course</b>,
+      not students being graded. Nothing gates their progress; nothing locks. Knowledge is
+      <i>checked</i>, never <i>scored against them</i>.</p>
+    </div>
+  </div>
+
+  <h3>Goals</h3>
+  <div class="grid g3">
+    <div class="card"><div class="tag brand">Familiarity</div>
+      <p style="margin:9px 0 0">A creator who has used Udemy can build a module without a tutorial.
+      Conventional curriculum tree, conventional block types, a guided Plan → Create → Publish flow.</p></div>
+    <div class="card"><div class="tag brand">Low-stakes by default</div>
+      <p style="margin:9px 0 0">No score, timer, attempt cap, or due date ever gates a learner.
+      Knowledge checks confirm understanding; exercises invite practice.</p></div>
+    <div class="card"><div class="tag brand">AI-ready seams</div>
+      <p style="margin:9px 0 0">Every artifact exposes a clean hook for the AI layer and the
+      analytics engine — the differentiation plugs in without reshaping the studio.</p></div>
+  </div>
+
+  <h3>Audiences</h3>
+  <div class="grid g2">
+    <div class="card"><h4 style="margin-top:0">Creators</h4>
+      Educators, SMEs, trainers, and competition coaches (USACO / FBLA). They bring expertise; the
+      studio + AI turn it into a sellable, self-paced course. Power users (coaches) occasionally want
+      stricter quiz controls — supported, but never the default.</div>
+    <div class="card"><h4 style="margin-top:0">Learners</h4>
+      Adults who <b>bought</b> a course to learn at their own pace. They want momentum and clarity,
+      not grades. Their correctness on knowledge checks becomes a private comprehension signal for the
+      creator — never a public or self-facing grade.</div>
+  </div>
+
+  <h3>Scope</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4 style="margin-top:0;color:var(--emerald)">In scope — the basic studio</h4>
+      <ul style="margin:6px 0;padding-left:18px">
+        <li>Course → module → lesson → block structure</li>
+        <li>Slide decks (existing Google-Slides-like editor)</li>
+        <li><b>Knowledge-check</b> quizzes (low-stakes)</li>
+        <li><b>Practice Exercise</b> (renamed homework, self-paced)</li>
+        <li>Guided creation flow / checklist (Plan → Create → Publish)</li>
+        <li>The <b>hooks</b> where AI &amp; analytics attach</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0;color:var(--ink-mute)">Out of scope — design so it slots in</h4>
+      <ul style="margin:6px 0;padding-left:18px">
+        <li><span class="tag future">future</span> Student AI tutor (deep behavior)</li>
+        <li><span class="tag future">future</span> Creator AI agents' deep behavior</li>
+        <li><span class="tag future">future</span> Skill / coaching agents</li>
+        <li><span class="tag future">future</span> Live calls</li>
+        <li><span class="tag future">future</span> Marketplace, payments, Stripe</li>
+        <li><span class="tag future">future</span> Learner runtime &amp; manual grading engine</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Business goal metrics</h3>
+  <p class="note">No production analytics exist yet — the app runs on mock data with 0 users, so all
+  current values are N/A. Definitions below establish how each metric is measured once the backend is
+  wired.</p>
+  <table>
+    <thead><tr><th>Metric</th><th>Definition (measurement)</th><th>Current</th><th>Target (first cohort)</th></tr></thead>
+    <tbody>
+      <tr><td><b>Time-to-first-published-course</b></td><td>Median elapsed time from studio entry to first <code>status=published</code></td><td>N/A</td><td>&lt; 60 min</td></tr>
+      <tr><td><b>AI-assist adoption</b></td><td>% of published courses with ≥1 AI-generated or AI-edited artifact</td><td>N/A</td><td>≥ 70%</td></tr>
+      <tr><td><b>Creation-flow completion</b></td><td>% of started courses that reach Publish with all checklist minimums met</td><td>N/A</td><td>≥ 45%</td></tr>
+      <tr><td><b>Comprehension rate</b> <span class="tag ink">analytics signal</span></td><td>Mean % of knowledge-check questions answered correctly per module (engagement signal, <b>not</b> a grade)</td><td>N/A</td><td>Baseline → feed "weak module" AI</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<!-- ============ 2. COMPETITIVE ANALYSIS ============ -->
+<section id="s2"><div class="wrap">
+  <div class="sec-head"><span class="num">02</span><h2>Competitive Analysis</h2></div>
+  <p class="lead">The reference set is the creator-economy course platforms — with Udemy as the primary
+  UX anchor (its Plan / Create / Publish flow, curriculum builder, and low-stakes Practice Test /
+  Assignment). The academic LMSs are included as an <b>anti-reference</b>: the category we are
+  deliberately moving away from.</p>
+  <p class="note">No live captures were taken in this session; competitor behaviors below are inferred
+  from well-known product patterns and the Udemy course-creation flow described in the brief. Treat
+  specifics as reasoned inference, not measured fact.</p>
+
+  <h3>Where each platform sits</h3>
+  <table>
+    <thead><tr>
+      <th class="cw-1">Platform</th><th>Creation flow</th><th>Assessment model</th>
+      <th>Gates progress?</th><th>AI assistance</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Udemy</b> <span class="tag brand">anchor</span></td>
+        <td>Guided <b>Plan → Create → Publish</b> with a persistent checklist of curriculum, landing,
+          pricing items</td>
+        <td>Low-stakes <b>Practice Test</b> + <b>Assignment</b> (instructions + optional solution)</td>
+        <td class="keep">No — self-paced</td>
+        <td>Minimal (some AI assist for outlines/captions)</td>
+      </tr>
+      <tr>
+        <td><b>Teachable</b></td>
+        <td>Curriculum builder (sections → lectures), simpler linear setup</td>
+        <td>Lightweight quizzes; graded quizzes optional add-on</td>
+        <td class="keep">No (optional drip/sequencing)</td>
+        <td>Limited</td>
+      </tr>
+      <tr>
+        <td><b>Kajabi</b></td>
+        <td>Product → outline builder, marketing-first</td>
+        <td>Assessments &amp; surveys, low-stakes</td>
+        <td class="keep">No</td>
+        <td>Creator AI (copy, outlines)</td>
+      </tr>
+      <tr>
+        <td><b>Skillshare / Thinkific</b></td>
+        <td>Project-based (Skillshare) / structured builder (Thinkific)</td>
+        <td>Class projects / quizzes, ungraded</td>
+        <td class="keep">No</td>
+        <td>Limited</td>
+      </tr>
+      <tr style="background:var(--rose-bg)">
+        <td><b>Canvas / Moodle</b> <span class="tag warn">anti-ref</span></td>
+        <td>Course-shell + gradebook centric</td>
+        <td><span class="strike">Timed, attempt-capped, passing-score, weighted, due-dated</span></td>
+        <td class="strike">Yes — scores &amp; prerequisites lock content</td>
+        <td>Mostly none</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Takeaways</h3>
+  <div class="grid g3">
+    <div class="card tint"><div class="tag ok">Borrow</div>
+      <ul style="margin:9px 0 0;padding-left:18px">
+        <li>Udemy's <b>Plan → Create → Publish</b> stepper + persistent side checklist</li>
+        <li>Low-stakes <b>Practice Test</b> framing → our <b>Knowledge Check</b></li>
+        <li><b>Assignment with optional solution</b> → our <b>Practice Exercise</b></li>
+        <li>Never gate the learner; self-paced is the default everywhere</li>
+      </ul>
+    </div>
+    <div class="card tint"><div class="tag ink">Simplify</div>
+      <ul style="margin:9px 0 0;padding-left:18px">
+        <li>One clean block menu, not a dense settings panel per artifact</li>
+        <li>Knowledge-check defaults to <b>just questions + explanations</b> — power settings hidden</li>
+        <li>Exercises drop points / due dates entirely from the default surface</li>
+      </ul>
+    </div>
+    <div class="card tint"><div class="tag future">Defer / differentiate</div>
+      <ul style="margin:9px 0 0;padding-left:18px">
+        <li>The <b>AI layer</b> is where we go beyond all of them — agents in the flow, a learner
+          tutor, future skill agents</li>
+        <li>Comprehension <b>analytics</b> ("find &amp; fix weak modules") — a creator superpower none
+          of these foreground</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>The one-line competitive read:</b> we win nothing by reinventing the curriculum builder, and we
+    lose credibility by importing the LMS gradebook. Match the creator-economy convention exactly, then
+    let the AI layer be the only surprise.
+  </div>
+</div></section>
+
+<!-- ============ 3. PRODUCT APPROACH ============ -->
+<section id="s3"><div class="wrap">
+  <div class="sec-head"><span class="num">03</span><h2>Product Approach</h2></div>
+  <p class="lead">Keep the studio's structure conventional and re-skin the two assessment artifacts
+  from "graded academic instrument" to "low-stakes creator-economy artifact," while preserving the
+  data substrate the AI &amp; analytics layers consume.</p>
+
+  <h4>Approaches considered for the academic fields</h4>
+  <table>
+    <thead><tr><th class="cw-2">Approach</th><th>Trade-off</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td><b>A — Hard-delete from schema</b></td><td>Purest model, but discards data a future AI grader could use; hardest to walk back</td><td>Rejected</td></tr>
+      <tr><td><b>B — Demote behind "Advanced," keep substrate</b></td><td>Default surface is low-stakes; power users (coaches) retain controls; nothing lost; never gates</td><td class="keep">Chosen ✓</td></tr>
+      <tr><td><b>C — Leave as-is, relabel only</b></td><td>Cheapest, but the academic feel survives — fails the reframe</td><td>Rejected</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Core product logic — the two reframes</h3>
+  <table>
+    <thead><tr><th class="cw-1">Artifact</th><th>From (academic)</th><th>To (creator-economy)</th><th>Field treatment</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Quiz →<br>Knowledge Check</b></td>
+        <td>Timed, attempt-capped, passing-score, difficulty-tagged, point-weighted test</td>
+        <td>A handful of questions that <b>confirm understanding</b>, with immediate feedback + a short
+          explanation. MC / true-false / short answer is plenty.</td>
+        <td>
+          <span class="strike">time limit</span>, <span class="strike">attempts</span>,
+          <span class="strike">passing score</span>, <span class="strike">difficulty</span>,
+          <span class="strike">points</span> → <b>demoted to "Advanced," off by default, never gates.</b><br>
+          <span class="keep">Kept &amp; visible:</span> questions, correct answers, per-question explanation.
+        </td>
+      </tr>
+      <tr>
+        <td><b>Homework →<br>Practice Exercise</b></td>
+        <td>Points + due date + leveled grading rubric — a deliverable to be graded</td>
+        <td>A <b>self-paced practice task</b>: instructions, plus an <b>optional</b> rubric / solution
+          key and an <b>optional</b> deliverable.</td>
+        <td>
+          <span class="strike">points</span>, <span class="strike">due date</span> → <b>removed.</b><br>
+          <span class="keep">Kept, all optional &amp; low-stakes:</span> instructions, rubric / solution key,
+          deliverable (text / file / link). Two paths: <b>upload for AI/creator feedback</b>, <b>or</b>
+          self-check against the included solution.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>The guided creation flow</h3>
+  <p>A familiar, Udemy-style progression with a <b>persistent side checklist</b>. The stepper is a
+  guide, not a gate — a creator can move freely between phases. Publishing requires a small set of
+  minimums; <b>nothing here ever locks a learner.</b></p>
+  <div class="flow">
+    <div class="node"><div class="ph">Phase 1</div><div class="ti">Plan</div>
+      <ul><li>Course title &amp; audience</li><li>Outline: modules &amp; lessons</li><li>Learning goals</li></ul></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="ph">Phase 2</div><div class="ti">Create content</div>
+      <ul><li>Slides &amp; lectures</li><li>Knowledge checks</li><li>Practice exercises</li></ul></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="ph">Phase 3</div><div class="ti">Publish</div>
+      <ul><li>Review checklist</li><li>Set price / visibility</li><li>Publish</li></ul></div>
+  </div>
+  <div class="gateline"><span class="dot ok"></span><b>Publish minimums</b> (title + ≥1 lesson with content) gate only the <b>Publish</b> action — they never gate or lock a <b>learner's</b> progression through the course.</div>
+
+  <h3>Key business rules — the invariants</h3>
+  <table>
+    <thead><tr><th class="cw-1">ID</th><th>Invariant</th></tr></thead>
+    <tbody>
+      <tr><td><b>INV-1</b></td><td><b>Nothing a learner does gates progression.</b> No score, timer, attempt cap, or due date locks any lesson. The only eligibility predicate for "can the learner open this lesson" is <code>true</code>.</td></tr>
+      <tr><td><b>INV-2</b></td><td><b>Knowledge checks are soft self-feedback.</b> The learner sees immediate right/wrong + a short explanation, plus a soft "X of Y correct." Never a course grade, gradebook, or pass/fail.</td></tr>
+      <tr><td><b>INV-3</b></td><td><b>Advanced quiz settings exist but are off by default and inert for gating.</b> Even if a creator sets a passing score or time limit, it is metadata for power users — it still never gates progression (INV-1 wins).</td></tr>
+      <tr><td><b>INV-4</b></td><td><b>Practice Exercise is fully optional &amp; low-stakes.</b> Rubric, solution key, and deliverable are each optional. No points; no due dates. The deliverable serves feedback (AI/creator) or self-check — not a grade.</td></tr>
+      <tr><td><b>INV-5</b></td><td><b>Correctness is captured as analytics, not grading.</b> Knowledge-check correctness feeds the creator's comprehension/engagement signal and the future "find &amp; fix weak modules" AI — never a learner-facing gradebook or ranking.</td></tr>
+      <tr><td><b>INV-6</b></td><td><b>AI &amp; analytics attach at seams only.</b> The studio exposes generate/improve hooks per artifact and a correctness-capture hook; their deep behavior is out of scope here and must not reshape the studio.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Conventional vs. radical — where each lives</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4 style="margin-top:0">Table-stakes — be conventional</h4>
+      <ul style="margin:6px 0;padding-left:18px">
+        <li>Curriculum tree (course → module → lesson → block)</li>
+        <li>Block types &amp; slide editor</li>
+        <li>Plan → Create → Publish flow + checklist</li>
+        <li>Low-stakes knowledge checks &amp; exercises</li>
+      </ul>
+    </div>
+    <div class="card tint">
+      <h4 style="margin-top:0;color:var(--b700)">Differentiation — be radical</h4>
+      <ul style="margin:6px 0;padding-left:18px">
+        <li>AI agents in the creation workflow (generate / "Magic Wand" edits)</li>
+        <li>AI tutor for every learner <span class="tag future">future</span></li>
+        <li>Comprehension analytics → fix-weak-modules AI</li>
+        <li>Skill / coaching agents <span class="tag future">future</span></li>
+      </ul>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============ 4. FUNCTIONAL DESIGN ============ -->
+<section id="s4"><div class="wrap">
+  <div class="sec-head"><span class="num">04</span><h2>Functional Design</h2></div>
+  <p class="lead">High-fidelity screens in the studio's warm-editorial system (paper
+  <code>#faf7f1</code>, stone ink, amber→orange accent, Fraunces display, mono eyebrows). Grouped by
+  surface. Each block's business logic sits in the description beneath it.</p>
+
+  <!-- ===== SURFACE A: CREATOR STUDIO ===== -->
+  <div class="surf-label"><span class="dot gen"></span> Surface A — Creator Studio (web)</div>
+
+  <h3>A1 · Guided creation flow shell</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/studio</span><div class="tb-spacer"></div>
+      <span class="btn ai sm"><span class="wand">✦</span> Ask AI</span><span class="btn pri sm">Publish</span></div>
+    <div class="stepper">
+      <div class="step done"><span class="b">✓</span> Plan</div><span class="step-sep"></span>
+      <div class="step now"><span class="b">2</span> Create content</div><span class="step-sep"></span>
+      <div class="step"><span class="b">3</span> Publish</div>
+    </div>
+    <div class="appbody studio">
+      <!-- outline -->
+      <div class="pane">
+        <div class="pane-h">Curriculum <span class="btn sm" style="padding:2px 8px">+</span></div>
+        <div class="tree">
+          <div class="mod"><span class="ic" style="background:var(--b200)"></span> 1 · Foundations</div>
+          <div class="les sel"><span class="dot ok"></span> Welcome &amp; setup</div>
+          <div class="blk"><span class="ic" style="background:#cde3f5"></span> Slides</div>
+          <div class="blk"><span class="ic" style="background:#d8f0d3"></span> Knowledge Check</div>
+          <div class="les"><span class="dot draft"></span> Core concepts</div>
+          <div class="mod"><span class="ic" style="background:var(--b200)"></span> 2 · Practice</div>
+          <div class="les"><span class="dot draft"></span> Hands-on lab</div>
+          <div class="blk"><span class="ic" style="background:#f3ddc7"></span> Practice Exercise</div>
+        </div>
+      </div>
+      <!-- workspace -->
+      <div class="pane" style="background:var(--paper)">
+        <div class="pane-h">Welcome &amp; setup <span class="tag ink">Lesson</span></div>
+        <div class="wsblock">
+          <div class="bh"><span class="ic" style="background:#cde3f5;width:16px;height:16px"></span>
+            <span class="bt">Slides</span><div class="tb-spacer" style="flex:1"></div>
+            <span class="btn ai sm"><span class="wand">✦</span> Generate</span></div>
+          <div style="height:64px;border:1px dashed var(--line-2);border-radius:8px;background:#fffdf9;display:flex;align-items:center;justify-content:center;color:var(--ink-faint);font-size:12px">6 slides · 1280×720 canvas</div>
+        </div>
+        <div class="wsblock">
+          <div class="bh"><span class="ic" style="background:#d8f0d3;width:16px;height:16px"></span>
+            <span class="bt">Knowledge Check</span>
+            <span class="tag ok" style="margin-left:4px">low-stakes</span>
+            <div class="tb-spacer" style="flex:1"></div>
+            <span class="btn ai sm"><span class="wand">✦</span> Generate</span></div>
+          <div style="font-size:12px;color:var(--ink-mute)">3 questions · immediate feedback · no timer, no score</div>
+        </div>
+        <span class="btn sm" style="margin-top:2px">+ Add block</span>
+      </div>
+      <!-- checklist rail -->
+      <div class="pane" style="border-right:none">
+        <div class="pane-h">Your progress</div>
+        <div class="progbar"><i style="width:58%"></i></div>
+        <div class="check">
+          <div class="ci"><span class="box on">✓</span> Add course title</div>
+          <div class="ci"><span class="box on">✓</span> Build outline</div>
+          <div class="ci"><span class="box now"></span> Create lesson content</div>
+          <div class="ci"><span class="box"></span> Add a knowledge check</div>
+          <div class="ci"><span class="box"></span> Set price &amp; visibility</div>
+          <div class="ci"><span class="box"></span> Publish</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>A1 — Description</h5>
+    <ul>
+      <li><b>Layout:</b> existing studio shell (left outline · center workspace · right rail), with a
+        <b>Plan → Create → Publish stepper</b> added to the top bar and a <b>persistent checklist</b>
+        replacing/augmenting the right rail. The stepper reflects the active phase; clicking a phase
+        navigates, it does not lock.</li>
+      <li><b>Checklist state:</b> derived from the document (title set? ≥1 module? ≥1 lesson with a
+        content block? price/visibility set?). Each item is <code>done | now | todo</code>. The
+        progress bar is <code>done ÷ total</code> and animates <code>scaleX</code> (origin-left).</li>
+      <li><b>Publish minimums (state machine):</b> the <b>Publish</b> button enables only when title +
+        ≥1 content-bearing lesson exist. This gates the <i>publish action</i> only — never learner
+        progression (<b>INV-1</b>).</li>
+      <li><b>AI seam:</b> every block header carries a <code>✦ Generate</code> affordance and the top
+        bar an <code>✦ Ask AI</code> entry — both route through the existing single LLM seam
+        (<span class="ref">lib/course/ai/mockClient.ts</span>). Deep behavior out of scope (<b>INV-6</b>).</li>
+      <li class="ref">Surface-specific: creator-only. Status dots reuse the system — emerald=ready,
+        amber=draft, pulsing brand=generating.</li>
+    </ul>
+  </div>
+
+  <h3>A2 · Knowledge Check editor — simple by default, power hidden</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/studio · Knowledge Check</span></div>
+    <div style="padding:18px 20px;background:var(--paper)">
+      <div class="wsblock" style="max-width:760px">
+        <div class="bh">
+          <span class="ic" style="background:#d8f0d3;width:16px;height:16px"></span>
+          <span class="bt">Knowledge Check</span>
+          <span class="tag ok">check understanding · ungraded</span>
+          <div class="tb-spacer" style="flex:1"></div>
+          <span class="btn ai sm"><span class="wand">✦</span> Generate questions</span>
+        </div>
+
+        <div class="q">
+          <div class="qp">Q1 · Which statement best describes a constant-product AMM?</div>
+          <div class="opt"><span class="radio"></span> It matches buyers and sellers in an order book</div>
+          <div class="opt"><span class="radio on"></span> It keeps <code>x · y = k</code> across a liquidity pool</div>
+          <div class="opt"><span class="radio"></span> It sets price by a central oracle only</div>
+          <div class="expl">✦ <b>Why:</b> the invariant <code>x·y=k</code> defines price along the
+            curve — this is the explanation the learner sees right after answering.</div>
+          <div style="display:flex;gap:6px;margin-top:8px"><span class="tag ink">Multiple choice</span>
+            <span class="btn sm">＋ Add option</span><span class="btn ai sm"><span class="wand">✦</span> Improve</span></div>
+        </div>
+
+        <div class="q">
+          <div class="qp">Q2 · A constant-product AMM can experience impermanent loss. <i>(True / False)</i></div>
+          <div class="opt"><span class="radio on"></span> True</div>
+          <div class="opt"><span class="radio"></span> False</div>
+        </div>
+
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <span class="btn sm">＋ Multiple choice</span>
+          <span class="btn sm">＋ True / false</span>
+          <span class="btn sm">＋ Short answer</span>
+        </div>
+
+        <!-- ADVANCED disclosure -->
+        <div class="disclosure">
+          <div class="dh"><span>▸ Advanced (optional) — off by default</span><span class="tag future">power users · never gates</span></div>
+          <div class="fieldrow">
+            <div class="field off"><span>Time limit</span><b>Off</b></div>
+            <div class="field off"><span>Attempts</span><b>Unlimited</b></div>
+            <div class="field off"><span>Passing score</span><b>—</b></div>
+            <div class="field off"><span>Difficulty</span><b>—</b></div>
+            <div class="field off"><span>Points / question</span><b>—</b></div>
+            <div class="field off"><span>Shuffle</span><b>Off</b></div>
+            <div class="field off"><span>Show answers</span><b>After submit</b></div>
+          </div>
+          <div class="note" style="margin-top:8px">Surfaced only for creators who explicitly want them
+            (e.g. competition coaches). Setting any value here still never gates a learner (INV-3).</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>A2 — Description</h5>
+    <ul>
+      <li><b>Default surface = questions + answers + explanation only.</b> No timer, score, difficulty,
+        or points are visible. Question types: <code>multiple_choice</code>, <code>multi_select</code>,
+        <code>true_false</code>, <code>short_answer</code>.</li>
+      <li><b>The removed academic fields are not deleted — they live in a collapsed "Advanced
+        (optional)" disclosure</b>, off by default. This is the chosen Approach&nbsp;B: power retained,
+        default low-stakes (<b>INV-3</b>).</li>
+      <li><b>Data object (no DB migration):</b> the block keeps schema <code>type:"quiz"</code>; the
+        product label is "Knowledge Check." Content jsonb = <code>{ questions[], settings? }</code>.
+        The <code>settings</code> object (<code>timeLimitMinutes</code>, <code>attemptsAllowed</code>,
+        <code>passingScore</code>, <code>shuffle*</code>, <code>whenToShowAnswers</code>) and the
+        per-question <code>difficulty</code> / <code>points</code> become <b>Advanced-only</b> and
+        default-absent (resolver supplies inert defaults).
+        <div class="ref">Existing shapes: lib/course/types.ts:248–309 · schemas.ts:293–339</div></li>
+      <li><b>AI seam:</b> "Generate questions" / per-question "Improve" route to the assessment tool
+        surface (<span class="ref">lib/course/ai/assessmentTools.ts</span> — defined, not yet wired).</li>
+      <li class="ref">Engineering note: product relabels quiz→"Knowledge Check" in UI strings only;
+        no rename of the <code>quiz</code> discriminant, patches, or DB CHECK value.</li>
+    </ul>
+  </div>
+
+  <h3>A3 · Practice Exercise editor — optional rubric, solution &amp; deliverable</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/studio · Practice Exercise</span></div>
+    <div style="padding:18px 20px;background:var(--paper)">
+      <div class="wsblock" style="max-width:760px">
+        <div class="bh"><span class="ic" style="background:#f3ddc7;width:16px;height:16px"></span>
+          <span class="bt">Practice Exercise</span>
+          <span class="tag ok">self-paced · no points · no due date</span>
+          <div class="tb-spacer" style="flex:1"></div>
+          <span class="btn ai sm"><span class="wand">✦</span> Draft exercise</span></div>
+
+        <h4 style="margin:4px 0 6px">Instructions</h4>
+        <div style="font-size:12.5px;color:var(--ink-soft);border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fffdf9">
+          Build a minimal constant-product swap function. Keep the invariant <code>x·y=k</code> and
+          return the output amount for a given input. Try it before checking the solution.</div>
+
+        <div class="fieldrow" style="margin-top:12px">
+          <div class="field"><span>Deliverable</span><b>Optional ▾</b></div>
+          <div class="seg" style="align-self:center">
+            <span class="on">Text</span><span>File</span><span>Link</span><span>None</span>
+          </div>
+        </div>
+
+        <div class="grid g2" style="margin-top:12px">
+          <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fffdf9">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <b style="font-size:12.5px">Rubric <span class="tag ink">optional</span></b><span class="btn sm">▾</span></div>
+            <div style="font-size:12px;color:var(--ink-soft);margin-top:7px">Criterion · <i>Correctly preserves x·y=k</i></div>
+            <div style="font-size:12px;color:var(--ink-soft)">Criterion · <i>Handles zero-liquidity edge</i></div>
+            <div class="note" style="margin-top:6px">Guides self-check or later AI/creator feedback — not a graded score.</div>
+          </div>
+          <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fffdf9">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <b style="font-size:12.5px">Solution key <span class="tag ink">optional</span></b><span class="btn sm">▾</span></div>
+            <div style="font-size:12px;color:var(--ink-soft);margin-top:7px;font-family:var(--font-mono)">getAmountOut(in, x, y) → (in·y)/(x+in)</div>
+            <div class="note" style="margin-top:6px">Learner can reveal to self-check after attempting.</div>
+          </div>
+        </div>
+        <div class="callout" style="margin:12px 0 0">
+          <b>Two low-stakes paths:</b> ① learner <b>uploads a deliverable</b> → routed to AI / the
+          creator for feedback &amp; advice; <b>or</b> ② the rubric / solution is included → learner
+          <b>self-checks</b>. Both optional; neither is graded or gates anything.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>A3 — Description</h5>
+    <ul>
+      <li><b>Removed:</b> <code>points</code> and <code>dueAt</code> — gone from the surface entirely.</li>
+      <li><b>Kept, all optional &amp; low-stakes:</b> <code>instructions</code>, <code>rubric?</code>
+        (leveled criteria, optional), <code>solution key</code>, and a <b>deliverable</b> that is
+        itself optional (<code>text_response | file_upload | external_link | none</code>).</li>
+      <li><b>Deliverable purpose (INV-4):</b> a deliverable is a feedback hook, not a grade. If present,
+        it's the artifact a future AI grader or the creator gives <i>advice</i> on; if absent, the
+        learner self-checks against the rubric / solution.</li>
+      <li><b>Data object (no DB migration):</b> schema <code>type:"homework"</code> retained; product
+        label "Practice Exercise." Content jsonb = <code>{ instructions, deliverableType?, exercises[],
+        rubric? , solutionKey? }</code> with <code>dueAt</code> / <code>points</code> dropped.
+        <div class="ref">Existing shapes: lib/course/types.ts:311–349 · RubricCriterion/RubricLevel</div></li>
+      <li class="ref">Engineering note: the existing leveled rubric editor (RubricEditor.tsx) is reused
+        but reframed as "feedback guidance," with its point totals presented as guidance, not a grade.</li>
+    </ul>
+  </div>
+
+  <h3>A4 · Add-block menu — the reframed vocabulary</h3>
+  <div class="card" style="max-width:760px">
+    <div class="grid g3" style="gap:10px">
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#cde3f5"></span><span class="bt">Slides</span></div><span class="note">Deck of canvas slides</span></div>
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#e7d8f5"></span><span class="bt">Lecture</span></div><span class="note">Rich text teaching</span></div>
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#d8f0d3"></span><span class="bt">Knowledge Check</span> <span class="tag ok" style="font-size:9px">was Quiz</span></div><span class="note">Low-stakes questions</span></div>
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#f3ddc7"></span><span class="bt">Practice Exercise</span> <span class="tag ok" style="font-size:9px">was Homework</span></div><span class="note">Self-paced practice</span></div>
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#fae0b8"></span><span class="bt">Worked Example</span></div><span class="note">Step-by-step model</span></div>
+      <div class="wsblock" style="margin:0"><div class="bh"><span class="ic" style="background:#d6efef"></span><span class="bt">Resources</span></div><span class="note">Links &amp; downloads</span></div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>A4 — Description</h5>
+    <ul>
+      <li>Seven existing block types, relabeled in product copy only: <code>quiz</code> →
+        <b>Knowledge Check</b>, <code>homework</code> → <b>Practice Exercise</b>. The schema
+        discriminants, patches, manifest entries, and DB CHECK values are unchanged.</li>
+      <li>The "was Quiz / was Homework" affordance is a one-release migration cue and is not permanent UI.</li>
+    </ul>
+  </div>
+
+  <!-- ===== SURFACE B: LEARNER ===== -->
+  <div class="surf-label" style="background:var(--sky-bg);border-color:#bae6fd;color:#0369a1">
+    <span class="dot" style="background:var(--sky)"></span> Surface B — Learner view (web)</div>
+
+  <h3>B1 · Knowledge check — soft self-feedback, never locked</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/learn · Foundations · Welcome</span></div>
+    <div class="learner">
+      <div class="lcard">
+        <div class="tag ink" style="margin-bottom:8px">Check your understanding · ungraded</div>
+        <div class="q" style="background:#fff">
+          <div class="qp">Which statement best describes a constant-product AMM?</div>
+          <div class="opt"><span class="radio"></span> It matches buyers and sellers in an order book</div>
+          <div class="opt"><span class="radio on"></span> It keeps <code>x · y = k</code> across a liquidity pool ✓</div>
+          <div class="opt"><span class="radio"></span> It sets price by a central oracle only</div>
+          <div class="expl">✓ <b>Correct.</b> The invariant <code>x·y=k</code> defines price along the curve.</div>
+        </div>
+        <div class="toast-soft"><span class="dot ok"></span> <b>4 of 5 correct</b> — nice. This is just a
+          self-check; it isn't graded and doesn't affect your progress.</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <span class="btn sm">Review answers</span>
+          <span class="btn pri">Continue →</span>
+        </div>
+        <div class="note" style="text-align:center;margin-top:8px">Continue is always available — answers never lock the next lesson.</div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>B1 — Description</h5>
+    <ul>
+      <li><b>Per-question feedback is immediate:</b> right/wrong marker + the creator's explanation
+        (<b>INV-2</b>).</li>
+      <li><b>Soft tally:</b> a non-graded "X of Y correct" for self-orientation only — no percentage
+        grade, no pass/fail, no gradebook entry. (Chosen over "explanations only" and "full % score.")</li>
+      <li><b>Continue is never disabled</b> regardless of answers, timer, or any Advanced setting
+        (<b>INV-1 / INV-3</b>).</li>
+      <li><b>Analytics hook (INV-5):</b> the response's correctness is written to the comprehension
+        signal (per question / lesson / module) — a private creator analytics event, invisible to the
+        learner as a score.</li>
+      <li class="ref">Surface-specific: learner-only; reuses the warm system but with the learner
+        accent (sky→teal) per the design system.</li>
+    </ul>
+  </div>
+
+  <h3>B2 · Practice exercise — try, then self-check or submit</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/learn · Practice · Hands-on lab</span></div>
+    <div class="learner">
+      <div class="lcard">
+        <div class="tag ink" style="margin-bottom:8px">Practice Exercise · self-paced</div>
+        <div style="font-size:13px;color:var(--ink-soft);border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fff">
+          Build a minimal constant-product swap. Keep <code>x·y=k</code> and return the output amount.</div>
+        <div style="margin:10px 0;border:1px dashed var(--line-2);border-radius:10px;padding:11px 13px;background:#fffdf9;color:var(--ink-faint);font-size:12.5px">Your answer (optional) — type, or drop a file…</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="btn">Reveal solution</span>
+          <span class="btn ai"><span class="wand">✦</span> Submit for feedback</span>
+          <span class="btn pri" style="margin-left:auto">Continue →</span>
+        </div>
+        <div class="note" style="text-align:center;margin-top:8px">No due date, no points — practice at your own pace.</div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>B2 — Description</h5>
+    <ul>
+      <li><b>Two optional actions,</b> mirroring the creator's setup (<b>INV-4</b>): <b>Reveal
+        solution</b> (self-check against rubric / solution key) and <b>Submit for feedback</b> (routes
+        the optional deliverable to AI / the creator for advice). If neither rubric/solution nor a
+        deliverable is configured, the exercise is purely informational and shows only "Continue."</li>
+      <li><b>Continue is always available;</b> submitting or revealing is never required.</li>
+      <li><b>AI seam:</b> "Submit for feedback" is the attach point for the future AI grader / advisor —
+        defined as a hook here, deep behavior out of scope (<b>INV-6</b>).</li>
+    </ul>
+  </div>
+
+  <!-- ===== SURFACE C: ANALYTICS HOOK ===== -->
+  <div class="surf-label" style="background:#f4f4f5;border-color:#d4d4d8;color:#3f3f46">
+    <span class="dot" style="background:#71717a"></span> Surface C — Creator analytics hook (web) · the seam, not the engine</div>
+
+  <h3>C1 · Comprehension signal — "where learners struggle," not a gradebook</h3>
+  <div class="appwin">
+    <div class="titlebar"><div class="tb-dots"><span class="tb-dot" style="background:#f0b3a0"></span><span class="tb-dot" style="background:#f6d59b"></span><span class="tb-dot" style="background:#bfe3b6"></span></div>
+      <span class="tb-url">coursegen.pro/analytics</span></div>
+    <div style="padding:18px 20px;background:var(--paper)">
+      <div class="card" style="max-width:780px;margin:0 auto">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div><div class="eyebrow">Comprehension signal</div>
+            <div style="font-family:var(--font-display);font-size:20px">Knowledge-check correctness by module</div></div>
+          <span class="tag ink">engagement signal · not grades</span>
+        </div>
+        <div style="margin-top:14px">
+          <div class="heatrow"><span class="lab">1 · Foundations</span><div class="heatbar"><i style="width:88%;background:var(--emerald)"></i></div><span class="heatval">88%</span></div>
+          <div class="heatrow"><span class="lab">2 · Practice</span><div class="heatbar"><i style="width:71%;background:#f59e0b"></i></div><span class="heatval">71%</span></div>
+          <div class="heatrow"><span class="lab">3 · Going deeper</span><div class="heatbar"><i style="width:46%;background:var(--rose)"></i></div><span class="heatval">46%</span></div>
+        </div>
+        <div class="callout" style="margin:14px 0 0"><span class="wand">✦</span> <b>AI insight (hook):</b>
+          Module 3 shows a comprehension dip on the "impermanent loss" knowledge check — a candidate for
+          the <b>find &amp; fix weak modules</b> agent. <span class="tag future">deep behavior — future</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <h5>C1 — Description</h5>
+    <ul>
+      <li><b>This is the analytics hook, not the analytics engine.</b> It visualizes the comprehension
+        signal captured per <b>INV-5</b> — aggregate correctness per module/lesson — framed as "where
+        learners struggle."</li>
+      <li><b>Never a gradebook:</b> no per-learner scores, rankings, or pass/fail. Data is aggregate and
+        creator-facing only.</li>
+      <li><b>AI seam:</b> the insight card is the documented attach point for the future "find &amp; fix
+        weak modules" agent; this PRD defines only the surface where it appears.</li>
+      <li class="ref">Existing analytics page: app/(app)/analytics/page.tsx (currently mock; "Avg. Quiz
+        Score" reframes to "Comprehension rate").</li>
+    </ul>
+  </div>
+
+  <!-- ===== DATA MODEL & SEAMS ===== -->
+  <h3>Data model &amp; migration impact</h3>
+  <table>
+    <thead><tr><th class="cw-1">Concept</th><th>Schema (unchanged)</th><th>Product label</th><th>Reframe in content jsonb</th></tr></thead>
+    <tbody>
+      <tr><td>Quiz</td><td><code>type:"quiz"</code></td><td><b>Knowledge Check</b></td><td>Default = <code>{questions[]}</code>; <code>settings</code> + per-q <code>difficulty/points</code> → Advanced-only, default-absent</td></tr>
+      <tr><td>Homework</td><td><code>type:"homework"</code></td><td><b>Practice Exercise</b></td><td>Drop <code>points</code>, <code>dueAt</code>; <code>rubric?</code>, solution key, <code>deliverableType?</code> all optional</td></tr>
+    </tbody>
+  </table>
+  <div class="callout okbox">
+    <b>No DB migration.</b> <code>quiz</code> and <code>homework</code> are already valid
+    <code>blocks.type</code> CHECK values; all reframed data lives in the schemaless
+    <code>blocks.content</code> jsonb, validated in-app by Zod. The change is <b>UI labels + default
+    surface + optionality</b>, plus inert resolver defaults — not a structural migration.
+    <span class="ref">(Confirmed against DESIGN_ASSESSMENTS.md §1 and supabase/migrations/…core_authoring_schema.sql.)</span>
+  </div>
+
+  <h3>AI &amp; analytics seams (defined here; deep behavior out of scope)</h3>
+  <table>
+    <thead><tr><th>Seam</th><th>Where it attaches</th><th>This PRD defines</th></tr></thead>
+    <tbody>
+      <tr><td><b>Generate / Magic-Wand</b></td><td>Each block header &amp; top-bar "Ask AI"</td><td>The affordance + the single LLM seam (mockClient.ts); not the agent logic</td></tr>
+      <tr><td><b>Assessment tools</b></td><td>Knowledge-check &amp; exercise editors</td><td>The tool surface exists (assessmentTools.ts, unwired); buttons route to it</td></tr>
+      <tr><td><b>Correctness capture</b></td><td>Learner knowledge-check submit</td><td>Write a comprehension event (aggregate); no gradebook</td></tr>
+      <tr><td><b>Feedback / advice</b></td><td>Practice-exercise "Submit for feedback"</td><td>The deliverable hook; AI/creator grading deferred</td></tr>
+      <tr><td><b>Weak-module insight</b></td><td>Analytics comprehension panel</td><td>The insight card slot; the agent is future</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<!-- ============ 5. USER EXPERIENCE / ACCEPTANCE ============ -->
+<section id="s5"><div class="wrap">
+  <div class="sec-head"><span class="num">05</span><h2>User Experience (Acceptance)</h2></div>
+  <p class="lead">Core-flow acceptance from the user's perspective, based on visible prototype actions.
+  Each story passes when the expected result holds.</p>
+
+  <div class="story">
+    <div class="sh"><span class="id">US-1</span><span class="nm">Creator builds a low-stakes knowledge check</span></div>
+    <div class="sbody">
+      <div class="col"><h5>User need</h5>Confirm learners understood a concept — without it feeling like a graded test.</div>
+      <div class="col"><h5>Flow</h5><ol>
+        <li>Open a lesson → <b>+ Add block</b> → <b>Knowledge Check</b></li>
+        <li>Add a multiple-choice question + an explanation</li>
+        <li>Glance at the editor; optionally expand <b>Advanced (optional)</b></li>
+      </ol></div>
+      <div class="col exp"><h5>Expected result</h5>The default editor shows <b>only</b> questions, answers,
+        and explanations — <b>no</b> timer, score, difficulty, or points. Those appear only inside the
+        collapsed Advanced disclosure, off by default, labeled "never gates."</div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="id">US-2</span><span class="nm">Creator builds a self-paced practice exercise</span></div>
+    <div class="sbody">
+      <div class="col"><h5>User need</h5>Give learners something to practice, with optional guidance — not a graded assignment.</div>
+      <div class="col"><h5>Flow</h5><ol>
+        <li><b>+ Add block</b> → <b>Practice Exercise</b></li>
+        <li>Write instructions; optionally add a rubric and a solution key</li>
+        <li>Optionally enable a deliverable (Text / File / Link / None)</li>
+      </ol></div>
+      <div class="col exp"><h5>Expected result</h5>There is <b>no points field and no due-date field</b>
+        anywhere. Rubric, solution key, and deliverable are each optional and labeled as feedback /
+        self-check guidance — not grading.</div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="id">US-3</span><span class="nm">Learner takes a knowledge check and is never blocked</span></div>
+    <div class="sbody">
+      <div class="col"><h5>User need</h5>Check my understanding and keep moving at my own pace.</div>
+      <div class="col"><h5>Flow</h5><ol>
+        <li>Answer the knowledge-check questions</li>
+        <li>Read the immediate right/wrong + explanation</li>
+        <li>Press <b>Continue →</b></li>
+      </ol></div>
+      <div class="col exp"><h5>Expected result</h5>Each answer shows immediate feedback + explanation and
+        a soft "<b>X of Y correct</b>" — no percentage grade or pass/fail. <b>Continue is always
+        enabled</b>, whatever the answers.</div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="id">US-4</span><span class="nm">Creator follows the guided Plan → Create → Publish flow</span></div>
+    <div class="sbody">
+      <div class="col"><h5>User need</h5>Know what to do next and when the course is ready to publish.</div>
+      <div class="col"><h5>Flow</h5><ol>
+        <li>Set a title, build the outline (Plan)</li>
+        <li>Add lesson content (Create)</li>
+        <li>Watch the side <b>checklist</b> and stepper update; reach <b>Publish</b></li>
+      </ol></div>
+      <div class="col exp"><h5>Expected result</h5>The checklist marks items done as the document fills;
+        the progress bar advances. <b>Publish</b> enables once minimums (title + ≥1 content lesson) are
+        met — and the flow never locks a learner's progression through the course.</div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="id">US-5</span><span class="nm">Creator reads comprehension as a signal, not a gradebook</span></div>
+    <div class="sbody">
+      <div class="col"><h5>User need</h5>See where learners struggle so I can improve weak modules.</div>
+      <div class="col"><h5>Flow</h5><ol>
+        <li>Open <b>Analytics</b></li>
+        <li>Read the <b>comprehension by module</b> panel</li>
+        <li>Note the AI insight on the weakest module</li>
+      </ol></div>
+      <div class="col exp"><h5>Expected result</h5>The panel shows <b>aggregate</b> correctness per
+        module framed as "where learners struggle" — <b>no</b> per-learner scores, rankings, or
+        pass/fail. An AI-insight slot points at the weakest module (deep behavior future).</div>
+    </div>
+  </div>
+
+  <hr class="soft" />
+  <p class="note">Scope note: acceptance covers the core studio flows only. Backend persistence, the
+  real LLM, the AI grader/tutor, and marketplace/payments are out of scope and intentionally excluded
+  from these criteria.</p>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  CourseGen Pro · Course Studio PRD · Reframe to creator-economy, low-stakes, self-paced ·
+  Generated 2026-06-14 · Sources: repo (CLAUDE.md, HANDOFF.md, DESIGN_ASSESSMENTS.md, lib/course/*),
+  Obsidian <span class="mono">Personal/Projects/CourseGen Pro/</span>. Design tokens mirror
+  <span class="mono">app/globals.css</span>.
+</div></footer>
+
+</body>
+</html>

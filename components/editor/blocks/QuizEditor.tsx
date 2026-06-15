@@ -1,11 +1,13 @@
 "use client";
 
 /**
- * Quiz block: collapsible settings bar, a drag-sortable question list, and
- * add-question / AI controls. Every edit flows through the patch pipeline.
+ * Knowledge-check block: a drag-sortable question list plus add-question / AI
+ * controls. Deliberately low-stakes — no timers, attempt caps, passing scores,
+ * difficulty, or points. Questions confirm understanding and show an
+ * explanation as immediate feedback. Every edit flows through the patch
+ * pipeline.
  */
 
-import { useState } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -20,14 +22,11 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { ChevronDown, Plus, SlidersHorizontal } from "lucide-react";
-import { cn } from "@/lib/cn";
-import { resolveQuizSettings, quizTotalPoints } from "@/lib/course/assessments";
-import { addQuestionPatch, reorderQuestionPatch, updateQuizSettingsPatch } from "@/lib/course/commands";
+import { Plus } from "lucide-react";
+import { addQuestionPatch, reorderQuestionPatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
-import type { QuestionKind, QuizBlock, QuizSettings, ShowAnswersPolicy } from "@/lib/course/types";
+import type { QuestionKind, QuizBlock } from "@/lib/course/types";
 import { AIActionButton } from "../AIActionButton";
-import { NumberField, Toggle } from "./controls";
 import { QuestionCard } from "./QuestionCard";
 
 const kinds: { kind: QuestionKind; label: string }[] = [
@@ -36,118 +35,6 @@ const kinds: { kind: QuestionKind; label: string }[] = [
   { kind: "true_false", label: "True / False" },
   { kind: "short_answer", label: "Short answer" },
 ];
-
-const showAnswerLabels: Record<ShowAnswersPolicy, string> = {
-  immediately: "Immediately",
-  after_submit: "After submit",
-  after_due: "After due date",
-  never: "Never",
-};
-
-function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex items-center justify-between gap-3">
-      <span className="text-xs text-stone-500">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function QuizSettingsBar({ block }: { block: QuizBlock }) {
-  const apply = useEditorStore((s) => s.apply);
-  const [open, setOpen] = useState(false);
-  const s = resolveQuizSettings(block.settings);
-
-  function update(patch: Partial<QuizSettings>) {
-    apply(updateQuizSettingsPatch(block.id, patch), "human");
-  }
-
-  const summary = [
-    s.timeLimitMinutes ? `${s.timeLimitMinutes} min` : "Untimed",
-    s.attemptsAllowed ? `${s.attemptsAllowed} attempt${s.attemptsAllowed === 1 ? "" : "s"}` : "Unlimited",
-    `pass ${s.passingScore}%`,
-  ].join(" · ");
-
-  return (
-    <div className="rounded-xl border border-stone-200/80 bg-stone-50/60">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
-      >
-        <SlidersHorizontal className="size-3.5 text-stone-400" />
-        <span className="text-xs font-medium text-stone-600">Quiz settings</span>
-        <span className="truncate text-[11px] text-stone-400">· {summary}</span>
-        <ChevronDown
-          className={cn("ml-auto size-3.5 text-stone-400 transition-transform", open && "rotate-180")}
-        />
-      </button>
-      {open && (
-        <div className="grid gap-2.5 border-t border-stone-200/70 px-3 py-3 sm:grid-cols-2">
-          <SettingRow label="Time limit">
-            <NumberField
-              value={s.timeLimitMinutes}
-              suffix="min"
-              placeholder="∞"
-              aria-label="Time limit in minutes"
-              onCommit={(n) => update({ timeLimitMinutes: n })}
-            />
-          </SettingRow>
-          <SettingRow label="Attempts">
-            <NumberField
-              value={s.attemptsAllowed}
-              placeholder="∞"
-              min={1}
-              aria-label="Attempts allowed"
-              onCommit={(n) => update({ attemptsAllowed: n })}
-            />
-          </SettingRow>
-          <SettingRow label="Passing score">
-            <NumberField
-              value={s.passingScore}
-              suffix="%"
-              aria-label="Passing score percent"
-              onCommit={(n) => update({ passingScore: n ?? undefined })}
-            />
-          </SettingRow>
-          <SettingRow label="Show answers">
-            <select
-              value={s.whenToShowAnswers}
-              aria-label="When to show answers"
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => update({ whenToShowAnswers: e.target.value as ShowAnswersPolicy })}
-              className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300 focus:ring-2 focus:ring-brand-200/60"
-            >
-              {(Object.keys(showAnswerLabels) as ShowAnswersPolicy[]).map((k) => (
-                <option key={k} value={k}>
-                  {showAnswerLabels[k]}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <SettingRow label="Shuffle questions">
-            <Toggle
-              checked={s.shuffleQuestions}
-              aria-label="Shuffle questions"
-              onChange={(v) => update({ shuffleQuestions: v })}
-            />
-          </SettingRow>
-          <SettingRow label="Shuffle options">
-            <Toggle
-              checked={s.shuffleOptions}
-              aria-label="Shuffle options"
-              onChange={(v) => update({ shuffleOptions: v })}
-            />
-          </SettingRow>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function QuizEditor({ block, lessonId }: { block: QuizBlock; lessonId: string }) {
   const apply = useEditorStore((s) => s.apply);
@@ -166,11 +53,12 @@ export function QuizEditor({ block, lessonId }: { block: QuizBlock; lessonId: st
     apply(reorderQuestionPatch(block.id, String(active.id), toIndex), "human");
   }
 
-  const totalPoints = quizTotalPoints(block.questions);
-
   return (
     <div className="space-y-3">
-      <QuizSettingsBar block={block} />
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-stone-400">
+        <span className="inline-block size-1.5 rounded-full bg-emerald-400" aria-hidden />
+        Ungraded — checks understanding, never blocks progress.
+      </p>
 
       {block.questions.length === 0 ? (
         <p className="rounded-xl bg-stone-50 px-4 py-6 text-center text-sm text-stone-400">
@@ -179,7 +67,7 @@ export function QuizEditor({ block, lessonId }: { block: QuizBlock; lessonId: st
       ) : (
         <>
           <p className="text-[11px] font-medium text-stone-400">
-            {block.questions.length} question{block.questions.length === 1 ? "" : "s"} · {totalPoints} pts
+            {block.questions.length} question{block.questions.length === 1 ? "" : "s"}
           </p>
           <DndContext
             id={`quiz-${block.id}`}
@@ -218,7 +106,6 @@ export function QuizEditor({ block, lessonId }: { block: QuizBlock; lessonId: st
         ))}
         <span className="mx-1 h-4 w-px bg-stone-200" aria-hidden />
         <AIActionButton prompt="Generate 3 questions" selection={blockSelection} />
-        <AIActionButton prompt="Make this quiz harder" label="Make harder" selection={blockSelection} />
         <AIActionButton prompt="Add explanations" selection={blockSelection} />
       </div>
     </div>

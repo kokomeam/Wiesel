@@ -146,7 +146,7 @@ export function SlideThumbnailStrip({
   const themeId = slides[0]?.style.theme.id;
 
   return (
-    <div className="flex items-stretch gap-2 overflow-x-auto pb-1 scrollbar-thin">
+    <div className="flex items-stretch gap-2 overflow-x-auto p-1 scrollbar-thin">
       {slides.map((slide, i) => (
         <Thumbnail
           key={slide.id}

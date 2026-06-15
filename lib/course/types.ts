@@ -316,8 +316,9 @@ export interface HomeworkExercise {
   solution?: string;
 }
 
-/** How learners submit their work for a homework block. */
-export type DeliverableType = "text_response" | "file_upload" | "external_link";
+/** How learners optionally submit work for a practice exercise. "none" = no
+ *  deliverable collected (self-paced practice only). */
+export type DeliverableType = "none" | "text_response" | "file_upload" | "external_link";
 
 /** One performance level within a rubric criterion (e.g. "Excellent" = 4 pts). */
 export interface RubricLevel {
@@ -406,12 +407,32 @@ export interface CourseTheme {
 
 export type CourseLevel = "beginner" | "intermediate" | "advanced";
 
+/**
+ * Structured planning context the studio collects on the Plan step and the AI
+ * agents read before generating lessons, slides, quizzes, and exercises —
+ * richer, more specific planning yields better AI output. Title, subtitle
+ * (description), intended learners (audience) and level live on the doc
+ * directly; these are the extra Plan fields. Maps to courses.plan (jsonb).
+ */
+export interface CoursePlan {
+  /** Category / topic, e.g. "Competitive programming". */
+  category?: string;
+  /** What learners will be able to do after the course. */
+  outcomes: string[];
+  /** Optional prerequisites / requirements — encourage a low barrier. */
+  prerequisites: string[];
+  /** Teaching style / tone the AI should adopt (e.g. "casual, practical"). */
+  teachingStyle?: string;
+}
+
 export interface CourseDocument {
   id: string;
   title: string;
   description?: string;
   audience?: string;
   level?: CourseLevel;
+  /** Plan-step context for the AI (see CoursePlan). */
+  plan: CoursePlan;
   modules: CourseModule[];
   theme: CourseTheme;
   metadata: {

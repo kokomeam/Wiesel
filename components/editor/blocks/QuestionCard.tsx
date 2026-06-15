@@ -14,28 +14,19 @@ import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import {
-  changeDifficultyPatch,
   deleteQuestionPatch,
   updateQuestionPatch,
 } from "@/lib/course/commands";
 import { newId } from "@/lib/course/factories";
 import { useEditorStore } from "@/lib/course/store";
-import type { QuizDifficulty, QuizQuestion } from "@/lib/course/types";
+import type { QuizQuestion } from "@/lib/course/types";
 import { InlineText, InlineTextArea } from "../InlineText";
-import { NumberField } from "./controls";
 
 const kindLabel: Record<QuizQuestion["kind"], string> = {
   multiple_choice: "Multiple choice",
   multi_select: "Multiple select",
   true_false: "True / False",
   short_answer: "Short answer",
-};
-
-const difficulties: QuizDifficulty[] = ["easy", "medium", "hard"];
-const difficultyActive: Record<QuizDifficulty, string> = {
-  easy: "bg-emerald-50 text-emerald-700",
-  medium: "bg-amber-50 text-amber-700",
-  hard: "bg-rose-50 text-rose-700",
 };
 
 type ChoiceQuestion = Extract<QuizQuestion, { kind: "multiple_choice" | "multi_select" }>;
@@ -204,46 +195,18 @@ export function QuestionCard({
       <div className="mb-2 flex items-center gap-2">
         <span className="text-xs font-semibold text-stone-400">Q{index + 1}</span>
         <Badge tone="slate">{kindLabel[question.kind]}</Badge>
-        <NumberField
-          value={question.points}
-          min={0}
-          suffix="pt"
-          aria-label={`Question ${index + 1} points`}
-          onCommit={(n) => replace({ ...question, points: n ?? undefined })}
-        />
-        <div className="ml-auto flex items-center gap-0.5">
-          {difficulties.map((d) => (
-            <button
-              key={d}
-              type="button"
-              aria-pressed={question.difficulty === d}
-              onClick={(e) => {
-                e.stopPropagation();
-                apply(changeDifficultyPatch(quizId, d, question.id), "human");
-              }}
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] font-medium capitalize transition-colors",
-                question.difficulty === d
-                  ? difficultyActive[d]
-                  : "text-stone-400 hover:bg-stone-100"
-              )}
-            >
-              {d}
-            </button>
-          ))}
-          <button
-            type="button"
-            title="Delete question"
-            aria-label={`Delete question ${index + 1}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              apply(deleteQuestionPatch(quizId, question.id), "human");
-            }}
-            className="ml-1 grid size-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        </div>
+        <button
+          type="button"
+          title="Delete question"
+          aria-label={`Delete question ${index + 1}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            apply(deleteQuestionPatch(quizId, question.id), "human");
+          }}
+          className="ml-auto grid size-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
       </div>
 
       <InlineTextArea

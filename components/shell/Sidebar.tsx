@@ -2,18 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  HelpCircle,
-  PanelLeftClose,
-  PanelLeft,
-  Plus,
-} from "lucide-react";
+import { PanelLeftClose, PanelLeft, Plus } from "lucide-react";
 import { mainNav, secondaryNav } from "@/lib/nav";
-import { currentUser } from "@/lib/data";
+import { createNewCourse } from "@/app/(app)/studio/actions";
 import { cn } from "@/lib/cn";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { NavItem } from "@/lib/nav";
+import { SignOutButton } from "./SignOutButton";
 
 function isActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/";
@@ -52,11 +48,16 @@ function NavLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({
+  user,
+}: {
+  user: { name: string; email: string; initials: string };
+}) {
   const collapsed = useUIStore((s) => s.collapsed.appSidebar);
   const togglePanel = useUIStore((s) => s.togglePanel);
-  const { credits } = currentUser;
-  const creditPct = Math.round((credits.used / credits.total) * 100);
+  const displayName = user.name;
+  const initials = user.initials;
+  const subtitle = user.email;
 
   return (
     <aside
@@ -82,18 +83,20 @@ export function Sidebar() {
         )}
       </Link>
 
-      {/* New course CTA */}
+      {/* New course CTA — server action (avoids prefetch-on-hover creates) */}
       <div className={cn("pb-2", collapsed ? "px-2.5" : "px-3")}>
-        <Link
-          href="/studio"
-          title={collapsed ? "New Course" : undefined}
-          className={cn(
-            "flex h-9 items-center justify-center gap-2 rounded-full brand-gradient text-sm font-medium text-white shadow-sm shadow-brand-600/25 transition-opacity hover:opacity-95"
-          )}
-        >
-          <Plus className="size-4" />
-          {!collapsed && "New Course"}
-        </Link>
+        <form action={createNewCourse}>
+          <button
+            type="submit"
+            title={collapsed ? "New Course" : undefined}
+            className={cn(
+              "flex h-9 w-full items-center justify-center gap-2 rounded-full brand-gradient text-sm font-medium text-white shadow-sm shadow-brand-600/25 transition-opacity hover:opacity-95"
+            )}
+          >
+            <Plus className="size-4" />
+            {!collapsed && "New Course"}
+          </button>
+        </form>
       </div>
 
       {/* Primary nav */}
@@ -107,28 +110,6 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Credits widget */}
-      {!collapsed && (
-        <div className="px-3 pb-2">
-          <div className="rounded-xl border border-stone-200 bg-stone-50/60 p-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-stone-700">AI Credits</span>
-              <span className="text-stone-400">{creditPct}%</span>
-            </div>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-stone-200">
-              <div
-                className="h-full rounded-full brand-gradient"
-                style={{ width: `${creditPct}%` }}
-              />
-            </div>
-            <p className="mt-2 text-[11px] text-stone-400">
-              {credits.used.toLocaleString()} / {credits.total.toLocaleString()} · resets{" "}
-              {credits.resets}
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* User + collapse toggle */}
       <div
         className={cn(
@@ -138,19 +119,17 @@ export function Sidebar() {
       >
         <div
           className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-900 text-xs font-semibold text-white"
-          title={collapsed ? `${currentUser.name} · ${currentUser.plan}` : undefined}
+          title={collapsed ? displayName : undefined}
         >
-          {currentUser.initials}
+          {initials}
         </div>
         {!collapsed && (
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-stone-900">{currentUser.name}</p>
-            <p className="truncate text-xs text-stone-400">
-              {currentUser.plan} plan · {currentUser.role}
-            </p>
+            <p className="truncate text-sm font-medium text-stone-900">{displayName}</p>
+            <p className="truncate text-xs text-stone-400">{subtitle}</p>
           </div>
         )}
-        {!collapsed && <HelpCircle className="size-4 shrink-0 text-stone-300" />}
+        <SignOutButton />
         <button
           type="button"
           {...toolAttrs({

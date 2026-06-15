@@ -51,7 +51,7 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
     description:
       "The root course document: ordered modules plus theme and metadata.",
     allowedChildren: ["module"],
-    allowedActions: ["ADD_MODULE", "REORDER_MODULE", "UPDATE_TEXT"],
+    allowedActions: ["ADD_MODULE", "REORDER_MODULE", "UPDATE_TEXT", "UPDATE_PLAN"],
     semanticTags: ["course"],
   },
   module: {

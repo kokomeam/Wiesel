@@ -11,12 +11,14 @@ import { aiAttrs } from "@/lib/course/aiAttributes";
 import { altTextFor, speakerNotesFor } from "@/lib/course/ai/templates";
 import { updateTextPatch } from "@/lib/course/commands";
 import { lintSlide } from "@/lib/course/lint";
+import { moduleDisplayName, moduleNumber } from "@/lib/course/moduleLabel";
 import { findLesson } from "@/lib/course/queries";
 import { useEditorStore } from "@/lib/course/store";
 import type { LessonBlock, QualityHint } from "@/lib/course/types";
 import { AddBlockMenu } from "./AddBlockMenu";
 import { BlockFrame } from "./BlockFrame";
-import { InlineText, InlineTextArea } from "./InlineText";
+import { EditableName } from "./EditableName";
+import { InlineTextArea } from "./InlineText";
 import { ExampleBlockEditor } from "./blocks/ExampleBlockEditor";
 import { HomeworkEditor } from "./blocks/HomeworkEditor";
 import { LectureTextEditor } from "./blocks/LectureTextEditor";
@@ -134,11 +136,19 @@ export function LessonWorkspace() {
           })}
           className="mb-6"
         >
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-            {module.title}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation(); // container's onClick re-selects the lesson
+              select({ kind: "module", id: module.id });
+            }}
+            className="mb-1 block max-w-full truncate text-left text-[11px] font-semibold uppercase tracking-wide text-stone-400 transition-colors hover:text-brand-600"
+            title="Open this module"
+          >
+            {moduleDisplayName(moduleNumber(doc, module.id), module.title)}
             {lesson.estimatedMinutes ? ` · ${lesson.estimatedMinutes} min` : ""}
-          </p>
-          <InlineText
+          </button>
+          <EditableName
             value={lesson.title}
             aria-label="Lesson title"
             placeholder="Lesson title"
@@ -170,7 +180,7 @@ export function LessonWorkspace() {
             <p className="mx-auto mt-1 mb-5 max-w-sm text-sm text-stone-400">
               Add your first block below, or ask the AI — try{" "}
               <span className="font-medium text-stone-500">
-                &ldquo;Add a quiz to this lesson&rdquo;
+                &ldquo;Add a knowledge check&rdquo;
               </span>
               .
             </p>

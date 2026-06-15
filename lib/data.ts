@@ -44,12 +44,15 @@ export interface Module {
 /*  Current user                                                       */
 /* ------------------------------------------------------------------ */
 
+// NOTE: real user identity (name/email/avatar) now comes from Supabase auth +
+// the `profiles` table — see app/(app)/layout.tsx. This mock is only still
+// read by the placeholder Settings/Dashboard pages (unbuilt features); the
+// AI-credits widget that lived here has been removed.
 export const currentUser = {
   name: "Arjun Mehta",
   role: "Creator",
   initials: "AM",
   plan: "Pro" as const,
-  credits: { used: 12450, total: 20000, resets: "Jul 1, 2025" },
 };
 
 /* ------------------------------------------------------------------ */

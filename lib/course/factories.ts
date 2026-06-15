@@ -6,7 +6,6 @@
  * uses hand-written ids instead, so server and client renders stay identical.
  */
 
-import { DEFAULT_QUIZ_SETTINGS } from "./assessments";
 import { componentManifest, defaultAIMeta, manifestTypeForElementType } from "./manifest";
 import { defaultFrameFor } from "./slide/geometry";
 import { elementFromPlaceholder, findLayout } from "./slide/layouts";
@@ -32,12 +31,22 @@ export function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+/**
+ * Module / lesson / block ids are FULL UUIDs because they are the primary
+ * keys of the `modules` / `lessons` / `blocks` Postgres tables (persistence
+ * upserts them 1:1). Elements, slides, questions, etc. live inside a block's
+ * `content` jsonb, so they keep the short prefixed `newId` form.
+ */
+export function newRowId(): string {
+  return crypto.randomUUID();
+}
+
 export function createModule(title = "New module", order = 0): CourseModule {
-  return { id: newId("mod"), type: "module", title, order, lessons: [] };
+  return { id: newRowId(), type: "module", title, order, lessons: [] };
 }
 
 export function createLesson(title = "New lesson", order = 0): LessonNode {
-  return { id: newId("lesson"), type: "lesson", title, order, blocks: [] };
+  return { id: newRowId(), type: "lesson", title, order, blocks: [] };
 }
 
 /* ───────────────────────────── Slides ─────────────────────────────────── */
@@ -198,8 +207,8 @@ export function createRubricCriterion(name = "New criterion"): RubricCriterion {
 const blockTitles: Record<BlockType, string> = {
   slide_deck: "Slide deck",
   lecture_text: "Lecture",
-  quiz: "Quiz",
-  homework: "Homework",
+  quiz: "Knowledge check",
+  homework: "Practice exercise",
   exercise: "Exercise",
   example: "Worked example",
   resource: "Resources",
@@ -207,7 +216,7 @@ const blockTitles: Record<BlockType, string> = {
 
 export function createBlock(type: BlockType, order = 0): LessonBlock {
   const base = {
-    id: newId("block"),
+    id: newRowId(),
     title: blockTitles[type],
     order,
     ai: defaultAIMeta(type),
@@ -218,13 +227,13 @@ export function createBlock(type: BlockType, order = 0): LessonBlock {
     case "lecture_text":
       return { ...base, type, tone: "beginner", paragraphs: [createParagraph()] };
     case "quiz":
-      return { ...base, type, settings: { ...DEFAULT_QUIZ_SETTINGS }, questions: [] };
+      return { ...base, type, questions: [] };
     case "homework":
       return {
         ...base,
         type,
         instructions: "",
-        deliverableType: "text_response",
+        deliverableType: "none",
         exercises: [],
       };
     case "exercise":

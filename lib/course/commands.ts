@@ -25,6 +25,8 @@ import type { LayoutPlaceholder } from "./slide/layouts";
 import type {
   BlockType,
   CourseDocument,
+  CourseLevel,
+  CoursePlan,
   QuestionKind,
   QuizQuestion,
   QuizSettings,
@@ -78,6 +80,16 @@ export function reorderBlockPatch(
 
 export function updateTextPatch(target: TextTarget, value: string): CoursePatch {
   return { action: "UPDATE_TEXT", target, value };
+}
+
+/** Update the course Plan: the top-level `level` enum and/or any of the
+ *  structured `plan` fields (category / outcomes / prerequisites / teachingStyle).
+ *  Array fields are replaced wholesale by the caller. */
+export function updatePlanPatch(input: {
+  level?: CourseLevel;
+  plan?: Partial<CoursePlan>;
+}): CoursePatch {
+  return { action: "UPDATE_PLAN", ...input };
 }
 
 export function updateBlockTitlePatch(blockId: string, title: string): CoursePatch {

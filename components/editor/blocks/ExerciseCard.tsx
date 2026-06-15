@@ -51,7 +51,7 @@ export function ExerciseCard({
         id: exercise.id,
         parentId: homeworkId,
         order: index,
-        purpose: "A practice exercise within a homework assignment.",
+        purpose: "A practice task within a practice exercise.",
         label: `Exercise ${index + 1}: ${exercise.title}`,
       })}
       className={cn(
