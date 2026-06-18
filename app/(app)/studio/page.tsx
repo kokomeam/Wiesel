@@ -1,32 +1,14 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+import { CourseGallery } from "@/components/editor/CourseGallery";
 import { StudioLoader } from "@/components/editor/StudioLoader";
-import { courseDocFromRows, defaultCourseTheme } from "@/lib/course/persistence";
+import { getPendingBlocks } from "@/lib/ai/changeSet";
+import { courseDocFromRows } from "@/lib/course/persistence";
 import { createClient } from "@/lib/supabase/server";
-import type { Json } from "@/lib/database.types";
 
 export const metadata: Metadata = {
   title: "Creator Studio — CourseGen Pro",
 };
-
-/** Insert a brand-new empty course for this author and return its id. */
-async function createEmptyCourse(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  authorId: string
-): Promise<string> {
-  const { data, error } = await supabase
-    .from("courses")
-    .insert({
-      author_id: authorId,
-      title: "Untitled course",
-      plan: { outcomes: [], prerequisites: [] } as Json,
-      theme: defaultCourseTheme() as unknown as Json,
-    })
-    .select("id")
-    .single();
-  if (error || !data) throw new Error(error?.message ?? "Could not create course");
-  return data.id;
-}
 
 export default async function StudioPage({
   searchParams,
@@ -41,41 +23,46 @@ export default async function StudioPage({
 
   const sp = await searchParams;
 
-  // Resolve the course to edit: explicit ?course= → most-recent → bootstrap a
-  // first empty one. (Explicit "New Course" goes through the server action.)
-  let courseId = sp.course ?? null;
-  if (!courseId) {
-    const { data: latest } = await supabase
+  // No explicit course → ALWAYS show the gallery (never auto-open or auto-create).
+  // The author picks a course to open, or creates one (createNewCourse action).
+  if (!sp.course) {
+    const { data: courses } = await supabase
       .from("courses")
-      .select("id")
+      .select("id, title, description, status, level, updated_at")
       .eq("author_id", user.id)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    courseId = latest?.id ?? null;
-  }
-  if (!courseId) {
-    courseId = await createEmptyCourse(supabase, user.id);
+      .order("updated_at", { ascending: false });
+    return <CourseGallery courses={courses ?? []} />;
   }
 
-  // Load the course + its tree. RLS guarantees we only read our own (or
-  // published-public) courses; a missing/forbidden id falls back to a new one.
+  const courseId = sp.course;
+
+  // Load the requested course + its tree. RLS guarantees we only read our own
+  // (or published-public) courses; a missing/forbidden id falls back to the
+  // gallery.
   const { data: course } = await supabase
     .from("courses")
     .select("*")
     .eq("id", courseId)
     .maybeSingle();
   if (!course) {
-    redirect("/studio"); // stale ?course= — re-resolve to latest/new
+    redirect("/studio"); // stale/forbidden ?course= — back to the gallery
   }
 
-  const [{ data: modules }, { data: lessons }, { data: blocks }] = await Promise.all([
+  const [{ data: modules }, { data: lessons }, { data: blocks }, pendingBlocks] = await Promise.all([
     supabase.from("modules").select("*").eq("course_id", courseId),
     supabase.from("lessons").select("*").eq("course_id", courseId),
     supabase.from("blocks").select("*").eq("course_id", courseId),
+    getPendingBlocks(supabase, courseId),
   ]);
 
   const doc = courseDocFromRows(course, modules ?? [], lessons ?? [], blocks ?? []);
 
-  return <StudioLoader initialDoc={doc} courseId={courseId} ownerId={user.id} />;
+  return (
+    <StudioLoader
+      initialDoc={doc}
+      courseId={courseId}
+      ownerId={user.id}
+      pendingBlocks={pendingBlocks.map((p) => ({ blockId: p.blockId, changeSetId: p.changeSetId }))}
+    />
+  );
 }

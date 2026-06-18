@@ -37,6 +37,7 @@ import type {
   SlideElement,
   SlideElementType,
   SlideThemeId,
+  SlideTemplate,
 } from "./types";
 
 /* ─────────────────── course / module / lesson / block ─────────────────── */
@@ -51,6 +52,17 @@ export function addLessonPatch(
   title = "New lesson"
 ): CoursePatch {
   return { action: "ADD_LESSON", moduleId, lesson: createLesson(title, lessonCount) };
+}
+
+/** Delete a whole module (and everything in it). Destructive — callers gate it
+ *  behind a confirmation. */
+export function deleteModulePatch(moduleId: string): CoursePatch {
+  return { action: "DELETE_MODULE", moduleId };
+}
+
+/** Delete a whole lesson (and its blocks). Destructive — gate behind a confirm. */
+export function deleteLessonPatch(lessonId: string): CoursePatch {
+  return { action: "DELETE_LESSON", lessonId };
 }
 
 export function addBlockPatch(
@@ -119,14 +131,6 @@ export function updateQuestionPatch(
 
 export function addExercisePatch(blockId: string, title?: string): CoursePatch {
   return { action: "ADD_HOMEWORK_EXERCISE", blockId, exercise: createExercise(title) };
-}
-
-export function changeDifficultyPatch(
-  blockId: string,
-  difficulty: Extract<CoursePatch, { action: "CHANGE_DIFFICULTY" }>["difficulty"],
-  questionId?: string
-): CoursePatch {
-  return { action: "CHANGE_DIFFICULTY", blockId, questionId, difficulty };
 }
 
 export function updateQuizSettingsPatch(
@@ -299,6 +303,43 @@ export function addElementPatch(
     slideId,
     element: createElement(type, existingCount),
   };
+}
+
+/** Insert a sticker element bearing a specific registry id (the picker passes
+ *  the chosen id; the AGENT uses ADD_SLIDE_ELEMENT directly). */
+export function addStickerPatch(
+  blockId: string,
+  slideId: string,
+  stickerId: string,
+  existingCount: number
+): CoursePatch {
+  const el = createElement("sticker", existingCount);
+  if (el.type !== "sticker") throw new Error("unreachable");
+  return {
+    action: "ADD_SLIDE_ELEMENT",
+    blockId,
+    slideId,
+    element: { ...el, stickerId },
+  };
+}
+
+/** Convert a slide into (or replace) a renderer-owned structured layout. */
+export function setSlideTemplatePatch(
+  blockId: string,
+  slideId: string,
+  template: SlideTemplate
+): CoursePatch {
+  return { action: "SET_SLIDE_TEMPLATE", blockId, slideId, template };
+}
+
+/** Edit one field/array of a structured slide's content by path. */
+export function updateTemplateContentPatch(
+  blockId: string,
+  slideId: string,
+  path: (string | number)[],
+  value: unknown
+): CoursePatch {
+  return { action: "UPDATE_TEMPLATE_CONTENT", blockId, slideId, path, value };
 }
 
 export function updateElementPatch(

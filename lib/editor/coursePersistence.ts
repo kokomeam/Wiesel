@@ -15,73 +15,26 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { courseDocToRows } from "@/lib/course/persistence";
+import { reconcileCourseDoc } from "@/lib/course/persistenceSync";
 import { useEditorStore } from "@/lib/course/store";
 import type { CourseDocument } from "@/lib/course/types";
 
 const SAVE_DEBOUNCE_MS = 1000;
+const MAX_RETRIES = 2;
 
-type Supabase = ReturnType<typeof createClient>;
-
-/** Delete rows of `table` for this course whose id is no longer present. */
-async function deleteOrphans(
-  supabase: Supabase,
-  table: "modules" | "lessons" | "blocks",
-  courseId: string,
-  keepIds: string[]
-): Promise<string | null> {
-  const base = supabase.from(table).delete().eq("course_id", courseId);
-  const query =
-    keepIds.length === 0
-      ? base // nothing survives at this level — clear them all
-      : base.not("id", "in", `(${keepIds.join(",")})`);
-  const { error } = await query;
-  return error?.message ?? null;
-}
-
-/** One full reconcile. Returns an error message, or null on success. */
+/**
+ * One full reconcile. Thin wrapper over the shared, client-agnostic
+ * `reconcileCourseDoc` (the server-side AI agent uses the same function), so
+ * human autosave and AI edits persist through one identical path. The optional
+ * `signal` lets the hook abort an in-flight save (e.g. when Reject fires).
+ */
 export async function saveCourseDoc(
-  supabase: Supabase,
+  supabase: ReturnType<typeof createClient>,
   doc: CourseDocument,
-  ownerId: string
+  ownerId: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
-  const { course, modules, lessons, blocks } = courseDocToRows(doc, ownerId);
-
-  // 1. course row — never touch status/visibility/price/tags (author may set
-  //    those elsewhere); only the columns the editor owns.
-  const { error: courseErr } = await supabase
-    .from("courses")
-    .update({
-      title: course.title,
-      description: course.description,
-      audience: course.audience,
-      level: course.level,
-      plan: course.plan,
-      theme: course.theme,
-    })
-    .eq("id", doc.id);
-  if (courseErr) return courseErr.message;
-
-  // 2. upsert parents → children
-  if (modules.length) {
-    const { error } = await supabase.from("modules").upsert(modules);
-    if (error) return error.message;
-  }
-  if (lessons.length) {
-    const { error } = await supabase.from("lessons").upsert(lessons);
-    if (error) return error.message;
-  }
-  if (blocks.length) {
-    const { error } = await supabase.from("blocks").upsert(blocks);
-    if (error) return error.message;
-  }
-
-  // 3. delete orphans children → parents
-  return (
-    (await deleteOrphans(supabase, "blocks", doc.id, blocks.map((b) => b.id!))) ??
-    (await deleteOrphans(supabase, "lessons", doc.id, lessons.map((l) => l.id!))) ??
-    (await deleteOrphans(supabase, "modules", doc.id, modules.map((m) => m.id!)))
-  );
+  return reconcileCourseDoc(supabase, doc, ownerId, signal);
 }
 
 /**
@@ -94,6 +47,7 @@ export function useCoursePersistence(ownerId: string) {
   const doc = useEditorStore((s) => s.doc);
   const courseId = useEditorStore((s) => s.courseId);
   const setSaveStatus = useEditorStore((s) => s.setSaveStatus);
+  const autosaveSuspended = useEditorStore((s) => s.autosaveSuspended);
 
   // One browser client for the editor's lifetime (lazy, render-safe).
   const [supabase] = useState(() => createClient());
@@ -101,8 +55,18 @@ export function useCoursePersistence(ownerId: string) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saving = useRef(false);
   const pending = useRef<CourseDocument | null>(null);
+  const controller = useRef<AbortController | null>(null);
   // Skip the first doc value after hydrate — it's the loaded state, not an edit.
   const primed = useRef(false);
+
+  // The moment autosave is suspended (a Reject in progress), cancel the pending
+  // timer AND abort any in-flight save so a stale write can't clobber the revert.
+  useEffect(() => {
+    if (autosaveSuspended) {
+      if (timer.current) clearTimeout(timer.current);
+      controller.current?.abort();
+    }
+  }, [autosaveSuspended]);
 
   useEffect(() => {
     if (!courseId) return;
@@ -110,24 +74,52 @@ export function useCoursePersistence(ownerId: string) {
       primed.current = true;
       return;
     }
+    const store = useEditorStore.getState();
+    if (store.autosaveSuspended) return; // paused (Reject)
+    if (store.consumeAutosaveSkip()) return; // the reverted doc — already server state
 
-    async function flush(next: CourseDocument) {
+    async function flush(next: CourseDocument, attempt = 0) {
+      if (useEditorStore.getState().autosaveSuspended) return;
       saving.current = true;
       setSaveStatus("saving");
-      const error = await saveCourseDoc(supabase, next, ownerId);
+      const ctrl = new AbortController();
+      controller.current = ctrl;
+      let error: string | null = null;
+      try {
+        error = await saveCourseDoc(supabase, next, ownerId, ctrl.signal);
+      } catch (e) {
+        if (ctrl.signal.aborted) {
+          saving.current = false; // aborted by a Reject — drop silently
+          return;
+        }
+        error = e instanceof Error ? e.message : "save failed";
+      }
       saving.current = false;
+      if (controller.current === ctrl) controller.current = null;
+
       if (pending.current) {
         const queued = pending.current;
         pending.current = null;
         void flush(queued); // a newer edit landed mid-save — save it too
         return;
       }
-      setSaveStatus(error ? "error" : "saved", new Date().toISOString());
-      if (error) console.error("Course autosave failed:", error);
+      if (error) {
+        // Transient fetch failures lose work if dropped — retry with backoff
+        // before surfacing, so a blip doesn't silently eat the edit.
+        if (attempt < MAX_RETRIES && !useEditorStore.getState().autosaveSuspended) {
+          setTimeout(() => void flush(next, attempt + 1), 600 * (attempt + 1));
+          return;
+        }
+        setSaveStatus("error");
+        console.error(`Course autosave failed (after ${attempt + 1} tries):`, error);
+        return;
+      }
+      setSaveStatus("saved", new Date().toISOString());
     }
 
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
+      if (useEditorStore.getState().autosaveSuspended) return;
       if (saving.current) {
         pending.current = doc; // coalesce — flushed when the current save ends
       } else {

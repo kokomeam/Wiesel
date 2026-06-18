@@ -20,7 +20,8 @@ export type PanelKey =
   | "outline"
   | "inspector"
   | "aiBar"
-  | "filmstrip";
+  | "filmstrip"
+  | "agentPanel";
 
 export type InspectorTab = "design" | "content" | "ai" | "metadata";
 
@@ -106,6 +107,7 @@ const defaultPanels: PanelSnapshot = {
   inspector: false,
   aiBar: false,
   filmstrip: false,
+  agentPanel: false,
 };
 
 export const MIN_ZOOM = 0.5;
@@ -160,6 +162,7 @@ export const useUIStore = create<UIState>()(
             outline: true,
             inspector: true,
             aiBar: true,
+            agentPanel: true,
           },
         })),
 

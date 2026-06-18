@@ -26,7 +26,6 @@ import type { CoursePatch } from "../patches";
 import type {
   CourseDocument,
   LessonBlock,
-  QuizDifficulty,
   Selection,
   Slide,
   SlideThemeId,
@@ -133,10 +132,6 @@ function parseCount(prompt: string, fallback: number): number {
   return Math.max(1, Math.min(6, Number(m[1])));
 }
 
-function parseDifficulty(prompt: string): QuizDifficulty | undefined {
-  const m = prompt.match(/\b(easy|medium|hard)\b/);
-  return m ? (m[1] as QuizDifficulty) : undefined;
-}
 
 function parseTheme(prompt: string): SlideThemeId | undefined {
   if (/minimal|light/.test(prompt)) return "minimal-light";
@@ -155,18 +150,12 @@ function parseLayout(prompt: string): string | undefined {
   )?.id;
 }
 
-const bump: Record<QuizDifficulty, QuizDifficulty> = {
-  easy: "medium",
-  medium: "hard",
-  hard: "hard",
-};
-
 /** Builds a fully-populated block for lesson-level "add X" commands. */
 function richBlock(type: LessonBlock["type"], order: number): LessonBlock {
   const block = createBlock(type, order);
   switch (block.type) {
     case "quiz":
-      block.questions = [0, 1, 2].map((i) => questionFromBank(i, "medium"));
+      block.questions = [0, 1, 2].map((i) => questionFromBank(i));
       block.title = "Checkpoint quiz";
       break;
     case "homework":
@@ -442,31 +431,12 @@ function blockRules(
     case "quiz": {
       if (/generate|\badd\b.*question|more question/.test(prompt)) {
         const count = parseCount(prompt, 3);
-        const difficulty = parseDifficulty(prompt) ?? "medium";
         const patches: CoursePatch[] = Array.from({ length: count }, (_, i) => ({
           action: "ADD_QUIZ_QUESTION",
           blockId,
-          question: questionFromBank(block.questions.length + i, difficulty),
+          question: questionFromBank(block.questions.length + i),
         }));
-        return ok(`Generated ${count} ${difficulty} question${count > 1 ? "s" : ""}`, patches);
-      }
-      if (/harder|difficult/.test(prompt)) {
-        const patches: CoursePatch[] = block.questions
-          .filter((q) => q.difficulty !== "hard")
-          .map((q) => ({
-            action: "CHANGE_DIFFICULTY",
-            blockId,
-            questionId: q.id,
-            difficulty: bump[q.difficulty],
-          }));
-        if (patches.length === 0)
-          return { ok: false, summary: "Every question is already hard.", patches: [] };
-        return ok(`Raised difficulty on ${patches.length} question${patches.length > 1 ? "s" : ""}`, patches);
-      }
-      if (/easier|simpler/.test(prompt)) {
-        return ok("Set all questions to easy", [
-          { action: "CHANGE_DIFFICULTY", blockId, difficulty: "easy" },
-        ]);
+        return ok(`Generated ${count} question${count > 1 ? "s" : ""}`, patches);
       }
       if (/explanation/.test(prompt)) {
         const missing = block.questions.filter((q) => !q.explanation?.trim());

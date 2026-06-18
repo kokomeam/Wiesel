@@ -31,7 +31,6 @@ import {
   LessonBlockSchema,
   LessonNodeSchema,
   LectureToneSchema,
-  QuizDifficultySchema,
   QuizQuestionSchema,
   QuizSettingsSchema,
   RubricCriterionSchema,
@@ -39,6 +38,7 @@ import {
   SlideBackgroundSchema,
   SlideElementSchema,
   SlideSchema,
+  SlideTemplateSchema,
   SlideThemeIdSchema,
   TextRunSchema,
 } from "./schemas";
@@ -117,6 +117,7 @@ const ElementUpdatesSchema = z
     orientation: z.enum(["horizontal", "vertical"]),
     rows: z.array(z.array(z.string())),
     headerRow: z.boolean(),
+    stickerId: z.string(),
     locked: z.boolean(),
     visible: z.boolean(),
     style: ElementStyleSchema,
@@ -137,6 +138,14 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     moduleId: z.string(),
     lesson: LessonNodeSchema,
     atIndex: z.number().int().optional(),
+  }),
+  z.object({
+    action: z.literal("DELETE_MODULE"),
+    moduleId: z.string(),
+  }),
+  z.object({
+    action: z.literal("DELETE_LESSON"),
+    lessonId: z.string(),
   }),
   z.object({
     action: z.literal("REORDER_MODULE"),
@@ -160,6 +169,15 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     lessonId: z.string(),
     block: LessonBlockSchema,
     atIndex: z.number().int().optional(),
+  }),
+  z.object({
+    // Replace an existing block's whole content with a new, schema-valid block
+    // (id + order preserved). The primitive content-writer tools use this to
+    // commit a fully-authored slide deck / quiz / homework / lecture in one
+    // validated patch — the clean "write a whole block" op.
+    action: z.literal("SET_BLOCK_CONTENT"),
+    blockId: z.string(),
+    block: LessonBlockSchema,
   }),
   z.object({
     action: z.literal("DELETE_BLOCK"),
@@ -214,12 +232,6 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     atIndex: z.number().int().optional(),
   }),
   z.object({
-    action: z.literal("CHANGE_DIFFICULTY"),
-    blockId: z.string(),
-    questionId: z.string().optional(),
-    difficulty: QuizDifficultySchema,
-  }),
-  z.object({
     action: z.literal("GENERATE_EXPLANATION"),
     blockId: z.string(),
     questionId: z.string(),
@@ -252,8 +264,6 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
       deliverableType: z
         .enum(["none", "text_response", "file_upload", "external_link"])
         .optional(),
-      dueAt: z.string().optional(),
-      points: z.number().min(0).optional(),
       estimatedMinutes: z.number().min(0).optional(),
       objectiveId: z.string().optional(),
     }),
@@ -304,6 +314,32 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     blockId: z.string(),
     slide: SlideSchema,
     atIndex: z.number().int().optional(),
+  }),
+  z.object({
+    // Replace ONE slide's layout + elements in place (id/order/background/
+    // speaker-notes preserved) — the slide-level analog of SET_BLOCK_CONTENT.
+    // Lets an agent switch a single slide's layout and fill it in one validated
+    // op without disturbing any other slide.
+    action: z.literal("SET_SLIDE_CONTENT"),
+    ...slideTarget,
+    layout: z.string(),
+    elements: z.array(SlideElementSchema),
+  }),
+  z.object({
+    // Make a slide a renderer-owned STRUCTURED slide (or replace its template).
+    // The freeform `elements` are kept but ignored while a template is set.
+    action: z.literal("SET_SLIDE_TEMPLATE"),
+    ...slideTarget,
+    template: SlideTemplateSchema,
+  }),
+  z.object({
+    // Path-addressed edit of a structured slide's content, e.g.
+    // path ["title","text"] or ["steps", 1, "heading", "text"] or ["steps"]
+    // (a whole array, for add/remove/reorder). The result is re-validated.
+    action: z.literal("UPDATE_TEMPLATE_CONTENT"),
+    ...slideTarget,
+    path: z.array(z.union([z.string(), z.number()])),
+    value: z.unknown(),
   }),
   z.object({ action: z.literal("DELETE_SLIDE"), ...slideTarget }),
   z.object({
@@ -542,6 +578,7 @@ const allowedContentKeys: Record<SlideElement["type"], string[]> = {
   callout: ["text", "variant", "runs"],
   divider: ["orientation"],
   table: ["rows", "headerRow"],
+  sticker: ["stickerId"],
 };
 
 /* ────────────────────────────── Apply ─────────────────────────────────── */
@@ -575,6 +612,23 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
         ok: true,
         summary: `Added lesson '${patch.lesson.title}' to '${mod.title}'`,
       };
+    }
+
+    case "DELETE_MODULE": {
+      const idx = next.modules.findIndex((m) => m.id === patch.moduleId);
+      if (idx === -1) return fail(`Module ${patch.moduleId} not found`);
+      const [removed] = next.modules.splice(idx, 1);
+      normalizeOrders(next.modules);
+      return { ok: true, summary: `Deleted module '${removed.title}'` };
+    }
+
+    case "DELETE_LESSON": {
+      const hit = findLesson(next, patch.lessonId);
+      if (!hit) return fail(`Lesson ${patch.lessonId} not found`);
+      const idx = hit.module.lessons.findIndex((l) => l.id === patch.lessonId);
+      const [removed] = hit.module.lessons.splice(idx, 1);
+      normalizeOrders(hit.module.lessons);
+      return { ok: true, summary: `Deleted lesson '${removed.title}'` };
     }
 
     case "REORDER_MODULE": {
@@ -632,6 +686,20 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       };
     }
 
+    case "SET_BLOCK_CONTENT": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit) return fail(`Block ${patch.blockId} not found`);
+      const idx = hit.lesson.blocks.findIndex((b) => b.id === patch.blockId);
+      // Keep the block's identity + position; take all content from the new
+      // block. The id is forced so a writer can't accidentally re-key a block.
+      hit.lesson.blocks[idx] = {
+        ...patch.block,
+        id: patch.blockId,
+        order: hit.block.order,
+      };
+      return { ok: true, summary: `Wrote ${blockLabel(hit.lesson.blocks[idx])} content` };
+    }
+
     case "DELETE_BLOCK": {
       const hit = findLesson(next, patch.lessonId);
       if (!hit) return fail(`Lesson ${patch.lessonId} not found`);
@@ -675,7 +743,7 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       insertAt(hit.block.questions, patch.question, patch.atIndex);
       return {
         ok: true,
-        summary: `Added a ${patch.question.difficulty} question to ${blockLabel(hit.block)}`,
+        summary: `Added a question to ${blockLabel(hit.block)}`,
       };
     }
 
@@ -697,25 +765,6 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       return {
         ok: true,
         summary: `Added exercise '${patch.exercise.title}' to ${blockLabel(hit.block)}`,
-      };
-    }
-
-    case "CHANGE_DIFFICULTY": {
-      const hit = findBlock(next, patch.blockId);
-      if (!hit || hit.block.type !== "quiz")
-        return fail(`Quiz ${patch.blockId} not found`);
-      if (patch.questionId) {
-        const q = hit.block.questions.find((x) => x.id === patch.questionId);
-        if (!q) return fail(`Question ${patch.questionId} not found`);
-        q.difficulty = patch.difficulty;
-        return { ok: true, summary: `Set question difficulty to ${patch.difficulty}` };
-      }
-      hit.block.questions.forEach((q) => {
-        q.difficulty = patch.difficulty;
-      });
-      return {
-        ok: true,
-        summary: `Set all ${hit.block.questions.length} questions to ${patch.difficulty}`,
       };
     }
 
@@ -845,6 +894,46 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       insertAt(hit.block.slides, patch.slide, patch.atIndex);
       normalizeOrders(hit.block.slides);
       return { ok: true, summary: `Added a slide to ${blockLabel(hit.block)}` };
+    }
+
+    case "SET_SLIDE_CONTENT": {
+      const hit = locateSlide(next, patch.blockId, patch.slideId);
+      if (isLocateFail(hit)) return hit;
+      // Keep the slide's identity, position, background/theme, and notes; swap
+      // only the layout + elements. A freeform-content write also drops any
+      // structured template so the slide goes back to a plain canvas.
+      hit.slide.layout = patch.layout;
+      hit.slide.elements = patch.elements;
+      delete hit.slide.template;
+      return { ok: true, summary: `Rewrote slide ${hit.slideIndex + 1} (${patch.layout})` };
+    }
+
+    case "SET_SLIDE_TEMPLATE": {
+      const hit = locateSlide(next, patch.blockId, patch.slideId);
+      if (isLocateFail(hit)) return hit;
+      hit.slide.template = patch.template;
+      hit.slide.layout = patch.template.layoutId;
+      return { ok: true, summary: `Set the ${patch.template.layoutId} layout` };
+    }
+
+    case "UPDATE_TEMPLATE_CONTENT": {
+      const hit = locateSlide(next, patch.blockId, patch.slideId);
+      if (isLocateFail(hit)) return hit;
+      if (!hit.slide.template) return fail("Slide has no structured template to edit");
+      if (patch.path.length === 0) return fail("Empty content path");
+      // Walk to the parent of the target key, then set it.
+      let node: unknown = hit.slide.template.content;
+      for (let i = 0; i < patch.path.length - 1; i++) {
+        if (node == null || typeof node !== "object") return fail(`Bad content path at '${patch.path[i]}'`);
+        node = (node as Record<string | number, unknown>)[patch.path[i]];
+      }
+      if (node == null || typeof node !== "object") return fail("Bad content path");
+      (node as Record<string | number, unknown>)[patch.path[patch.path.length - 1]] = patch.value;
+      // Re-validate the whole template so a bad path/value can't corrupt the slide.
+      const check = SlideTemplateSchema.safeParse(hit.slide.template);
+      if (!check.success) return fail(`Invalid template after edit: ${check.error.issues[0]?.message ?? "schema error"}`);
+      hit.slide.template = check.data;
+      return { ok: true, summary: "Updated structured content" };
     }
 
     case "DELETE_SLIDE": {
@@ -1022,6 +1111,9 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
         patch.newElementIds
       );
       hit.slide.layout = patch.layoutId;
+      // Applying a flat (placeholder) layout returns a structured slide to a
+      // plain editable canvas.
+      delete hit.slide.template;
       normalizeGroups(hit.slide);
       return {
         ok: true,

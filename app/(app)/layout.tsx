@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { ConfirmHost } from "@/components/editor/ConfirmHost";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
 import { UIHydrator } from "@/components/shell/UIHydrator";
@@ -46,6 +47,7 @@ export default async function AppLayout({
   return (
     <div className="flex h-screen overflow-hidden">
       <UIHydrator />
+      <ConfirmHost />
       <Sidebar user={sidebarUser} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />

@@ -32,11 +32,12 @@ import {
   updateElementPatch,
   updateStylePatch,
 } from "@/lib/course/commands";
-import { findTheme, FONT_FAMILIES } from "@/lib/course/slide/themes";
+import { findTheme, FONT_FAMILIES, FONT_SCALE_OPTIONS } from "@/lib/course/slide/themes";
 import { SHADOW_PRESETS, shadowPresetName } from "@/lib/course/slide/styleResolver";
 import { useEditorStore } from "@/lib/course/store";
 import type {
   FontFamilyId,
+  FontScaleToken,
   FontWeight,
   LectureTextBlock,
   Selection,
@@ -195,13 +196,18 @@ function ElementDesign({
                   </option>
                 ))}
               </select>
-              <NumberField
-                label=""
-                value={el.style.fontSize ?? (el.type === "heading" ? 44 : 22)}
-                min={8}
-                max={160}
-                onCommit={(fontSize) => style({ fontSize })}
-              />
+              <select
+                value={el.style.fontScale ?? (el.type === "heading" ? "title" : "body")}
+                aria-label="Text size"
+                onChange={(e) => style({ fontScale: e.target.value as FontScaleToken })}
+                className="min-w-0 flex-1 rounded-lg border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+              >
+                {FONT_SCALE_OPTIONS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </Field>
           <Field label="Weight">

@@ -13,10 +13,12 @@ import {
   Lightbulb,
   List,
   Minus,
+  Smile,
   Square,
   Table2,
   Type,
 } from "lucide-react";
+import { findSticker } from "@/lib/course/slide/stickers";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import {
@@ -43,6 +45,7 @@ import type {
 } from "@/lib/course/types";
 import { InlineText, InlineTextArea } from "../InlineText";
 import { EmptyTabState, Field, PillGroup } from "./DesignTab";
+import { StructuredContentEditor } from "./StructuredContentEditor";
 
 const elementIcon: Record<SlideElement["type"], typeof Type> = {
   text: Type,
@@ -54,6 +57,7 @@ const elementIcon: Record<SlideElement["type"], typeof Type> = {
   callout: Lightbulb,
   divider: Minus,
   table: Table2,
+  sticker: Smile,
 };
 
 function elementSnippet(el: SlideElement): string {
@@ -74,6 +78,8 @@ function elementSnippet(el: SlideElement): string {
       return el.orientation;
     case "table":
       return `${el.rows.length} rows`;
+    case "sticker":
+      return findSticker(el.stickerId)?.label ?? el.stickerId;
   }
 }
 
@@ -111,6 +117,9 @@ function SlideContent({ slide, selection }: { slide: Slide; selection: Extract<S
           className="text-xs leading-relaxed text-stone-600"
         />
       </Field>
+      {slide.template ? (
+        <StructuredContentEditor slide={slide} blockId={selection.blockId} />
+      ) : (
       <Field label={`Elements (${slide.elements.length})`}>
         <ul className="space-y-0.5">
           {[...slide.elements]
@@ -145,6 +154,7 @@ function SlideContent({ slide, selection }: { slide: Slide; selection: Extract<S
             })}
         </ul>
       </Field>
+      )}
     </>
   );
 }

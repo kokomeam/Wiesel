@@ -9,19 +9,114 @@
  * slide's element frames as a reusable custom layout (stored locally).
  */
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Save, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { toolAttrs } from "@/lib/course/aiAttributes";
-import { applyLayoutPatch } from "@/lib/course/commands";
+import { applyLayoutPatch, setSlideTemplatePatch } from "@/lib/course/commands";
 import {
   inferPlaceholdersFromSlide,
   SLIDE_LAYOUTS,
   type SlideLayoutDef,
 } from "@/lib/course/slide/layouts";
+import {
+  STRUCTURED_LAYOUTS,
+  type StructuredLayoutDef,
+} from "@/lib/course/slide/structuredLayouts";
 import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
-import type { Slide } from "@/lib/course/types";
+import type { Slide, StructuredLayoutId } from "@/lib/course/types";
+
+/** Wireframe thumbnail per structured layout (renderer-owned, no placeholders). */
+function StructuredThumbnail({ id }: { id: StructuredLayoutId }) {
+  const a = "#fdba74";
+  const g = "#e5e5e7";
+  return (
+    <svg viewBox="0 0 1280 720" className="w-full rounded-md bg-white" aria-hidden>
+      <rect width="1280" height="720" fill="#fafafa" />
+      <rect x={72} y={70} width={520} height={44} rx={10} fill={g} />
+      {id === "process_steps" &&
+        [0, 1, 2, 3].map((i) => (
+          <rect key={i} x={72 + i * 300} y={360} width={264} height={300} rx={18} fill={i % 2 ? a : g} opacity={0.85} />
+        ))}
+      {id === "metrics_overview" &&
+        [0, 1, 2].map((i) => (
+          <rect key={i} x={72 + i * 388} y={250} width={344} height={300} rx={18} fill={i === 2 ? g : a} opacity={0.85} />
+        ))}
+      {id === "key_concept" && (
+        <>
+          <rect x={72} y={200} width={460} height={260} rx={16} fill={g} />
+          {[0, 1, 2].map((i) => (
+            <rect key={i} x={700} y={170 + i * 150} width={500} height={96} rx={14} fill={i === 1 ? a : g} opacity={0.85} />
+          ))}
+        </>
+      )}
+      {id === "code_walkthrough_steps" && (
+        <>
+          <rect x={72} y={200} width={620} height={440} rx={16} fill="#1f2937" />
+          {[0, 1, 2].map((i) => (
+            <rect key={i} x={740} y={210 + i * 150} width={460} height={110} rx={14} fill={i === 0 ? a : g} opacity={0.85} />
+          ))}
+        </>
+      )}
+      {id === "section_break" && (
+        <>
+          <rect x={72} y={150} width={120} height={20} rx={6} fill={a} />
+          <rect x={72} y={330} width={760} height={70} rx={12} fill={g} />
+          <rect x={72} y={440} width={120} height={12} rx={6} fill={a} />
+          <circle cx={1280} cy={720} r={300} fill="none" stroke={a} strokeWidth={6} />
+        </>
+      )}
+      {id === "concept_example" && (
+        <>
+          <rect x={72} y={220} width={440} height={56} rx={12} fill={g} />
+          <rect x={72} y={300} width={300} height={180} rx={12} fill={g} opacity={0.6} />
+          <rect x={584} y={170} width={624} height={420} rx={18} fill={a} opacity={0.85} />
+        </>
+      )}
+      {id === "outline_list" && (
+        <>
+          <rect x={72} y={70} width={64} height={20} rx={6} fill={a} />
+          <rect x={72} y={150} width={520} height={44} rx={10} fill={g} />
+          {[0, 1, 2, 3].map((i) => (
+            <rect key={i} x={150} y={260 + i * 100} width={900} height={40} rx={10} fill={i % 2 ? a : g} opacity={0.8} />
+          ))}
+        </>
+      )}
+      {id === "prose" && (
+        <>
+          <rect x={72} y={120} width={560} height={48} rx={10} fill={g} />
+          {[0, 1, 2, 3, 4].map((i) => (
+            <rect key={i} x={72} y={230 + i * 70} width={i === 4 ? 760 : 1120} height={34} rx={8} fill={g} opacity={0.7} />
+          ))}
+          <rect x={72} y={620} width={90} height={10} rx={5} fill={a} />
+        </>
+      )}
+      {id === "comparison_columns" && (
+        <>
+          <rect x={72} y={200} width={520} height={420} rx={18} fill={a} opacity={0.85} />
+          <rect x={688} y={200} width={520} height={420} rx={18} fill={g} />
+          <circle cx={640} cy={410} r={42} fill="#fff" stroke="#a8a29e" strokeWidth={5} />
+        </>
+      )}
+      {id === "comparison_matrix" && (
+        <>
+          <rect x={300} y={180} width={290} height={90} rx={10} fill={a} opacity={0.85} />
+          <rect x={610} y={180} width={290} height={90} rx={10} fill={a} opacity={0.55} />
+          <rect x={920} y={180} width={288} height={90} rx={10} fill={a} opacity={0.35} />
+          {[0, 1, 2].map((r) => (
+            <Fragment key={r}>
+              <rect x={72} y={300 + r * 110} width={208} height={84} rx={10} fill={g} />
+              <rect x={300} y={300 + r * 110} width={290} height={84} rx={10} fill={g} opacity={0.55} />
+              <rect x={610} y={300 + r * 110} width={290} height={84} rx={10} fill={g} opacity={0.55} />
+              <rect x={920} y={300 + r * 110} width={288} height={84} rx={10} fill={g} opacity={0.55} />
+            </Fragment>
+          ))}
+        </>
+      )}
+    </svg>
+  );
+}
 
 export function LayoutThumbnail({ layout }: { layout: SlideLayoutDef }) {
   return (
@@ -94,6 +189,11 @@ export function LayoutPicker({
     }
   }
 
+  function applyStructured(def: StructuredLayoutDef) {
+    apply(setSlideTemplatePatch(blockId, slide.id, def.seed()), "human");
+    onApplied?.();
+  }
+
   function renderGrid(layouts: SlideLayoutDef[]) {
     return (
       <div className="grid grid-cols-3 gap-2">
@@ -143,6 +243,38 @@ export function LayoutPicker({
         Layouts
       </p>
       {renderGrid(SLIDE_LAYOUTS)}
+
+      <p className="mb-2 mt-4 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+        Structured
+        <span className="rounded bg-brand-50 px-1 py-0.5 text-[8px] font-bold text-brand-600">designed</span>
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {STRUCTURED_LAYOUTS.map((def) => (
+          <button
+            key={def.id}
+            type="button"
+            {...toolAttrs({
+              tool: `apply-structured-${def.id}`,
+              action: "SET_SLIDE_TEMPLATE",
+              targetType: "slide",
+              label: `Apply structured layout: ${def.name}`,
+            })}
+            title={def.description}
+            onClick={() => applyStructured(def)}
+            className={cn(
+              "w-full rounded-lg p-1 ring-1 transition-shadow",
+              slide.template?.layoutId === def.id
+                ? "ring-2 ring-brand-400"
+                : "ring-stone-200 hover:ring-brand-200"
+            )}
+          >
+            <StructuredThumbnail id={def.id} />
+            <span className="mt-1 block truncate text-center text-[10px] font-medium text-stone-500">
+              {def.name}
+            </span>
+          </button>
+        ))}
+      </div>
 
       {customLayouts.length > 0 && (
         <>

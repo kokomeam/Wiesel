@@ -5,8 +5,10 @@
  * tool, or the CLI:
  *   supabase gen types typescript --project-id mfqolkzocxssgogcmhzf > lib/database.types.ts
  *
- * Reflects migrations 0001_core_authoring_schema + 0002_harden_rls_and_advisors.
+ * Reflects migrations: 0001 core_authoring_schema · 0002 harden_rls_and_advisors ·
+ * course_plan · ai_agent_conversations_changesets.
  */
+
 export type Json =
   | string
   | number
@@ -67,6 +69,167 @@ export type Database = {
           },
           {
             foreignKeyName: "blocks_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      change_set_items: {
+        Row: {
+          after: Json | null
+          before: Json | null
+          block_id: string
+          change_set_id: string
+          course_id: string
+          created_at: string
+          id: string
+          lesson_id: string | null
+          op: string
+        }
+        Insert: {
+          after?: Json | null
+          before?: Json | null
+          block_id: string
+          change_set_id: string
+          course_id: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          op: string
+        }
+        Update: {
+          after?: Json | null
+          before?: Json | null
+          block_id?: string
+          change_set_id?: string
+          course_id?: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          op?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "change_set_items_change_set_id_fkey"
+            columns: ["change_set_id"]
+            isOneToOne: false
+            referencedRelation: "change_sets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "change_set_items_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      change_sets: {
+        Row: {
+          conversation_id: string | null
+          course_id: string
+          created_at: string
+          id: string
+          lesson_id: string | null
+          message_id: string | null
+          resolved_at: string | null
+          status: string
+          summary: string | null
+          updated_at: string
+        }
+        Insert: {
+          conversation_id?: string | null
+          course_id: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          message_id?: string | null
+          resolved_at?: string | null
+          status?: string
+          summary?: string | null
+          updated_at?: string
+        }
+        Update: {
+          conversation_id?: string | null
+          course_id?: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          message_id?: string | null
+          resolved_at?: string | null
+          status?: string
+          summary?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "change_sets_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "change_sets_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "change_sets_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "change_sets_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversations: {
+        Row: {
+          course_id: string
+          created_at: string
+          id: string
+          lesson_id: string | null
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          id?: string
+          lesson_id?: string | null
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_lesson_id_fkey"
             columns: ["lesson_id"]
             isOneToOne: false
             referencedRelation: "lessons"
@@ -172,6 +335,48 @@ export type Database = {
             columns: ["module_id"]
             isOneToOne: false
             referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      messages: {
+        Row: {
+          content: Json
+          conversation_id: string
+          course_id: string
+          created_at: string
+          id: string
+          role: string
+        }
+        Insert: {
+          content?: Json
+          conversation_id: string
+          course_id: string
+          created_at?: string
+          id?: string
+          role: string
+        }
+        Update: {
+          content?: Json
+          conversation_id?: string
+          course_id?: string
+          created_at?: string
+          id?: string
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
             referencedColumns: ["id"]
           },
         ]

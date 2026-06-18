@@ -7,7 +7,7 @@
  * lesson workspace's "Add block" affordance at the module level.
  */
 
-import { BookOpen, ChevronRight, FileText, Plus } from "lucide-react";
+import { ChevronRight, FileText, Layers, Plus, Trash2 } from "lucide-react";
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import { updateTextPatch } from "@/lib/course/commands";
 import { createLesson } from "@/lib/course/factories";
@@ -15,6 +15,7 @@ import { moduleNumber, moduleNumberPrefix } from "@/lib/course/moduleLabel";
 import { findModule } from "@/lib/course/queries";
 import { useEditorStore } from "@/lib/course/store";
 import type { LessonNode } from "@/lib/course/types";
+import { confirmDeleteLesson, confirmDeleteModule } from "./deleteConfirm";
 import { EditableName } from "./EditableName";
 import { InlineTextArea } from "./InlineText";
 
@@ -29,14 +30,15 @@ export function ModulePage({ moduleId }: { moduleId: string }) {
   const doc = useEditorStore((s) => s.doc);
   const apply = useEditorStore((s) => s.apply);
   const openLesson = useEditorStore((s) => s.openLesson);
+  const select = useEditorStore((s) => s.select);
 
   const mod = findModule(doc, moduleId);
   if (!mod) {
     return (
       <div className="grid flex-1 place-items-center px-8">
         <div className="text-center">
-          <div className="mx-auto mb-4 grid size-12 place-items-center rounded-2xl bg-brand-50">
-            <BookOpen className="size-5 text-brand-500" />
+          <div className="mx-auto mb-4 grid size-12 place-items-center rounded-2xl bg-sky-50">
+            <Layers className="size-5 text-sky-600" />
           </div>
           <h2 className="text-sm font-semibold text-stone-900">Module not found</h2>
           <p className="mt-1 text-sm text-stone-400">Pick a module in the outline.</p>
@@ -57,6 +59,12 @@ export function ModulePage({ moduleId }: { moduleId: string }) {
     if (result.ok) openLesson(lesson.id); // jump straight into the new lesson
   }
 
+  async function deleteThisModule() {
+    if (await confirmDeleteModule(doc, apply, moduleId)) {
+      select({ kind: "course" }); // module is gone — return to the course home
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       <div className="mx-auto max-w-3xl px-8 pb-10 pt-8">
@@ -71,31 +79,45 @@ export function ModulePage({ moduleId }: { moduleId: string }) {
           })}
           className="mb-7"
         >
-          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-            Module {n} of {doc.modules.length}
-          </p>
-          <EditableName
-            value={mod.title}
-            prefix={moduleNumberPrefix(n)}
-            aria-label="Module name"
-            placeholder="Module name"
-            onCommit={(v) =>
-              apply(updateTextPatch({ kind: "module", id: mod.id, field: "title" }, v), "human")
-            }
-            className="text-2xl font-semibold tracking-tight text-stone-900"
-          />
-          <InlineTextArea
-            value={mod.description ?? ""}
-            aria-label="Module description"
-            placeholder="Add a short description for this module…"
-            onCommit={(v) =>
-              apply(
-                updateTextPatch({ kind: "module", id: mod.id, field: "description" }, v),
-                "human"
-              )
-            }
-            className="mt-1.5 text-sm text-stone-500"
-          />
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sky-600">
+                <Layers className="size-3" />
+                Module {n} of {doc.modules.length}
+              </p>
+              <EditableName
+                value={mod.title}
+                prefix={moduleNumberPrefix(n)}
+                aria-label="Module name"
+                placeholder="Module name"
+                onCommit={(v) =>
+                  apply(updateTextPatch({ kind: "module", id: mod.id, field: "title" }, v), "human")
+                }
+                className="text-2xl font-semibold tracking-tight text-stone-900"
+              />
+              <InlineTextArea
+                value={mod.description ?? ""}
+                aria-label="Module description"
+                placeholder="Add a short description for this module…"
+                onCommit={(v) =>
+                  apply(
+                    updateTextPatch({ kind: "module", id: mod.id, field: "description" }, v),
+                    "human"
+                  )
+                }
+                className="mt-1.5 text-sm text-stone-500"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void deleteThisModule()}
+              title="Delete module"
+              className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-stone-200 px-3 py-1.5 text-xs font-medium text-stone-500 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+            >
+              <Trash2 className="size-3.5" />
+              Delete
+            </button>
+          </div>
         </header>
 
         <div className="mb-3 flex items-center justify-between">
@@ -128,38 +150,51 @@ export function ModulePage({ moduleId }: { moduleId: string }) {
         ) : (
           <div className="space-y-2">
             {mod.lessons.map((lesson, i) => (
-              <button
-                key={lesson.id}
-                type="button"
-                {...aiAttrs({
-                  component: "module-lesson-row",
-                  type: "lesson",
-                  id: lesson.id,
-                  parentId: mod.id,
-                  order: lesson.order,
-                  purpose: lesson.objective,
-                  label: `Lesson: ${lesson.title}`,
-                  interactive: true,
-                })}
-                onClick={() => openLesson(lesson.id)}
-                className="group flex w-full items-center gap-4 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(68,48,28,0.04)] transition-colors hover:border-brand-200 hover:bg-brand-50/40"
-              >
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-stone-100 text-xs font-semibold text-stone-500 transition-colors group-hover:bg-brand-100 group-hover:text-brand-700">
-                  {i + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-stone-900">
-                    {lesson.title}
+              <div key={lesson.id} className="group relative">
+                <button
+                  type="button"
+                  {...aiAttrs({
+                    component: "module-lesson-row",
+                    type: "lesson",
+                    id: lesson.id,
+                    parentId: mod.id,
+                    order: lesson.order,
+                    purpose: lesson.objective,
+                    label: `Lesson: ${lesson.title}`,
+                    interactive: true,
+                  })}
+                  onClick={() => openLesson(lesson.id)}
+                  className="flex w-full items-center gap-4 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-left shadow-[0_1px_2px_rgba(68,48,28,0.04)] transition-colors hover:border-brand-200 hover:bg-brand-50/40"
+                >
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-stone-100 text-xs font-semibold text-stone-500 transition-colors group-hover:bg-brand-100 group-hover:text-brand-700">
+                    {i + 1}
                   </span>
-                  <span className="block truncate text-xs text-stone-400">
-                    {lesson.objective?.trim() || lessonMeta(lesson)}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-stone-900">
+                      {lesson.title}
+                    </span>
+                    <span className="block truncate text-xs text-stone-400">
+                      {lesson.objective?.trim() || lessonMeta(lesson)}
+                    </span>
                   </span>
-                </span>
-                <span className="hidden shrink-0 text-[11px] text-stone-300 sm:block">
-                  {lessonMeta(lesson)}
-                </span>
-                <ChevronRight className="size-4 shrink-0 text-stone-300 transition-colors group-hover:text-brand-400" />
-              </button>
+                  <span className="hidden shrink-0 text-[11px] text-stone-300 transition-opacity group-hover:opacity-0 sm:block">
+                    {lessonMeta(lesson)}
+                  </span>
+                  <ChevronRight className="size-4 shrink-0 text-stone-300 transition-all group-hover:opacity-0" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void confirmDeleteLesson(doc, apply, lesson.id);
+                  }}
+                  aria-label={`Delete ${lesson.title}`}
+                  title="Delete lesson"
+                  className="absolute right-3 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-stone-400 opacity-0 transition-all hover:bg-rose-50 hover:text-rose-600 focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
             ))}
 
             <button

@@ -1,11 +1,40 @@
 # CourseGen Pro — Handoff / Checkpoint
 
-> **Snapshot date:** 2026-06-14
+> **Snapshot date:** 2026-06-16
 > A resume-from-here checkpoint. For the exhaustive front-end architecture, see
-> `CLAUDE.md` (note: its "no backend / all mock data" line is now **partially
-> stale** — a Supabase backend exists as of 2026-06-13, but the app is not wired
-> to it yet). Personal-project status tracking also lives in the Obsidian vault
-> at `Personal/Projects/CourseGen Pro/` (`Supabase Backend.md`, `Log.md`, `PRD.md`).
+> `CLAUDE.md`. **Backend is LIVE:** Supabase auth + course persistence (since
+> 2026-06-13), and as of 2026-06-15 the **first real AI** — a Cursor-style
+> Content Agent docked beside the lesson editor, backed by the OpenAI Responses
+> API server-side (`lib/ai/*`), with change-set review (highlight → Accept/Reject)
+> and conversation persistence. Set `OPENAI_API_KEY` in `.env.local` to enable
+> it. **2026-06-16:** the slide system gained a richer vocabulary — a sticker
+> primitive library, tokenized font sizes (+ Fraunces `display` family), **seven**
+> renderer-owned **structured layouts** (process / key-concept / metrics /
+> code-walkthrough, plus section-break / concept→example / outline-list, all with
+> STRICT length-enforced content schemas + a renderer-owned, AI-invisible `decor`
+> flair knob), AI tools that use them, and an **atomic** Reject (see CHANGELOG).
+> The content agent is now a **phased pipeline** (PLAN → GENERATE → CRITIQUE,
+> one agent, per-call reasoning effort) auto-routed 3 ways by an intent classifier
+> — `generate_module` (module plan → generate every lesson, no critique),
+> `generate_lesson` (plan → generate → critique), and `edit` (fast single-turn,
+> now layered). PLAN surfaces an approvable plan in a prominent modal and the
+> sidebar shows the live phase (see CHANGELOG 2026-06-16). **2026-06-17:** fixed
+> the PLAN structured-output path — for a reasoning + json_schema response
+> `final.output_text` is empty, so the provider reads the message parts directly
+> (`messageTextFromOutput`); plus a bigger PLAN token budget + a bounds-relaxed,
+> clamping outline parse (strict mode strips min/max). **2026-06-17 (GENERATE
+> quality):** model → gpt-5.5; PLAN decomposes into building sub-steps + a
+> per-slide `keyPoints` content brief; GENERATE is bound to the planned STRUCTURED
+> layout (structured-only toolset, no flat `write_slide_deck` → no tip-box
+> downgrade) with a depth floor (ban skeletal slides); new first-class `prose`
+> layout (8 structured total); CRITIQUE enforces it on single-lesson builds.
+> **2026-06-17 (A/B/C):** model is per-call (PLAN/CRITIQUE gpt-5.5, GENERATE/
+> classifier gpt-5.4-mini); the static system+tools prefix now caches (~98% —
+> variable context moved to a leading `input` message); Reject suspends+aborts
+> autosave (no race / "Failed to fetch") and autosave auto-retries transient
+> failures. Personal-project
+> status tracking also lives in the Obsidian vault at
+> `Personal/Projects/CourseGen Pro/` (`Supabase Backend.md`, `Log.md`, `PRD.md`).
 
 ---
 

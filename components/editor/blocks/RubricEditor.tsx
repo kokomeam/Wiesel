@@ -1,10 +1,11 @@
 "use client";
 
 /**
- * Homework rubric editor: drag-sortable criteria, each with ordered
- * performance levels (label · description · points). Every edit replaces the
- * whole criterion via UPDATE_RUBRIC_CRITERION (add/delete/reorder have their
- * own patches), so the document stays the single source of truth.
+ * Homework rubric editor: drag-sortable criteria, each with ordered qualitative
+ * performance levels (label · description). Low-stakes — levels guide feedback
+ * and self-checking, they carry no points. Every edit replaces the whole
+ * criterion via UPDATE_RUBRIC_CRITERION (add/delete/reorder have their own
+ * patches), so the document stays the single source of truth.
  */
 
 import {
@@ -26,7 +27,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Plus, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
-import { criterionMaxPoints, rubricTotalPoints } from "@/lib/course/assessments";
 import {
   addRubricCriterionPatch,
   deleteRubricCriterionPatch,
@@ -37,7 +37,6 @@ import { createRubricLevel } from "@/lib/course/factories";
 import { useEditorStore } from "@/lib/course/store";
 import type { HomeworkBlock, RubricCriterion } from "@/lib/course/types";
 import { InlineText } from "../InlineText";
-import { NumberField } from "./controls";
 
 function SortableCriterion({
   criterion,
@@ -90,9 +89,6 @@ function SortableCriterion({
           onCommit={(name) => patch({ ...criterion, name })}
           className="text-sm font-semibold text-stone-800"
         />
-        <span className="ml-auto shrink-0 text-[11px] font-semibold text-stone-400">
-          max {criterionMaxPoints(criterion)} pts
-        </span>
         <button
           type="button"
           title="Delete criterion"
@@ -101,7 +97,7 @@ function SortableCriterion({
             e.stopPropagation();
             apply(deleteRubricCriterionPatch(blockId, criterion.id), "human");
           }}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
+          className="ml-auto grid size-6 shrink-0 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
         >
           <Trash2 className="size-3.5" />
         </button>
@@ -118,20 +114,6 @@ function SortableCriterion({
       <ul className="mt-2 space-y-1">
         {criterion.levels.map((level) => (
           <li key={level.id} className="group/lvl flex items-center gap-2">
-            <NumberField
-              value={level.points}
-              min={0}
-              suffix="pt"
-              aria-label={`Level points for ${level.label || "level"}`}
-              onCommit={(n) =>
-                patch({
-                  ...criterion,
-                  levels: criterion.levels.map((l) =>
-                    l.id === level.id ? { ...l, points: n ?? 0 } : l
-                  ),
-                })
-              }
-            />
             <InlineText
               value={level.label}
               aria-label="Level label"
@@ -214,7 +196,7 @@ export function RubricEditor({ block }: { block: HomeworkBlock }) {
     <div className="rounded-xl bg-stone-50 px-4 py-3">
       <div className="mb-2 flex items-center">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-stone-400">
-          Rubric (optional){rubric.length > 0 ? ` · ${rubricTotalPoints(rubric)} pts` : ""}
+          Rubric (optional)
         </p>
         <button
           type="button"

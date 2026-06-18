@@ -36,6 +36,7 @@ import {
   PaintBucket,
   Palette,
   Shapes,
+  Smile,
   Sparkles,
   Trash2,
   Type,
@@ -49,6 +50,7 @@ import { toolAttrs } from "@/lib/course/aiAttributes";
 import {
   addElementPatch,
   addShapePatch,
+  addStickerPatch,
   deleteElementPatch,
   duplicateElementPatch,
   groupElementsPatch,
@@ -66,7 +68,9 @@ import {
   type ElementMove,
 } from "@/lib/course/slide/arrange";
 import { groupIdsAt, unitKeysAt } from "@/lib/course/slide/groups";
-import { findTheme, FONT_FAMILIES } from "@/lib/course/slide/themes";
+import { STICKER_REGISTRY } from "@/lib/course/slide/stickers";
+import { findTheme, FONT_FAMILIES, FONT_SCALE_OPTIONS } from "@/lib/course/slide/themes";
+import { StickerGlyph } from "./elements/StickerElement";
 import {
   growAwareStylePatches,
   isTextLike,
@@ -76,6 +80,7 @@ import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type {
   FontFamilyId,
+  FontScaleToken,
   Slide,
   SlideDeckBlock,
   SlideElement,
@@ -88,8 +93,6 @@ import { ColorSwatchPicker } from "./ColorSwatchPicker";
 import { LayoutPicker } from "./LayoutPicker";
 import { ThemePicker } from "./ThemePicker";
 
-const FONT_SIZES = [14, 18, 22, 26, 32, 40, 48, 56, 64];
-
 type PopoverKey =
   | "layout"
   | "background"
@@ -99,6 +102,7 @@ type PopoverKey =
   | "vAlign"
   | "arrange"
   | "shapes"
+  | "stickers"
   | null;
 
 function ToolButton({
@@ -286,9 +290,11 @@ export function SlideToolbar({
     setPopover((cur) => (cur === key ? null : key));
   }
 
-  const effectiveSize =
+  // Semantic size token: the element's explicit token, else a sensible default
+  // for its type (legacy raw-px elements show their nearest token until re-set).
+  const effectiveScale: FontScaleToken | "" =
     textish && selectedEl
-      ? (selectedEl.style.fontSize ?? (selectedEl.type === "heading" ? 44 : 22))
+      ? (selectedEl.style.fontScale ?? (selectedEl.type === "heading" ? "title" : "body"))
       : "";
   const effectiveFamily =
     textish && selectedEl
@@ -342,6 +348,41 @@ export function SlideToolbar({
             >
               <ShapeGlyph kind={kind} />
               <span className="text-[10px] font-medium text-stone-600">{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  } else if (popover === "stickers") {
+    popoverContent = (
+      <div className="w-72">
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+          Insert sticker
+        </p>
+        <div className="grid max-h-64 grid-cols-4 gap-1.5 overflow-y-auto">
+          {STICKER_REGISTRY.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              title={s.label}
+              {...toolAttrs({
+                tool: `insert-sticker-${s.id}`,
+                action: "ADD_SLIDE_ELEMENT",
+                targetType: "slide",
+                label: `Insert ${s.label} sticker`,
+              })}
+              onClick={() => {
+                elementOp(addStickerPatch(block.id, slide.id, s.id, slide.elements.length));
+                setPopover(null);
+              }}
+              className="flex flex-col items-center gap-1 rounded-lg bg-stone-50 px-1.5 py-2 transition-colors hover:bg-brand-50"
+            >
+              <span className="block size-7">
+                <StickerGlyph id={s.id} accent={theme.accentColor} circleColor={null} iconRatio={1} />
+              </span>
+              <span className="w-full truncate text-center text-[9px] font-medium text-stone-600">
+                {s.label}
+              </span>
             </button>
           ))}
         </div>
@@ -667,6 +708,15 @@ export function SlideToolbar({
           onClick={() => togglePopover("shapes")}
         />
         <ToolButton
+          icon={Smile}
+          label="Insert a sticker (icon)"
+          tool="open-sticker-picker"
+          action="ADD_SLIDE_ELEMENT"
+          targetType="slide"
+          active={popover === "stickers"}
+          onClick={() => togglePopover("stickers")}
+        />
+        <ToolButton
           icon={ImagePlus}
           label="Insert image into selected slide"
           tool="insert-image"
@@ -700,20 +750,18 @@ export function SlideToolbar({
           ))}
         </select>
         <select
-          value={effectiveSize}
+          value={effectiveScale}
           disabled={!textish}
-          aria-label="Font size"
-          data-ai-tool="font-size"
+          aria-label="Text size"
+          title="Text size (semantic scale)"
+          data-ai-tool="font-scale"
           data-ai-action="UPDATE_SLIDE_ELEMENT"
-          onChange={(e) => styleSelected({ fontSize: Number(e.target.value) })}
-          className="h-7 w-14 rounded-md bg-transparent px-1 text-xs font-medium text-stone-600 outline-none transition-colors hover:bg-stone-100 disabled:opacity-30"
+          onChange={(e) => styleSelected({ fontScale: e.target.value as FontScaleToken })}
+          className="h-7 w-[5.5rem] rounded-md bg-transparent px-1 text-xs font-medium text-stone-600 outline-none transition-colors hover:bg-stone-100 disabled:opacity-30"
         >
-          {effectiveSize !== "" && !FONT_SIZES.includes(Number(effectiveSize)) && (
-            <option value={effectiveSize}>{effectiveSize}</option>
-          )}
-          {FONT_SIZES.map((s) => (
-            <option key={s} value={s}>
-              {s}
+          {FONT_SCALE_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
             </option>
           ))}
         </select>

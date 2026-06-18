@@ -25,6 +25,7 @@ import {
   ShapeElementView,
   TableElementView,
 } from "./elements/MiscElements";
+import { StickerElement } from "./elements/StickerElement";
 import { TextLikeElement } from "./elements/TextLikeElement";
 import { useElementDrag, type ResizeHandle } from "./useElementDrag";
 import { absoluteEndpoints, useEndpointDrag } from "./useEndpointDrag";
@@ -84,6 +85,8 @@ function ElementBody({
       return <DividerElementView el={el} themeId={themeId} />;
     case "table":
       return <TableElementView el={el} themeId={themeId} />;
+    case "sticker":
+      return <StickerElement el={el} themeId={themeId} />;
   }
 }
 

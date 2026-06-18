@@ -9,6 +9,7 @@
  */
 
 import { defaultAIMeta, manifestTypeForElementType } from "../manifest";
+import { DEFAULT_STICKER_ID } from "./stickers";
 import type {
   ElementStyle,
   Slide,
@@ -461,6 +462,8 @@ export function elementFromPlaceholder(
         ],
         headerRow: true,
       };
+    case "sticker":
+      return { ...base, type: "sticker", stickerId: DEFAULT_STICKER_ID };
   }
 }
 
@@ -516,6 +519,7 @@ function hasAuthoredContent(el: SlideElement): boolean {
       return true;
     case "shape":
     case "divider":
+    case "sticker":
       return false;
   }
 }

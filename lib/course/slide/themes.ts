@@ -6,6 +6,7 @@
 
 import type {
   FontFamilyId,
+  FontScaleToken,
   SlideBackground,
   SlideThemeId,
   SlideThemeRef,
@@ -24,6 +25,9 @@ export interface SlideTheme {
     surface: string;
   };
   defaultBackground: SlideBackground;
+  /** Optional per-theme semantic type scale (px in 1280×720 units). Falls back
+   *  to DEFAULT_TYPE_SCALE — see `themeTypeScale`. */
+  typeScale?: Record<FontScaleToken, number>;
   /** Curated swatches offered in pickers; also the "on palette" set for the
    *  TOO_MANY_COLORS lint. */
   palette: string[];
@@ -39,7 +43,35 @@ export const FONT_FAMILIES: Record<FontFamilyId, { label: string; css: string }>
     label: "Mono",
     css: "var(--font-geist-mono), ui-monospace, 'SF Mono', monospace",
   },
+  display: {
+    label: "Display",
+    css: "var(--font-display), Georgia, 'Times New Roman', serif",
+  },
 };
+
+/** Shared default semantic type scale (logical px). Themes may override via
+ *  `SlideTheme.typeScale`. One source of truth for the toolbar tokens, the AI,
+ *  and the structured layouts. */
+export const DEFAULT_TYPE_SCALE: Record<FontScaleToken, number> = {
+  display: 56,
+  title: 40,
+  heading: 28,
+  body: 20,
+  caption: 15,
+};
+
+export function themeTypeScale(theme: SlideTheme): Record<FontScaleToken, number> {
+  return theme.typeScale ?? DEFAULT_TYPE_SCALE;
+}
+
+/** Human labels for the size-token picker, largest → smallest. */
+export const FONT_SCALE_OPTIONS: { id: FontScaleToken; label: string }[] = [
+  { id: "display", label: "Display" },
+  { id: "title", label: "Title" },
+  { id: "heading", label: "Heading" },
+  { id: "body", label: "Body" },
+  { id: "caption", label: "Caption" },
+];
 
 export const SLIDE_THEMES: SlideTheme[] = [
   {

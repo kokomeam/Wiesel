@@ -25,16 +25,22 @@ of the original session; key points:
   → 4 Analytics engine → 5 Multi-modal (video/avatars).
 - **Backend status (2026-06-15):** Supabase **auth + persistence are LIVE**
   (email/password login, RLS-secured `courses → modules → lessons → blocks`
-  schema, course-assets storage bucket). Still NOT built: Stripe, real LLM
-  orchestration (the PRD names LangChain / GPT-4o / Claude).
+  schema, course-assets storage bucket). The **first real AI is LIVE** too: a
+  Cursor-style **Content Agent** docked beside the lesson editor, backed by the
+  **OpenAI Responses API server-side** (`lib/ai/*`). Still NOT built: Stripe;
+  the marketing/analytics/marketplace suites; multi-agent orchestration.
 
 The **Studio is now a real, persisted authoring app**: it loads your course
 from Postgres (or auto-creates an empty one), autosaves every edit, and is
-gated behind sign-in. The **other in-app pages** (dashboard, analytics,
-marketplace, exports, marketing, settings) are still **presentational
-placeholders backed by `lib/data.ts` mock data**, and AI commands are still
-the deterministic mock (`lib/course/ai/mockClient.ts`). Publish/Generate/Export
-buttons remain non-functional.
+gated behind sign-in. The **docked AI agent** authors slide decks, knowledge
+checks, homework, and lecture text by calling tools that mutate the course
+through the SAME validated CoursePatch pipeline the UI uses, streams its work,
+and stages every change for review (highlight → Accept/Reject). The **other
+in-app pages** (dashboard, analytics, marketplace, exports, marketing,
+settings) are still **presentational placeholders backed by `lib/data.ts` mock
+data**. The legacy inline command bar (`AICommandBar` → `requestAIPatches` in
+`lib/course/ai/mockClient.ts`) remains a deterministic mock and is secondary to
+the real agent panel; Publish/Export buttons remain non-functional.
 
 ## Stack
 
@@ -182,6 +188,171 @@ and put reusable primitives in `components/ui/`.
   delete orphans children→parents), surfaced through the store's `saveStatus`.
   Store init = `PLACEHOLDER_COURSE` (deterministic, hydration-safe) until
   `store.hydrate(doc, courseId)` installs the loaded course.
+  **Reject-aware autosave (2026-06-17):** the flush carries an `AbortController`
+  (`reconcileCourseDoc(…, signal)`); Reject calls `suspendAutosaveForReject()` to
+  pause + abort the in-flight flush BEFORE its revert, and `hydrate` resumes +
+  skips re-saving the reverted doc (so a stale flush can't clobber the revert /
+  trip "Failed to fetch"). Autosave failures auto-retry (2× backoff) before
+  `saveStatus("error")`.
+
+## AI Content Agent (OpenAI) — `lib/ai/*` (2026-06-15)
+
+The first real AI: a Cursor-style chat docked beside the lesson editor. Built
+**provider-agnostic** — the agent loop, tools, streaming, and change-tracking
+never import a provider SDK.
+
+- **Model seam:** `lib/ai/modelClient.ts` (the `ModelClient` interface +
+  normalized event/tool types). The OpenAI SDK is imported in **exactly one
+  file**, `lib/ai/providers/openai.ts` (Responses API via `client.responses.stream`;
+  default model = `OPENAI_MODEL ?? "gpt-5.5"` (edit/fallback; phases override per-call — see below), `OPENAI_REASONING_EFFORT`,
+  `OPENAI_MAX_OUTPUT_TOKENS`). `providers/mock.ts` is a deterministic client for
+  tests / the no-key path (records each call's params via `getCalls()`).
+  **MODEL + `reasoning.effort` are PER CALL** (2026-06-17): `ModelTurnParams.model`
+  + `.effort` override the env default — PLAN/CRITIQUE `gpt-5.5`/high, GENERATE
+  `gpt-5.4-mini`/medium (high-volume → cheap), classifier `gpt-5.4-mini`/minimal;
+  `agent_phase` logs the per-call `{model, effort}`. `ModelTurnParams.responseFormat`
+  forces a strict json_schema turn; `usage.{reasoningTokens,cachedTokens}` surfaced.
+  **Prompt caching (2026-06-17):** the STABLE prefix must be byte-identical + FIRST.
+  `buildSystemPrompt()` is STATIC only (role + catalogs + teaching bar); the
+  variable course/lesson/outline rides in a leading `developer` `input` message
+  (`buildContextMessage`) so the static system + tool schemas cache as one prefix
+  (measured ~98% input cached on repeats). NEVER put course/lesson/outline back
+  into the system string.
+  **Structured-output gotchas (2026-06-17):** for a reasoning + json_schema
+  response `final.output_text` is EMPTY though the JSON exists — read the
+  `message` items' `output_text` parts (`messageTextFromOutput`); give the call a
+  generous `maxOutputTokens` (PLAN uses 32000) so reasoning tokens don't starve
+  it. Strict mode STRIPS `min/max/minItems/maxItems` (`schema.ts`), so never
+  hard-reject the parse on them — `coerceOutline`/`coerceModuleOutline` clamp
+  counts, limits stay as `.describe()`/prompt guidance.
+- **Phased content pipeline (2026-06-16):** content generation runs ONE agent
+  through a plan→generate(→critique) pipeline with **per-call effort**; small edits
+  keep the single-turn loop. **3-way auto-routing** (`lib/ai/intent.ts`
+  `classifyIntent`: regex short-circuits + minimal-effort 3-mode classifier):
+  - **`generate_module`** → module PLAN (`ModuleOutlineSchema` = ordered lessons,
+    each with its slide outline, effort high) → ONE approval card → create module +
+    lessons → GENERATE each lesson (layered, effort medium). **Module builds SKIP
+    CRITIQUE** (deliberate cost trade-off, 2026-06-16). Routing (fixed 2026-06-17):
+    a module build that NAMES its lessons routes to `generate_module`; only
+    "add a lesson TO module X" (`LESSON_INTO_MODULE`) diverts to `generate_lesson`.
+  - **`generate_lesson`** → lesson PLAN (`LessonOutlineSchema`) → approve → GENERATE
+    (medium) → **CRITIQUE** (one bounded fresh-eyes pass, deck-as-data, high).
+  - **`edit`** → the single-turn loop, but **LAYERED** (teaching bar + layout guide)
+    so any content it creates still meets the bar — no plan gate, stays fast. The
+    delete-resume loop is layered too; **no un-layered content path remains**.
+  PLAN uses structured output (`lib/ai/outline.ts`, validate→repair); the outline
+  is **transient** (round-trips client→server, never persisted). An **auto-approve**
+  toggle (OFF by default, honored server-side) skips the pause. GENERATE layers via
+  `buildSystemPrompt(doc, lessonId, {layered, outline})`; the edit path runs
+  **`authoringOnly`** (`AUTHORING_TOOL_NAMES`, no structural/destructive) while
+  GENERATE/CRITIQUE run the narrower **`generateTools`** (`GENERATE_TOOL_NAMES`:
+  reads + structured slide tools + create_block + write_quiz/homework/lecture —
+  **no `write_slide_deck`/flat slide ops**, so generation MUST honor the plan's
+  structured layout and can't downgrade to a flat tip/text deck; 2026-06-17). The
+  outline carries a per-slide `keyPoints` content brief GENERATE expands; the
+  teaching bar bans skeletal slides (a `agent_thin_slides` log flags under-fill).
+  The whole run reconciles once → ONE change-set.
+  **Known hazard:** the agent's server reconcile and the browser autosave both
+  full-snapshot the same course with no coordination (can transiently orphan rows →
+  a `lessons_module_id_fkey`); follow-up = pause autosave during a run / scoped reconcile. Orchestration in `lib/ai/phases.ts`
+  (`runContentAgentTurn`/`runGenerateLessonTurn`/`runGenerateModuleTurn`/
+  `runGenerateThenCritique`/`runGenerateModule`/`resumeGeneratePlan`); approval
+  resolved by `app/api/ai/agent/plan/route.ts`. The review is a **prominent modal**
+  (`components/editor/agent/AgentPlanHost.tsx`, mounted at the shell level, renders
+  lesson vs module) + a sidebar PLAN/GENERATE/CRITIQUE badge
+  (`agentStore.phase`/`pendingOutline`/`autoApprovePlan`). Per-phase
+  `console.log({tag:"agent_phase", layered, effort, tokens, latencyMs,…})`.
+- **Loop:** `lib/ai/agentLoop.ts` — per turn: persist user msg → load doc +
+  replayed history → stream a model turn → execute each tool call (validate args
+  → apply CoursePatches to the in-memory doc → stream `tool_result`) → feed
+  output back → repeat until no tool calls (cap 12, with a `checkpoint`). Then
+  reconcile the doc to the DB ONCE and stage the net block diff as one
+  change-set.
+- **Tools = the ops layer:** `lib/ai/tools/*`. Read (get_course_context /
+  list_modules / list_lessons / get_lesson / get_block), structural
+  (create_module/lesson/block, delete_block, reorder_blocks), and content
+  writers (write_slide_deck / write_quiz / write_homework / write_lecture_text).
+  writers, PLUS a granular **slide tool surface** (`lib/ai/tools/slides.ts`:
+  get_deck / get_slide / add_slide / update_slide / set_slide_layout /
+  reorder_slides / delete_slide) — id-addressed + non-destructive, bound to the
+  studio's OWN `SLIDE_LAYOUTS` registry (a strict layout enum + catalog;
+  `lib/ai/tools/slideContent.ts`). Emphasis is rich-text **runs**
+  (`lib/ai/richText.ts`, structured + markdown→runs safety net — no `**` leak).
+  Tools are PURE over `ctx.doc` → return CoursePatches + a summary; the loop
+  owns apply/persist/stream. Writers build full blocks (blockBuilders.ts) and
+  commit via **`SET_BLOCK_CONTENT`**; the slide tools use **`SET_SLIDE_CONTENT`**
+  (switch one slide's layout + content in place) / `ADD_SLIDE` /
+  `UPDATE_SLIDE_ELEMENT` / `APPLY_SLIDE_LAYOUT`. `write_slide_deck` is now
+  per-slide layout + rich content, reserved for a FRESH deck. Tool param schemas
+  are Zod (single source of truth) → strict JSON Schema via `lib/ai/schema.ts`
+  (`z.toJSONSchema` + a strict post-process: all keys required, optionals→
+  nullable, oneOf→anyOf, unsupported keywords stripped).
+- **Change-set staging:** `lib/ai/changeSetDiff.ts` (pure block diff) +
+  `lib/ai/changeSet.ts` (create/accept/reject; Reject replays the inverse
+  through the patch pipeline). Mutations apply + persist, but blocks are flagged
+  pending so the editor highlights them (amber ring + inline Accept/Reject in
+  `BlockFrame`, panel review bar). DB is authoritative.
+- **Conversations:** `lib/ai/conversations.ts` — threads + messages in Postgres;
+  history is REPLAYED each turn (no provider-side state). Tables added by
+  `supabase/migrations/20260615010000_ai_agent_conversations_changesets.sql`
+  (conversations, messages, change_sets, change_set_items; all RLS author-only).
+- **Persistence:** server reconcile is the SHARED `lib/course/persistenceSync.ts`
+  (the browser autosave now wraps it too). `lib/ai/serverPersistence.ts` re-exports
+  `loadCourseDoc` / `reconcileCourseDoc`.
+- **Routes (Node runtime, SSE):** `app/api/ai/agent/route.ts` (POST → streams
+  the `lib/ai/events.ts` protocol) and `app/api/ai/change-set/[id]/route.ts`
+  (accept/reject). **The OpenAI key is server-only.**
+- **UI:** `lib/editor/agentStore.ts` (transient streaming + pending-highlight
+  state), `components/editor/agent/{AgentPanel,useAgentStream}.tsx`, docked in
+  `CourseEditorShell` (collapsible `agentPanel` PanelKey), studio server-loads
+  pending blocks → `StudioLoader` → `agentStore.hydratePending`.
+- **Env:** set `OPENAI_API_KEY` (required) in `.env.local`; optional
+  `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS`.
+- **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts`, no key) and
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — 47
+  checks incl. the phased lesson + MODULE plan→approve→generate pipeline, per-call
+  effort + layered system-prompt asserted via the mock's `getCalls()`, and the
+  3-way classifier routing).
+  Slide-vocabulary suites (no key): `npm run verify:slides` (stickers + font
+  tokens + all 8 structured layouts incl. near-max overflow + the structured
+  agent tools) and `npm run verify:reject` (atomic byte-for-byte revert, incl. a
+  structured slide). Renderer near-max overflow is checked with a temporary
+  `/zz-layout-preview` + Playwright harness (build it, drive it through every
+  variant + both decor levels, assert no frame overflow / container clipping,
+  then delete it + `npm uninstall playwright`).
+- **Slide vocabulary (2026-06-16):** **stickers** = a pure id-keyed registry
+  (`lib/course/slide/stickers.ts`) + a `sticker` element (icons stay in the
+  renderer, `StickerElement.tsx`/`StickerGlyph`). **Font tokens** =
+  `ElementStyle.fontScale` (display/title/heading/body/caption) → per-theme
+  `typeScale`, wins over legacy px (toolbar/Design tab are token dropdowns now);
+  `display` family = Fraunces. **Structured layouts** = renderer-owned
+  `slide.template` (`structuredLayouts.ts` registry with STRICT length-enforcing
+  Zod schemas; `components/editor/slide/structured/*`; Shiki via `highlight.ts`)
+  — `SlideStage` branches on `template`, the `LayoutPicker` "Structured" section
+  + `StructuredContentEditor` edit them. AI tools: `add_structured_slide` /
+  `set_structured_slide` / `set_text_style` / `add_sticker`
+  (`lib/ai/tools/structuredSlides.ts`); the strict schema's `.max()` IS the
+  validate→repair guard. **Reject is atomic** (`revertChangeSet`).
+  **8 structured layouts:** the original four (process_steps,
+  key_concept, metrics_overview, code_walkthrough_steps) PLUS **section_break**
+  (chapter divider; variants standard/hero_numeral × titleStyle serif/sans;
+  renderer-owned two-tone title + corner arcs), **concept_example** (rule/def
+  left + worked example right whose body is a `steps`|`paragraphs` discriminated
+  union; "in practice" connector + footnote callout), and **outline_list**
+  (titled nested list — objectives / TOC — 2–5 items × 0–2 sub-points), and
+  **prose** (2026-06-17 — a deliberate plain teaching slide: title + a substantive
+  rich body + optional points; a FIRST-CLASS plan choice rendered structured, NOT
+  a flat fallback). Each is the SAME pattern (registry entry + strict schema +
+  component + union variant + dispatch case), auto-exposed to the AI catalog +
+  picker. Decoration is
+  renderer-owned and dial-able via a `decor` (`full`|`minimal`) knob that lives
+  in storage + the inspector but is **ABSENT from the strict AI schema** (the AI
+  can never request/position flair). `ITEM_BOUNDS` is now `Partial` — the three
+  bespoke layouts use their own inspector panels (dispatcher in
+  `StructuredContentEditor`); the original four share the generic item editor.
+- **Low-stakes assessments enforced structurally:** quiz/homework schemas no
+  longer contain scores/passing/time/attempts/difficulty/points/due-dates (the
+  fields, patches, and UI were removed 2026-06-15).
 
 ## Where things live
 
@@ -301,7 +472,9 @@ and put reusable primitives in `components/ui/`.
   assert no horizontal overflow at 320/390/768/1024/1440, then
   `npm uninstall playwright`. Keep runtime deps at exactly: framer-motion,
   lucide-react, next, react, react-dom, zustand, zod, @dnd-kit/core,
-  @dnd-kit/sortable, @dnd-kit/utilities, **@supabase/ssr, @supabase/supabase-js**.
+  @dnd-kit/sortable, @dnd-kit/utilities, **@supabase/ssr, @supabase/supabase-js**,
+  **openai**, **shiki** (Shiki = code highlighting for the code-walkthrough
+  structured layout; 14 runtime deps total).
 - **Auth'd flows** (persistence, studio load) are browser-verified against
   live Supabase: email confirmation is OFF, so a test self-provisions a fresh
   throwaway user via `POST {URL}/auth/v1/signup` (anon key), signs in through
@@ -357,6 +530,11 @@ and put reusable primitives in `components/ui/`.
    visual diff to the verification loop): `justify` text-align · drop-shadow
    (PPTX outer shadow ≠ CSS drop-shadow semantics) · dashed/dotted strokes ·
    triangle geometry · nested groups (`groupPath` → nested `<p:grpSp>`) ·
-   grow-only auto-height text boxes.
+   grow-only auto-height text boxes · **sticker elements** (lucide glyph → an
+   embedded image/path) · **renderer-owned structured layouts** (each
+   `slide.template` component's arrangement must be re-derived as native PPTX
+   shapes/text boxes — costs more than flat layouts) · **Shiki code** (token
+   spans → run-level colored text). The `metrics_overview` chart slot is
+   deferred to the charts-as-data workstream — do NOT fake it in export.
 6. `/pricing` marketing page — the landing nav currently points Pricing at
    `/settings`, which is a known wart.

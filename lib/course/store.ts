@@ -66,6 +66,15 @@ interface EditorState {
   saveStatus: SaveStatus;
   /** When the last successful save completed (ISO), for the header. */
   lastSavedAt: string | null;
+  /** Autosave is paused (e.g. during a Reject) — the persistence hook skips
+   *  scheduling and aborts any in-flight save while true. */
+  autosaveSuspended: boolean;
+  /** Skip the autosave for exactly ONE upcoming doc change (the reverted doc a
+   *  Reject re-hydrates is already the server state — re-saving it is redundant
+   *  and races the reject). */
+  autosaveSkipOnce: boolean;
+  /** Internal: the next hydrate is a Reject refetch (→ resume + skip-once). */
+  rejectRefetch: boolean;
 
   hydrate: (doc: CourseDocument, courseId: string) => void;
   select: (sel: Selection) => void;
@@ -76,6 +85,12 @@ interface EditorState {
   redo: () => void;
   setLastAIResult: (result: AIResult | null) => void;
   setSaveStatus: (status: SaveStatus, savedAt?: string) => void;
+  /** Pause autosave + flag the imminent reject re-hydrate (called before Reject). */
+  suspendAutosaveForReject: () => void;
+  /** Resume autosave without a reject re-hydrate (e.g. the reject POST failed). */
+  resumeAutosave: () => void;
+  /** Read-and-clear the skip-once flag (used by the persistence hook). */
+  consumeAutosaveSkip: () => boolean;
 }
 
 /** If the selection no longer resolves (node deleted), walk up to something
@@ -170,10 +185,15 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     lastAIResult: null,
     saveStatus: "idle",
     lastSavedAt: null,
+    autosaveSuspended: false,
+    autosaveSkipOnce: false,
+    rejectRefetch: false,
 
-    /** Install a freshly loaded course; resets history and save state. */
+    /** Install a freshly loaded course; resets history and save state. A Reject
+     *  refetch resumes autosave and skips re-saving the reverted doc. */
     hydrate: (doc, courseId) => {
       const lessonId = firstLessonId(doc) ?? "";
+      const fromReject = get().rejectRefetch;
       set({
         doc,
         courseId,
@@ -185,7 +205,20 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         lastAIResult: null,
         saveStatus: "idle",
         lastSavedAt: doc.metadata.updatedAt,
+        autosaveSuspended: false,
+        autosaveSkipOnce: fromReject,
+        rejectRefetch: false,
       });
+    },
+
+    suspendAutosaveForReject: () => set({ autosaveSuspended: true, rejectRefetch: true }),
+
+    resumeAutosave: () => set({ autosaveSuspended: false, rejectRefetch: false, autosaveSkipOnce: false }),
+
+    consumeAutosaveSkip: () => {
+      if (!get().autosaveSkipOnce) return false;
+      set({ autosaveSkipOnce: false });
+      return true;
     },
 
     select: (sel) => set({ selection: sel }),

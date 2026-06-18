@@ -18,8 +18,12 @@ import { registerLintTextMeasurer } from "@/lib/course/lint";
 import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { AICommandBar } from "./AICommandBar";
+import { AgentConfirmHost } from "./agent/AgentConfirmHost";
+import { AgentPlanHost } from "./agent/AgentPlanHost";
+import { AgentPanel } from "./agent/AgentPanel";
 import { CollapsedRail } from "./CollapsedRail";
 import { CourseOutlineSidebar } from "./CourseOutlineSidebar";
+import { CoursePage } from "./CoursePage";
 import { CreationFlowBar } from "./CreationFlowBar";
 import { EditableName } from "./EditableName";
 import { ModulePage } from "./ModulePage";
@@ -251,6 +255,8 @@ export function CourseEditorShell() {
         <div className="relative flex min-w-0 flex-1 flex-col">
           {selection.kind === "module" ? (
             <ModulePage moduleId={selection.id} />
+          ) : selection.kind === "course" ? (
+            <CoursePage />
           ) : (
             <LessonWorkspace />
           )}
@@ -284,11 +290,25 @@ export function CourseEditorShell() {
             <InspectorPanel />
           )}
         </div>
+
+        <div className="hidden lg:flex">
+          {collapsed.agentPanel ? (
+            <CollapsedRail
+              label="AI Agent"
+              side="right"
+              onExpand={() => togglePanel("agentPanel")}
+            />
+          ) : (
+            <AgentPanel />
+          )}
+        </div>
       </div>
       )}
 
       <GlobalImageDialog />
       <CanvasContextMenu />
+      <AgentConfirmHost />
+      <AgentPlanHost />
     </div>
   );
 }

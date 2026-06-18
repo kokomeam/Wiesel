@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Homework block: a metadata row (deliverable type, due date, points, time),
- * instructions, a drag-sortable exercise list, the leveled rubric editor, and
- * AI presets.
+ * Homework block: a metadata row (deliverable type, time estimate),
+ * instructions, a drag-sortable exercise list, the qualitative rubric editor,
+ * and AI presets. Low-stakes practice — no points or due dates.
  */
 
 import {

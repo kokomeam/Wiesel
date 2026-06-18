@@ -21,12 +21,14 @@ import type {
   LessonNode,
   QuizQuestion,
   QuizSettings,
+  RichText,
   RubricCriterion,
   RubricLevel,
   Slide,
   SlideBackground,
   SlideElement,
   SlideStyle,
+  SlideTemplate,
   SlideThemeRef,
 } from "./types";
 
@@ -40,7 +42,8 @@ export const AIMetaSchema = z.object({
 
 /* ───────────────────────────── Slides ─────────────────────────────────── */
 
-export const FontFamilyIdSchema = z.enum(["sans", "serif", "mono"]);
+export const FontFamilyIdSchema = z.enum(["sans", "serif", "mono", "display"]);
+export const FontScaleSchema = z.enum(["display", "title", "heading", "body", "caption"]);
 export const FontWeightSchema = z.enum(["regular", "medium", "semibold", "bold"]);
 
 export const ElementShadowSchema = z.object({
@@ -53,6 +56,7 @@ export const ElementShadowSchema = z.object({
 
 export const ElementStyleSchema = z.object({
   fontFamily: FontFamilyIdSchema.optional(),
+  fontScale: FontScaleSchema.optional(),
   fontSize: z.number().positive().optional(),
   fontWeight: FontWeightSchema.optional(),
   italic: z.boolean().optional(),
@@ -189,6 +193,14 @@ export const SlideElementSchema = z.discriminatedUnion("type", [
     rows: z.array(z.array(z.string())),
     headerRow: z.boolean(),
   }),
+  z.object({
+    ...elementBaseShape,
+    type: z.literal("sticker"),
+    // Permissive at the storage layer (a removed registry id must not break
+    // loading an old slide — the renderer falls back). The AI TOOL boundary
+    // constrains this to the live registry with a strict enum.
+    stickerId: z.string(),
+  }),
 ]) satisfies z.ZodType<SlideElement>;
 
 export const GradientDirectionSchema = z.enum(["to-r", "to-br", "to-b", "to-tr"]);
@@ -231,6 +243,171 @@ export const SlideStyleSchema = z.object({
   theme: SlideThemeRefSchema,
 }) satisfies z.ZodType<SlideStyle>;
 
+/* ── Structured (renderer-owned) layout content — PERMISSIVE storage schema.
+   No length/count caps here so loading an old slide never breaks; the TIGHT,
+   length-enforcing schemas live in structuredLayouts.ts and gate AI input. */
+export const RichTextSchema = z.object({
+  text: z.string(),
+  runs: z.array(TextRunSchema).optional(),
+}) satisfies z.ZodType<RichText>;
+
+const StepItemSchema = z.object({
+  sticker: z.string().optional(),
+  heading: RichTextSchema,
+  body: RichTextSchema,
+});
+const MetricItemSchema = z.object({
+  sticker: z.string().optional(),
+  label: RichTextSchema,
+  value: RichTextSchema,
+  delta: z
+    .object({
+      direction: z.enum(["up", "down"]),
+      text: RichTextSchema,
+      sentiment: z.enum(["positive", "negative", "neutral"]),
+    })
+    .optional(),
+});
+
+const DecorLevelSchema = z.enum(["full", "minimal"]);
+const TitleStyleSchema = z.enum(["sans", "serif"]);
+const ConceptExampleBodyStorageSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("paragraphs"), paragraphs: z.array(RichTextSchema) }),
+  z.object({
+    kind: z.literal("steps"),
+    steps: z.array(z.object({ heading: RichTextSchema, body: RichTextSchema })),
+  }),
+]);
+const ComparisonFooterStorageSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("summary"), text: RichTextSchema }),
+  z.object({ kind: z.literal("similarities"), points: z.array(RichTextSchema) }),
+]);
+
+export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
+  z.object({
+    layoutId: z.literal("process_steps"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      subtitle: RichTextSchema.optional(),
+      steps: z.array(StepItemSchema),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("key_concept"),
+    content: z.object({
+      variant: z.enum(["sans", "serif"]),
+      spine: z.boolean().optional(),
+      eyebrow: RichTextSchema.optional(),
+      term: RichTextSchema,
+      definition: RichTextSchema,
+      items: z.array(z.object({ sticker: z.string().optional(), heading: RichTextSchema, body: RichTextSchema })),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("metrics_overview"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      metrics: z.array(MetricItemSchema),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("code_walkthrough_steps"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      code: z.object({ language: z.string(), code: z.string() }),
+      steps: z.array(StepItemSchema),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("section_break"),
+    content: z.object({
+      number: z.string().optional(),
+      label: RichTextSchema,
+      title: RichTextSchema,
+      subtitle: RichTextSchema.optional(),
+      titleStyle: TitleStyleSchema.optional(),
+      variant: z.enum(["standard", "hero_numeral"]).optional(),
+      decor: DecorLevelSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("concept_example"),
+    content: z.object({
+      concept: z.object({
+        badge: z.string().optional(),
+        title: RichTextSchema,
+        titleStyle: TitleStyleSchema.optional(),
+        definition: RichTextSchema,
+      }),
+      example: z.object({
+        badge: z.string().optional(),
+        title: RichTextSchema.optional(),
+        body: ConceptExampleBodyStorageSchema,
+      }),
+      footnote: RichTextSchema.optional(),
+      decor: DecorLevelSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("outline_list"),
+    content: z.object({
+      title: RichTextSchema,
+      items: z.array(
+        z.object({ text: RichTextSchema, subItems: z.array(RichTextSchema).optional() })
+      ),
+      decor: DecorLevelSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("prose"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      body: RichTextSchema,
+      points: z.array(RichTextSchema).optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("comparison_columns"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      subtitle: RichTextSchema.optional(),
+      presentation: z.enum(["cards", "bare"]).optional(),
+      options: z.array(
+        z.object({
+          name: RichTextSchema,
+          icon: z.string().optional(),
+          points: z.array(z.object({ label: RichTextSchema, detail: RichTextSchema.optional() })),
+        })
+      ),
+      footer: ComparisonFooterStorageSchema.optional(),
+      decor: DecorLevelSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("comparison_matrix"),
+    content: z.object({
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      subtitle: RichTextSchema.optional(),
+      options: z.array(z.object({ name: RichTextSchema, icon: z.string().optional() })),
+      dimensions: z.array(
+        z.object({
+          label: RichTextSchema,
+          icon: z.string().optional(),
+          cells: z.array(z.object({ detail: RichTextSchema, example: RichTextSchema.optional() })),
+        })
+      ),
+      footer: ComparisonFooterStorageSchema.optional(),
+      decor: DecorLevelSchema.optional(),
+    }),
+  }),
+]) satisfies z.ZodType<SlideTemplate>;
+
 export const SlideSchema = z.object({
   id: z.string(),
   type: z.literal("slide"),
@@ -238,6 +415,7 @@ export const SlideSchema = z.object({
   layout: z.string(),
   style: SlideStyleSchema,
   elements: z.array(SlideElementSchema),
+  template: SlideTemplateSchema.optional(),
   speakerNotes: z.string().optional(),
   order: z.number().int(),
   ai: z.object({
@@ -245,6 +423,7 @@ export const SlideSchema = z.object({
     formattingRules: z.array(z.string()),
     qualityChecks: z.array(z.string()),
     allowedActions: z.array(z.string()),
+    specId: z.string().optional(),
   }),
 }) satisfies z.ZodType<Slide>;
 
@@ -260,6 +439,7 @@ export const LayoutPlaceholderSchema = z.object({
     "callout",
     "divider",
     "table",
+    "sticker",
   ]),
   x: z.number(),
   y: z.number(),
@@ -291,25 +471,15 @@ export const LectureParagraphSchema = z.object({
   text: z.string(),
 }) satisfies z.ZodType<LectureParagraph>;
 
-export const QuizDifficultySchema = z.enum(["easy", "medium", "hard"]);
-
 export const QuizSettingsSchema = z.object({
-  timeLimitMinutes: z.number().positive().nullable().optional(),
-  attemptsAllowed: z.number().int().positive().nullable().optional(),
   shuffleQuestions: z.boolean().optional(),
   shuffleOptions: z.boolean().optional(),
-  passingScore: z.number().min(0).max(100).optional(),
-  whenToShowAnswers: z
-    .enum(["immediately", "after_submit", "after_due", "never"])
-    .optional(),
 }) satisfies z.ZodType<QuizSettings>;
 
 const quizQuestionBaseShape = {
   id: z.string(),
   prompt: z.string(),
   explanation: z.string().optional(),
-  difficulty: QuizDifficultySchema,
-  points: z.number().min(0).optional(),
   objectiveId: z.string().optional(),
 };
 
@@ -351,7 +521,6 @@ export const RubricLevelSchema = z.object({
   id: z.string(),
   label: z.string(),
   description: z.string().optional(),
-  points: z.number(),
 }) satisfies z.ZodType<RubricLevel>;
 
 export const RubricCriterionSchema = z.object({
@@ -384,8 +553,6 @@ export const LessonBlockSchema = z.discriminatedUnion("type", [
     type: z.literal("homework"),
     instructions: z.string(),
     deliverableType: z.enum(["none", "text_response", "file_upload", "external_link"]),
-    dueAt: z.string().optional(),
-    points: z.number().min(0).optional(),
     estimatedMinutes: z.number().min(0).optional(),
     objectiveId: z.string().optional(),
     exercises: z.array(HomeworkExerciseSchema),

@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Content Agent — Creator Studio (Web)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&display=swap');
+
+  :root{
+    --brand-50:#fff7ed; --brand-100:#ffedd5; --brand-200:#fed7aa; --brand-300:#fdba74;
+    --brand-400:#fb923c; --brand-500:#f97316; --brand-600:#ea580c; --brand-700:#c2410c;
+    --brand-800:#9a3412; --brand-900:#7c2d12;
+    --paper:#faf7f1; --line:#ece7de; --card:#ffffff;
+    --ink:#1c1917; --ink-soft:#44403c; --muted:#78716c; --faint:#a8a29e;
+    --emerald:#059669; --emerald-bg:#ecfdf5; --emerald-line:#a7f3d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --amber-line:#fde68a;
+    --red:#dc2626; --red-bg:#fef2f2; --red-line:#fecaca;
+    --gradient:linear-gradient(135deg,#f59e0b 0%,#ea580c 100%);
+    --shadow:0 1px 2px rgba(68,48,28,.05);
+    --shadow-md:0 2px 12px rgba(68,48,28,.08);
+    --display:'Fraunces',Georgia,serif;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --mono:'Geist Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand-700);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- atmosphere ---------- */
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(900px 420px at 88% -8%, rgba(249,115,22,.10), transparent 60%),
+      radial-gradient(700px 380px at 8% 0%, rgba(245,158,11,.07), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1}
+
+  /* ---------- top bar ---------- */
+  header.top{
+    position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);
+    background:rgba(250,247,241,.82);border-bottom:1px solid var(--line);
+  }
+  .top-inner{max-width:1120px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .wordmark{font-family:var(--display);font-weight:500;font-size:19px;letter-spacing:-.01em}
+  .wordmark .star{color:var(--brand-600)}
+  .top .sep{width:1px;height:22px;background:var(--line)}
+  .top .doctitle{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .top .spacer{flex:1}
+  .pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .pill.draft{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+
+  /* ---------- hero ---------- */
+  .hero{max-width:1120px;margin:0 auto;padding:64px 28px 36px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand-700);margin:0 0 18px}
+  h1{font-family:var(--display);font-weight:300;font-size:clamp(34px,5vw,56px);line-height:1.04;letter-spacing:-.02em;margin:0 0 18px}
+  h1 .accent{font-weight:500;font-style:italic;color:var(--brand-700)}
+  .lede{font-size:18px;color:var(--ink-soft);max-width:760px;margin:0}
+  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  @media(max-width:760px){.meta-grid{grid-template-columns:repeat(2,1fr)}}
+  .meta-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow)}
+  .meta-card .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .meta-card .v{font-size:14px;color:var(--ink);font-weight:500}
+
+  /* ---------- toc ---------- */
+  .toc{max-width:1120px;margin:36px auto 0;padding:0 28px}
+  .toc-inner{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:10px;display:flex;flex-wrap:wrap;gap:6px;box-shadow:var(--shadow)}
+  .toc a{display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:12px;color:var(--ink-soft);font-weight:500;font-size:14px;flex:1;min-width:180px}
+  .toc a:hover{background:var(--brand-50);text-decoration:none;color:var(--brand-800)}
+  .toc a .num{font-family:var(--mono);font-size:11px;color:var(--brand-600);border:1px solid var(--brand-200);background:#fff;border-radius:7px;padding:2px 7px}
+
+  /* ---------- sections ---------- */
+  main{max-width:1120px;margin:0 auto;padding:20px 28px 90px}
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  section:first-child{border-top:none}
+  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700);margin:0 0 12px}
+  h2{font-family:var(--display);font-weight:300;font-size:clamp(26px,3.4vw,36px);letter-spacing:-.015em;margin:0 0 16px;line-height:1.12}
+  h3{font-family:var(--display);font-weight:500;font-size:21px;letter-spacing:-.01em;margin:34px 0 12px}
+  h4{font-family:var(--sans);font-weight:600;font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  p{margin:0 0 14px;color:var(--ink-soft)}
+  .lead-p{font-size:16.5px;color:var(--ink-soft);max-width:820px}
+  ul,ol{margin:0 0 14px;padding-left:20px;color:var(--ink-soft)}
+  li{margin:6px 0}
+  strong{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#f5f1ea;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--brand-800)}
+
+  .callout{border:1px solid var(--line);border-left:3px solid var(--brand-500);background:#fffdfa;border-radius:12px;padding:16px 18px;margin:18px 0}
+  .callout .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);margin-bottom:6px}
+  .callout.guard{border-left-color:var(--red);background:var(--red-bg)}
+  .callout.guard .lbl{color:#b91c1c}
+  .callout.ok{border-left-color:var(--emerald);background:var(--emerald-bg)}
+  .callout.ok .lbl{color:#047857}
+
+  /* cards / grids */
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:840px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+  .card h4{margin-top:0}
+  .kpi .big{font-family:var(--display);font-weight:500;font-size:30px;color:var(--brand-700);letter-spacing:-.02em}
+  .kpi .na{color:var(--faint);font-style:italic;font-family:var(--sans);font-size:22px}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0 8px;border-radius:14px}
+  .tablewrap > table{margin:0}
+  table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0 8px;font-size:13.5px;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:#fbf8f3;font-weight:500}
+  tr:last-child td{border-bottom:none}
+  td code{font-size:12px}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.05em;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft)}
+  .tag.read{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+  .tag.struct{background:#f5f3ff;border-color:#ddd6fe;color:#6d28d9}
+  .tag.write{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-800)}
+  .tag.no{background:var(--red-bg);border-color:var(--red-line);color:#b91c1c;text-decoration:line-through}
+
+  /* flow diagram */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:18px 0}
+  .node{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:120px;text-align:center;box-shadow:var(--shadow);flex:1}
+  .node .t{font-weight:600;font-size:13px}
+  .node .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .node.accent{border-color:var(--brand-300);background:var(--brand-50)}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--brand-500);font-size:18px;padding:0 8px;flex:0 0 auto}
+  .loop-note{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--brand-700);text-align:center;margin-top:6px}
+
+  /* ---------- prototype "screens" ---------- */
+  .screens{display:grid;gap:22px}
+  .surface-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:30px 0 4px;display:flex;align-items:center;gap:10px}
+  .surface-label::after{content:"";height:1px;flex:1;background:var(--line)}
+  .screen{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-md)}
+  .screen .chrome{display:flex;align-items:center;gap:7px;padding:9px 14px;border-bottom:1px solid var(--line);background:#fbf8f3}
+  .screen .chrome .dot{width:9px;height:9px;border-radius:50%;background:#e7e1d6}
+  .screen .chrome .ttl{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-left:8px;letter-spacing:.04em}
+  .screen .cap{padding:12px 16px;border-top:1px solid var(--line);background:#fdfbf7;font-size:12.5px;color:var(--muted)}
+  .screen .cap b{color:var(--ink-soft)}
+
+  /* mini studio mock */
+  .studio{display:grid;grid-template-columns:120px 1fr 300px;height:430px;font-size:12px}
+  @media(max-width:840px){.studio{grid-template-columns:1fr;height:auto}}
+  .col{padding:12px;overflow:hidden}
+  .col.outline{background:#fbf8f3;border-right:1px solid var(--line)}
+  .col.canvas{background:#f7f3ec;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+  .col.agent{background:#fff;display:flex;flex-direction:column;min-width:0}
+  .mini-h{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+  .o-item{padding:7px 9px;border-radius:8px;color:var(--ink-soft);margin-bottom:3px}
+  .o-item.active{background:#fff;border:1px solid var(--brand-200);color:var(--brand-800);font-weight:600}
+  .o-sub{padding-left:12px;font-size:11px;color:var(--muted)}
+
+  .block{background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 13px;box-shadow:var(--shadow);position:relative}
+  .block .bh{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .block .btype{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .block .bt{font-weight:600;font-size:12.5px}
+  .ln{height:6px;border-radius:3px;background:#efe9df;margin:5px 0}
+  .ln.w70{width:70%}.ln.w50{width:50%}.ln.w90{width:90%}.ln.w40{width:40%}
+  .block.pending{border-color:var(--amber-line);box-shadow:0 0 0 2px rgba(217,119,6,.22),var(--shadow)}
+  .pending-tab{position:absolute;top:-9px;left:12px;background:var(--amber-bg);border:1px solid var(--amber-line);color:#92400e;font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
+  .ar-row{display:flex;gap:6px;margin-top:9px}
+  .btn{font-size:11px;font-weight:600;border-radius:999px;padding:5px 13px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);cursor:default}
+  .btn.accept{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .btn.reject{background:#fff;border-color:var(--line);color:var(--muted)}
+  .btn.grad{background:var(--gradient);color:#fff;border:none}
+  .btn.ghost{background:transparent}
+
+  /* agent chat */
+  .agent .ah{display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:10px}
+  .agent .ah .av{width:22px;height:22px;border-radius:7px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display);font-size:13px}
+  .agent .ah .nm{font-weight:600;font-size:12.5px}
+  .agent .ah .st{margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--emerald)}
+  .chatscroll{flex:1;overflow:hidden;display:flex;flex-direction:column;gap:9px}
+  .msg{border-radius:11px;padding:9px 11px;font-size:11.5px;line-height:1.5}
+  .msg.user{background:var(--brand-50);border:1px solid var(--brand-100);color:var(--brand-900);align-self:flex-end;max-width:88%}
+  .msg.ai{background:#fbf8f3;border:1px solid var(--line);color:var(--ink-soft)}
+  .toolcard{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;font-size:11px;display:flex;gap:8px;align-items:flex-start}
+  .toolcard .ic{width:16px;height:16px;border-radius:5px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px}
+  .toolcard.done .ic{background:var(--emerald-bg);color:#047857;border:1px solid var(--emerald-line)}
+  .toolcard.run .ic{background:var(--amber-bg);color:#92400e;border:1px solid var(--amber-line)}
+  .toolcard .tt{font-family:var(--mono);font-size:10px;color:var(--ink)}
+  .toolcard .ts{color:var(--muted);font-size:10.5px}
+  .composer{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:#fff;display:flex;align-items:center;gap:8px}
+  .composer .ph{color:var(--faint);font-size:11.5px;flex:1}
+  .composer .send{width:24px;height:24px;border-radius:8px;background:var(--gradient);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px}
+  .typing{display:inline-flex;gap:3px;align-items:center}
+  .typing i{width:5px;height:5px;border-radius:50%;background:var(--brand-400);display:inline-block}
+
+  .reviewbar{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:11px;font-size:11.5px;color:#92400e}
+  .reviewbar .cnt{font-weight:700}
+  .reviewbar .sp{flex:1}
+
+  .state-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:840px){.state-grid{grid-template-columns:1fr}}
+  .state{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow);min-height:150px;display:flex;flex-direction:column}
+  .state .st-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+  .state .st-body{flex:1;display:flex;flex-direction:column;gap:7px;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px}
+  .state.err{border-color:var(--red-line);background:#fffafa}
+  .state.err .st-h{color:#b91c1c}
+
+  /* acceptance stories */
+  .story{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:0;box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+  .story .sh{display:flex;align-items:center;gap:12px;padding:14px 18px;background:#fbf8f3;border-bottom:1px solid var(--line)}
+  .story .sn{font-family:var(--display);font-size:18px;color:var(--brand-600);font-weight:500}
+  .story .stt{font-weight:600;font-size:15px}
+  .story .sb{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:0}
+  @media(max-width:760px){.story .sb{grid-template-columns:1fr}}
+  .story .cell{padding:14px 18px;border-right:1px solid var(--line)}
+  .story .cell:last-child{border-right:none}
+  .story .cl{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .story .cell p{margin:0;font-size:13px}
+  .story .pass{color:#047857;font-weight:600}
+
+  footer{max-width:1120px;margin:0 auto;padding:30px 28px 70px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;font-family:var(--mono);letter-spacing:.04em}
+
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 0;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:4px;border:1px solid var(--line)}
+
+  /* mobile */
+  @media(max-width:560px){
+    body{font-size:14.5px}
+    .top .doctitle,.top .sep{display:none}
+    .top-inner{padding:12px 18px;gap:9px}
+    .hero{padding:44px 18px 26px}
+    .toc{padding:28px 18px 0}
+    main{padding:16px 18px 70px}
+    footer{padding:26px 18px 60px}
+    .toc a{min-width:140px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="top-inner">
+    <span class="wordmark">CourseGen<span class="star">*</span></span>
+    <span class="sep"></span>
+    <span class="doctitle">PRD · AI Content Agent</span>
+    <span class="spacer"></span>
+    <span class="pill draft">Draft for review</span>
+    <span class="pill">v1 · 2026-06-15</span>
+  </div>
+</header>
+
+<!-- ===================== HERO ===================== -->
+<div class="hero">
+  <p class="eyebrow">Product Requirements · Creator Studio · Web</p>
+  <h1>The AI Content Agent —<br/>a <span class="accent">Cursor for courses</span>, docked beside the lesson.</h1>
+  <p class="lede">A creator opens a lesson, asks the agent to “write a 5-slide intro deck and a 4-question knowledge check,” and watches it work: it calls tools that mutate the course through the studio’s own operations layer, highlights every change for review, and discusses what it did. This is the product’s first real AI — ambitious in the agent, conservative in the studio.</p>
+
+  <div class="meta-grid">
+    <div class="meta-card"><div class="k">Surface</div><div class="v">Web · Creator Studio</div></div>
+    <div class="meta-card"><div class="k">Audience</div><div class="v">Course creators (authors)</div></div>
+    <div class="meta-card"><div class="k">Scope</div><div class="v">Milestone 1 · single content agent</div></div>
+    <div class="meta-card"><div class="k">Engine</div><div class="v">OpenAI Responses API · server-only</div></div>
+  </div>
+</div>
+
+<!-- ===================== TOC ===================== -->
+<div class="toc">
+  <div class="toc-inner">
+    <a href="#purpose"><span class="num">1</span> Purpose &amp; Goals</a>
+    <a href="#competitive"><span class="num">2</span> Competitive Analysis</a>
+    <a href="#approach"><span class="num">3</span> Product Approach</a>
+    <a href="#functional"><span class="num">4</span> Functional Design</a>
+    <a href="#ux"><span class="num">5</span> User Experience (Acceptance)</a>
+  </div>
+</div>
+
+<main>
+
+<!-- ===================== 1. PURPOSE ===================== -->
+<section id="purpose">
+  <p class="sec-eyebrow">01 — Purpose &amp; Goals</p>
+  <h2>Turn the studio’s deterministic mock into a real, trustworthy authoring partner.</h2>
+  <p class="lead-p">CourseGen’s thesis is “Cursor for courses”: the studio is creator-economy table-stakes; the <strong>AI layer is the moat</strong>. Today every AI action is a deterministic mock behind a single function (<code>requestAIPatches</code>). This milestone ships the first real agent — one versatile content agent that authors lessons, slide decks, knowledge checks, and practice work by calling tools, and earns trust by <strong>showing its changes before they’re accepted</strong>.</p>
+
+  <h3>The problem</h3>
+  <ul>
+    <li><strong>Authoring is slow and blank-page-hard.</strong> Creators have expertise but not time; the studio gives them a canvas, not a collaborator.</li>
+    <li><strong>The current “AI” can’t actually help.</strong> The mock returns canned patches; it can’t reason about a course, write grounded content, or hold a conversation.</li>
+    <li><strong>Generative tools feel unsafe.</strong> Creators won’t let an AI silently rewrite their course. They need to see, understand, and approve every change.</li>
+  </ul>
+
+  <h3>Goals</h3>
+  <div class="grid g3">
+    <div class="card"><h4>Real, grounded generation</h4><p>An agent that writes lessons/slides/checks grounded in the course’s outcomes, level, and teaching tone — quality over speed.</p></div>
+    <div class="card"><h4>Trust by review</h4><p>Every mutation is staged, highlighted in the editor, and individually accept/rejectable. Nothing is irreversible.</p></div>
+    <div class="card"><h4>Future-proof architecture</h4><p>Provider-agnostic, ops-layer-only writes, DB-coordinated — so specialist agents and an orchestrator slot in later with no rework.</p></div>
+  </div>
+
+  <h3>Non-goals (this milestone)</h3>
+  <ul>
+    <li><strong>No image generation</strong> — leave a clean seam only.</li>
+    <li><strong>No multi-agent orchestration</strong> — one content agent; specialists/orchestrator come later via shared DB state, not agent-to-agent messaging.</li>
+    <li><strong>No gradebook.</strong> Assessments are low-stakes knowledge checks &amp; practice — see the structural guarantee in §4.</li>
+    <li><strong>No marketplace/Stripe/analytics</strong> changes.</li>
+  </ul>
+
+  <h3>Success metrics</h3>
+  <p>The product has <strong>no production analytics yet</strong>, so current values are <code>N/A</code>. These are the metrics to instrument with this feature.</p>
+  <div class="grid g4">
+    <div class="card kpi"><div class="k" style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)">Acceptance rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of agent-proposed blocks accepted (vs. rejected). Primary quality signal.</p></div>
+    <div class="card kpi"><div class="k" style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)">Blocks via agent</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Share of created blocks authored by the agent vs. by hand.</p></div>
+    <div class="card kpi"><div class="k" style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)">Turn success</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of agent turns that complete without error or empty result.</p></div>
+    <div class="card kpi"><div class="k" style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)">Time-to-first-draft</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Median minutes from empty lesson to an accepted first draft.</p></div>
+  </div>
+
+  <div class="callout guard"><div class="lbl">Hard non-negotiables (enforced by design)</div>
+  <ul style="margin-bottom:0">
+    <li>OpenAI key &amp; every model call are <strong>server-side only</strong> — the SDK is imported in exactly one file.</li>
+    <li>All content mutations flow through the <strong>existing operations layer</strong> (the validated patch pipeline the studio UI already uses). The agent has no private write path.</li>
+    <li>Assessments are <strong>low-stakes</strong>: no scores, passing thresholds, time limits, attempt caps, difficulty tags, points, or due dates — the schemas must not even contain those fields.</li>
+    <li>RLS &amp; migrations require <strong>human sign-off</strong> before applying.</li>
+  </ul></div>
+</section>
+
+<!-- ===================== 2. COMPETITIVE ===================== -->
+<section id="competitive">
+  <p class="sec-eyebrow">02 — Competitive Analysis</p>
+  <h2>Borrow the agentic-review pattern from code tools; the slide aesthetic from deck AIs; reject the LMS gradebook.</h2>
+  <p class="lead-p">No competitor screenshots were supplied, so this is reasoned from well-known product patterns and <span style="font-style:italic">marked as inference</span>. We compare only decision-relevant dimensions: entry point, the agentic loop, how changes are reviewed, grounding, and trust cues.</p>
+
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Product</th><th>Core pattern (inferred)</th><th>What to borrow</th><th>What to avoid</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Cursor / Copilot agents</strong><br/><span class="tag">code editor</span></td>
+        <td>Chat docked beside the editor; an agent runs a tool loop over the workspace, proposes edits as a reviewable <em>diff</em>, you Accept/Reject per hunk.</td>
+        <td>The whole interaction model: <strong>docked chat + agentic tool loop + staged, per-unit accept/reject</strong>. This is our north star.</td>
+        <td>Code-diff density &amp; jargon. Course creators aren’t engineers — show <em>block-level</em> change cards, not text diffs.</td>
+      </tr>
+      <tr>
+        <td><strong>Gamma / Slides AI</strong><br/><span class="tag">deck gen</span></td>
+        <td>Prompt → a whole deck appears; light per-slide regeneration; strong default aesthetics.</td>
+        <td><strong>Minimal, professional slides</strong> — few words per slide, strong layouts, no walls of text. Bake this into the slide-writer tool.</td>
+        <td>One-shot “magic” with no review and no grounding in a broader curriculum. Opaque = untrustworthy for paid courses.</td>
+      </tr>
+      <tr>
+        <td><strong>Notion AI / Docs AI</strong><br/><span class="tag">inline writing</span></td>
+        <td>Inline “ask AI” that rewrites the current selection; conversational follow-ups.</td>
+        <td>Conversational <strong>follow-ups &amp; next-step suggestions</strong> grounded in current state; the “Magic Wand” iterative feel.</td>
+        <td>Selection-only scope. Our agent must operate across a lesson (and neighbors) via read tools, not just one block.</td>
+      </tr>
+      <tr>
+        <td><strong>LMS course-AI (Coursebox, LearnWorlds, etc.)</strong><br/><span class="tag">edtech</span></td>
+        <td>AI generates quizzes/courses; assessments are graded — scores, passing %, attempts, timers.</td>
+        <td>Breadth of artifacts (lesson + check + practice) from one brief.</td>
+        <td><strong>The gradebook.</strong> Our product is explicitly low-stakes; right/wrong is an analytics signal, never a grade. We strip those fields entirely.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout"><div class="lbl">Net takeaways</div>
+  <p style="margin-bottom:0"><strong>1.</strong> Adopt Cursor’s docked-agent + staged-review model, but express changes as <strong>block-level cards</strong>, not diffs. <strong>2.</strong> Bake Gamma-grade slide minimalism into the writer tools’ schema &amp; prompt. <strong>3.</strong> Ground every artifact in the course plan (outcomes, level, tone) — the thing one-shot tools skip. <strong>4.</strong> Structurally exclude gradebook semantics that LMS tools assume.</p></div>
+</section>
+
+<!-- ===================== 3. APPROACH ===================== -->
+<section id="approach">
+  <p class="sec-eyebrow">03 — Product Approach</p>
+  <h2>A docked chat agent that writes through the studio’s own tools and stages every change.</h2>
+
+  <h3>Approaches considered</h3>
+  <div class="grid g3">
+    <div class="card"><h4>A · Inline one-shot command</h4><p>Extend the existing command bar to call a real model and apply patches directly.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Rejected:</strong> no review, no conversation, no multi-lesson reasoning. Doesn’t build the moat.</p></div>
+    <div class="card" style="border-color:var(--brand-300);box-shadow:0 0 0 2px var(--brand-100),var(--shadow)"><h4>B · Docked agent + tool loop + change-set review ✓</h4><p>Cursor-style chat panel; a server-side agentic loop calls ops-layer tools; mutations persist but stage as a reviewable change-set.</p><p style="font-size:12.5px;color:var(--brand-800)"><strong>Recommended:</strong> trustworthy, conversational, extensible to specialists/orchestrator.</p></div>
+    <div class="card"><h4>C · Background “generate whole course” batch</h4><p>A wizard that generates an entire course unattended.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Deferred:</strong> powerful but opaque; no per-change trust. Becomes easy <em>after</em> B (it’s the same loop, unattended).</p></div>
+  </div>
+
+  <h3>Core product logic — one agent turn</h3>
+  <div class="flow">
+    <div class="node accent"><div class="t">Creator prompt</div><div class="s">in the docked panel</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">Assemble context</div><div class="s">course plan · lesson · siblings</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">Model turn</div><div class="s">streams text + tool calls</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">Run tools</div><div class="s">via the patch pipeline</div></div>
+    <div class="arrow">→</div>
+    <div class="node accent"><div class="t">Stage &amp; stream</div><div class="s">change-set + highlights</div></div>
+  </div>
+  <p class="loop-note">↺ the model loop repeats — read tools inform write tools — until it returns a final message with no tool calls (capped, with a “continue?” checkpoint for very large jobs)</p>
+
+  <h3>Change-set state machine</h3>
+  <div class="flow">
+    <div class="node"><div class="t">pending</div><div class="s">applied &amp; persisted, highlighted</div></div>
+    <div class="arrow">→</div>
+    <div class="node accent" style="border-color:var(--emerald-line);background:var(--emerald-bg)"><div class="t">accepted</div><div class="s">highlight cleared</div></div>
+    <div class="arrow" style="color:var(--muted)">or</div>
+    <div class="node" style="border-color:var(--red-line);background:var(--red-bg)"><div class="t">rejected</div><div class="s">before-snapshot restored</div></div>
+  </div>
+  <p style="font-size:13px"><strong>Why “apply then stage,” not “stage then apply”:</strong> the DB stays the single source of truth, so on later loop steps the agent can <em>read its own pending edits</em> and build on them. Rejecting replays the stored before-snapshots through the same patch pipeline.</p>
+
+  <h3>Key business rules</h3>
+  <div class="tablewrap"><table>
+    <tbody>
+      <tr><td style="width:230px"><strong>Server-only model access</strong></td><td>The agent runs entirely in route handlers. The browser never sees the key, the provider SDK, or raw model traffic.</td></tr>
+      <tr><td><strong>Ops-layer writes only</strong></td><td>Every change is a validated <code>CoursePatch</code> applied by the same pure reducer the studio UI uses. Invalid output from the model is rejected, never persisted.</td></tr>
+      <tr><td><strong>Author scope</strong></td><td>The agent can only read/write courses the signed-in author owns (enforced by RLS, not app code). Learners never see agent edits or pending changes.</td></tr>
+      <tr><td><strong>Low-stakes assessments</strong></td><td>Quiz/homework content cannot carry scores, passing marks, timers, attempts, difficulty, points, or due dates — guaranteed at the schema level.</td></tr>
+      <tr><td><strong>Provider-agnostic</strong></td><td>Conversation history lives in our DB and is replayed each turn; we never depend on provider-side session state.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================== 4. FUNCTIONAL DESIGN ===================== -->
+<section id="functional">
+  <p class="sec-eyebrow">04 — Functional Design</p>
+  <h2>High-fidelity design &amp; engineering spec.</h2>
+  <p class="lead-p">The studio keeps its three-column shape (outline · canvas · inspector). We add a <strong>fourth, collapsible column</strong>: the agent panel. Blocks the agent touches get an amber “pending” treatment with inline Accept/Reject. All in-screen copy below is final.</p>
+
+  <div class="surface-label">Web · Creator Studio — primary screen</div>
+
+  <!-- SCREEN 1: full studio with agent -->
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">coursegen.app/studio — Intro to Options Trading · Lesson 1</span></div>
+    <div class="studio">
+      <!-- outline -->
+      <div class="col outline">
+        <div class="mini-h">Outline</div>
+        <div class="o-item">Module 1: Foundations</div>
+        <div class="o-item active o-sub">L1 · What is an option?</div>
+        <div class="o-item o-sub">L2 · Calls &amp; puts</div>
+        <div class="o-item o-sub">L3 · Payoff diagrams</div>
+        <div class="o-item" style="margin-top:8px">Module 2: Strategy</div>
+      </div>
+      <!-- canvas -->
+      <div class="col canvas">
+        <div class="mini-h">Lesson 1 · What is an option?</div>
+        <div class="block pending">
+          <span class="pending-tab">Agent · pending</span>
+          <div class="bh"><span class="btype">Slide deck</span><span class="bt">Intro deck · 5 slides</span></div>
+          <div class="ln w90"></div><div class="ln w70"></div>
+          <div class="ar-row"><span class="btn accept">✓ Accept</span><span class="btn reject">Reject</span><span class="btn ghost">View</span></div>
+        </div>
+        <div class="block pending">
+          <span class="pending-tab">Agent · pending</span>
+          <div class="bh"><span class="btype">Quiz</span><span class="bt">Knowledge check · 4 questions</span></div>
+          <div class="ln w70"></div><div class="ln w50"></div>
+          <div class="ar-row"><span class="btn accept">✓ Accept</span><span class="btn reject">Reject</span><span class="btn ghost">View</span></div>
+        </div>
+        <div class="block">
+          <div class="bh"><span class="btype">Lecture text</span><span class="bt">Your original notes</span></div>
+          <div class="ln w90"></div><div class="ln w40"></div>
+        </div>
+      </div>
+      <!-- agent -->
+      <div class="col agent">
+        <div class="ah"><span class="av">*</span><span class="nm">Content Agent</span><span class="st">● Working</span></div>
+        <div class="chatscroll">
+          <div class="msg user">Write a 5-slide intro deck and a 4-question knowledge check for this lesson.</div>
+          <div class="msg ai">On it — I’ll ground this in your “explain options to a beginner” outcome and friendly tone.</div>
+          <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">write_slide_deck</div><div class="ts">Added “Intro deck” · 5 slides, ≤12 words each</div></div></div>
+          <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">write_quiz</div><div class="ts">Added 4 knowledge-check questions + explanations</div></div></div>
+          <div class="toolcard run"><span class="ic">●</span><div><div class="tt">write_lecture_text</div><div class="ts typing">drafting summary <i></i><i></i><i></i></div></div></div>
+        </div>
+        <div class="reviewbar"><span class="cnt">2</span> changes pending<span class="sp"></span><span class="btn accept" style="font-size:10px;padding:3px 9px">Accept all</span></div>
+        <div class="composer"><span class="ph">Ask a follow-up, or describe the next change…</span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>Primary flow.</b> The agent streams assistant text and live tool cards (running → done with a one-line summary). Each tool result targets a block, which renders an amber pending ring with inline <b>Accept / Reject / View</b>. A panel-level review bar offers <b>Accept all</b>. The panel collapses to an icon rail like the other studio panels.</div>
+  </div>
+
+  <h3>States</h3>
+  <div class="state-grid">
+    <div class="state"><div class="st-h">Empty · first run</div><div class="st-body"><span class="av" style="width:30px;height:30px;border-radius:9px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display)">*</span><div>“Ask me to draft slides, a knowledge check, or flesh out lessons. I’ll show every change before it sticks.”</div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center"><span class="tag">Draft a deck</span><span class="tag">Add a check</span><span class="tag">Summarize</span></div></div></div>
+    <div class="state"><div class="st-h">Checkpoint · large job</div><div class="st-body"><div style="font-size:22px">⏸</div><div>“I’ve completed 3 of 6 lessons (12 steps). Continue with the rest?”</div><span class="btn grad" style="font-size:10px">Continue</span></div></div>
+    <div class="state err"><div class="st-h">Error · key missing</div><div class="st-body"><div style="font-size:22px">⚠</div><div>“The AI service isn’t configured. Add <code style="font-size:10px">OPENAI_API_KEY</code> on the server to enable the agent.”</div></div></div>
+  </div>
+
+  <h3>The agent’s tools = the operations layer</h3>
+  <p>Every tool wraps existing patch/command logic — there is no separate write path. Schemas are generated from the studio’s Zod definitions (single source of truth) and sent to the model as strict function schemas.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:36px">Kind</th><th style="width:200px">Tool</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="5"><span class="tag read">read</span></td><td><code>get_course_context</code></td><td>Course title, description, audience, level, and plan (outcomes, prerequisites, teaching style/tone).</td></tr>
+      <tr><td><code>list_modules</code> / <code>list_lessons</code></td><td>Navigate structure for multi-lesson jobs.</td></tr>
+      <tr><td><code>get_lesson</code></td><td>A lesson with its blocks — so the agent aligns with what’s taught and avoids duplication.</td></tr>
+      <tr><td><code>get_block</code></td><td>Full content of one block for targeted edits.</td></tr>
+      <tr><td><em>(neighbors)</em></td><td>Agent pulls siblings on demand rather than stuffing everything into context.</td></tr>
+      <tr><td rowspan="4"><span class="tag struct">structural</span></td><td><code>create_module</code> / <code>create_lesson</code></td><td>Extend the course outline.</td></tr>
+      <tr><td><code>create_block</code> / <code>delete_block</code></td><td>Add or remove a block of a given type.</td></tr>
+      <tr><td><code>reorder_blocks</code></td><td>Resequence blocks within a lesson.</td></tr>
+      <tr><td><code>update_block</code></td><td>Title / structural metadata on an existing block.</td></tr>
+      <tr><td rowspan="4"><span class="tag write">writer</span></td><td><code>write_slide_deck</code></td><td>Author a deck — minimal, professional slides, few words each, strong layouts.</td></tr>
+      <tr><td><code>write_quiz</code></td><td>A small, consistent set of knowledge-check questions, each with instant feedback + a short explanation. <strong>No scoring fields.</strong></td></tr>
+      <tr><td><code>write_homework</code></td><td>A practice exercise — instructions + optional qualitative rubric/solution. <strong>No points/due dates.</strong></td></tr>
+      <tr><td><code>write_lecture_text</code></td><td>Clear, well-structured prose grounded in outcomes &amp; tone.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px">Writer tools build a complete, schema-valid block and commit it via a single additive patch (<code>SET_BLOCK_CONTENT</code>) validated against the block’s discriminated-union schema — the clean primitive for whole-block generation, fully inside the existing pipeline.</p>
+
+  <h3>Low-stakes guarantee (structural)</h3>
+  <p>To honor “the schemas must not even contain those fields,” these fields are <strong>removed</strong> from the quiz/homework content model, their patches, and the studio UI that edited them. Legacy stored data is tolerated (unknown keys are dropped on read), so no data migration is needed.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Removed field</th><th>Lived on</th><th>Why it’s gone</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag no">passingScore</span> <span class="tag no">timeLimitMinutes</span> <span class="tag no">attemptsAllowed</span></td><td>Quiz settings</td><td>No passing thresholds, timers, or attempt caps — checks are formative.</td></tr>
+      <tr><td><span class="tag no">difficulty</span> <span class="tag no">points</span></td><td>Quiz question</td><td>No difficulty tags or scoring; right/wrong is analytics only.</td></tr>
+      <tr><td><span class="tag no">dueAt</span> <span class="tag no">points</span></td><td>Homework</td><td>No due dates or grades — homework is practice.</td></tr>
+      <tr><td><span class="tag no">points</span></td><td>Rubric level</td><td>Rubric levels become qualitative (label + description), not scored bands.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Kept:</strong> question prompt, choices/answer, and a short <em>explanation</em> (instant feedback); homework instructions, exercises, optional solution &amp; qualitative rubric; links to learning outcomes.</p>
+
+  <h3>Streaming event protocol (server → browser, SSE)</h3>
+  <p>One normalized protocol drives both the chat transcript and the editor highlights, mapped from the provider’s native stream events.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:170px">Event</th><th>Payload</th><th>Drives</th></tr></thead>
+    <tbody>
+      <tr><td><code>assistant_delta</code></td><td>text fragment</td><td>Streaming chat message.</td></tr>
+      <tr><td><code>tool_start</code></td><td>tool name</td><td>“Running” tool card.</td></tr>
+      <tr><td><code>tool_result</code></td><td>block id · type · one-line summary</td><td>“Done” card + editor pending-highlight.</td></tr>
+      <tr><td><code>change_set</code></td><td>change-set id · count</td><td>Review bar; binds Accept/Reject.</td></tr>
+      <tr><td><code>checkpoint</code></td><td>progress · resumable</td><td>“Continue?” prompt for large jobs.</td></tr>
+      <tr><td><code>done</code> / <code>error</code></td><td>final status / message</td><td>Settle the turn; surface failures &amp; refusals gracefully.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Data model (new) &amp; access control</h3>
+  <p>Four new tables, each carrying a denormalized <code>course_id</code> so row-level security can authorize in one hop (matching the existing schema convention). All are author-scoped; nothing is learner-visible.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:170px">Table</th><th>Shape</th><th>Access</th></tr></thead>
+    <tbody>
+      <tr><td><code>conversations</code></td><td>scoped to a course (+ optional lesson); a titled thread.</td><td rowspan="4">RLS: author full CRUD where they own the course; no public/learner read. Migration &amp; policies ship for <strong>human review</strong> and are applied only after sign-off; types regenerated after.</td></tr>
+      <tr><td><code>messages</code></td><td>role + content (incl. tool calls/outputs) as JSON; replayed each turn.</td></tr>
+      <tr><td><code>change_sets</code></td><td>one per agent turn; status <code>pending → accepted / rejected</code>; summary.</td></tr>
+      <tr><td><code>change_set_items</code></td><td>per-block <code>op</code> (create/update/delete) + before/after snapshots.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Grounding &amp; cost control</h3>
+  <ul>
+    <li><strong>Context assembly:</strong> a stable system prompt (role + content-quality + low-stakes rules) and the course “prefix” (title/description/audience/level + teaching style/tone) lead every turn; the target lesson and sibling summaries follow. Multi-lesson jobs pull neighbors via read tools instead of bloating context.</li>
+    <li><strong>Prompt caching:</strong> the stable prefix is placed first so repeated turns in a tool loop hit the provider’s automatic cache.</li>
+    <li><strong>Bounds:</strong> a per-turn tool-call cap with a user “continue?” checkpoint; a capped output budget; the default model is configurable via env.</li>
+  </ul>
+</section>
+
+<!-- ===================== 5. UX / ACCEPTANCE ===================== -->
+<section id="ux">
+  <p class="sec-eyebrow">05 — User Experience (Acceptance)</p>
+  <h2>Self-acceptance stories — the core flows that must pass.</h2>
+  <p class="lead-p">Each story is written from the creator’s perspective and tied to concrete on-screen actions in the studio. This is core-flow acceptance, not exhaustive QA.</p>
+
+  <div class="story">
+    <div class="sh"><span class="sn">1</span><span class="stt">Generate a deck and a knowledge check from one prompt</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want a first draft for this lesson without starting from a blank page.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open the lesson → open the agent panel → type “write a 5-slide intro deck and a 4-question knowledge check” → send.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The agent streams its work; a slide-deck block and a quiz block appear with amber “pending” rings; the chat summarizes both. The quiz has 4 questions, each with an explanation and <b>no</b> scoring fields.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">2</span><span class="stt">Review and accept a change</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to read what the agent wrote and keep what’s good.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Click <b>View</b> on the pending slide-deck block → read the slides → click <b>Accept</b> (or <b>Accept all</b> in the review bar).</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The amber highlight clears, the block becomes a normal part of the lesson, and the change persists — it’s still there after a page reload.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">3</span><span class="stt">Reject a change and get the prior state back</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>If I don’t like a change, undoing it must be effortless and safe.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>On a pending block, click <b>Reject</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The block reverts to exactly its before-state (or disappears if the agent created it). The reversal persists across reload; the chat notes it was rejected.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">4</span><span class="stt">Have a grounded follow-up conversation</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to refine the result by talking, and pick up where I left off.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>After accepting the deck, type “make slide 3 simpler and add an example” → send. Later, reload the page and reopen the panel.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The agent edits the right slide with awareness of current lesson state and suggests a next step. After reload, the full conversation is still there.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">5</span><span class="stt">Flesh out several lessons in one job</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want the agent to handle a bigger task across multiple lessons.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Type “flesh out the next three lessons in this module with lecture text and a knowledge check each” → send → if prompted, click <b>Continue</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The agent navigates the module via its read tools and adds grounded, non-duplicative content to each lesson as pending changes; large jobs pause at a checkpoint the creator can continue.</p></div>
+    </div>
+  </div>
+
+  <div class="callout ok"><div class="lbl">Definition of done — milestone 1</div>
+  <p style="margin-bottom:0">A creator opens a lesson, asks the docked agent for a deck + knowledge check, watches it stream and apply changes through the ops layer, sees them highlighted &amp; summarized, then accepts or rejects — with the OpenAI key living only on the server, all content valid against the (now low-stakes) schemas, and no schema/RLS change applied without human sign-off.</p></div>
+</section>
+
+</main>
+
+<footer>
+  CourseGen* · AI Content Agent PRD · Creator Studio (Web) · Draft for review · 2026-06-15 — design tokens sourced from <code>app/globals.css</code> (warm-editorial: paper #faf7f1 · stone ink · amber→orange gradient · Fraunces display).
+</footer>
+
+</div>
+</body>
+</html>

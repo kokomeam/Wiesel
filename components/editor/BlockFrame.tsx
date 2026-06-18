@@ -9,6 +9,7 @@
 import type { ReactNode } from "react";
 import {
   AlignLeft,
+  Check,
   ChevronDown,
   ChevronUp,
   Dumbbell,
@@ -24,7 +25,9 @@ import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import { deleteBlockPatch, reorderBlockPatch, updateBlockTitlePatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
+import { usePendingChangeSetId } from "@/lib/editor/agentStore";
 import type { BlockType, LessonBlock, QualityHint } from "@/lib/course/types";
+import { useAgentStream } from "./agent/useAgentStream";
 import { InlineText } from "./InlineText";
 import { QualityHintBadge } from "./QualityHintBadge";
 
@@ -66,6 +69,9 @@ export function BlockFrame({
   const selection = useEditorStore((s) => s.selection);
   const select = useEditorStore((s) => s.select);
   const apply = useEditorStore((s) => s.apply);
+  const pendingChangeSetId = usePendingChangeSetId(block.id);
+  const { resolve } = useAgentStream();
+  const pending = Boolean(pendingChangeSetId);
 
   const selected =
     (selection.kind === "block" && selection.id === block.id) ||
@@ -91,11 +97,14 @@ export function BlockFrame({
         e.stopPropagation();
         selectBlock();
       }}
+      data-ai-pending={pending ? "" : undefined}
       className={cn(
         "group rounded-2xl border bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-shadow",
-        selected
-          ? "border-brand-300 ring-2 ring-brand-200/60"
-          : "border-stone-200/80 hover:shadow-[0_2px_8px_rgba(16,24,40,0.06)]"
+        pending
+          ? "border-amber-300 ring-2 ring-amber-200/70"
+          : selected
+            ? "border-brand-300 ring-2 ring-brand-200/60"
+            : "border-stone-200/80 hover:shadow-[0_2px_8px_rgba(16,24,40,0.06)]"
       )}
     >
       <header className="flex items-center gap-3 px-5 pt-4">
@@ -112,6 +121,38 @@ export function BlockFrame({
             className="text-sm font-semibold text-stone-900"
           />
         </div>
+        {pending && (
+          <div className="flex items-center gap-1" data-ai-block-pending="">
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Agent
+            </span>
+            <button
+              type="button"
+              aria-label="Accept agent change"
+              data-ai-tool="block-accept"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (pendingChangeSetId) void resolve(pendingChangeSetId, "accept");
+              }}
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-100"
+            >
+              <Check className="size-3" />
+              Accept
+            </button>
+            <button
+              type="button"
+              aria-label="Reject agent change"
+              data-ai-tool="block-reject"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (pendingChangeSetId) void resolve(pendingChangeSetId, "reject");
+              }}
+              className="rounded-full px-2 py-0.5 text-[11px] font-medium text-stone-500 transition-colors hover:bg-stone-100"
+            >
+              Reject
+            </button>
+          </div>
+        )}
         <QualityHintBadge hints={hints} />
         <div
           className={cn(

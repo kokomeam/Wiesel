@@ -23,13 +23,14 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { BookOpen, GripVertical, PanelLeftClose, Plus } from "lucide-react";
+import { BookOpen, GripVertical, PanelLeftClose, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { aiAttrs, toolAttrs } from "@/lib/course/aiAttributes";
 import { addLessonPatch, addModulePatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { CourseModule, LessonNode } from "@/lib/course/types";
+import { confirmDeleteLesson, confirmDeleteModule } from "./deleteConfirm";
 
 function SortableLesson({
   lesson,
@@ -38,6 +39,8 @@ function SortableLesson({
   lesson: LessonNode;
   module: CourseModule;
 }) {
+  const doc = useEditorStore((s) => s.doc);
+  const apply = useEditorStore((s) => s.apply);
   const activeLessonId = useEditorStore((s) => s.activeLessonId);
   const openLesson = useEditorStore((s) => s.openLesson);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -65,7 +68,7 @@ function SortableLesson({
         })}
         onClick={() => openLesson(lesson.id)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-left text-[13px] transition-colors",
+          "flex w-full items-center gap-2 rounded-lg py-1.5 pl-7 pr-7 text-left text-[13px] transition-colors",
           active
             ? "bg-brand-50 font-medium text-brand-700"
             : "text-stone-600 hover:bg-stone-50 hover:text-stone-900"
@@ -75,7 +78,7 @@ function SortableLesson({
         {lesson.estimatedMinutes !== undefined && (
           <span
             className={cn(
-              "shrink-0 text-[11px]",
+              "shrink-0 text-[11px] transition-opacity group-hover/lesson:opacity-0",
               active ? "text-brand-400" : "text-stone-300"
             )}
           >
@@ -91,11 +94,24 @@ function SortableLesson({
       >
         <GripVertical className="size-3.5" />
       </span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          void confirmDeleteLesson(doc, apply, lesson.id);
+        }}
+        aria-label={`Delete lesson ${lesson.title}`}
+        title="Delete lesson"
+        className="absolute right-1 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-md text-stone-300 opacity-0 transition-opacity hover:bg-rose-50 hover:text-rose-600 focus-visible:opacity-100 group-hover/lesson:opacity-100"
+      >
+        <Trash2 className="size-3" />
+      </button>
     </div>
   );
 }
 
 function SortableModule({ module, index }: { module: CourseModule; index: number }) {
+  const doc = useEditorStore((s) => s.doc);
   const selection = useEditorStore((s) => s.selection);
   const select = useEditorStore((s) => s.select);
   const apply = useEditorStore((s) => s.apply);
@@ -132,35 +148,48 @@ function SortableModule({ module, index }: { module: CourseModule; index: number
           onClick={() => select({ kind: "module", id: module.id })}
           className={cn(
             "flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-left transition-colors",
-            selected ? "bg-brand-50" : "hover:bg-stone-50"
+            // Modules carry a light-blue (sky) identity — distinct from the
+            // warm-orange course/lesson accent — so the levels read apart.
+            selected ? "bg-sky-50" : "hover:bg-stone-50"
           )}
         >
           <span
             className={cn(
               "min-w-0 flex-1 truncate text-xs font-semibold tracking-tight",
-              selected ? "text-brand-700" : "text-stone-700"
+              selected ? "text-sky-700" : "text-stone-700"
             )}
           >
-            <span className={selected ? "text-brand-500" : "text-stone-400"}>
+            <span className={selected ? "text-sky-600" : "text-sky-500"}>
               Module {index + 1}:
             </span>{" "}
             {module.title}
           </span>
-          <span className="shrink-0 text-[11px] text-stone-300">
+          <span className="shrink-0 text-[11px] text-stone-300 transition-opacity group-hover/module:opacity-0">
             {module.lessons.length}
           </span>
         </button>
-        <button
-          type="button"
-          title="Add lesson"
-          aria-label={`Add lesson to ${module.title}`}
-          onClick={() =>
-            apply(addLessonPatch(module.id, module.lessons.length), "human")
-          }
-          className="absolute right-1 grid size-5 place-items-center rounded-md text-stone-300 opacity-0 transition-opacity hover:bg-stone-100 hover:text-brand-600 group-hover/module:opacity-100"
-        >
-          <Plus className="size-3" />
-        </button>
+        <span className="absolute right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/module:opacity-100">
+          <button
+            type="button"
+            title="Add lesson"
+            aria-label={`Add lesson to ${module.title}`}
+            onClick={() =>
+              apply(addLessonPatch(module.id, module.lessons.length), "human")
+            }
+            className="grid size-5 place-items-center rounded-md text-stone-300 transition-colors hover:bg-stone-100 hover:text-brand-600"
+          >
+            <Plus className="size-3" />
+          </button>
+          <button
+            type="button"
+            title="Delete module"
+            aria-label={`Delete module ${module.title}`}
+            onClick={() => void confirmDeleteModule(doc, apply, module.id)}
+            className="grid size-5 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
+          >
+            <Trash2 className="size-3" />
+          </button>
+        </span>
       </div>
       <SortableContext
         items={module.lessons.map((l) => l.id)}

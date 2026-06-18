@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * One quiz question (sortable). All content edits are full-replace
- * UPDATE_QUIZ_QUESTION patches; difficulty uses CHANGE_DIFFICULTY, deletion
- * DELETE_QUIZ_QUESTION. Multiple-choice marks one correct answer (radio),
- * multi-select marks a set (checkboxes).
+ * One knowledge-check question (sortable). All content edits are full-replace
+ * UPDATE_QUIZ_QUESTION patches; deletion DELETE_QUIZ_QUESTION. Multiple-choice
+ * marks one correct answer (radio), multi-select marks a set (checkboxes).
+ * Low-stakes: no difficulty or points — just an explanation as instant feedback.
  */
 
 import { useSortable } from "@dnd-kit/sortable";

@@ -41,6 +41,7 @@ const defaultSizes: Record<SlideElementType, { width: number; height: number }> 
   callout: { width: 420, height: 130 },
   divider: { width: 560, height: 8 },
   table: { width: 760, height: 280 },
+  sticker: { width: 96, height: 96 },
 };
 
 /** A sensible starting frame for a freshly inserted element; cascades by

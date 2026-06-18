@@ -7,7 +7,6 @@
 import { newId } from "../factories";
 import type {
   HomeworkExercise,
-  QuizDifficulty,
   QuizQuestion,
   Slide,
   SlideElement,
@@ -84,16 +83,12 @@ const questionBank: QuestionSeed[] = [
   },
 ];
 
-export function questionFromBank(
-  index: number,
-  difficulty: QuizDifficulty
-): QuizQuestion {
+export function questionFromBank(index: number): QuizQuestion {
   const seed = questionBank[index % questionBank.length];
   const base = {
     id: newId("q"),
     prompt: seed.prompt,
     explanation: seed.explanation,
-    difficulty,
   };
   if (seed.choices) {
     const choices = seed.choices.map((text) => ({ id: newId("c"), text }));

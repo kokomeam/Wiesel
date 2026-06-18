@@ -33,6 +33,7 @@ import { useUIStore } from "@/lib/editor/uiStore";
 import type { Slide, SlideElement } from "@/lib/course/types";
 import { ElementView } from "./ElementView";
 import { MultiSelectionBox } from "./MultiSelectionBox";
+import { StructuredSlide } from "./structured/StructuredSlide";
 import { useStageScale } from "./useStageScale";
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -142,6 +143,10 @@ export function SlideStage({
   const select = useEditorStore((s) => s.select);
   const { containerRef, scale: fitScale } = useStageScale();
   const interactive = mode === "edit";
+  /** Renderer-owned structured slides bypass the freeform element canvas
+   *  (no marquee / element drag / stage keyboard). */
+  const isTemplate = !!slide.template;
+  const elementsInteractive = interactive && !isTemplate;
   const zoom = useUIStore((s) => (interactive ? s.zoom : 1));
   /** Effective scale = fit-to-container × user zoom. All logical↔screen
    *  math downstream uses this one number. */
@@ -253,7 +258,7 @@ export function SlideStage({
   const keyboardActive = useEditorStore((s) => {
     const sel = s.selection;
     return (
-      interactive &&
+      elementsInteractive &&
       ((sel.kind === "element" || sel.kind === "elements")
         ? sel.blockId === blockId && sel.slideId === slide.id
         : sel.kind === "slide" && sel.id === slide.id && sel.blockId === blockId)
@@ -465,14 +470,14 @@ export function SlideStage({
             label: `Slide canvas: ${slide.title ?? `slide ${slide.order + 1}`}`,
           })
         : { "aria-hidden": true as const })}
-      onPointerDown={interactive ? marqueeDown : undefined}
-      onPointerMove={interactive ? marqueeMove : undefined}
-      onPointerUp={interactive ? marqueeUp : undefined}
+      onPointerDown={elementsInteractive ? marqueeDown : undefined}
+      onPointerMove={elementsInteractive ? marqueeMove : undefined}
+      onPointerUp={elementsInteractive ? marqueeUp : undefined}
       // Keep canvas clicks from bubbling to BlockFrame, which would replace
       // the slide/element selection with the whole-block selection.
       onClick={interactive ? (e) => e.stopPropagation() : undefined}
       onContextMenu={
-        interactive
+        elementsInteractive
           ? (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -522,23 +527,34 @@ export function SlideStage({
           }}
         >
           <BackgroundLayers slide={slide} />
-          {sortedElements.map((el) => (
-            <ElementView
-              key={el.id}
-              el={el}
+          {isTemplate ? (
+            <StructuredSlide
+              slide={slide}
               blockId={blockId}
-              slideId={slide.id}
               lessonId={lessonId}
-              themeId={slide.style.theme.id}
-              scale={scale}
               interactive={interactive}
             />
-          ))}
-          {interactive && (
-            <MultiSelectionBox slide={slide} blockId={blockId} scale={scale} />
+          ) : (
+            <>
+              {sortedElements.map((el) => (
+                <ElementView
+                  key={el.id}
+                  el={el}
+                  blockId={blockId}
+                  slideId={slide.id}
+                  lessonId={lessonId}
+                  themeId={slide.style.theme.id}
+                  scale={scale}
+                  interactive={interactive}
+                />
+              ))}
+              {interactive && (
+                <MultiSelectionBox slide={slide} blockId={blockId} scale={scale} />
+              )}
+              {interactive && <GuideOverlay slideId={slide.id} scale={scale} />}
+              {interactive && <MarqueeOverlay />}
+            </>
           )}
-          {interactive && <GuideOverlay slideId={slide.id} scale={scale} />}
-          {interactive && <MarqueeOverlay />}
         </div>
         </div>
       )}

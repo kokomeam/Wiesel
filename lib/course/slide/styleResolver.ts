@@ -12,7 +12,7 @@ import type {
   SlideElement,
   SlideElementType,
 } from "../types";
-import { FONT_FAMILIES, findTheme, type SlideTheme } from "./themes";
+import { FONT_FAMILIES, findTheme, themeTypeScale, type SlideTheme } from "./themes";
 
 /* ───────────────────────────── Shadows ────────────────────────────────── */
 
@@ -69,6 +69,7 @@ const defaultFontSize: Record<SlideElementType, number> = {
   image: 16,
   shape: 16,
   divider: 16,
+  sticker: 16,
 };
 
 const defaultFontWeight: Record<string, number> = {
@@ -97,7 +98,10 @@ export function resolveElementStyle(
 
   const css: CSSProperties = {
     fontFamily: FONT_FAMILIES[s.fontFamily ?? theme.fontFamily].css,
-    fontSize: s.fontSize ?? defaultFontSize[el.type],
+    // Semantic token wins → legacy raw px → per-type default.
+    fontSize: s.fontScale
+      ? themeTypeScale(theme)[s.fontScale]
+      : (s.fontSize ?? defaultFontSize[el.type]),
     fontWeight:
       defaultFontWeight[s.fontWeight ?? (isHeadingish(el) ? "semibold" : "regular")],
     color: s.color ?? themeTextColor(el, theme),

@@ -27,8 +27,14 @@ export interface AIMeta {
  * (see lib/course/slide/geometry.ts). Styles are optional overrides — the
  * slide's theme supplies defaults (lib/course/slide/styleResolver.ts). */
 
-export type FontFamilyId = "sans" | "serif" | "mono";
+/** `display` = the editorial Fraunces serif, for key-concept / section titles. */
+export type FontFamilyId = "sans" | "serif" | "mono" | "display";
 export type FontWeight = "regular" | "medium" | "semibold" | "bold";
+
+/** Semantic type-scale token. Resolves to per-theme px (themes.ts `typeScale`).
+ *  Preferred over raw `fontSize` so text stays on a consistent scale; the
+ *  human picker and the AI both choose from this enum. */
+export type FontScaleToken = "display" | "title" | "heading" | "body" | "caption";
 
 /** Expressive shadow model; the UI exposes presets (None/Subtle/Medium/
  *  Strong) that map onto it, so AI/import paths can still set custom values. */
@@ -43,7 +49,11 @@ export interface ElementShadow {
 
 export interface ElementStyle {
   fontFamily?: FontFamilyId;
-  /** Logical px in 1280×720 canvas units. */
+  /** Semantic size token; resolves to per-theme px and WINS over `fontSize`.
+   *  New content sets this; the toolbar size control writes it. */
+  fontScale?: FontScaleToken;
+  /** Legacy raw px (1280×720 canvas units). Still rendered when no `fontScale`
+   *  is set, but the toolbar no longer exposes it. */
   fontSize?: number;
   fontWeight?: FontWeight;
   italic?: boolean;
@@ -149,6 +159,9 @@ export type SlideElement = SlideElementBase &
     | { type: "callout"; text: string; variant: CalloutVariant; runs?: TextRun[] }
     | { type: "divider"; orientation: "horizontal" | "vertical" }
     | { type: "table"; rows: string[][]; headerRow: boolean }
+    /** Inline icon primitive: a lucide glyph referenced by id from the shared
+     *  sticker registry, themed to the slide accent. Never raw SVG. */
+    | { type: "sticker"; stickerId: string }
   );
 
 export type SlideElementType = SlideElement["type"];
@@ -190,6 +203,260 @@ export interface SlideStyle {
   theme: SlideThemeRef;
 }
 
+/* ───────────── Structured (renderer-owned) layout content ──────────────── */
+
+/** A rich-text value for a structured slot. Invariant: `text` === concat of
+ *  `runs` (when present), so length checks + lint read plain text. */
+export interface RichText {
+  text: string;
+  runs?: TextRun[];
+}
+
+export interface StepItem {
+  /** Sticker id (icon) for the step card; renderer auto-numbers by position. */
+  sticker?: string;
+  heading: RichText;
+  body: RichText;
+}
+
+export interface ProcessContent {
+  eyebrow?: RichText;
+  title: RichText;
+  subtitle?: RichText;
+  steps: StepItem[];
+}
+
+export interface ConceptItem {
+  sticker?: string;
+  heading: RichText;
+  body: RichText;
+}
+
+export interface KeyConceptContent {
+  /** `serif` uses the editorial display title (cgref2); `sans` is plainer (cgref4). */
+  variant: "sans" | "serif";
+  /** Draw the thin connector spine + node dots between the right-hand items. */
+  spine?: boolean;
+  eyebrow?: RichText;
+  term: RichText;
+  definition: RichText;
+  items: ConceptItem[];
+}
+
+export interface MetricDelta {
+  direction: "up" | "down";
+  text: RichText;
+  /** Colors the delta: positive = accent, negative = cool/muted, neutral = muted. */
+  sentiment: "positive" | "negative" | "neutral";
+}
+
+export interface MetricItem {
+  sticker?: string;
+  label: RichText;
+  /** Free-form display string: "67.8%", "12,345", "3.2×", "$4.1M". */
+  value: RichText;
+  delta?: MetricDelta;
+}
+
+export interface MetricsContent {
+  eyebrow?: RichText;
+  title: RichText;
+  metrics: MetricItem[];
+}
+
+export interface CodeStepItem {
+  sticker?: string;
+  heading: RichText;
+  body: RichText;
+}
+
+export interface CodeContent {
+  language: string;
+  code: string;
+}
+
+export interface CodeWalkthroughContent {
+  eyebrow?: RichText;
+  title: RichText;
+  code: CodeContent;
+  steps: CodeStepItem[];
+}
+
+/** How much renderer-owned flair a structured layout draws. `full` is the
+ *  decorated default (corner arcs, dot-grids, giant numerals, rules); `minimal`
+ *  dials it back so the layout still reads on a busy theme. Renderer-owned and
+ *  human-toggled only — the AI never sets it (it's absent from the strict tool
+ *  schema), so the model can never request or position decoration. */
+export type DecorLevel = "full" | "minimal";
+
+/** Chapter/section transition slide (refs 1–4 = one layout, variant flags).
+ *  Renderer owns the kicker rule, accent underline, giant outline numeral
+ *  (hero), corner arcs / dot-grids and two-tone title coloring. */
+export interface SectionBreakContent {
+  /** Short section number shown in the kicker (and giant in `hero_numeral`). */
+  number?: string;
+  /** Section name beside the number, e.g. "Foundations". */
+  label: RichText;
+  title: RichText;
+  subtitle?: RichText;
+  /** `serif` = editorial display title (default); `sans` = plainer. Serif also
+   *  drives the renderer's two-tone accent on the last word. */
+  titleStyle?: "sans" | "serif";
+  /** `hero_numeral` draws the giant outline number; `standard` is the default. */
+  variant?: "standard" | "hero_numeral";
+  decor?: DecorLevel;
+}
+
+export interface ConceptExampleConcept {
+  /** Small pill, e.g. "Rule" / "Concept". */
+  badge?: string;
+  title: RichText;
+  titleStyle?: "sans" | "serif";
+  definition: RichText;
+}
+
+export interface ConceptExampleStep {
+  heading: RichText;
+  body: RichText;
+}
+
+/** The worked example's body: free prose paragraphs OR numbered steps. */
+export type ConceptExampleBody =
+  | { kind: "paragraphs"; paragraphs: RichText[] }
+  | { kind: "steps"; steps: ConceptExampleStep[] };
+
+export interface ConceptExampleExample {
+  badge?: string;
+  title?: RichText;
+  body: ConceptExampleBody;
+}
+
+/** Pairs an abstract rule/concept (left) with a worked example (right). */
+export interface ConceptExampleContent {
+  concept: ConceptExampleConcept;
+  example: ConceptExampleExample;
+  /** Optional bottom callout (a caveat / "in practice" note). */
+  footnote?: RichText;
+  decor?: DecorLevel;
+}
+
+export interface OutlineItem {
+  text: RichText;
+  /** Optional brief breakdown (renderer indents these); 0–2 per item. */
+  subItems?: RichText[];
+}
+
+/** A titled nested list — a lesson's objectives or a module table of contents. */
+export interface OutlineListContent {
+  title: RichText;
+  items: OutlineItem[];
+  decor?: DecorLevel;
+}
+
+/** A plain-but-substantive teaching text slide — a deliberate, plan-selectable
+ *  layout (NOT a fallback): a title + a real explanatory body + optional key
+ *  points. The renderer owns the typography; the AI fills real prose. */
+export interface ProseContent {
+  eyebrow?: RichText;
+  title: RichText;
+  /** The explanation — full sentences that actually teach the point. */
+  body: RichText;
+  /** Optional key takeaways (0–5). */
+  points?: RichText[];
+}
+
+/* ── Comparison layouts (contrast 2–3 options). The renderer owns ALL
+ *    decoration: option colors + letter badges assigned BY INDEX (A/B/C), the
+ *    "VS." divider (two-option columnar only), row striping, and the footer
+ *    tint + icon. The AI only fills typed slots — it never picks a color, a
+ *    badge, or the divider. */
+
+/** One bullet under an option in the columnar comparison: a short label and an
+ *  optional supporting detail. */
+export interface ComparisonPoint {
+  label: RichText;
+  detail?: RichText;
+}
+
+/** One option (column) in the columnar comparison. */
+export interface ComparisonOption {
+  name: RichText;
+  /** Optional sticker id (icon) for the option header. */
+  icon?: string;
+  points: ComparisonPoint[];
+}
+
+/** The shared comparison footer: a single takeaway OR a list of shared traits.
+ *  Renderer owns the tint + icon (summary = warm + a star; similarities = cool
+ *  + a people icon); the AI only supplies the text. */
+export type ComparisonFooter =
+  | { kind: "summary"; text: RichText }
+  | { kind: "similarities"; points: RichText[] };
+
+/** Contrast 2–3 options as side-by-side columns — each an identity (name + icon)
+ *  over a short list of points. `presentation` picks the renderer treatment:
+ *  "cards" (boxed columns) or "bare" (a big letter badge over an open column). */
+export interface ComparisonColumnsContent {
+  eyebrow?: RichText;
+  title: RichText;
+  subtitle?: RichText;
+  presentation?: "cards" | "bare";
+  options: ComparisonOption[];
+  footer?: ComparisonFooter;
+  decor?: DecorLevel;
+}
+
+/** One option (column header) in the matrix comparison. */
+export interface ComparisonMatrixOption {
+  name: RichText;
+  /** Optional sticker id (icon) for the option header. */
+  icon?: string;
+}
+
+/** One option's value for a given dimension row. */
+export interface ComparisonCell {
+  detail: RichText;
+  example?: RichText;
+}
+
+/** One dimension (row) of the matrix: a labelled attribute compared across every
+ *  option. `cells` has exactly one entry per option, in option order. */
+export interface ComparisonDimension {
+  label: RichText;
+  /** Optional sticker id (icon) for the row label. */
+  icon?: string;
+  cells: ComparisonCell[];
+}
+
+/** Contrast 2–3 options across shared dimensions as a matrix (options = columns,
+ *  dimensions = rows). */
+export interface ComparisonMatrixContent {
+  eyebrow?: RichText;
+  title: RichText;
+  subtitle?: RichText;
+  options: ComparisonMatrixOption[];
+  dimensions: ComparisonDimension[];
+  footer?: ComparisonFooter;
+  decor?: DecorLevel;
+}
+
+/** A renderer-owned structured slide: a typed content payload that a dedicated
+ *  component draws (it owns arrangement / arrows / reflow). When set on a slide
+ *  it is the source of truth and the freeform `elements` are ignored. */
+export type SlideTemplate =
+  | { layoutId: "process_steps"; content: ProcessContent }
+  | { layoutId: "key_concept"; content: KeyConceptContent }
+  | { layoutId: "metrics_overview"; content: MetricsContent }
+  | { layoutId: "code_walkthrough_steps"; content: CodeWalkthroughContent }
+  | { layoutId: "section_break"; content: SectionBreakContent }
+  | { layoutId: "concept_example"; content: ConceptExampleContent }
+  | { layoutId: "outline_list"; content: OutlineListContent }
+  | { layoutId: "prose"; content: ProseContent }
+  | { layoutId: "comparison_columns"; content: ComparisonColumnsContent }
+  | { layoutId: "comparison_matrix"; content: ComparisonMatrixContent };
+
+export type StructuredLayoutId = SlideTemplate["layoutId"];
+
 export interface Slide {
   id: string;
   type: "slide";
@@ -199,6 +466,9 @@ export interface Slide {
   layout: string;
   style: SlideStyle;
   elements: SlideElement[];
+  /** When present, this is a renderer-owned structured slide (see SlideTemplate)
+   *  and `elements` are not rendered. */
+  template?: SlideTemplate;
   speakerNotes?: string;
   order: number;
   ai: {
@@ -206,6 +476,9 @@ export interface Slide {
     formattingRules: string[];
     qualityChecks: string[];
     allowedActions: string[];
+    /** The PLAN slide-spec id this slide was authored to satisfy (set by the
+     *  batch generator). Lets plan-coverage map slides → specs deterministically. */
+    specId?: string;
   };
 }
 
@@ -245,40 +518,28 @@ export interface LectureTextBlock extends BaseBlock {
   paragraphs: LectureParagraph[];
 }
 
-export type QuizDifficulty = "easy" | "medium" | "hard";
 export type QuestionKind =
   | "multiple_choice"
   | "multi_select"
   | "true_false"
   | "short_answer";
 
-/** When learners are shown correct answers / explanations. */
-export type ShowAnswersPolicy = "immediately" | "after_submit" | "after_due" | "never";
-
 /**
- * Quiz-level behavior. Optional on the block — absent fields resolve to
- * defaults via resolveQuizSettings() (lib/course/assessments.ts), mirroring
- * the slide styleResolver's "defaults under explicit overrides" model.
+ * Quiz-level presentation options only. Low-stakes by design: there are NO
+ * scores, passing thresholds, timers, or attempt caps here (or anywhere) — a
+ * knowledge check confirms understanding and shows instant feedback, it never
+ * grades or gates progress.
  */
 export interface QuizSettings {
-  /** Minutes; null/absent = untimed. */
-  timeLimitMinutes?: number | null;
-  /** null/absent = unlimited. */
-  attemptsAllowed?: number | null;
   shuffleQuestions?: boolean;
   shuffleOptions?: boolean;
-  /** Percent 0..100 needed to pass. */
-  passingScore?: number;
-  whenToShowAnswers?: ShowAnswersPolicy;
 }
 
 interface QuizQuestionBase {
   id: string;
   prompt: string;
+  /** Shown as instant feedback once the learner answers. */
   explanation?: string;
-  difficulty: QuizDifficulty;
-  /** Score weight; absent = 1 (questionPoints()). */
-  points?: number;
   /** Optional link to a lesson objective / semantic tag this question assesses. */
   objectiveId?: string;
 }
@@ -320,12 +581,12 @@ export interface HomeworkExercise {
  *  deliverable collected (self-paced practice only). */
 export type DeliverableType = "none" | "text_response" | "file_upload" | "external_link";
 
-/** One performance level within a rubric criterion (e.g. "Excellent" = 4 pts). */
+/** One qualitative performance level within a rubric criterion (e.g.
+ *  "Excellent"). Low-stakes: levels describe quality, they never score it. */
 export interface RubricLevel {
   id: string;
   label: string;
   description?: string;
-  points: number;
 }
 export interface RubricCriterion {
   id: string;
@@ -338,10 +599,7 @@ export interface HomeworkBlock extends BaseBlock {
   type: "homework";
   instructions: string;
   deliverableType: DeliverableType;
-  /** ISO-8601; absent = no due date. */
-  dueAt?: string;
-  /** Total points for the assignment. */
-  points?: number;
+  /** Informational estimate only — never a limit or deadline. */
   estimatedMinutes?: number;
   /** Optional link to a lesson objective / semantic tag. */
   objectiveId?: string;

@@ -9,6 +9,8 @@
 import { componentManifest, defaultAIMeta, manifestTypeForElementType } from "./manifest";
 import { defaultFrameFor } from "./slide/geometry";
 import { elementFromPlaceholder, findLayout } from "./slide/layouts";
+import { DEFAULT_STICKER_ID } from "./slide/stickers";
+import { STRUCTURED_LAYOUTS, findStructuredLayout } from "./slide/structuredLayouts";
 import { DEFAULT_THEME_ID, findTheme, themeRef } from "./slide/themes";
 import type {
   BlockType,
@@ -25,6 +27,7 @@ import type {
   SlideElement,
   SlideElementType,
   SlideThemeId,
+  StructuredLayoutId,
 } from "./types";
 
 export function newId(prefix: string): string {
@@ -97,6 +100,8 @@ export function createElement(
         ],
         headerRow: true,
       };
+    case "sticker":
+      return { ...base, type, stickerId: DEFAULT_STICKER_ID };
   }
 }
 
@@ -127,6 +132,34 @@ export function createSlide(
   };
 }
 
+/** A fresh renderer-owned STRUCTURED slide, seeded with the layout's example
+ *  content (the manual picker applies this; the AI fills its own content). */
+export function createStructuredSlide(
+  layoutId: StructuredLayoutId,
+  themeId: SlideThemeId = DEFAULT_THEME_ID
+): Slide {
+  const def = findStructuredLayout(layoutId) ?? STRUCTURED_LAYOUTS[0];
+  const theme = findTheme(themeId);
+  const template = def.seed();
+  return {
+    id: newId("slide"),
+    type: "slide",
+    layout: template.layoutId,
+    style: {
+      background: structuredClone(theme.defaultBackground),
+      theme: themeRef(theme),
+    },
+    elements: [],
+    template,
+    order: 0,
+    ai: {
+      formattingRules: [],
+      qualityChecks: ["tight copy", "icons clarify, not clutter"],
+      allowedActions: [...componentManifest.slide.allowedActions],
+    },
+  };
+}
+
 /** Deep-clone a slide with fresh ids (for paste-from-clipboard). */
 export function reidentifySlide(slide: Slide): Slide {
   const clone = structuredClone(slide);
@@ -150,8 +183,6 @@ export function createQuestion(kind: QuestionKind): QuizQuestion {
   const base = {
     id: newId("q"),
     prompt: "New question",
-    difficulty: "medium" as const,
-    points: 1,
   };
   switch (kind) {
     case "multiple_choice":
@@ -187,19 +218,19 @@ export function createExercise(title = "New exercise"): HomeworkExercise {
   return { id: newId("ex"), title, prompt: "" };
 }
 
-export function createRubricLevel(label = "New level", points = 0): RubricLevel {
-  return { id: newId("lvl"), label, points };
+export function createRubricLevel(label = "New level"): RubricLevel {
+  return { id: newId("lvl"), label };
 }
 
-/** A fresh rubric criterion with a sensible Full / Partial / None ladder. */
+/** A fresh rubric criterion with a sensible qualitative ladder. */
 export function createRubricCriterion(name = "New criterion"): RubricCriterion {
   return {
     id: newId("rub"),
     name,
     levels: [
-      { id: newId("lvl"), label: "Full marks", points: 2 },
-      { id: newId("lvl"), label: "Partial", points: 1 },
-      { id: newId("lvl"), label: "None", points: 0 },
+      { id: newId("lvl"), label: "Strong" },
+      { id: newId("lvl"), label: "Developing" },
+      { id: newId("lvl"), label: "Needs work" },
     ],
   };
 }
