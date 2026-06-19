@@ -9,10 +9,10 @@
  */
 
 import { z } from "zod";
-import { addStickerPatch, setSlideTemplatePatch, updateElementPatch } from "@/lib/course/commands";
+import { addBlockPatch, addStickerPatch, setSlideTemplatePatch, updateElementPatch } from "@/lib/course/commands";
 import { createStructuredSlide } from "@/lib/course/factories";
 import type { CoursePatch } from "@/lib/course/patches";
-import { findBlock, findSlide } from "@/lib/course/queries";
+import { findBlock, findLesson, findSlide } from "@/lib/course/queries";
 import { FontFamilyIdSchema, FontScaleSchema } from "@/lib/course/schemas";
 import { STICKER_IDS } from "@/lib/course/slide/stickers";
 import { StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
@@ -25,6 +25,33 @@ function deck(ctx: ToolContext, blockId: string): { block: SlideDeckBlock; lesso
   const hit = findBlock(ctx.doc, blockId);
   if (!hit || hit.block.type !== "slide_deck") throw new ToolError(`No slide deck with id ${blockId}.`);
   return { block: hit.block, lessonId: hit.lesson.id };
+}
+
+/**
+ * Resolve the deck to author a batch into. A valid `blockId` is used directly;
+ * `null` (or a stale/wrong id) falls back to the docked lesson's FIRST slide deck,
+ * creating an empty one if the lesson has none. This makes batch authoring robust
+ * to a model that can't perfectly echo the (server-generated) deck id — it just
+ * targets "this lesson's deck".
+ */
+function resolveDeck(
+  ctx: ToolContext,
+  blockId: string | null
+): { deckId: string; lessonId: string; themeId: SlideThemeId; createPatch?: CoursePatch } {
+  if (blockId) {
+    const hit = findBlock(ctx.doc, blockId);
+    if (hit && hit.block.type === "slide_deck") {
+      return { deckId: blockId, lessonId: hit.lesson.id, themeId: deckThemeId(hit.block, ctx) };
+    }
+  }
+  const lesson = findLesson(ctx.doc, ctx.lessonId)?.lesson;
+  if (!lesson) throw new ToolError(`No lesson ${ctx.lessonId} to add slides to.`);
+  const existing = lesson.blocks.find((b): b is SlideDeckBlock => b.type === "slide_deck");
+  if (existing) return { deckId: existing.id, lessonId: lesson.id, themeId: deckThemeId(existing, ctx) };
+  // No deck yet — create an EMPTY one in the same batch (never a placeholder).
+  const createPatch = addBlockPatch(lesson.id, "slide_deck", undefined, { emptySlideDeck: true });
+  const deckId = createPatch.action === "ADD_BLOCK" ? createPatch.block.id : "";
+  return { deckId, lessonId: lesson.id, themeId: ctx.doc.theme.slideDefaults.themeId, createPatch };
 }
 
 function deckThemeId(block: SlideDeckBlock, ctx: ToolContext): SlideThemeId {
@@ -63,9 +90,9 @@ const addStructuredSlide = defineTool({
 const addStructuredSlidesBatch = defineTool({
   name: "add_structured_slides_batch",
   description:
-    "Add a BATCH of 1–4 designed (structured) slides in ONE call — author a whole pedagogical SEGMENT at once (e.g. hook+concept, or a worked example, or practice+recap) rather than one slide per call. Each entry is a full structured slide (pick the layoutId whose shape fits the content), plus optional speaker notes and the plan slideSpecId it satisfies. All entries are validated together: if ANY slide's content violates a slot limit, NOTHING is added and you get the errors to fix. Strongly prefer this over repeated add_structured_slide calls.",
+    "Add a BATCH of 1–4 designed (structured) slides in ONE call — author a whole pedagogical SEGMENT at once (e.g. hook+concept, or a worked example, or practice+recap) rather than one slide per call. Pass the lesson's slide-deck blockId as deckBlockId (or null to target this lesson's deck). Each entry is a full structured slide (pick the layoutId whose shape fits the content), plus optional speaker notes and the plan slideSpecId it satisfies. All entries are validated together: if ANY slide's content violates a slot limit, NOTHING is added and you get the errors to fix. Strongly prefer this over repeated add_structured_slide calls.",
   params: z.object({
-    deckBlockId: z.string(),
+    deckBlockId: z.string().nullable(),
     slides: z
       .array(
         z.object({
@@ -78,22 +105,22 @@ const addStructuredSlidesBatch = defineTool({
       .max(4, "Author at most 4 slides per batch — one segment (1–3 slides) at a time."),
   }),
   execute(args, ctx) {
-    const { block, lessonId } = deck(ctx, args.deckBlockId);
-    const themeId = deckThemeId(block, ctx);
+    const { deckId, lessonId, themeId, createPatch } = resolveDeck(ctx, args.deckBlockId);
     const patches: CoursePatch[] = [];
+    if (createPatch) patches.push(createPatch);
     const slidesAdded: { slideId: string; specId?: string; index: number }[] = [];
     args.slides.forEach((s, i) => {
       const slide = createStructuredSlide(s.template.layoutId, themeId);
       slide.template = s.template as SlideTemplate;
       if (s.notes && s.notes.trim()) slide.speakerNotes = s.notes.trim();
       if (s.slideSpecId && s.slideSpecId.trim()) slide.ai.specId = s.slideSpecId.trim();
-      patches.push({ action: "ADD_SLIDE", blockId: args.deckBlockId, slide });
+      patches.push({ action: "ADD_SLIDE", blockId: deckId, slide });
       slidesAdded.push({ slideId: slide.id, specId: s.slideSpecId ?? undefined, index: i });
     });
     return {
-      summary: `Added ${patches.length} structured slide${patches.length === 1 ? "" : "s"}`,
+      summary: `Added ${args.slides.length} structured slide${args.slides.length === 1 ? "" : "s"}`,
       patches,
-      data: { blockId: args.deckBlockId, lessonId, blockType: "slide_deck", slidesAdded },
+      data: { blockId: deckId, lessonId, blockType: "slide_deck", slidesAdded },
     };
   },
 });

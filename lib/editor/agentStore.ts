@@ -16,7 +16,21 @@ import type { PlanOutline } from "@/lib/ai/events";
 
 /** Which phase of the content pipeline the agent is in (drives the sidebar
  *  indicator). `null` for the single-turn edit path / when idle. */
-export type AgentPhase = "plan" | "generate" | "critique" | null;
+export type AgentPhase = "plan" | "generate" | "validate" | "repair" | "review" | "critique" | null;
+
+/** The latest VALIDATION status line (calm progress: "Checking coverage…",
+ *  "Found 4 missing slides. Repairing…", "Final validation passed."). */
+export interface ValidationStatus {
+  message: string;
+  ok: boolean;
+  incomplete?: boolean;
+}
+
+/** Soft, optional quality findings surfaced after a generation (never blocking). */
+export interface QualityReport {
+  warnings: { code: string; message: string; slideId?: string }[];
+  suggestions: { title: string; detail: string }[];
+}
 
 export interface AgentChatMessage {
   id: string;
@@ -66,6 +80,10 @@ interface AgentState {
   pendingConfirmation: PendingConfirmation | null;
   /** Which pipeline phase the agent is in (sidebar indicator). */
   phase: AgentPhase;
+  /** The latest validation status line for the in-flight generation. */
+  validation: ValidationStatus | null;
+  /** The latest soft quality report (lint + optional review suggestions). */
+  qualityReport: QualityReport | null;
   /** Set while the agent is paused awaiting approval of a planned outline. */
   pendingOutline: PendingOutline | null;
   /** blockId → the pending change-set it belongs to (drives the highlight). */
@@ -89,6 +107,8 @@ interface AgentState {
   setCheckpoint: (reason: string | null) => void;
   setPendingConfirmation: (c: PendingConfirmation | null) => void;
   setPhase: (phase: AgentPhase) => void;
+  setValidation: (v: ValidationStatus | null) => void;
+  setQualityReport: (q: QualityReport | null) => void;
   setPendingOutline: (o: PendingOutline | null) => void;
   finishTurn: (finalText: string) => void;
   setError: (msg: string | null) => void;
@@ -104,6 +124,8 @@ export const useAgentStore = create<AgentState>((set) => ({
   checkpoint: null,
   pendingConfirmation: null,
   phase: null,
+  validation: null,
+  qualityReport: null,
   pendingOutline: null,
   pendingBlocks: {},
   changeSets: {},
@@ -136,6 +158,8 @@ export const useAgentStore = create<AgentState>((set) => ({
       checkpoint: null,
       pendingConfirmation: null,
       phase: null,
+      validation: null,
+      qualityReport: null,
       pendingOutline: null,
       toolCards: [],
       turnBlockIds: [],
@@ -156,6 +180,8 @@ export const useAgentStore = create<AgentState>((set) => ({
       checkpoint: null,
       pendingConfirmation: null,
       pendingOutline: null,
+      validation: null,
+      qualityReport: null,
       turnBlockIds: [],
       messages: [
         ...s.messages,
@@ -210,6 +236,10 @@ export const useAgentStore = create<AgentState>((set) => ({
   setPendingConfirmation: (c) => set({ pendingConfirmation: c }),
 
   setPhase: (phase) => set({ phase }),
+
+  setValidation: (v) => set({ validation: v }),
+
+  setQualityReport: (q) => set({ qualityReport: q }),
 
   setPendingOutline: (o) => set({ pendingOutline: o }),
 

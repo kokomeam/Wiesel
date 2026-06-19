@@ -76,7 +76,9 @@ const createBlockTool = defineTool({
   execute(args, ctx) {
     const lessonId = args.lessonId ?? ctx.lessonId;
     if (!findLesson(ctx.doc, lessonId)) throw new ToolError(`Lesson ${lessonId} not found`);
-    const patch = addBlockPatch(lessonId, args.type);
+    // AI-created slide decks start EMPTY (no default "Section title" placeholder
+    // slide) — the agent authors real slides into it.
+    const patch = addBlockPatch(lessonId, args.type, undefined, { emptySlideDeck: true });
     if (patch.action === "ADD_BLOCK" && args.title) patch.block.title = args.title;
     const blockId = patch.action === "ADD_BLOCK" ? patch.block.id : undefined;
     return { summary: `Added ${args.type.replace("_", " ")} block`, patches: [patch], data: { blockId } };

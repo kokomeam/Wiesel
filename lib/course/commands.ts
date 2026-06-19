@@ -68,12 +68,13 @@ export function deleteLessonPatch(lessonId: string): CoursePatch {
 export function addBlockPatch(
   lessonId: string,
   type: BlockType,
-  atIndex?: number
+  atIndex?: number,
+  opts?: { emptySlideDeck?: boolean }
 ): CoursePatch {
   return {
     action: "ADD_BLOCK",
     lessonId,
-    block: createBlock(type, atIndex ?? 0),
+    block: createBlock(type, atIndex ?? 0, opts),
     atIndex,
   };
 }

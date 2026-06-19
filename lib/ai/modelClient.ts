@@ -38,11 +38,18 @@ export interface ModelToolCall {
   arguments: string;
 }
 
+/** How a failed turn failed — so the agent can log transport timeouts SEPARATELY
+ *  from schema/validation problems (an empty timed-out response must never be
+ *  reported as "invalid JSON"). `transport_timeout` = the request died before the
+ *  model produced output; `model_error` = the API returned an error (4xx/5xx);
+ *  `transport` = a connection failure that isn't specifically a timeout. */
+export type ModelErrorKind = "transport_timeout" | "model_error" | "transport";
+
 /** Normalized streaming events emitted by a provider during one turn. */
 export type ModelStreamEvent =
   | { type: "text_delta"; delta: string }
   | { type: "tool_call"; call: ModelToolCall }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; kind?: ModelErrorKind };
 
 export type FinishReason = "stop" | "tool_calls" | "incomplete" | "error";
 
@@ -56,6 +63,9 @@ export interface ModelTurnResult {
   text: string;
   toolCalls: ModelToolCall[];
   finishReason: FinishReason;
+  /** Set when `finishReason === "error"` — the category of the transport/API
+   *  failure (so the caller can log + message it accurately). */
+  errorKind?: ModelErrorKind;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -75,6 +85,18 @@ export interface ModelTurnParams {
   tools: ToolDefinition[];
   signal?: AbortSignal;
   maxOutputTokens?: number;
+  /** Per-call request timeout (ms), overriding the provider/client default. The
+   *  heavy PLAN call gives itself more headroom than a quick tool turn. */
+  timeoutMs?: number;
+  /** Stream the response token-by-token (default true). Structured PLAN calls set
+   *  this false — they don't need token streaming, just the final JSON, and a
+   *  non-streamed request is simpler/cleaner for a one-shot plan. */
+  stream?: boolean;
+  /** Run the request in OpenAI BACKGROUND mode: create the response, then POLL to
+   *  completion instead of holding one long HTTP connection open through the
+   *  model's silent reasoning (which an idle proxy/LB can drop). Optional fallback
+   *  for long plan calls; gated by config / a prior timeout. */
+  background?: boolean;
   /** Per-call model (PLAN/CRITIQUE gpt-5.5 · GENERATE/classifier gpt-5.4-mini).
    *  Falls back to the provider's env default when omitted. */
   model?: string;

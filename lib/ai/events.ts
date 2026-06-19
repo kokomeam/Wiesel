@@ -7,14 +7,15 @@
  * renders highlights from the exact same data.
  */
 
-import type { LessonOutline, ModuleOutline } from "./outline";
+import type { LessonOutline, ModuleSkeleton } from "./outline";
 
-/** A planned outline awaiting approval — a single lesson's deck, or a whole
- *  module (ordered lessons, each with its slide outline). Transient: it
- *  round-trips back to /api/ai/agent/plan on approve, never persisted. */
+/** A planned artifact awaiting approval — a single lesson's full deck outline, or
+ *  a whole module's COMPACT SKELETON (the lesson map; rich per-lesson contracts are
+ *  planned lazily after approval). Transient: it round-trips back to
+ *  /api/ai/agent/plan on approve, never persisted. */
 export type PlanOutline =
   | { kind: "lesson"; lessonId: string; outline: LessonOutline }
-  | { kind: "module"; outline: ModuleOutline };
+  | { kind: "module"; skeleton: ModuleSkeleton };
 
 export type AgentEvent =
   /** Sent once at the start so the client can persist/track the thread. */
@@ -22,9 +23,35 @@ export type AgentEvent =
   /** Which phase of the content pipeline the agent is in (drives the sidebar
    *  indicator). `detail` carries per-lesson progress in a module build, e.g.
    *  "Linked lists (2/4)". Absent for the single-turn edit path's phase log.
-   *  `critique_skipped` (with a `reason`) is emitted instead of `critique` when
-   *  CRITIQUE is disabled by config. */
-  | { type: "phase"; phase: "plan" | "generate" | "critique" | "critique_skipped"; detail?: string; reason?: string }
+   *  `validate` = checking the deck against the plan; `repair` = fixing hard
+   *  failures; `review` = the optional light review. `critique_skipped` (with a
+   *  `reason`) is emitted when the legacy CRITIQUE is disabled by config. */
+  | {
+      type: "phase";
+      phase: "plan" | "generate" | "validate" | "repair" | "review" | "critique" | "critique_skipped";
+      detail?: string;
+      reason?: string;
+    }
+  /** A VALIDATION pass result — the calm progress lines ("Found 4 missing planned
+   *  slides. Repairing…", "Removed 1 placeholder slide.", "Final validation
+   *  passed."). `ok` true once the contract is satisfied. */
+  | {
+      type: "validation";
+      ok: boolean;
+      message: string;
+      missingSlides: number;
+      placeholdersRemoved: number;
+      repaired: boolean;
+      /** Set when the run stopped on a budget/turn cap before the contract was met. */
+      incomplete?: boolean;
+    }
+  /** Deterministic lint warnings + optional light-review suggestions — surfaced as
+   *  calm, OPTIONAL improvements (never block staging). */
+  | {
+      type: "quality_report";
+      warnings: { code: string; message: string; slideId?: string }[];
+      suggestions: { title: string; detail: string }[];
+    }
   /** The PLAN phase produced an outline awaiting the creator's approval. */
   | { type: "plan_outline"; plan: PlanOutline }
   /** A fragment of the assistant's streaming chat message. */

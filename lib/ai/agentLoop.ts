@@ -88,6 +88,12 @@ export interface LoopOptions {
   layered?: boolean;
   /** Inject an approved outline as the authoring spec. */
   outline?: LessonOutline;
+  /** The pre-created empty slide deck to author into (named in the context so the
+   *  model never creates a second deck / a placeholder starter). */
+  deckBlockId?: string;
+  /** An extra, run-specific instruction appended to the context message — the
+   *  targeted REPAIR pass uses it to list exactly the hard failures to fix. */
+  extraInstruction?: string;
   /** Use this exact system prompt instead of building one (CRITIQUE supplies a
    *  fresh-eyes critic prompt + the deck-as-data). */
   systemOverride?: string;
@@ -129,6 +135,9 @@ export interface LoopResult {
   /** Number of model turns the loop actually ran (instrumentation). */
   turns: number;
   paused: boolean;
+  /** The loop stopped on a budget / per-turn cap (emitted a checkpoint) rather
+   *  than because the model was done — so an unmet plan is "ran out of room". */
+  checkpointed: boolean;
 }
 
 export interface AgentRunParams {
@@ -254,7 +263,11 @@ export async function runConversationLoop(
   const system = options.systemOverride ?? buildSystemPrompt({ layered: options.layered });
   const contextMessage = options.systemOverride
     ? null
-    : buildContextMessage(doc, c.lessonId, { outline: options.outline });
+    : buildContextMessage(doc, c.lessonId, {
+        outline: options.outline,
+        deckBlockId: options.deckBlockId,
+        extraInstruction: options.extraInstruction,
+      });
   const allowed = options.generateTools
     ? GENERATE_TOOL_NAMES
     : options.authoringOnly
@@ -275,6 +288,7 @@ export async function runConversationLoop(
   let lastAssistantMessageId: string | null = null;
   let docMutated = initialMutated;
   let paused = false;
+  let checkpointed = false;
   const usage: PhaseUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
   let toolCallCount = 0;
   let turnsRun = 0;
@@ -324,6 +338,7 @@ export async function runConversationLoop(
         reason: "Reached the overall step budget for this request. Ask me to continue if there's more to do.",
         completedSteps: turn,
       });
+      checkpointed = true;
       break;
     }
     if (c.callBudget) c.callBudget.remaining -= 1;
@@ -472,6 +487,7 @@ export async function runConversationLoop(
         reason: "Reached the per-turn step limit. Ask me to continue if there's more to do.",
         completedSteps: turn + 1,
       });
+      checkpointed = true;
     }
   }
 
@@ -485,7 +501,7 @@ export async function runConversationLoop(
     c.emit({ type: "done" });
   }
 
-  return { doc, docMutated, lastAssistantMessageId, assistantText: fullAssistantText, usage, toolCalls: toolCallCount, turns: turnsRun, paused };
+  return { doc, docMutated, lastAssistantMessageId, assistantText: fullAssistantText, usage, toolCalls: toolCallCount, turns: turnsRun, paused, checkpointed };
 }
 
 /** The minimal fields every phase/turn entrypoint shares — lets `loopContext`

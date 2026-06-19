@@ -8,12 +8,87 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, CheckCheck, PanelRightClose, Sparkles, X } from "lucide-react";
+import { ArrowUp, Check, CheckCheck, ChevronDown, Lightbulb, PanelRightClose, ShieldCheck, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { toolAttrs } from "@/lib/course/aiAttributes";
-import { useAgentStore } from "@/lib/editor/agentStore";
+import { useAgentStore, type QualityReport, type ValidationStatus } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { useAgentStream } from "./useAgentStream";
+
+/** A calm validation status line ("Found 4 missing slides. Repairing…", "Final
+ *  validation passed."). Emerald when the plan was satisfied, amber when the run
+ *  fell short, neutral while in progress. */
+function ValidationLine({ validation, thinking }: { validation: ValidationStatus; thinking: boolean }) {
+  const tone = validation.ok
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : validation.incomplete
+      ? "border-amber-200 bg-amber-50 text-amber-800"
+      : "border-stone-200 bg-stone-50 text-stone-600";
+  return (
+    <div className={cn("flex items-center gap-2 rounded-xl border px-3 py-2 text-xs", tone)}>
+      <ShieldCheck className="size-3.5 shrink-0" />
+      <span>{validation.message}</span>
+      {thinking && !validation.ok && <span className="ml-auto size-1.5 animate-pulse rounded-full bg-current" />}
+    </div>
+  );
+}
+
+/** Soft, OPTIONAL quality findings after a generation. Lint warnings collapse
+ *  behind a count; light-review suggestions each get an "Improve" action that
+ *  asks the agent to refine that point. Never blocks anything. */
+function QualityReportCard({ report, onImprove }: { report: QualityReport; onImprove: (message: string) => void }) {
+  const [open, setOpen] = useState(false);
+  if (!report.warnings.length && !report.suggestions.length) return null;
+  return (
+    <div className="rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5 font-medium text-stone-700">
+        <Lightbulb className="size-3.5 text-amber-500" />
+        Quality suggestions
+        <span className="ml-auto text-[11px] font-normal text-stone-400">optional</span>
+      </div>
+
+      {report.suggestions.length > 0 && (
+        <ul className="mt-2 space-y-2">
+          {report.suggestions.map((sg, i) => (
+            <li key={i} className="rounded-lg bg-stone-50 px-2.5 py-2">
+              <p className="font-medium text-stone-700">{sg.title}</p>
+              <p className="mt-0.5 text-stone-500">{sg.detail}</p>
+              <button
+                type="button"
+                onClick={() => onImprove(`Please improve this lesson — ${sg.title}: ${sg.detail}`)}
+                {...toolAttrs({ tool: "agent-improve-suggestion", action: "AGENT_SEND", label: sg.title })}
+                className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-stone-200 px-2 py-0.5 text-[11px] font-medium text-brand-700 transition-colors hover:border-brand-200 hover:bg-brand-50"
+              >
+                <Sparkles className="size-2.5" />
+                Ask AI to improve
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {report.warnings.length > 0 && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="flex w-full items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-700"
+          >
+            <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />
+            {report.warnings.length} polish note{report.warnings.length === 1 ? "" : "s"}
+          </button>
+          {open && (
+            <ul className="mt-1.5 space-y-1 border-l border-stone-200 pl-2.5 text-stone-500">
+              {report.warnings.map((w, i) => (
+                <li key={i}>{w.message}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const TOOL_LABELS: Record<string, string> = {
   get_course_context: "Read course context",
@@ -63,6 +138,8 @@ export function AgentPanel() {
   const changeSets = useAgentStore((s) => s.changeSets);
   const pendingConfirmation = useAgentStore((s) => s.pendingConfirmation);
   const phase = useAgentStore((s) => s.phase);
+  const validation = useAgentStore((s) => s.validation);
+  const qualityReport = useAgentStore((s) => s.qualityReport);
   const pendingOutline = useAgentStore((s) => s.pendingOutline);
   const autoApprovePlan = useAgentStore((s) => s.autoApprovePlan);
   const setAutoApprovePlan = useAgentStore((s) => s.setAutoApprovePlan);
@@ -81,7 +158,14 @@ export function AgentPanel() {
 
   const blocked = thinking || !!pendingConfirmation || !!pendingOutline;
 
-  const PHASE_LABEL: Record<string, string> = { plan: "Planning", generate: "Generating", critique: "Reviewing" };
+  const PHASE_LABEL: Record<string, string> = {
+    plan: "Planning",
+    generate: "Generating",
+    validate: "Checking the plan",
+    repair: "Repairing",
+    review: "Reviewing",
+    critique: "Reviewing",
+  };
   const statusText = pendingOutline
     ? "Review the plan"
     : pendingConfirmation
@@ -221,6 +305,8 @@ export function AgentPanel() {
                 A {pendingOutline.kind === "module" ? "module" : "lesson"} plan is ready — review it to continue.
               </div>
             )}
+            {validation && <ValidationLine validation={validation} thinking={thinking} />}
+            {qualityReport && <QualityReportCard report={qualityReport} onImprove={send} />}
             {checkpoint && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {checkpoint}

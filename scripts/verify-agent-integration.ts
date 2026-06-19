@@ -24,6 +24,7 @@ import { loadCourseDoc } from "@/lib/ai/serverPersistence";
 import { getPendingBlocks, acceptChangeSet, rejectChangeSet } from "@/lib/ai/changeSet";
 import type { AgentEvent } from "@/lib/ai/events";
 import { findBlock, findLesson } from "@/lib/course/queries";
+import { createBlock } from "@/lib/course/factories";
 
 let pass = 0, fail = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -260,34 +261,58 @@ async function main() {
   const { data: convRow } = await supabase.from("conversations").select("lesson_id").eq("id", convBogus).single();
   check("new conversation for a non-existent lesson stores lesson_id NULL", convRow?.lesson_id === null, String(convRow?.lesson_id));
 
-  // 11. PHASED PIPELINE — PLAN → (approve) → GENERATE → CRITIQUE, one change-set.
-  console.log("\n# phased pipeline — plan → approve → generate → critique");
+  // 11. PHASED PIPELINE — PLAN → GENERATE → VALIDATE/REPAIR → (light review) → stage.
+  console.log("\n# phased pipeline — plan → generate → validate/repair → stage");
   const pModuleId = crypto.randomUUID();
   const pLessonId = crypto.randomUUID();
   await supabase.from("modules").insert({ id: pModuleId, course_id: courseId, title: "Trees", order: 2 });
   await supabase.from("lessons").insert({ id: pLessonId, module_id: pModuleId, course_id: courseId, title: "Intro to binary trees", objective: "Define a tree and its parts; insertion cost.", order: 0 });
   const pConvo = await getOrCreateConversation(supabase, courseId, pLessonId);
 
-  const OUTLINE = {
+  // A real-enough teaching paragraph so generated slides aren't flagged "thin".
+  const BODY = "A binary tree is a hierarchy where each node has up to two children, called left and right, rooted at a single top node.";
+  /** A prose slide for an add_structured_slides_batch entry, stamped with a spec id. */
+  const slide = (specId: string | null, title: string, notes: string | null = "Speaker notes for this slide.") => ({
+    slideSpecId: specId,
+    template: { layoutId: "prose", content: { title: { text: title }, body: { text: BODY } } },
+    notes,
+  });
+  /** A structured-authoring batch into the docked lesson's deck (deckBlockId null). */
+  const batchCall = (slides: ReturnType<typeof slide>[]) => ({
+    name: "add_structured_slides_batch",
+    arguments: { deckBlockId: null, slides },
+  });
+
+  // A full lesson PLAN (microLesson so the depth floor doesn't re-ask). 3 specs → s1..s3.
+  const LESSON_PLAN = {
+    objective: "Define a binary tree and its parts.",
+    targetStudent: "beginners with no CS background",
+    estimatedMinutes: 10,
+    microLesson: true,
+    teachingArc: { hook: "trees are everywhere", coreConcepts: ["node", "root"], workedExamples: ["insert a value"], commonMisconceptions: ["a tree is a list"], recapGoal: "name the parts" },
+    segments: [{ id: "seg", name: "Core", purpose: "concept_intro", targetSlideCount: 3 }],
     slides: [
-      { concept: "What a tree is", prerequisites: [], layout: "key_concept", depth: "definition", notes: "Define node, root, leaf." },
-      { concept: "Insertion", prerequisites: ["node"], layout: "process_steps", depth: "mechanism", notes: "O(log n) average." },
-      { concept: "Recap", prerequisites: [], layout: "outline_list", depth: "analysis", notes: "Summarize the parts." },
+      { segmentId: "seg", title: "What a tree is", teachingGoal: "define a tree", role: "definition", kind: "core", layout: "prose", depth: "definition", keyPoints: ["nodes and edges"], notes: "node/root/leaf", visualIntent: null, requiredElements: null, speakerNotesGoal: "define the parts" },
+      { segmentId: "seg", title: "Insertion", teachingGoal: "insert a value", role: "worked_example", kind: "enrichment", layout: "prose", depth: "mechanism", keyPoints: ["compare and descend"], notes: "O(log n)", visualIntent: null, requiredElements: null, speakerNotesGoal: "walk the insert" },
+      { segmentId: "seg", title: "Recap", teachingGoal: "summarize", role: "recap", kind: "core", layout: "prose", depth: "analysis", keyPoints: ["root, nodes, leaves"], notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "consolidate" },
     ],
+    quizPlan: null,
+    homeworkPlan: null,
   };
-  const genDeckCall = {
-    name: "write_slide_deck",
-    arguments: { blockId: null, lessonId: pLessonId, title: "Binary Trees", slides: [
-      { layout: "title", content: [{ role: "title", text: [{ text: "Binary Trees", bold: null, italic: null }], items: null }], notes: null },
-    ] },
-  };
-  const critLectureCall = {
-    name: "write_lecture_text",
-    arguments: { blockId: null, lessonId: pLessonId, title: "Recap", tone: "concise", paragraphs: [{ kind: "key_idea", text: "A tree has a root, internal nodes, and leaves." }] },
+  // The compact module SKELETON the first plan call returns (lesson briefs, NO
+  // per-slide content). Each lesson's rich contract is planned lazily on approve.
+  const brief = (title: string, objective: string, quiz = false) => ({
+    title, objective, rationale: `teaches ${title.toLowerCase()}`, prerequisiteLessons: [], skillsIntroduced: [title], skillsPracticed: [],
+    estimatedMinutes: 10, minSlides: 6, maxSlides: 9, suggestedBlocks: quiz ? ["slide_deck", "quiz"] : ["slide_deck"], recommendQuiz: quiz, recommendHomework: false, dependencyNotes: null,
+  });
+  const SKELETON = {
+    moduleTitle: "Searching", moduleObjective: "Find things in arrays.", summary: "Two ways to search.", audienceLevel: "beginners", prerequisites: [],
+    lessons: [brief("Linear search", "Scan an array in order."), brief("Binary search", "Halve a sorted range.", true)],
+    assessmentGoal: null, pacingNotes: null,
   };
 
-  // 11a. PLAN pause path (STRONG_GENERATE message → classifier short-circuits, no model call).
-  const pauseMock = createMockModelClient([{ text: JSON.stringify(OUTLINE) }], { finalText: "" });
+  // 11a. PLAN pause path (LESSON_BUILD message → classifier short-circuits, no model call).
+  const pauseMock = createMockModelClient([{ text: JSON.stringify(LESSON_PLAN) }], { finalText: "" });
   const evPlan: AgentEvent[] = [];
   await runContentAgentTurn({
     supabase, model: pauseMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
@@ -298,61 +323,63 @@ async function main() {
   const lessonPlan = outlineEvt && outlineEvt.type === "plan_outline" ? outlineEvt.plan : null;
   check("PLAN emits a phase:plan event", !!planEvt);
   check("PLAN emits a lesson plan_outline with the 3 planned slides", !!lessonPlan && lessonPlan.kind === "lesson" && lessonPlan.outline.slides.length === 3);
+  check("a micro lesson plan does NOT trigger the depth re-ask (one PLAN call)", pauseMock.getCalls().length === 1, `${pauseMock.getCalls().length}`);
   check("PLAN pauses — no change_set yet", !evPlan.some((e) => e.type === "change_set"));
   check("PLAN call used effort:high + responseFormat (per-call)", pauseMock.getCalls()[0]?.effort === "high" && !!pauseMock.getCalls()[0]?.responseFormat);
   check("PLAN call used the cheap default model gpt-5.4-mini (per-call)", pauseMock.getCalls()[0]?.model === "gpt-5.4-mini", pauseMock.getCalls()[0]?.model);
-  // B: the static system carries NO course context (cacheable); the variable
-  // context rides in a leading developer input message.
   const planCall = pauseMock.getCalls()[0];
   check("B: PLAN system is static (no COURSE CONTEXT leak into the cached prefix)", !(planCall?.system ?? "").includes("COURSE CONTEXT"));
   check("B: PLAN context rides in a leading developer input message", (planCall?.input ?? []).some((i) => "role" in i && i.role === "developer" && i.content.includes("COURSE CONTEXT")));
 
-  // 11b. Approve → GENERATE (medium) → CRITIQUE (high) → ONE change-set.
+  // 11b. Approve → GENERATE → VALIDATE (clean) → ONE change-set.
   const resumeMock = createMockModelClient([
-    { text: "Authoring the deck.", toolCalls: [genDeckCall] },
+    { text: "Authoring the deck.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
     { text: "", toolCalls: [] }, // ends GENERATE loop
-    { text: "Adding a recap note.", toolCalls: [critLectureCall] },
-    { text: "", toolCalls: [] }, // ends CRITIQUE loop
-  ], { finalText: "Done — generated and reviewed." });
+  ], { finalText: "Done — generated." });
   const evApprove: AgentEvent[] = [];
   await resumeGeneratePlan({
     supabase, model: resumeMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
-    plan: lessonPlan ?? { kind: "lesson", lessonId: pLessonId, outline: OUTLINE }, decision: "approve", emit: (e) => evApprove.push(e),
+    plan: lessonPlan ?? { kind: "lesson", lessonId: pLessonId, outline: LESSON_PLAN }, decision: "approve", emit: (e) => evApprove.push(e),
   });
   const phaseSeq = evApprove.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
-  // CRITIQUE is OFF by default → generate then a critique_skipped marker.
-  check("approve runs GENERATE then critique_skipped (critique off by default)", JSON.stringify(phaseSeq) === JSON.stringify(["generate", "critique_skipped"]), JSON.stringify(phaseSeq));
-  check("a critique_skipped phase carries the disabled_by_config reason", evApprove.some((e) => e.type === "phase" && e.phase === "critique_skipped" && e.reason === "disabled_by_config"));
+  check("approve runs GENERATE then VALIDATE (critique replaced)", JSON.stringify(phaseSeq) === JSON.stringify(["generate", "validate"]), JSON.stringify(phaseSeq));
+  const valEvt = evApprove.find((e) => e.type === "validation");
+  check("a clean deck passes validation (validation ok, no repair)", !!valEvt && valEvt.type === "validation" && valEvt.ok && !valEvt.repaired);
   const csApprove = evApprove.filter((e) => e.type === "change_set");
-  check("the pipeline still produces exactly ONE change-set (no critique)", csApprove.length === 1, `got ${csApprove.length}`);
+  check("the pipeline produces exactly ONE change-set", csApprove.length === 1, `got ${csApprove.length}`);
   check("GENERATE used effort:medium + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "medium" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
   const pLessonDoc = await loadCourseDoc(supabase, courseId);
-  const pBlocks = pLessonDoc?.modules.find((m) => m.id === pModuleId)?.lessons[0].blocks ?? [];
-  check("generated deck persisted; no critique pass ran", pBlocks.some((b) => b.type === "slide_deck") && !pBlocks.some((b) => b.type === "lecture_text"), `got ${pBlocks.map((b) => b.type).join(",")}`);
+  const pDeck = pLessonDoc?.modules.find((m) => m.id === pModuleId)?.lessons[0].blocks.find((b) => b.type === "slide_deck");
+  check("generated deck persisted with the 3 planned structured slides", !!pDeck && pDeck.type === "slide_deck" && pDeck.slides.length === 3 && pDeck.slides.every((s) => !!s.template), `${pDeck && pDeck.type === "slide_deck" ? pDeck.slides.length : "none"}`);
+  check("no default placeholder slide survived (pre-created empty deck)", !!pDeck && pDeck.type === "slide_deck" && pDeck.slides.every((s) => !!s.ai?.specId));
 
-  // 11c. Auto-approve collapses the pause: plan → generate → critique in one call.
+  // 11c. Auto-approve (fresh lesson): plan → generate → validate in one call.
+  const aLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: aLessonId, module_id: pModuleId, course_id: courseId, title: "Auto lesson", objective: "x", order: 1 });
+  const cConvo = await getOrCreateConversation(supabase, courseId, aLessonId);
   const autoMock = createMockModelClient([
-    { text: JSON.stringify(OUTLINE) },          // PLAN
-    { text: "Authoring.", toolCalls: [genDeckCall] },
-    { text: "", toolCalls: [] },
-    { text: "Reviewing.", toolCalls: [critLectureCall] },
+    { text: JSON.stringify(LESSON_PLAN) },          // PLAN
+    { text: "Authoring.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
     { text: "", toolCalls: [] },
   ], { finalText: "Done." });
-  const cConvo = await getOrCreateConversation(supabase, courseId, pLessonId);
   const evAuto: AgentEvent[] = [];
   await runGenerateLessonTurn({
-    supabase, model: autoMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: cConvo,
+    supabase, model: autoMock, courseId, lessonId: aLessonId, ownerId: userId, conversationId: cConvo,
     userMessage: "Generate the whole lesson", autoApprove: true, emit: (e) => evAuto.push(e),
   });
   const autoPhases = evAuto.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
-  check("auto-approve runs plan→generate→critique_skipped, no pause", JSON.stringify(autoPhases) === JSON.stringify(["plan", "generate", "critique_skipped"]), JSON.stringify(autoPhases));
+  check("auto-approve runs plan→generate→validate, no pause", JSON.stringify(autoPhases) === JSON.stringify(["plan", "generate", "validate"]), JSON.stringify(autoPhases));
   check("auto-approve emits no plan_outline (no approval gate)", !evAuto.some((e) => e.type === "plan_outline"));
   check("auto-approve produces exactly one change-set", evAuto.filter((e) => e.type === "change_set").length === 1);
 
   // 11d. Classifier routes a small edit to the single-turn path (no phases).
+  const editLectureCall = {
+    name: "write_lecture_text",
+    arguments: { blockId: null, lessonId: pLessonId, title: "Recap", tone: "concise", paragraphs: [{ kind: "key_idea", text: "A tree has a root, internal nodes, and leaves." }] },
+  };
   const editMock = createMockModelClient([
-    { text: '{"mode":"edit"}' },                // classifier (structured, minimal)
-    { text: "Tweaked the wording.", toolCalls: [critLectureCall] },
+    { text: '{"mode":"edit"}' },                // classifier (structured, low effort)
+    { text: "Tweaked the wording.", toolCalls: [editLectureCall] },
     { text: "", toolCalls: [] },
   ], { finalText: "Done." });
   const evEdit: AgentEvent[] = [];
@@ -362,37 +389,113 @@ async function main() {
   });
   check("an edit request routes to the single-turn path (no phase events)", !evEdit.some((e) => e.type === "phase"));
   check("the edit still stages one change-set", evEdit.filter((e) => e.type === "change_set").length === 1);
-  check("classifier call used effort:minimal + model gpt-5.4-mini + responseFormat", editMock.getCalls()[0]?.effort === "minimal" && editMock.getCalls()[0]?.model === "gpt-5.4-mini" && !!editMock.getCalls()[0]?.responseFormat);
+  check("classifier call used effort:low (NOT minimal) + model gpt-5.4-mini + responseFormat", editMock.getCalls()[0]?.effort === "low" && editMock.getCalls()[0]?.model === "gpt-5.4-mini" && !!editMock.getCalls()[0]?.responseFormat, editMock.getCalls()[0]?.effort);
   check("the edit path is now LAYERED (teaching bar in the system prompt)", (editMock.getCalls()[1]?.system ?? "").includes("TEACHING BAR"));
 
-  // 11e. MODULE BUILD — "add a … module" routes to a module plan; approve →
-  //      generate every lesson (layered, NO critique) → ONE change-set.
-  const mModuleMock = createMockModelClient([
-    { text: JSON.stringify({
-      moduleTitle: "Searching",
-      lessons: [
-        { title: "Linear search", objective: "Scan an array in order.", slides: OUTLINE.slides },
-        { title: "Binary search", objective: "Halve a sorted range.", slides: OUTLINE.slides },
-      ],
-    }) },
-  ], { finalText: "" });
+  // 11e. MISSING-SPEC REPAIR — generate only s1+s2, validation finds s3 missing,
+  //      a targeted repair pass builds it, re-validation passes.
+  const rLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: rLessonId, module_id: pModuleId, course_id: courseId, title: "Repair lesson", objective: "x", order: 2 });
+  const rConvo = await getOrCreateConversation(supabase, courseId, rLessonId);
+  const repairMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },                                  // PLAN
+    { text: "Partial.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion")])] }, // GENERATE (missing s3)
+    { text: "", toolCalls: [] },                                            // end GENERATE
+    { text: "Fixing the gap.", toolCalls: [batchCall([slide("s3", "Recap")])] }, // REPAIR builds s3
+    { text: "", toolCalls: [] },                                            // end REPAIR
+  ], { finalText: "Done." });
+  const evRepair: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: repairMock, courseId, lessonId: rLessonId, ownerId: userId, conversationId: rConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evRepair.push(e),
+  });
+  const rPhases = evRepair.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("a short deck triggers a repair phase (plan→generate→validate→repair→validate)", JSON.stringify(rPhases) === JSON.stringify(["plan", "generate", "validate", "repair", "validate"]), JSON.stringify(rPhases));
+  const rValEvents = evRepair.filter((e) => e.type === "validation");
+  check("validation reports the missing slide, then passes after repair", rValEvents.length >= 2 && rValEvents.some((e) => e.type === "validation" && !e.ok) && rValEvents[rValEvents.length - 1].type === "validation" && (rValEvents[rValEvents.length - 1] as Extract<AgentEvent, { type: "validation" }>).ok);
+  check("repair did NOT emit a checkpoint (the contract was met)", !evRepair.some((e) => e.type === "checkpoint"));
+  const rDoc = await loadCourseDoc(supabase, courseId);
+  const rDeck = rDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === rLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("the repaired deck has all 3 planned slides", !!rDeck && rDeck.type === "slide_deck" && rDeck.slides.length === 3, `${rDeck && rDeck.type === "slide_deck" ? rDeck.slides.length : "none"}`);
+
+  // 11f. PLACEHOLDER REMOVAL — seed a deck that already holds a default placeholder
+  //      slide; generation authors the real slides into it; validation strips the
+  //      placeholder deterministically before staging.
+  const phLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: phLessonId, module_id: pModuleId, course_id: courseId, title: "Placeholder lesson", objective: "x", order: 3 });
+  const phDeckId = crypto.randomUUID();
+  // A FULL slide_deck payload (type/order/ai/slides) whose one slide is the studio
+  // default "Section title" placeholder — the content jsonb must carry the whole
+  // block, not just slides (see courseDocFromRows).
+  const phBlock = createBlock("slide_deck"); // slides: [createSlide("title")]
+  const phContent = JSON.parse(JSON.stringify({ ...phBlock, id: undefined }));
+  await supabase.from("blocks").insert({ id: phDeckId, lesson_id: phLessonId, course_id: courseId, type: "slide_deck", order: 0, title: "Deck", content: phContent });
+  const phConvo = await getOrCreateConversation(supabase, courseId, phLessonId);
+  const phMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },
+    { text: "Authoring.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
+    { text: "", toolCalls: [] },
+  ], { finalText: "Done." });
+  const evPh: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: phMock, courseId, lessonId: phLessonId, ownerId: userId, conversationId: phConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evPh.push(e),
+  });
+  const phValEvt = evPh.filter((e) => e.type === "validation").pop();
+  check("placeholder removal is reported in the validation event", !!phValEvt && phValEvt.type === "validation" && phValEvt.placeholdersRemoved >= 1 && phValEvt.ok, JSON.stringify(phValEvt));
+  const phDoc = await loadCourseDoc(supabase, courseId);
+  const phDeck = phDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === phLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("the staged deck has the 3 real slides and NO placeholder", !!phDeck && phDeck.type === "slide_deck" && phDeck.slides.length === 3 && phDeck.slides.every((s) => !!s.ai?.specId), `${phDeck && phDeck.type === "slide_deck" ? phDeck.slides.length : "none"}`);
+
+  // 11g. LIGHT REVIEW — a deck with several lint warnings (no speaker notes) trips
+  //      the threshold; ONE review call returns soft suggestions (no regeneration).
+  const lrLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: lrLessonId, module_id: pModuleId, course_id: courseId, title: "Review lesson", objective: "x", order: 4 });
+  const lrConvo = await getOrCreateConversation(supabase, courseId, lrLessonId);
+  const FOUR_SPEC_PLAN = { ...LESSON_PLAN, slides: [...LESSON_PLAN.slides, { segmentId: "seg", title: "Edge case", teachingGoal: "x", role: "edge_case", kind: "enrichment", layout: "prose", depth: "analysis", keyPoints: ["a"], notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "x" }] };
+  const lrMock = createMockModelClient([
+    { text: JSON.stringify(FOUR_SPEC_PLAN) },
+    // 4 slides, all WITHOUT speaker notes → ≥4 lint warnings → review fires.
+    { text: "Authoring.", toolCalls: [batchCall([slide("s1", "A", null), slide("s2", "B", null), slide("s3", "C", null), slide("s4", "D", null)])] },
+    { text: "", toolCalls: [] },
+    // The single light-review call (responseFormat) returns suggestions.
+    { text: JSON.stringify({ coherent: true, matchesPlan: true, topSuggestions: [{ title: "Add speaker notes", detail: "Each slide should carry a spoken explanation." }] }) },
+  ], { finalText: "Done." });
+  const evLr: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: lrMock, courseId, lessonId: lrLessonId, ownerId: userId, conversationId: lrConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evLr.push(e),
+  });
+  const lrPhases = evLr.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("a rough deck triggers the optional light-review phase", lrPhases.includes("review"), JSON.stringify(lrPhases));
+  const qr = evLr.find((e) => e.type === "quality_report");
+  check("a quality_report carries lint warnings + review suggestions", !!qr && qr.type === "quality_report" && qr.warnings.length >= 4 && qr.suggestions.length >= 1, JSON.stringify(qr && qr.type === "quality_report" ? { w: qr.warnings.length, s: qr.suggestions.length } : null));
+  check("the light review used the cheap model at medium effort (one call, no tools)", lrMock.getCalls().some((c) => c.effort === "medium" && c.model === "gpt-5.4-mini" && (c.tools?.length ?? 0) === 0 && !!c.responseFormat));
+
+  // 11h. MODULE BUILD — the FIRST call is a COMPACT SKELETON (low effort, lean),
+  //      NOT a slide-by-slide plan. Approve → each lesson gets a LAZY rich plan →
+  //      generate → validate. ONE change-set.
+  const mModuleMock = createMockModelClient([{ text: JSON.stringify(SKELETON) }], { finalText: "" });
   const evMod: AgentEvent[] = [];
   await runContentAgentTurn({
     supabase, model: mModuleMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
-    // NAMES its lessons — the old `!/lessons/` guard misrouted this to a single lesson.
     userMessage: "Create a search algorithms module; only do the first 2 lessons for now", emit: (e) => evMod.push(e),
   });
   const modPlanEvt = evMod.find((e) => e.type === "plan_outline");
   const modulePlan = modPlanEvt && modPlanEvt.type === "plan_outline" ? modPlanEvt.plan : null;
-  check("a module request short-circuits to a MODULE plan (no model call)", mModuleMock.getCalls()[0]?.effort === "high" && !!modulePlan && modulePlan.kind === "module");
-  check("module plan_outline carries 2 lessons", !!modulePlan && modulePlan.kind === "module" && modulePlan.outline.lessons.length === 2);
-  check("module plan pauses — no change_set yet", !evMod.some((e) => e.type === "change_set"));
+  check("module request → a COMPACT module SKELETON plan at LOW effort", mModuleMock.getCalls()[0]?.effort === "low" && !!modulePlan && modulePlan.kind === "module", mModuleMock.getCalls()[0]?.effort);
+  check("the skeleton carries 2 lesson briefs (title + objective + slide range)", !!modulePlan && modulePlan.kind === "module" && modulePlan.skeleton.lessons.length === 2 && modulePlan.skeleton.lessons.every((l) => !!l.title && l.minSlides >= 3));
+  check("the skeleton has NO per-slide content (lesson briefs only)", !!modulePlan && modulePlan.kind === "module" && modulePlan.skeleton.lessons.every((l) => !("slides" in l)));
+  check("module skeleton plan was NON-streaming (reliability over token streaming)", mModuleMock.getCalls()[0]?.stream === false);
+  check("module skeleton plan pauses — no change_set yet", !evMod.some((e) => e.type === "change_set"));
 
-  // Approve the module plan → generate each lesson (no critique), one change-set.
+  // Approve → per lesson: RICH plan → generate → validate. One change-set.
   const mGenMock = createMockModelClient([
-    { text: "L1.", toolCalls: [{ name: "write_slide_deck", arguments: { blockId: null, lessonId: null, title: "Linear", slides: [{ layout: "title", content: [{ role: "title", text: [{ text: "Linear search", bold: null, italic: null }], items: null }], notes: null }] } }] },
+    { text: JSON.stringify(LESSON_PLAN) },                                  // L1 rich plan (lazy)
+    { text: "L1.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
     { text: "", toolCalls: [] },
-    { text: "L2.", toolCalls: [{ name: "write_slide_deck", arguments: { blockId: null, lessonId: null, title: "Binary", slides: [{ layout: "title", content: [{ role: "title", text: [{ text: "Binary search", bold: null, italic: null }], items: null }], notes: null }] } }] },
+    { text: JSON.stringify(LESSON_PLAN) },                                  // L2 rich plan (lazy)
+    { text: "L2.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
     { text: "", toolCalls: [] },
   ], { finalText: "" });
   const evModGen: AgentEvent[] = [];
@@ -401,23 +504,58 @@ async function main() {
     plan: modulePlan ?? undefined, decision: "approve", emit: (e) => evModGen.push(e),
   });
   const modPhases = evModGen.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
-  check("module approve generates per lesson, NO critique", JSON.stringify(modPhases) === JSON.stringify(["generate", "generate"]), JSON.stringify(modPhases));
+  check("module approve runs RICH-plan→generate→validate PER LESSON", JSON.stringify(modPhases) === JSON.stringify(["plan", "generate", "validate", "plan", "generate", "validate"]), JSON.stringify(modPhases));
+  check("the rich per-lesson plan ran at HIGH effort (full lesson contract)", mGenMock.getCalls()[0]?.effort === "high" && !!mGenMock.getCalls()[0]?.responseFormat);
   check("module build is ONE change-set across both lessons", evModGen.filter((e) => e.type === "change_set").length === 1);
-  // GENERATE is STRUCTURED-only: no flat deck/slide ops, no structural churn —
-  // so it can't downgrade to a flat tip/text deck or mangle the tree.
-  const genToolNames = new Set((mGenMock.getCalls()[0]?.tools ?? []).map((t) => t.name));
+  const genCall = mGenMock.getCalls().find((c) => (c.tools?.length ?? 0) > 0);
+  const genToolNames = new Set((genCall?.tools ?? []).map((t) => t.name));
   check(
     "GENERATE toolset excludes flat deck/slide ops + structural deletes",
     !genToolNames.has("write_slide_deck") && !genToolNames.has("update_slide") && !genToolNames.has("set_slide_layout") && !genToolNames.has("create_lesson") && !genToolNames.has("delete_lesson") && !genToolNames.has("delete_module"),
     [...genToolNames].join(",")
   );
-  check("GENERATE toolset includes structured authoring (+ create_block, write_quiz)", genToolNames.has("add_structured_slide") && genToolNames.has("create_block") && genToolNames.has("write_quiz"));
-  check("module generate ran at effort:medium, layered", mGenMock.getCalls()[0]?.effort === "medium" && (mGenMock.getCalls()[0]?.system ?? "").includes("TEACHING BAR"));
+  check("GENERATE toolset includes structured authoring (+ create_block, write_quiz)", genToolNames.has("add_structured_slides_batch") && genToolNames.has("create_block") && genToolNames.has("write_quiz"));
+  check("module generate ran at effort:medium, layered", genCall?.effort === "medium" && (genCall?.system ?? "").includes("TEACHING BAR"));
   const modDoc = await loadCourseDoc(supabase, courseId);
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");
-  check("module + 2 lessons created, each with a deck", !!newMod && newMod.lessons.length === 2 && newMod.lessons.every((l) => l.blocks.some((b) => b.type === "slide_deck")));
+  const modDeckCounts = newMod?.lessons.map((l) => { const d = l.blocks.find((b) => b.type === "slide_deck"); return d && d.type === "slide_deck" ? d.slides.length : -1; });
+  check("module + 2 lessons created, each with a 3-slide deck", !!newMod && newMod.lessons.length === 2 && (modDeckCounts ?? []).every((n) => n === 3), `lessons=${newMod?.lessons.length} deckCounts=${JSON.stringify(modDeckCounts)}`);
 
-  // 11f. CALL BUDGET (D) — a model that NEVER stops calling tools must be capped
+  // 11h-b. SKELETON TIMEOUT → ULTRA-LEAN FALLBACK. The first call times out (a
+  //        transport error, NOT a schema problem); the system retries with the
+  //        tiny fallback schema and still produces an approvable lesson map.
+  const fbMock = createMockModelClient([
+    { error: { message: "Request timed out.", kind: "transport_timeout" } },        // skeleton times out
+    { text: JSON.stringify({ moduleTitle: "Sorting", moduleObjective: "Order data.", lessons: [{ title: "Bubble sort", objective: "Swap adjacent pairs." }, { title: "Merge sort", objective: "Divide and merge." }], estimatedLessonCount: 2, notes: null }) }, // fallback ok
+  ], { finalText: "" });
+  const evFb: AgentEvent[] = [];
+  await runContentAgentTurn({
+    supabase, model: fbMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
+    userMessage: "Build a sorting algorithms module", emit: (e) => evFb.push(e),
+  });
+  check("a skeleton timeout falls back to the ultra-lean planner (2 plan calls)", fbMock.getCalls().length === 2, `${fbMock.getCalls().length}`);
+  const fbPlanEvt = evFb.find((e) => e.type === "plan_outline");
+  const fbPlan = fbPlanEvt && fbPlanEvt.type === "plan_outline" ? fbPlanEvt.plan : null;
+  check("the fallback still yields an approvable 2-lesson skeleton", !!fbPlan && fbPlan.kind === "module" && fbPlan.skeleton.lessons.length === 2, JSON.stringify(fbPlan));
+  check("the fallback call ran in BACKGROUND mode (poll, not a held connection)", fbMock.getCalls()[1]?.background === true);
+
+  // 11h-c. BOTH skeleton + fallback time out → a CLEAR timeout error, NOT "invalid
+  //        JSON", and no plan card.
+  const failMock = createMockModelClient([
+    { error: { message: "Request timed out.", kind: "transport_timeout" } },
+    { error: { message: "Request timed out.", kind: "transport_timeout" } },
+  ], { finalText: "" });
+  const evFail: AgentEvent[] = [];
+  await runContentAgentTurn({
+    supabase, model: failMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
+    userMessage: "Build a graph algorithms module", emit: (e) => evFail.push(e),
+  });
+  const failErr = evFail.find((e) => e.type === "error");
+  check("both planning attempts timing out → a clear TIMEOUT message", !!failErr && failErr.type === "error" && /timed out/i.test(failErr.message), failErr && failErr.type === "error" ? failErr.message : "(no error)");
+  check("a timeout is NOT mis-reported as 'invalid JSON'", !!failErr && failErr.type === "error" && !/invalid json/i.test(failErr.message));
+  check("no plan card is shown when planning fully failed", !evFail.some((e) => e.type === "plan_outline"));
+
+  // 11i. CALL BUDGET (D) — a model that NEVER stops calling tools must be capped
   //      by the shared per-run budget and emit a checkpoint, not loop forever.
   console.log("\n# call budget — runaway guard caps + checkpoints");
   const READ_CALL = { name: "get_course_context", arguments: {} }; // no-op, never pauses

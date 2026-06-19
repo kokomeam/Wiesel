@@ -11,12 +11,12 @@
  *
  * Two high-precision regex short-circuits skip the model call on unmistakable
  * builds; everything else (incl. small adds like "add a knowledge check") goes
- * to a minimal-effort structured classifier that defaults to "edit".
+ * to a low-effort structured classifier that defaults to "edit".
  */
 
 import { z } from "zod";
 import type { ModelClient } from "./modelClient";
-import { AI_CLASSIFIER_MODEL } from "./modelConfig";
+import { AI_CLASSIFIER_EFFORT, AI_CLASSIFIER_MODEL } from "./modelConfig";
 import { toStrictJsonSchema } from "./schema";
 
 export type AgentMode = "generate_module" | "generate_lesson" | "edit";
@@ -70,7 +70,7 @@ export async function classifyIntent(
         system,
         input: [{ role: "user", content: msg }],
         tools: [],
-        effort: "minimal",
+        effort: AI_CLASSIFIER_EFFORT, // low (gpt-5.4-mini rejects "minimal")
         model: AI_CLASSIFIER_MODEL, // cheap routing; never the strong model
         responseFormat: { name: "intent", schema: toStrictJsonSchema(IntentSchema) },
       },

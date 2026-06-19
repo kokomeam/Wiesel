@@ -208,8 +208,16 @@ never import a provider SDK.
   `OPENAI_MAX_OUTPUT_TOKENS`). `providers/mock.ts` is a deterministic client for
   tests / the no-key path (records each call's params via `getCalls()`).
   **MODEL + `reasoning.effort` are PER CALL** (2026-06-17): `ModelTurnParams.model`
-  + `.effort` override the env default — PLAN/CRITIQUE `gpt-5.5`/high, GENERATE
-  `gpt-5.4-mini`/medium (high-volume → cheap), classifier `gpt-5.4-mini`/minimal;
+  + `.effort` override the env default. Central config = `lib/ai/modelConfig.ts`:
+  every phase defaults to `gpt-5.4-mini` — PLAN high · GENERATE/EDIT/REPAIR medium ·
+  LIGHT REVIEW medium (off by default) · CRITIQUE off by default (legacy) ·
+  classifier **low** (NOT `minimal` — gpt-5.4-mini rejects it: accepts
+  none/low/medium/high/xhigh); each env-overridable (`AI_PLAN_MODEL`/`AI_PLAN_EFFORT`/
+  …/`AI_CLASSIFIER_EFFORT`). The correctness gate is its own config block:
+  `AI_VALIDATION` (`AI_VALIDATE_GENERATION`/`AI_REPAIR_HARD_FAILURES`/`AI_MAX_REPAIR_PASSES`,
+  default ON), `AI_LESSON_FLOORS` (`AI_MIN_NORMAL_/TECHNICAL_LESSON_SLIDES`),
+  `AI_LIGHT_REVIEW` (`AI_LIGHT_REVIEW_ENABLED`/`_ON_LINT_THRESHOLD`/`_LINT_THRESHOLD`/
+  `_MODEL`/`_EFFORT`). No premium `gpt-5.5` by default anywhere.
   `agent_phase` logs the per-call `{model, effort}`. `ModelTurnParams.responseFormat`
   forces a strict json_schema turn; `usage.{reasoningTokens,cachedTokens}` surfaced.
   **Prompt caching (2026-06-17):** the STABLE prefix must be byte-identical + FIRST.
@@ -223,45 +231,89 @@ never import a provider SDK.
   `message` items' `output_text` parts (`messageTextFromOutput`); give the call a
   generous `maxOutputTokens` (PLAN uses 32000) so reasoning tokens don't starve
   it. Strict mode STRIPS `min/max/minItems/maxItems` (`schema.ts`), so never
-  hard-reject the parse on them — `coerceOutline`/`coerceModuleOutline` clamp
+  hard-reject the parse on them — `coerceOutline`/`coerceModuleSkeleton` clamp
   counts, limits stay as `.describe()`/prompt guidance.
-- **Phased content pipeline (2026-06-16):** content generation runs ONE agent
-  through a plan→generate(→critique) pipeline with **per-call effort**; small edits
-  keep the single-turn loop. **3-way auto-routing** (`lib/ai/intent.ts`
-  `classifyIntent`: regex short-circuits + minimal-effort 3-mode classifier):
-  - **`generate_module`** → module PLAN (`ModuleOutlineSchema` = ordered lessons,
-    each with its slide outline, effort high) → ONE approval card → create module +
-    lessons → GENERATE each lesson (layered, effort medium). **Module builds SKIP
-    CRITIQUE** (deliberate cost trade-off, 2026-06-16). Routing (fixed 2026-06-17):
-    a module build that NAMES its lessons routes to `generate_module`; only
-    "add a lesson TO module X" (`LESSON_INTO_MODULE`) diverts to `generate_lesson`.
+  **Plan calls are NON-STREAMING (2026-06-19):** a plan needs reliability, not
+  token streaming — `ModelTurnParams.stream:false` uses `responses.create`. Optional
+  `background:true` (CREATE + POLL, no long-held idle connection) gated by
+  `AI_USE_BACKGROUND_FOR_PLANS` / used automatically by the module fallback. Errors
+  are CATEGORIZED (`ModelErrorKind` + `classifyError`): a transport **timeout** is
+  NEVER parsed as "invalid JSON". Every plan call logs `agent_plan_request`
+  (planType/model/effort/timeoutMs/input+schema chars/maxTokens/background); a
+  failure logs `agent_plan_fail` with `errorType` = `transport_timeout` |
+  `model_error` | `transport` | `schema_error`.
+- **Phased content pipeline (2026-06-16; VALIDATE/REPAIR added 2026-06-18):**
+  content generation runs ONE agent through **PLAN → GENERATE → VALIDATE/REPAIR →
+  (optional LIGHT REVIEW) → STAGE** with **per-call effort**; small edits keep the
+  single-turn loop. The plan is a **contract**; correctness is enforced by code,
+  not a model critique (the heavy CRITIQUE pass is OFF by default — see below).
+  **3-way auto-routing** (`lib/ai/intent.ts` `classifyIntent`: regex short-circuits
+  + low-effort 3-mode classifier):
+  - **`generate_module`** (REDESIGNED 2026-06-19 — the old whole-module plan timed
+    out) → a COMPACT **module SKELETON** (`ModuleSkeletonSchema`: a lesson MAP —
+    title/objective/rationale/skills/slide-range/blocks per lesson, **NO per-slide
+    content**; low effort, ~2.8 KB schema → returns in seconds) → ONE approval card
+    → create module + lessons → **for EACH lesson: a LAZY RICH lesson plan**
+    (`runRichLessonPlan`, full `LessonOutlineSchema`, high effort, one small lesson)
+    → GENERATE (medium) → **VALIDATE/REPAIR**. A lesson whose rich plan fails is
+    SKIPPED + checkpointed (the rest still build). If the skeleton call
+    transport-fails, an **ultra-lean FALLBACK** (`ModuleFallbackSchema`, background
+    mode) retries once (`runModuleSkeletonPlan`). No light review (kept cheap; lint
+    aggregated into one `quality_report`). Routing: a module build that NAMES its
+    lessons routes here; only "add a lesson TO module X" (`LESSON_INTO_MODULE`)
+    diverts to `generate_lesson`.
   - **`generate_lesson`** → lesson PLAN (`LessonOutlineSchema`) → approve → GENERATE
-    (medium) → **CRITIQUE** (one bounded fresh-eyes pass, deck-as-data, high).
-  - **`edit`** → the single-turn loop, but **LAYERED** (teaching bar + layout guide)
-    so any content it creates still meets the bar — no plan gate, stays fast. The
-    delete-resume loop is layered too; **no un-layered content path remains**.
-  PLAN uses structured output (`lib/ai/outline.ts`, validate→repair); the outline
-  is **transient** (round-trips client→server, never persisted). An **auto-approve**
-  toggle (OFF by default, honored server-side) skips the pause. GENERATE layers via
-  `buildSystemPrompt(doc, lessonId, {layered, outline})`; the edit path runs
-  **`authoringOnly`** (`AUTHORING_TOOL_NAMES`, no structural/destructive) while
-  GENERATE/CRITIQUE run the narrower **`generateTools`** (`GENERATE_TOOL_NAMES`:
-  reads + structured slide tools + create_block + write_quiz/homework/lecture —
-  **no `write_slide_deck`/flat slide ops**, so generation MUST honor the plan's
-  structured layout and can't downgrade to a flat tip/text deck; 2026-06-17). The
-  outline carries a per-slide `keyPoints` content brief GENERATE expands; the
-  teaching bar bans skeletal slides (a `agent_thin_slides` log flags under-fill).
-  The whole run reconciles once → ONE change-set.
+    (medium) → **VALIDATE/REPAIR** → optional **LIGHT REVIEW**.
+  - **`edit`** → the single-turn loop, LAYERED (teaching bar + layout guide); no
+    plan gate, no validate — stays fast. The delete-resume loop is layered too.
+  **PLAN is the contract** (`lib/ai/outline.ts`): each slide spec carries a `role`
+  (hook/worked_example/common_mistake/conceptual_check/…) + `kind` (core|enrichment);
+  the lesson carries `microLesson`. Slide-count guidance (micro 3–4 only on request ·
+  normal 6–10 · technical 7–12 · complex 9–14) + a **depth floor**
+  (`lessonDepthShortfall`, `AI_MIN_NORMAL_/TECHNICAL_LESSON_SLIDES`) that re-asks
+  ONCE for a too-thin non-micro plan (via `runStructuredPlan`'s `postValidate` hook,
+  reusing the single repair-call slot; a valid-but-thin plan is never lost). The
+  outline is **transient** (round-trips client→server, never persisted). An
+  **auto-approve** toggle (OFF by default) skips the pause.
+  **GENERATE** runs the narrow **`generateTools`** (`GENERATE_TOOL_NAMES`: reads +
+  structured slide tools + create_block + write_quiz/homework/lecture — **no
+  `write_slide_deck`/flat slide ops**). It **pre-creates an EMPTY deck** and threads
+  its `deckBlockId` into the context (`buildContextMessage`), so the model authors
+  real slides into a known deck and **never seeds a placeholder**;
+  `add_structured_slides_batch` takes a **nullable** `deckBlockId` resolving to the
+  lesson's deck (robust to a mis-cited/absent id). The edit path runs
+  `authoringOnly` (`AUTHORING_TOOL_NAMES`). The outline's per-slide `keyPoints` brief
+  is expanded; the teaching bar frames the plan as a binding contract + bans skeletal
+  slides (`agent_thin_slides` log).
+  **VALIDATE/REPAIR** (`lib/ai/validation.ts` pure + `slideDiagnostics.ts` leaf):
+  after GENERATE, check the doc vs the plan — every spec built, no placeholder/empty
+  slide, no duplicate primary spec, required quiz/homework present, deck not short,
+  budget not exhausted. Hard failures are repaired DETERMINISTICALLY first (strip
+  placeholder/empty slides, drop junk/empty decks — no model) then a NARROW model
+  pass handed ONLY the missing spec briefs + missing blocks (`buildRepairInstruction`,
+  via `LoopOptions.extraInstruction`), re-validating up to `AI_MAX_REPAIR_PASSES`. If
+  still unmet → **checkpoint** with exactly what remains (never staged as complete;
+  `LoopResult.checkpointed` = budget vs done). `generationState` now also tracks
+  remaining/duplicate/placeholder/no-spec/incomplete-segment/missing-block so bounded
+  history can't forget the contract.
+  **LINT + LIGHT REVIEW** (`lib/ai/lintGeneration.ts` pure, `lib/ai/lightReview.ts`):
+  after hard validation passes, a no-model linter emits SOFT warnings; an OPTIONAL
+  **one-call** review (no tool loop, no regen, gpt-5.4-mini/medium, OFF by default,
+  fires only when lint ≥ `AI_LIGHT_REVIEW_LINT_THRESHOLD`) adds ≤3 suggestions.
+  Neither blocks staging. The whole run reconciles once → ONE change-set.
   **Known hazard:** the agent's server reconcile and the browser autosave both
   full-snapshot the same course with no coordination (can transiently orphan rows →
   a `lessons_module_id_fkey`); follow-up = pause autosave during a run / scoped reconcile. Orchestration in `lib/ai/phases.ts`
   (`runContentAgentTurn`/`runGenerateLessonTurn`/`runGenerateModuleTurn`/
-  `runGenerateThenCritique`/`runGenerateModule`/`resumeGeneratePlan`); approval
-  resolved by `app/api/ai/agent/plan/route.ts`. The review is a **prominent modal**
-  (`components/editor/agent/AgentPlanHost.tsx`, mounted at the shell level, renders
-  lesson vs module) + a sidebar PLAN/GENERATE/CRITIQUE badge
-  (`agentStore.phase`/`pendingOutline`/`autoApprovePlan`). Per-phase
-  `console.log({tag:"agent_phase", layered, effort, tokens, latencyMs,…})`.
+  `runModuleSkeletonPlan`/`runRichLessonPlan`/`runLessonPipeline`/`validateAndRepairLesson`/
+  `runGenerateModule`/`resumeGeneratePlan`; legacy `runLegacyCritique` gated by
+  `AI_CRITIQUE_ENABLED`, off); approval resolved
+  by `app/api/ai/agent/plan/route.ts`. The review is a **prominent modal**
+  (`components/editor/agent/AgentPlanHost.tsx`) + a sidebar phase badge + a calm
+  `validation` line + a `quality_report` "Quality suggestions" card
+  (`agentStore.phase`/`validation`/`qualityReport`/`pendingOutline`/`autoApprovePlan`).
+  Per-phase `console.log({tag:"agent_phase", layered, effort, tokens, latencyMs,…})`;
+  per-lesson `agent_plan_coverage`.
 - **Loop:** `lib/ai/agentLoop.ts` — per turn: persist user msg → load doc +
   replayed history → stream a model turn → execute each tool call (validate args
   → apply CoursePatches to the in-memory doc → stream `tool_result`) → feed
@@ -308,11 +360,15 @@ never import a provider SDK.
   pending blocks → `StudioLoader` → `agentStore.hydratePending`.
 - **Env:** set `OPENAI_API_KEY` (required) in `.env.local`; optional
   `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS`.
-- **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts`, no key) and
-  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — 47
-  checks incl. the phased lesson + MODULE plan→approve→generate pipeline, per-call
-  effort + layered system-prompt asserted via the mock's `getCalls()`, and the
-  3-way classifier routing).
+- **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **76**
+  checks incl. the phased lesson pipeline, the **module SKELETON → approve →
+  per-lesson rich-plan → generate → validate** flow, **skeleton-timeout →
+  background fallback**, **both-timeout → clear-message** (not "invalid JSON"),
+  per-call effort + layered system-prompt via the mock's `getCalls()`, the 3-way
+  classifier routing, and clean-validate · missing-spec repair · placeholder
+  removal · light-review-trigger end-to-end paths). The mock can inject a transport
+  error (`MockTurn.error`) to exercise timeout handling.
   Slide-vocabulary suites (no key): `npm run verify:slides` (stickers + font
   tokens + all 8 structured layouts incl. near-max overflow + the structured
   agent tools) and `npm run verify:reject` (atomic byte-for-byte revert, incl. a

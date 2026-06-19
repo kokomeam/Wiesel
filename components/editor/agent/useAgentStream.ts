@@ -30,9 +30,15 @@ function dispatch(ev: AgentEvent): boolean {
       s.resolveTool(ev.toolCallId, ev.ok, ev.summary, ev.blockId);
       return true;
     case "phase":
-      // `critique_skipped` is informational (critique disabled) — clear the
+      // `critique_skipped` is informational (legacy critique disabled) — clear the
       // indicator; the next assistant_message/done settles the run.
       s.setPhase(ev.phase === "critique_skipped" ? null : ev.phase);
+      return false;
+    case "validation":
+      s.setValidation({ message: ev.message, ok: ev.ok, incomplete: ev.incomplete });
+      return false;
+    case "quality_report":
+      s.setQualityReport({ warnings: ev.warnings, suggestions: ev.suggestions });
       return false;
     case "plan_outline":
       s.setPendingOutline(ev.plan);

@@ -245,7 +245,18 @@ const blockTitles: Record<BlockType, string> = {
   resource: "Resources",
 };
 
-export function createBlock(type: BlockType, order = 0): LessonBlock {
+/**
+ * Create a fresh block. `opts.emptySlideDeck` makes a slide_deck with NO slides —
+ * the AI path uses this so an agent-authored deck never starts with the default
+ * "Section title" placeholder slide (the human AddBlockMenu keeps the starter so
+ * a person has a slide to edit). See lib/ai/slideDiagnostics for the detector
+ * that catches a placeholder if one ever does slip through.
+ */
+export function createBlock(
+  type: BlockType,
+  order = 0,
+  opts?: { emptySlideDeck?: boolean }
+): LessonBlock {
   const base = {
     id: newRowId(),
     title: blockTitles[type],
@@ -254,7 +265,7 @@ export function createBlock(type: BlockType, order = 0): LessonBlock {
   };
   switch (type) {
     case "slide_deck":
-      return { ...base, type, slides: [createSlide("title")] };
+      return { ...base, type, slides: opts?.emptySlideDeck ? [] : [createSlide("title")] };
     case "lecture_text":
       return { ...base, type, tone: "beginner", paragraphs: [createParagraph()] };
     case "quiz":

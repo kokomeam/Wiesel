@@ -6,6 +6,138 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Module SKELETON plan + lazy per-lesson rich planning — kill the module-plan timeout, 2026-06-19
+
+Even after a lean schema + low effort, `generate_module` STILL timed out (~76s,
+`rawLength:0`, before any timeout fired) — the model reasoned silently over the
+whole-module plan and the connection dropped. Root cause: ONE call was doing two
+jobs (unit map + every lesson's teaching contract). Redesigned so the first call
+is tiny:
+
+- **MODULE SKELETON → approve → per lesson: RICH plan → GENERATE → VALIDATE/REPAIR.**
+  The first call (`ModuleSkeletonSchema`, `lib/ai/outline.ts`) returns only a
+  COMPACT lesson MAP — per lesson: title, objective, rationale, prereqs, skills,
+  estimatedMinutes, slide-range, suggested blocks, recommend quiz/homework — **no
+  per-slide arrays, no speaker notes, no quiz content**. ~2.8 KB schema vs the old
+  ~6 KB; returns in seconds. Each lesson's full contract (`LessonOutlineSchema`) is
+  planned **LAZILY**, right before that lesson is generated (`runRichLessonPlan`,
+  high effort, one small lesson) — so quality is preserved without one giant call.
+  A lesson whose rich plan fails is **skipped + reported**; the rest still build,
+  and a checkpoint lists what's left (`runGenerateModule` in `lib/ai/phases.ts`).
+- **Ultra-lean FALLBACK** (`ModuleFallbackSchema`: title/objective per lesson + a
+  count, no nested arrays): if the skeleton call **transport-fails**, the system
+  retries ONCE with this tiny schema in **background mode**, then lets the user
+  approve the rough map. Both fail → a clear checkpoint, never a hang.
+- **Error categories, separated** (`modelClient.ts` `ModelErrorKind`; `openai.ts`
+  `classifyError`): a transport **timeout** is no longer parsed as "invalid JSON".
+  `agent_plan_fail` now logs `errorType` = `transport_timeout` | `model_error` |
+  `transport` | `schema_error`; the empty timed-out body is never run through the
+  JSON validator. The user sees "Module planning timed out before the model
+  returned a plan. Try a smaller module request" — not a schema error.
+- **Background mode + non-streaming plans** (`openai.ts`): plan calls are now
+  NON-STREAMING (a plan needs reliability, not token streaming). `background:true`
+  CREATEs the response then POLLs to completion (no long-held idle connection an
+  proxy can drop) — opt-in via `AI_USE_BACKGROUND_FOR_PLANS`, and automatic for the
+  module fallback after a timeout.
+- **Instrumentation** (`agent_plan_request` before every plan call): planType
+  (`module_skeleton`/`module_fallback`/`lesson_rich`/`lesson`), model, effort,
+  timeoutMs, approxInputChars, approxSchemaChars, maxOutputTokens, background,
+  streaming — so a future failure makes the cause (timeout vs schema vs model vs
+  proxy) obvious from the logs.
+- **UI** (`AgentPlanHost.tsx`): the module review card renders the lesson MAP
+  (briefs + slide ranges + quiz/practice chips) with a note that each lesson's
+  slides are planned just before it's built. `PlanOutline` module variant now
+  carries `skeleton` (was the full outline).
+- **Preserved:** bounded history, structured slide tools, batch generation,
+  deterministic validate/repair, slideSpecId coverage, no default `gpt-5.5`,
+  critique off, the approval gate, single change-set per module build.
+- **Verified:** build + lint + tsc; `verify:ai` 64+**26**+27+32 (skeleton + fallback
+  schema/coerce); `verify:slides` 17+8+67+23; `verify:reject` 17; `verify:ai:int`
+  **76** vs live Supabase (+ skeleton→approve→per-lesson-rich-plan→generate,
+  skeleton-timeout→fallback-in-background, and both-timeout→clear-message paths).
+  No DB migration.
+
+## Deterministic VALIDATE/REPAIR replaces heavy CRITIQUE — the plan is a contract, 2026-06-18
+
+The heavy CRITIQUE pass was disabled (poor quality-per-cost). The reliability
+problems it papered over — a deck finalizing with only 3 slides, a leftover
+"Section title" placeholder, a failed batch silently skipping slides — are now
+solved STRUCTURALLY: **PLAN → GENERATE → VALIDATE/REPAIR → (optional LIGHT
+REVIEW) → STAGE**. Correctness is enforced by code, not by a model's opinion.
+
+- **PLAN is the contract** (`lib/ai/outline.ts`): every slide spec now carries a
+  pedagogical `role` (hook / worked_example / common_mistake / conceptual_check /
+  edge_case / recap / …) + `kind` (`core` | `enrichment`), and the lesson carries
+  a `microLesson` flag. The prompt gives explicit slide-count guidance (micro 3–4
+  only on request · normal 6–10 · technical 7–12 · complex 9–14) and a "deepen,
+  don't pad" checklist. A **depth floor** (`lessonDepthShortfall`, env
+  `AI_MIN_NORMAL_LESSON_SLIDES`/`AI_MIN_TECHNICAL_LESSON_SLIDES`) re-asks ONCE when
+  a non-micro plan comes back too thin — the PLAN-time half of the 3-slide fix
+  (reuses the single repair-call slot in `runStructuredPlan` via a `postValidate`
+  hook; a valid-but-thin plan is never lost if the deepen re-ask returns garbage).
+- **No more placeholder decks** (`factories.ts`/`commands.ts`/`tools/structural.ts`):
+  AI-created slide decks start EMPTY (`createBlock(…, {emptySlideDeck})`); the
+  human AddBlockMenu keeps its starter slide. GENERATE now PRE-CREATES the empty
+  deck and threads its `deckBlockId` into the context, so the model authors real
+  slides into a known deck and never seeds a placeholder. `add_structured_slides_batch`
+  takes a **nullable** `deckBlockId` that resolves to the lesson's deck (robust to
+  a model that mis-cites the server-generated id; creates one if absent).
+- **VALIDATE** (`lib/ai/validation.ts`, pure): after GENERATE, checks the doc
+  against the plan — every spec built, no placeholder/empty slide, no duplicate
+  primary spec, required quiz/homework present, deck not short of the contract,
+  budget not exhausted mid-build. `lib/ai/slideDiagnostics.ts` is the leaf detector
+  (precise placeholder/empty detection — a flat seed-only slide; a structured
+  slide is authored content).
+- **REPAIR** (`lib/ai/phases.ts`): hard failures are fixed — DETERMINISTICALLY
+  first (strip placeholder/empty slides, drop junk/empty decks — no model), then a
+  NARROW model pass handed ONLY the missing spec briefs + missing blocks ("fix
+  these, leave correct slides alone"), re-validating each round up to
+  `AI_MAX_REPAIR_PASSES`. If the contract still isn't met, it **checkpoints** with
+  exactly what remains — a short deck is never presented as complete.
+  `LoopResult.checkpointed` distinguishes "ran out of budget" from "model was done".
+- **Generation state tracks remaining work** (`generationState.ts`): the bounded
+  summary now carries the specs still to build, duplicates, placeholders present,
+  slides missing a spec id, incomplete segments, and required blocks missing — so
+  bounded history can't make the agent forget the rest of the contract.
+- **Deterministic LINT + optional LIGHT REVIEW** (`lib/ai/lintGeneration.ts`,
+  `lib/ai/lightReview.ts`): after hard validation passes, a no-model linter emits
+  SOFT suggestions (thin slide, no speaker notes, example-planned slide with no
+  example, quiz short of plan, …). An OPTIONAL **one-call** review (no tool loop,
+  no regeneration, `gpt-5.4-mini`/medium) adds ≤3 suggestions — OFF by default,
+  fired only when lint warnings cross `AI_LIGHT_REVIEW_LINT_THRESHOLD`. Neither
+  blocks staging.
+- **UI** (`events.ts`/`agentStore.ts`/`AgentPanel.tsx`): new `validate`/`repair`/
+  `review` phases + `validation` ("Found 4 missing slides. Repairing…", "Final
+  validation passed.") and `quality_report` events. The panel shows a calm
+  validation line + a "Quality suggestions" card (warnings collapse behind a
+  count; each review suggestion gets an "Ask AI to improve" action).
+- **Config:** all default-ON for correctness, no premium `gpt-5.5` by default —
+  `AI_VALIDATE_GENERATION` · `AI_REPAIR_HARD_FAILURES` · `AI_MAX_REPAIR_PASSES` ·
+  `AI_LIGHT_REVIEW_ENABLED`/`_ON_LINT_THRESHOLD`/`_LINT_THRESHOLD` (`modelConfig.ts`).
+  The legacy CRITIQUE path is kept behind `AI_CRITIQUE_ENABLED` (off) for parity.
+- **Module-plan timeout fix:** "make all of module 3" failed with "The AI service
+  hit an error" — diagnosis from the logs: the whole-module PLAN call **timed out**
+  (`openai_error: Request timed out`) at ~77s, BEFORE our 120/180s timeouts — i.e.
+  the model "reasons" for >75s producing **zero output** (`rawLength: 0`) over the
+  giant per-slide outline, and the silent connection is dropped (server-side / a
+  local proxy). Fixes: (a) the module plan is now a **DELIBERATELY LEAN** schema —
+  `concept + layout + depth` per slide, NO per-slide keyPoints/notes/prerequisites
+  (those were the bulk the model had to generate); the per-lesson GENERATE expands
+  each concept. (b) **LOW effort** for the module plan (`AI_PHASE_MODELS.modulePlan`,
+  env `AI_MODULE_PLAN_EFFORT`) — the single-lesson plan stays high; depth is built
+  in GENERATE. (c) `runStructuredPlan` no longer **re-asks after a TRANSPORT error**
+  (`finishReason === "error"`) — that was burning a SECOND timeout (the original
+  2.6-min double-fail); it bails with the real provider message, now **surfaced to
+  the chat** + the `agent_plan_fail` log (the PLAN path was swallowing the provider
+  `error` event via `() => {}`). (d) a longer per-call PLAN timeout
+  (`ModelTurnParams.timeoutMs`, `AI_PLAN_TIMEOUT_MS`=180s) as a safety net. Net: the
+  module plan is now a small, fast call that returns in seconds.
+- **Verified:** build + lint + tsc; `verify:ai` 64+20+27+**32** (new `verify-validation.ts`:
+  placeholder detection, every hard-failure class, deterministic repair, depth floor,
+  lint + review trigger); `verify:slides` 17+8+67+23; `verify:reject` 17;
+  `verify:ai:int` **67** vs live Supabase (+ clean-validate, missing-spec repair,
+  placeholder removal, and light-review-trigger end-to-end). No DB migration.
+
 ## Per-phase model · prompt-cache fix · reject↔autosave race (A/B/C), 2026-06-17
 
 - **A — per-phase MODEL (not just effort):** `ModelTurnParams.model` + `LoopOptions.model` make the model a per-call parameter (provider falls back to `OPENAI_MODEL`/`DEFAULT_MODEL`). PLAN/CRITIQUE = `gpt-5.5`/high, **GENERATE = `gpt-5.4-mini`/medium** (the high-volume phase stays cheap), classifier = `gpt-5.4-mini`/minimal. `agent_phase` logs the per-call `{phase, model, effort}` (was logging the client default). Both strings confirmed valid live.

@@ -55,13 +55,20 @@ DESIGNED LAYOUTS & PRIMITIVES (use the richer vocabulary)
 const GENERATE_TEACHING_BAR = `LESSON GENERATION — TEACHING BAR (hold to it)
 You build slides for self-paced, creator-economy courses (Udemy/Kajabi style). Any subject; the standard is the same. Your job is to TEACH, not to decorate. A learner with no prior exposure should finish UNDERSTANDING the concept, not just having seen it named.
 
-AUTHOR THROUGH STRUCTURED LAYOUTS, ONE SEGMENT PER TURN. If the lesson has no slide deck yet, create_block(slide_deck) ONCE. Then work through the plan's SEGMENTS in order: each turn, author the next segment's 1–3 slides in a SINGLE add_structured_slides_batch call (do NOT add slides one at a time — a 9-slide lesson should take ~3–5 turns, not 9+). Tag each slide with the plan slideSpecId it satisfies so coverage can be measured, and write its speaker notes. Render each slide with the layout the plan assigned (layout=<id>). You MAY upgrade to a different STRUCTURED layout if the content genuinely fits it better — but you may NOT downgrade to a plain/prose or a bare list as a lazy default, and there is NO flat tip-box / plain-text deck tool here. "prose" is allowed ONLY when the plan chose it (or the content is genuinely just an explanation). Fill EVERY slot of the chosen layout. Follow the approved contract's order, layouts, and depth; if you must deviate, say why in one line. The generation-state summary tells you what's already built and which specs remain — build the remaining ones; don't re-read or duplicate what's listed.
+THE PLAN IS A CONTRACT — COVER IT COMPLETELY:
+- The lesson's slide deck ALREADY EXISTS (its blockId is in the context + generation state). Author into THAT deck with add_structured_slides_batch — never create a new deck.
+- Build EVERY planned slide spec. Stamp each generated slide with the exact slideSpecId it satisfies so coverage is measured automatically. The generation-state summary lists which specs remain — keep going until none remain.
+- Do NOT stop early because the topic "seems simple" or "feels done". A planned full lesson must produce its full slide count; a 3-slide deck for an 8-slide plan is a FAILURE.
+- If an add_structured_slides_batch call comes back with an error (a slot too long, a bad count), FIX it and retry the SAME specs — never skip them or move on leaving them unbuilt.
+
+AUTHOR THROUGH STRUCTURED LAYOUTS, ONE SEGMENT PER TURN. Work through the plan's SEGMENTS in order: each turn, author the next segment's 1–3 slides in a SINGLE add_structured_slides_batch call (do NOT add slides one at a time — a 9-slide lesson should take ~3–5 turns, not 9+). Render each slide with the layout the plan assigned (layout=<id>). You MAY upgrade to a different STRUCTURED layout if the content genuinely fits it better — but you may NOT downgrade to a plain/prose or a bare list as a lazy default, and there is NO flat tip-box / plain-text deck tool here. "prose" is allowed ONLY when the plan chose it (or the content is genuinely just an explanation). Fill EVERY slot of the chosen layout.
 
 TEACH WITH REAL CONTENT (this is what's been missing):
 - Expand the plan's per-slide brief (the "cover" points) into actual teaching — full sentences, real steps, a concrete worked example. The brief is the floor of what to say, not the text to paste.
 - BANNED: skeletal slides. No near-empty slots; no 3–6-word fragments standing in for an explanation. A definition/body/explanation slot is 1–3 real sentences. (A short label or a step heading may be terse — but the slide as a whole must explain its point.)
 - One idea per slide; define every term before using it; be precise where precision carries the lesson (a runtime/cost, a quantity, a ratio, a formula, exact conditions) — "roughly"/"it depends" are placeholders, not teaching.
-- Show a concrete example before generalizing; every concept gets a worked example.
+- Show a concrete example before generalizing; every concept gets a worked example. Honor each slide's role: a worked_example slide shows a real example; a code_walkthrough slide carries real code; a common_mistake slide names the actual mistake and the fix; a conceptual_check / mini_practice slide poses a real question or task.
+- DEEPEN a short topic instead of ending early — with a worked example, a mini-practice prompt, a conceptual question, an edge case, a common mistake, and a recap — never with filler or crowded slides. Add purposeful slides, not padding.
 - Length discipline still caps the MAX per slot (tighten, never truncate mid-thought) — but fill substantively up to it; do not under-fill.
 - Follow the approved outline: cover every planned concept; keep the planned order + depth; vary layouts so the deck isn't five identical slides.
 
@@ -143,9 +150,13 @@ export function buildSystemPrompt(opts?: { layered?: boolean }): string {
 export function buildContextMessage(
   doc: CourseDocument,
   lessonId: string,
-  opts?: { outline?: LessonOutline }
+  opts?: { outline?: LessonOutline; deckBlockId?: string; extraInstruction?: string }
 ): string {
   const lines = courseContextLines(doc, lessonId);
+  if (opts?.deckBlockId) {
+    lines.push("", `SLIDE DECK TO AUTHOR INTO: blockId ${opts.deckBlockId} (it already exists — add slides to it; do NOT create another deck).`);
+  }
   if (opts?.outline) lines.push("", outlinePromptFragment(opts.outline));
+  if (opts?.extraInstruction) lines.push("", opts.extraInstruction);
   return lines.join("\n");
 }

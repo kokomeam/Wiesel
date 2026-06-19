@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { STRUCTURED_LAYOUT_IDS, structuredLayoutCatalog } from "@/lib/course/slide/structuredLayouts";
 import { toStrictJsonSchema } from "./schema";
+import { AI_LESSON_FLOORS } from "./modelConfig";
 import type { JsonSchema } from "./modelClient";
 
 /** Allowed outline layouts = ALL structured layouts (incl. `prose`, the
@@ -27,6 +28,33 @@ import type { JsonSchema } from "./modelClient";
 export const OUTLINE_LAYOUTS = [...STRUCTURED_LAYOUT_IDS] as [string, ...string[]];
 
 export const OUTLINE_DEPTHS = ["motivation", "definition", "mechanism", "example", "analysis"] as const;
+
+/** The pedagogical ROLE a single slide plays. Drives the deepening checklist (a
+ *  normal lesson should carry a worked_example + a common_mistake + a
+ *  conceptual_check + a recap) and lets the linter check a slide does its job
+ *  (a worked_example slide must carry a concrete example; a code_walkthrough must
+ *  carry code). */
+export const SLIDE_ROLES = [
+  "hook",
+  "concept_intro",
+  "definition",
+  "worked_example",
+  "code_walkthrough",
+  "visual_model",
+  "comparison",
+  "common_mistake",
+  "edge_case",
+  "conceptual_check",
+  "mini_practice",
+  "recap",
+  "transition",
+] as const;
+
+/** Whether a slide is essential to the objective (`core`) or deepens it
+ *  (`enrichment` — a worked example, a check, an edge case, practice). The
+ *  planner marks each slide so a thin lesson can be deepened with enrichment
+ *  rather than padded with filler. */
+export const SLIDE_KINDS = ["core", "enrichment"] as const;
 
 /** Pedagogical role of a segment (1–3 slides that teach one beat together). */
 export const SEGMENT_PURPOSES = [
@@ -65,6 +93,8 @@ const SlideSpecSchema = z.object({
   segmentId: z.string().describe("The id of the segment this slide belongs to (must match a segment.id)."),
   title: z.string().describe("The slide's working title."),
   teachingGoal: z.string().describe("The single thing a learner should understand after this slide."),
+  role: z.enum(SLIDE_ROLES).describe("The pedagogical role this slide plays (hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition)."),
+  kind: z.enum(SLIDE_KINDS).describe("'core' = essential to the objective; 'enrichment' = a worked example / check / edge case / practice that deepens it."),
   layout: z.enum(OUTLINE_LAYOUTS).describe("The structured layout that best fits this slide's intent."),
   depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
   keyPoints: z
@@ -101,9 +131,14 @@ export const LessonOutlineSchema = z.object({
   objective: z.string().describe("The lesson's single learning objective."),
   targetStudent: z.string().describe("Who this lesson is for + what they already know."),
   estimatedMinutes: z.number().int().describe("Rough minutes to complete the lesson."),
+  microLesson: z
+    .boolean()
+    .describe(
+      "TRUE only if the user EXPLICITLY asked for a short / micro / quick lesson (3–4 slides). Otherwise FALSE — a normal instructional lesson plans 6+ slides (technical lessons 7+)."
+    ),
   teachingArc: TeachingArcSchema,
   segments: z.array(SegmentSchema).describe("Ordered pedagogical segments (2–6); each groups 1–3 slides."),
-  slides: z.array(SlideSpecSchema).describe("Ordered slide specs; each tagged with its segmentId. 3–14 total."),
+  slides: z.array(SlideSpecSchema).describe("Ordered slide specs; each tagged with its segmentId. A normal lesson has 6–10, technical 7–12, complex 9–14. Only 3–4 if microLesson is true."),
   quizPlan: QuizPlanSchema.nullable().describe("A knowledge-check plan if the lesson should have one (else null)."),
   homeworkPlan: HomeworkPlanSchema.nullable().describe("A homework plan if applicable (else null)."),
 });
@@ -117,6 +152,8 @@ export interface PlannedSlide {
   segmentId: string;
   title: string;
   teachingGoal: string;
+  role: (typeof SLIDE_ROLES)[number];
+  kind: (typeof SLIDE_KINDS)[number];
   layout: string;
   depth: (typeof OUTLINE_DEPTHS)[number];
   keyPoints: string[];
@@ -138,6 +175,7 @@ export interface LessonOutline {
   objective: string;
   targetStudent: string;
   estimatedMinutes: number;
+  microLesson: boolean;
   teachingArc: z.infer<typeof TeachingArcSchema>;
   segments: PlannedSegment[];
   slides: PlannedSlide[];
@@ -153,6 +191,8 @@ const RelaxedSlideSchema = z.object({
   segmentId: z.string().optional().default(""),
   title: z.string().optional().default(""),
   teachingGoal: z.string().optional().default(""),
+  role: z.enum(SLIDE_ROLES).optional().default("concept_intro"),
+  kind: z.enum(SLIDE_KINDS).optional().default("core"),
   layout: z.enum(OUTLINE_LAYOUTS),
   depth: z.enum(OUTLINE_DEPTHS).optional().default("definition"),
   keyPoints: z.array(z.string()).optional().default([]),
@@ -172,6 +212,7 @@ const RelaxedLessonOutlineSchema = z.object({
   objective: z.string().optional().default(""),
   targetStudent: z.string().optional().default(""),
   estimatedMinutes: z.number().int().optional().default(10),
+  microLesson: z.boolean().optional().default(false),
   teachingArc: TeachingArcSchema.partial().optional(),
   segments: z.array(RelaxedSegmentSchema).optional().default([]),
   slides: z.array(RelaxedSlideSchema),
@@ -192,6 +233,33 @@ export function outlineResponseFormat(): { name: string; schema: JsonSchema } {
   return { name: "lesson_outline", schema: toStrictJsonSchema(LessonOutlineSchema) };
 }
 
+/** Heuristic: a lesson is "technical" if any planned slide is code-bearing
+ *  (a code walkthrough layout or role). Technical lessons carry a higher floor. */
+export function isTechnicalOutline(outline: LessonOutline): boolean {
+  return outline.slides.some(
+    (s) => s.layout === "code_walkthrough_steps" || s.role === "code_walkthrough"
+  );
+}
+
+/**
+ * PLAN depth floor: a NON-micro lesson plan that came back too thin gets ONE
+ * re-ask to deepen it (the central fix for "a normal lesson planned only 3
+ * slides"). Returns the re-ask instruction, or null when the plan is deep enough
+ * / is an explicit micro-lesson. Pure — the caller decides whether to act on it.
+ */
+export function lessonDepthShortfall(outline: LessonOutline): string | null {
+  if (outline.microLesson) return null;
+  const floor = isTechnicalOutline(outline) ? AI_LESSON_FLOORS.technical : AI_LESSON_FLOORS.normal;
+  if (outline.slides.length >= floor) return null;
+  return (
+    `This is a normal (non-micro) lesson, but the plan has only ${outline.slides.length} slide(s) — too thin. ` +
+    `Expand it to at least ${floor} slides by DEEPENING the teaching where it genuinely helps (do NOT pad with filler): ` +
+    `add a concrete motivating example, a full worked example, a common mistake / misconception to pre-empt, a check-for-understanding, ` +
+    `a short practice prompt, an edge case or limitation, and a recap. Mark the added slides kind="enrichment". ` +
+    `Keep microLesson=false and return the COMPLETE corrected contract.`
+  );
+}
+
 /** Coerce a parsed value into a lesson outline: assign stable slide ids (keeping
  *  any already present), clamp slide + segment counts, and DERIVE each segment's
  *  slideSpecIds from the slides' segmentId grouping. Idempotent on the flat form. */
@@ -206,6 +274,8 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     segmentId: s.segmentId,
     title: s.title,
     teachingGoal: s.teachingGoal,
+    role: s.role,
+    kind: s.kind,
     layout: s.layout,
     depth: s.depth,
     keyPoints: s.keyPoints,
@@ -232,6 +302,7 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     objective: d.objective,
     targetStudent: d.targetStudent,
     estimatedMinutes: d.estimatedMinutes,
+    microLesson: d.microLesson,
     teachingArc: { ...EMPTY_ARC, ...(d.teachingArc ?? {}) },
     segments,
     slides,
@@ -257,7 +328,7 @@ export function validateOutline(raw: string): { outline?: LessonOutline; errors:
 export function outlinePromptFragment(outline: LessonOutline): string {
   const slideById = new Map(outline.slides.map((s) => [s.id, s]));
   const renderSlide = (s: PlannedSlide): string => {
-    const pre = `   - [${s.id} · layout=${s.layout} · ${s.depth}] ${s.title} — ${s.teachingGoal}`;
+    const pre = `   - [${s.id} · ${s.role}/${s.kind} · layout=${s.layout} · ${s.depth}] ${s.title} — ${s.teachingGoal}`;
     const cover = s.keyPoints.length ? `\n     cover: ${s.keyPoints.map((p) => `• ${p}`).join("  ")}` : "";
     const exact = s.notes ? `\n     exact: ${s.notes}` : "";
     const visual = s.visualIntent ? `\n     visual: ${s.visualIntent}` : "";
@@ -284,11 +355,13 @@ export function outlinePromptFragment(outline: LessonOutline): string {
     ? `\nHOMEWORK PLAN: ${outline.homeworkPlan.exerciseCount} exercise(s), ${outline.homeworkPlan.difficulty} — ${outline.homeworkPlan.targetSkills.join(", ")}.`
     : "";
 
+  const specIds = outline.slides.map((s) => s.id).join(", ");
   return [
     `APPROVED LESSON CONTRACT — objective: ${outline.objective}`,
-    `For: ${outline.targetStudent}.`,
+    `For: ${outline.targetStudent}.${outline.microLesson ? " (micro-lesson — short by request.)" : ""}`,
     arcLine,
-    `Author ONE SEGMENT per turn (in order) with add_structured_slides_batch, EXPANDING each slide's "cover" brief into real teaching content and writing its speaker notes. Use each slide's spec id so coverage can be measured; keep the planned order, layout, and depth.`,
+    `THE CONTRACT IS BINDING: you MUST build ALL ${outline.slides.length} planned slides (spec ids: ${specIds})${outline.quizPlan ? " + the planned knowledge check" : ""}${outline.homeworkPlan ? " + the planned practice" : ""}. Do not stop early.`,
+    `Author ONE SEGMENT per turn (in order) with add_structured_slides_batch, EXPANDING each slide's "cover" brief into real teaching content and writing its speaker notes. Stamp each slide with its exact slideSpecId so coverage can be measured; keep the planned order, layout, and depth. If a batch call fails, retry the SAME specs — never skip them.`,
     segBlocks,
     quiz + hw,
   ].join("\n");
@@ -301,13 +374,23 @@ First decide the lesson-level frame:
 - objective: the single thing the learner can do after the lesson.
 - targetStudent: who it's for and what they already know.
 - estimatedMinutes: a realistic completion time.
+- microLesson: TRUE only if the user EXPLICITLY asked for a short / micro / quick lesson. Otherwise FALSE.
 - teachingArc: the hook (why care), the core concepts, the worked example(s), the common misconceptions to pre-empt, and what the recap consolidates.
+
+HOW MANY SLIDES (the single most important planning decision — a too-short deck is the #1 failure):
+- Micro lesson: 3–4 slides — ONLY when microLesson is true (the user explicitly asked for a short one).
+- Normal instructional lesson: 6–10 slides.
+- Technical / conceptual lesson: 7–12 slides.
+- Complex lesson with examples + practice: 9–14 slides.
+Never plan a 3–5-slide deck for a normal lesson just because the topic "seems simple". Almost every real topic has depth to teach. Do NOT pad with filler — DEEPEN with useful instructional material: a concrete motivating example, a full worked example, a common mistake / misconception, a check-for-understanding, a short practice prompt, an edge case or limitation, and a recap. Add each only where it improves the lesson.
 
 Then DECOMPOSE the lesson into ordered SEGMENTS (2–6), each a pedagogical beat of 1–3 slides — e.g. hook → concept_intro → worked_example → guided_practice → common_mistakes → recap → assessment. Give every segment an id, a name, a purpose, and a targetSlideCount.
 
-Then write the ordered SLIDES (3–14 total). For each slide:
+Then write the ordered SLIDES. For each slide:
 - segmentId: which segment it belongs to (must match a segment id).
 - title + teachingGoal: the working title and the single thing the learner should understand.
+- role: the slide's pedagogical job — hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition.
+- kind: "core" (essential to the objective) or "enrichment" (a worked example / check / edge case / practice that deepens it). Mark them honestly — a normal lesson carries several enrichment slides.
 - layout: the structured layout that best fits, from the catalog below.
 - depth: motivation / definition / mechanism / example / analysis.
 - keyPoints: the ACTUAL CONTENT to convey — real points / worked-example steps / the definition, each a full clause (NOT a title), 2–5.
@@ -321,131 +404,257 @@ Finally, plan assessment where it fits: quizPlan (3–5 checks with target skill
 Rules:
 - Front-load foundations: vocabulary is defined before it is used; basics before advanced.
 - Teach to the depth a beginner needs — never skip "obvious" basics a real course would teach.
-- EVERY core concept gets at least one concrete WORKED EXAMPLE slide (concept_example or a steps slide).
+- EVERY core concept gets at least one concrete WORKED EXAMPLE slide (a worked_example role on concept_example or a steps layout).
+- A normal lesson should include at least one common_mistake AND one conceptual_check (or mini_practice). Deepen, don't pad.
 - Completeness over brevity: plan more slides if the topic warrants it (up to 14). A weight-bearing idea is its own slide.
 - No slides that need diagrams/charts we can't render — put the explanation in prose or a worked example. "prose" is a FIRST-CLASS choice, picked deliberately.
 
 Output only the structured contract. The user reviews + approves before generation.`;
 
-/* ─────────────────────────── Module-level plan ─────────────────────────────
- * MODULE builds keep a LIGHTER per-lesson outline (the bulk path). Each lesson
- * is adapted into a LessonOutline before GENERATE via moduleLessonToOutline. */
+/* ─────────────────────────── Module SKELETON plan ──────────────────────────
+ * A module build's FIRST call is a COMPACT skeleton, NOT a slide-by-slide plan.
+ * The old whole-module plan (full slide specs + keyPoints + notes for every
+ * lesson) was the heaviest call in the system and routinely TIMED OUT during the
+ * model's long silent reasoning phase. The skeleton answers only "what unit is
+ * this + what lessons, in what order, teaching what, how big" — a few short text
+ * fields per lesson, NO per-slide arrays — so it returns in seconds. Each lesson's
+ * RICH contract (slide specs, speaker notes, quiz/homework) is planned LAZILY,
+ * per lesson, at generation time (runRichLessonPlan). Module map ≠ teaching
+ * contract; one call must not do both jobs. */
 
-export const ModuleOutlineSlideSchema = z.object({
-  concept: z.string().min(1).describe("The single idea this slide teaches."),
-  prerequisites: z.array(z.string()).describe("Terms/ideas that must already be defined before this slide."),
-  layout: z.enum(OUTLINE_LAYOUTS).describe("The structured layout that best fits this slide's intent."),
-  depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
-  keyPoints: z.array(z.string()).describe("The ACTUAL CONTENT to convey — full clauses, 2–5. The writer's brief."),
-  notes: z.string().describe("Load-bearing specifics to get exactly right."),
+/** Block types a lesson brief can suggest (the rich plan fills the actual content). */
+export const MODULE_BLOCK_TYPES = ["slide_deck", "quiz", "homework", "lecture_text"] as const;
+
+const LessonBriefSchema = z.object({
+  title: z.string().describe("Lesson title (≤ ~10 words)."),
+  objective: z.string().describe("One-line objective — what the learner can do after this lesson."),
+  rationale: z.string().describe("Why this lesson exists in the module / what gap it fills."),
+  prerequisiteLessons: z.array(z.string()).describe("Titles of earlier lessons in THIS module this depends on; [] if none."),
+  skillsIntroduced: z.array(z.string()).describe("New skills/ideas this lesson introduces."),
+  skillsPracticed: z.array(z.string()).describe("Earlier skills this lesson reinforces; [] if none."),
+  estimatedMinutes: z.number().int().describe("Rough completion time in minutes."),
+  minSlides: z.number().int().describe("Lower end of the deck size (e.g. 6)."),
+  maxSlides: z.number().int().describe("Upper end of the deck size (e.g. 9)."),
+  suggestedBlocks: z.array(z.enum(MODULE_BLOCK_TYPES)).describe("Block types this lesson should eventually contain (always includes slide_deck)."),
+  recommendQuiz: z.boolean().describe("Whether a low-stakes knowledge check fits this lesson."),
+  recommendHomework: z.boolean().describe("Whether a practice exercise fits this lesson."),
+  dependencyNotes: z.string().nullable().describe("Any sequencing caveat, or null."),
 });
-export type ModuleOutlineSlide = z.infer<typeof ModuleOutlineSlideSchema>;
 
-export const ModuleLessonSchema = z.object({
-  title: z.string().min(1).max(80).describe("Lesson title (≤ ~10 words)."),
-  objective: z.string().min(1).max(160).describe("One-line lesson objective."),
-  slides: z.array(ModuleOutlineSlideSchema).min(3).max(12).describe("This lesson's slide-by-slide outline."),
+/** The compact module SKELETON the first plan call returns (NO per-slide content). */
+export const ModuleSkeletonSchema = z.object({
+  moduleTitle: z.string().describe("The new module's title."),
+  moduleObjective: z.string().describe("The single thing the module as a whole teaches."),
+  summary: z.string().describe("A 1–2 sentence overview of the module."),
+  audienceLevel: z.string().describe("Who it's for + their level."),
+  prerequisites: z.array(z.string()).describe("What a learner should already know before this module; [] if none."),
+  lessons: z.array(LessonBriefSchema).describe("Ordered lesson briefs (1–8). NO per-slide content here — just the lesson map."),
+  assessmentGoal: z.string().nullable().describe("What the module's assessments should confirm, or null."),
+  pacingNotes: z.string().nullable().describe("Optional note on pacing/sequencing, or null."),
 });
-export type ModuleLesson = z.infer<typeof ModuleLessonSchema>;
 
-export const ModuleOutlineSchema = z.object({
-  moduleTitle: z.string().min(1).max(80).describe("The new module's title."),
-  lessons: z.array(ModuleLessonSchema).min(1).max(8).describe("Ordered lessons; each carries its own slide outline."),
+/** The ULTRA-LEAN fallback the system retries with if the skeleton call times out.
+ *  No nested arrays beyond the lesson list — the smallest possible module map. */
+export const ModuleFallbackSchema = z.object({
+  moduleTitle: z.string().describe("The new module's title."),
+  moduleObjective: z.string().describe("The single thing the module teaches."),
+  lessons: z.array(z.object({ title: z.string(), objective: z.string() })).describe("Ordered lessons: title + objective ONLY."),
+  estimatedLessonCount: z.number().int().describe("How many lessons the module should have."),
+  notes: z.string().nullable().describe("Optional note, or null."),
 });
-export type ModuleOutline = z.infer<typeof ModuleOutlineSchema>;
 
-export function moduleOutlineResponseFormat(): { name: string; schema: JsonSchema } {
-  return { name: "module_outline", schema: toStrictJsonSchema(ModuleOutlineSchema) };
+/* ──────────────────────── Internal (coerced) types ─────────────────────── */
+
+export interface LessonBrief {
+  title: string;
+  objective: string;
+  rationale: string;
+  prerequisiteLessons: string[];
+  skillsIntroduced: string[];
+  skillsPracticed: string[];
+  estimatedMinutes: number;
+  minSlides: number;
+  maxSlides: number;
+  suggestedBlocks: (typeof MODULE_BLOCK_TYPES)[number][];
+  recommendQuiz: boolean;
+  recommendHomework: boolean;
+  dependencyNotes?: string;
 }
 
-/** Adapt a lighter module-lesson outline into a LessonOutline so GENERATE,
- *  generation-state, and coverage all consume one shape. One synthetic segment;
- *  slide ids assigned; spec fields mapped from the light outline. */
-export function moduleLessonToOutline(lesson: ModuleLesson): LessonOutline {
-  const slides: PlannedSlide[] = lesson.slides.slice(0, MAX_LESSON_SLIDES).map((s, i) => ({
-    id: `s${i + 1}`,
-    segmentId: "lesson",
-    title: s.concept,
-    teachingGoal: s.concept,
-    layout: s.layout,
-    depth: s.depth,
-    keyPoints: s.keyPoints,
-    notes: s.notes,
-    speakerNotesGoal: `Explain: ${s.concept}`,
-  }));
+export interface ModuleSkeleton {
+  moduleTitle: string;
+  moduleObjective: string;
+  summary: string;
+  audienceLevel: string;
+  prerequisites: string[];
+  lessons: LessonBrief[];
+  assessmentGoal?: string;
+  pacingNotes?: string;
+}
+
+export function moduleSkeletonResponseFormat(): { name: string; schema: JsonSchema } {
+  return { name: "module_skeleton", schema: toStrictJsonSchema(ModuleSkeletonSchema) };
+}
+export function moduleFallbackResponseFormat(): { name: string; schema: JsonSchema } {
+  return { name: "module_fallback", schema: toStrictJsonSchema(ModuleFallbackSchema) };
+}
+
+/* Bounds-relaxed mirrors for PARSING (strict ignores min/max; clamp in coerce). */
+const RelaxedLessonBriefSchema = z.object({
+  title: z.string(),
+  objective: z.string().optional().default(""),
+  rationale: z.string().optional().default(""),
+  prerequisiteLessons: z.array(z.string()).optional().default([]),
+  skillsIntroduced: z.array(z.string()).optional().default([]),
+  skillsPracticed: z.array(z.string()).optional().default([]),
+  estimatedMinutes: z.number().int().optional().default(12),
+  minSlides: z.number().int().optional().default(6),
+  maxSlides: z.number().int().optional().default(9),
+  suggestedBlocks: z.array(z.enum(MODULE_BLOCK_TYPES)).optional().default(["slide_deck"]),
+  recommendQuiz: z.boolean().optional().default(false),
+  recommendHomework: z.boolean().optional().default(false),
+  dependencyNotes: z.string().nullish(),
+});
+const RelaxedModuleSkeletonSchema = z.object({
+  moduleTitle: z.string().optional().default("New module"),
+  moduleObjective: z.string().optional().default(""),
+  summary: z.string().optional().default(""),
+  audienceLevel: z.string().optional().default(""),
+  prerequisites: z.array(z.string()).optional().default([]),
+  lessons: z.array(RelaxedLessonBriefSchema),
+  assessmentGoal: z.string().nullish(),
+  pacingNotes: z.string().nullish(),
+});
+const RelaxedFallbackSchema = z.object({
+  moduleTitle: z.string().optional().default("New module"),
+  moduleObjective: z.string().optional().default(""),
+  lessons: z.array(z.object({ title: z.string(), objective: z.string().optional().default("") })).optional().default([]),
+  estimatedLessonCount: z.number().int().optional().default(0),
+  notes: z.string().nullish(),
+});
+
+function briefFrom(b: z.infer<typeof RelaxedLessonBriefSchema>): LessonBrief {
+  const minSlides = Math.max(3, Math.min(b.minSlides, MAX_LESSON_SLIDES));
+  const maxSlides = Math.max(minSlides, Math.min(b.maxSlides, MAX_LESSON_SLIDES));
+  const blocks: (typeof MODULE_BLOCK_TYPES)[number][] = b.suggestedBlocks.includes("slide_deck")
+    ? b.suggestedBlocks
+    : ["slide_deck", ...b.suggestedBlocks];
   return {
-    objective: lesson.objective,
-    targetStudent: "",
-    estimatedMinutes: Math.max(5, slides.length * 2),
-    teachingArc: EMPTY_ARC,
-    segments: [
-      { id: "lesson", name: lesson.title, purpose: "concept_intro", targetSlideCount: slides.length, slideSpecIds: slides.map((s) => s.id) },
-    ],
-    slides,
+    title: b.title,
+    objective: b.objective,
+    rationale: b.rationale,
+    prerequisiteLessons: b.prerequisiteLessons,
+    skillsIntroduced: b.skillsIntroduced,
+    skillsPracticed: b.skillsPracticed,
+    estimatedMinutes: b.estimatedMinutes,
+    minSlides,
+    maxSlides,
+    suggestedBlocks: blocks,
+    recommendQuiz: b.recommendQuiz,
+    recommendHomework: b.recommendHomework,
+    dependencyNotes: b.dependencyNotes ?? undefined,
   };
 }
 
-/* Bounds-relaxed mirror for PARSING the module plan (see the lesson note). */
-const RelaxedModuleSlideSchema = z.object({
-  concept: z.string(),
-  prerequisites: z.array(z.string()).optional().default([]),
-  layout: z.enum(OUTLINE_LAYOUTS),
-  depth: z.enum(OUTLINE_DEPTHS),
-  keyPoints: z.array(z.string()).optional().default([]),
-  notes: z.string().optional().default(""),
-});
-const RelaxedModuleLessonSchema = z.object({
-  title: z.string(),
-  objective: z.string(),
-  slides: z.array(RelaxedModuleSlideSchema),
-});
-const RelaxedModuleOutlineSchema = z.object({
-  moduleTitle: z.string(),
-  lessons: z.array(RelaxedModuleLessonSchema),
-});
-
-/** Coerce a parsed value into a module outline: clamp lesson + per-lesson slide
- *  counts; drop any lesson with zero slides; require ≥1 usable lesson. */
-export function coerceModuleOutline(value: unknown): { outline?: ModuleOutline; errors: string[] } {
-  const res = RelaxedModuleOutlineSchema.safeParse(value);
+/** Coerce a parsed value into a ModuleSkeleton: clamp lessons, drop untitled ones,
+ *  require ≥1, normalize slide ranges + block lists. */
+export function coerceModuleSkeleton(value: unknown): { skeleton?: ModuleSkeleton; errors: string[] } {
+  const res = RelaxedModuleSkeletonSchema.safeParse(value);
   if (!res.success) return { errors: res.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`) };
   const lessons = res.data.lessons
-    .map((l) => ({ ...l, slides: l.slides.slice(0, MAX_LESSON_SLIDES) }))
-    .filter((l) => l.slides.length > 0)
-    .slice(0, MAX_MODULE_LESSONS);
-  if (lessons.length === 0) return { errors: ["lessons: the module has no lessons with slides."] };
-  return { outline: { moduleTitle: res.data.moduleTitle, lessons }, errors: [] };
+    .filter((l) => l.title.trim())
+    .slice(0, MAX_MODULE_LESSONS)
+    .map(briefFrom);
+  if (lessons.length === 0) return { errors: ["lessons: the module skeleton has no lessons."] };
+  return {
+    skeleton: {
+      moduleTitle: res.data.moduleTitle,
+      moduleObjective: res.data.moduleObjective,
+      summary: res.data.summary,
+      audienceLevel: res.data.audienceLevel,
+      prerequisites: res.data.prerequisites,
+      lessons,
+      assessmentGoal: res.data.assessmentGoal ?? undefined,
+      pacingNotes: res.data.pacingNotes ?? undefined,
+    },
+    errors: [],
+  };
 }
 
-/** Parse the model's module JSON, then coerce. */
-export function validateModuleOutline(raw: string): { outline?: ModuleOutline; errors: string[] } {
+/** Coerce the ULTRA-LEAN fallback into the same ModuleSkeleton shape (sensible
+ *  defaults for the fields it omits) so the rest of the pipeline is identical. */
+export function coerceModuleFallback(value: unknown): { skeleton?: ModuleSkeleton; errors: string[] } {
+  const res = RelaxedFallbackSchema.safeParse(value);
+  if (!res.success) return { errors: res.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`) };
+  const lessons = res.data.lessons
+    .filter((l) => l.title.trim())
+    .slice(0, MAX_MODULE_LESSONS)
+    .map((l) => briefFrom(RelaxedLessonBriefSchema.parse({ title: l.title, objective: l.objective })));
+  if (lessons.length === 0) return { errors: ["lessons: the fallback module map has no lessons."] };
+  return {
+    skeleton: {
+      moduleTitle: res.data.moduleTitle,
+      moduleObjective: res.data.moduleObjective,
+      summary: "",
+      audienceLevel: "",
+      prerequisites: [],
+      lessons,
+      notes: res.data.notes ?? undefined,
+    } as ModuleSkeleton,
+    errors: [],
+  };
+}
+
+export function validateModuleSkeleton(raw: string): { skeleton?: ModuleSkeleton; errors: string[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { errors: ["The module outline was not valid JSON. Return ONLY the json_schema object."] };
+    return { errors: ["The module skeleton was not valid JSON. Return ONLY the json_schema object."] };
   }
-  return coerceModuleOutline(parsed);
+  return coerceModuleSkeleton(parsed);
+}
+export function validateModuleFallback(raw: string): { skeleton?: ModuleSkeleton; errors: string[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { errors: ["The fallback module map was not valid JSON. Return ONLY the json_schema object."] };
+  }
+  return coerceModuleFallback(parsed);
 }
 
-export const MODULE_PLAN_SYSTEM_PROMPT = `You are planning a whole NEW module before any slides are written. Read the request and the course context, then produce the module as structured data: an ordered list of lessons, each with a slide-by-slide outline.
+/** Turn a lesson brief into the user instruction for that lesson's RICH plan
+ *  (runRichLessonPlan feeds this to the full lesson PLAN, lazily, per lesson). */
+export function lessonBriefToPlanRequest(brief: LessonBrief, moduleTitle: string): string {
+  const parts = [
+    `Plan the lesson "${brief.title}" for the module "${moduleTitle}".`,
+    `Objective: ${brief.objective}.`,
+  ];
+  if (brief.rationale) parts.push(brief.rationale.endsWith(".") ? brief.rationale : `${brief.rationale}.`);
+  if (brief.skillsIntroduced.length) parts.push(`It introduces: ${brief.skillsIntroduced.join(", ")}.`);
+  if (brief.skillsPracticed.length) parts.push(`It reinforces: ${brief.skillsPracticed.join(", ")}.`);
+  parts.push(`Aim for ${brief.minSlides}–${brief.maxSlides} slides, ~${brief.estimatedMinutes} min.`);
+  if (brief.recommendQuiz) parts.push("Include a low-stakes knowledge check (quizPlan).");
+  if (brief.recommendHomework) parts.push("Include a practice exercise (homeworkPlan).");
+  if (brief.dependencyNotes) parts.push(brief.dependencyNotes);
+  return parts.join(" ");
+}
 
-For the module:
-- Title it clearly. Sequence lessons as a learning arc (foundations first; each lesson builds on the last).
-- Give each lesson a one-line objective and 3–12 planned slides.
+export const MODULE_SKELETON_SYSTEM_PROMPT = `You are sketching a COMPACT skeleton for a whole NEW module — a coherent unit MAP, not a slide-by-slide plan. Keep it small: a few short text fields per lesson. The detailed teaching contract for each lesson (slides, speaker notes, quizzes) is planned LATER, lazily, one lesson at a time — do NOT plan slide content here, or this call gets too large to return reliably.
 
-DECOMPOSE each lesson, don't list: break the concept into sub-problems that BUILD to the intuition; each weight-bearing sub-step is its OWN slide; go primitive -> improved.
+Decide:
+- moduleTitle, moduleObjective, summary, audienceLevel, prerequisites.
+- An ordered list of LESSONS (aim 3–7) forming a learning arc: foundations first, each building on the last.
+- assessmentGoal (what the module's checks should confirm) and pacingNotes, or null.
 
-For each slide specify concept, prerequisites (defined earlier — this lesson or an earlier one), layout (from the catalog), depth (motivation / definition / mechanism / example / analysis), keyPoints (the ACTUAL CONTENT — real points / worked-example steps / the definition, each a full clause, 2–5; this is the writer's brief), and notes (load-bearing specifics: a runtime like O(log n), a quantity, a ratio, a formula, a rule's exact conditions).
+For each lesson give ONLY: title, objective, rationale (why it's here), prerequisiteLessons (earlier lessons it depends on), skillsIntroduced, skillsPracticed, estimatedMinutes, minSlides + maxSlides (a sensible deck size, usually 6–9), suggestedBlocks (always include slide_deck; add quiz/homework/lecture_text where they fit), recommendQuiz, recommendHomework, dependencyNotes (or null).
 
-Rules:
-- Front-load foundations across the module: vocabulary is defined before it is used.
-- For an algorithm: intuition -> mechanism -> complexity -> a WORKED EXAMPLE -> when to use it. EVERY concept gets ≥1 worked-example slide; add a low-stakes check where it fits (no scores).
-- Each lesson moves through the arc; the module as a whole does too.
-- Completeness over brevity, but keep lessons focused (split an overloaded lesson in two).
-- No slides needing diagrams/charts we can't render — use prose/worked examples. "prose" is a deliberate first-class choice for full-sentence explanation, not a fallback.
+Do NOT write: slide-by-slide content, slide specs, key points, speaker notes, full quiz questions, full homework, examples, or visual layouts. Those belong in the per-lesson rich plan.
 
-Output only the structured module outline. The user reviews + approves before generation.`;
+Output only the compact skeleton. The user reviews + approves the lesson MAP before any content is generated.`;
+
+export const MODULE_FALLBACK_SYSTEM_PROMPT = `Quick module map (fallback — the detailed plan timed out, so keep this MINIMAL). Return only: moduleTitle, moduleObjective, an ordered list of lessons (title + one-line objective each, aim 3–6), estimatedLessonCount, and an optional note. NOTHING else — no slides, no skills, no per-lesson detail. This must be tiny so it returns instantly.`;
 
 /** The structured-layout catalog text the PLAN phase chooses layouts from. */
 export function planLayoutCatalogText(): string {

@@ -11,6 +11,7 @@
 
 import type {
   ModelClient,
+  ModelErrorKind,
   ModelStreamEvent,
   ModelToolCall,
   ModelTurnParams,
@@ -18,10 +19,13 @@ import type {
 } from "../modelClient";
 
 /** One scripted turn. `arguments` may be an object (stringified for you) or a
- *  raw JSON string (to test malformed input). */
+ *  raw JSON string (to test malformed input). `error` simulates a TRANSPORT
+ *  failure (e.g. a timeout) — the turn returns empty text + finishReason "error"
+ *  + the given kind, exercising the agent's transport-vs-schema error handling. */
 export interface MockTurn {
   text?: string;
   toolCalls?: { name: string; arguments: unknown }[];
+  error?: { message: string; kind?: ModelErrorKind };
 }
 
 export interface MockOptions {
@@ -60,6 +64,14 @@ export function createMockModelClient(
     ): Promise<ModelTurnResult> {
       calls.push(params);
       const turn = script[turnIndex++];
+
+      // Simulate a transport failure (timeout / connection drop): empty output,
+      // finishReason "error", the given kind — like a real timed-out plan call.
+      if (turn?.error) {
+        onEvent({ type: "error", message: turn.error.message, kind: turn.error.kind });
+        return { text: "", toolCalls: [], finishReason: "error", errorKind: turn.error.kind };
+      }
+
       const text = turn?.text ?? (turn ? "" : opts.finalText ?? "All set — review the changes when you're ready.");
 
       for (const chunk of chunkWords(text)) {

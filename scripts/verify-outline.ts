@@ -17,10 +17,12 @@ import { classifyIntent } from "@/lib/ai/intent";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
 import { messageTextFromOutput } from "@/lib/ai/providers/openai";
 import {
-  coerceModuleOutline,
+  coerceModuleFallback,
+  coerceModuleSkeleton,
   coerceOutline,
-  moduleLessonToOutline,
-  moduleOutlineResponseFormat,
+  lessonBriefToPlanRequest,
+  moduleFallbackResponseFormat,
+  moduleSkeletonResponseFormat,
   outlineResponseFormat,
   MAX_LESSON_SLIDES,
   MAX_MODULE_LESSONS,
@@ -70,8 +72,12 @@ async function main() {
   check("build out this lesson → generate_lesson", (await route("Build out this lesson with a full slide deck")) === "generate_lesson");
   check("routing short-circuits used no model call", noModel.getCalls().length === 0, `${noModel.getCalls().length}`);
 
-  // ── 1. Strict-schema shape.
-  for (const [label, rf] of [["lesson", outlineResponseFormat()], ["module", moduleOutlineResponseFormat()]] as const) {
+  // ── 1. Strict-schema shape (lesson + the compact module SKELETON + fallback).
+  for (const [label, rf] of [
+    ["lesson", outlineResponseFormat()],
+    ["module_skeleton", moduleSkeletonResponseFormat()],
+    ["module_fallback", moduleFallbackResponseFormat()],
+  ] as const) {
     const errs: string[] = [];
     auditStrict(rf.schema, label, errs);
     check(`${label} response schema obeys OpenAI strict rules`, errs.length === 0, errs.slice(0, 4).join(" | "));
@@ -91,16 +97,24 @@ async function main() {
   check("coerceOutline rejects 0 slides", !coerceOutline({ objective: "o", segments: [], slides: [] }).outline);
   check("coerceOutline rejects a bad layout enum", !coerceOutline({ objective: "o", segments: [], slides: [{ ...slide, layout: "title_bullets" }] }).outline);
 
-  // moduleLessonToOutline adapts the lighter module-lesson into a LessonOutline.
-  const mSlide = { concept: "c", prerequisites: [], layout: "key_concept", depth: "definition" as const, keyPoints: ["a"], notes: "n" };
-  const adapted = moduleLessonToOutline({ title: "L", objective: "o", slides: [mSlide, mSlide, mSlide] });
-  check("moduleLessonToOutline yields a LessonOutline with ids + a segment", adapted.slides.length === 3 && !!adapted.slides[0].id && adapted.segments.length === 1);
+  // ── Module SKELETON coerce — the compact lesson MAP (NO per-slide arrays).
+  const brief = { title: "Linear search", objective: "Scan an array in order.", rationale: "starts the unit", skillsIntroduced: ["scanning"], minSlides: 2, maxSlides: 99, suggestedBlocks: ["quiz"], recommendQuiz: true };
+  const sk = coerceModuleSkeleton({ moduleTitle: "Searching", moduleObjective: "find things", lessons: Array.from({ length: 12 }, () => brief) });
+  check(`coerceModuleSkeleton clamps to ${MAX_MODULE_LESSONS} lessons`, sk.skeleton?.lessons.length === MAX_MODULE_LESSONS, `${sk.skeleton?.lessons.length}`);
+  check("coerceModuleSkeleton normalizes the slide range (min≥3, max≤cap)", sk.skeleton?.lessons[0].minSlides === 3 && sk.skeleton.lessons[0].maxSlides === MAX_LESSON_SLIDES, `${sk.skeleton?.lessons[0].minSlides}-${sk.skeleton?.lessons[0].maxSlides}`);
+  check("coerceModuleSkeleton forces slide_deck into suggestedBlocks", sk.skeleton?.lessons[0].suggestedBlocks.includes("slide_deck") === true);
+  check("coerceModuleSkeleton drops untitled lessons + requires ≥1", coerceModuleSkeleton({ moduleTitle: "M", lessons: [{ title: "" }, brief] }).skeleton?.lessons.length === 1);
+  check("coerceModuleSkeleton rejects an empty lesson list", !coerceModuleSkeleton({ moduleTitle: "M", lessons: [] }).skeleton);
+  check("coerceModuleSkeleton tolerates a model that omits optional fields", !!coerceModuleSkeleton({ lessons: [{ title: "Just a title" }] }).skeleton);
 
-  const mLesson = { title: "t", objective: "o", slides: [mSlide, mSlide, mSlide] };
-  const mod = coerceModuleOutline({ moduleTitle: "M", lessons: Array.from({ length: 12 }, () => mLesson) });
-  check(`coerceModuleOutline clamps to ${MAX_MODULE_LESSONS} lessons`, mod.outline?.lessons.length === MAX_MODULE_LESSONS);
-  check("coerceModuleOutline drops empty-slide lessons", coerceModuleOutline({ moduleTitle: "M", lessons: [{ title: "t", objective: "o", slides: [] }, mLesson] }).outline?.lessons.length === 1);
-  check("coerceModuleOutline accepts long title/objective (no max reject)", !!coerceModuleOutline({ moduleTitle: "x".repeat(300), lessons: [{ title: "y".repeat(300), objective: "z".repeat(400), slides: [mSlide] }] }).outline);
+  // lessonBriefToPlanRequest turns a brief into a rich-plan instruction.
+  const req = lessonBriefToPlanRequest(coerceModuleSkeleton({ moduleTitle: "M", lessons: [brief] }).skeleton!.lessons[0], "Searching");
+  check("lessonBriefToPlanRequest mentions the title, slide range + quiz", req.includes("Linear search") && /\d+–\d+ slides/.test(req) && /knowledge check/i.test(req), req);
+
+  // ── Module FALLBACK coerce — ultra-lean → the same ModuleSkeleton shape.
+  const fb = coerceModuleFallback({ moduleTitle: "M", moduleObjective: "o", lessons: [{ title: "A", objective: "x" }, { title: "B", objective: "y" }], estimatedLessonCount: 2 });
+  check("coerceModuleFallback yields a usable skeleton with default slide ranges", fb.skeleton?.lessons.length === 2 && fb.skeleton.lessons[0].suggestedBlocks.includes("slide_deck") && fb.skeleton.lessons[0].minSlides >= 3);
+  check("coerceModuleFallback rejects an empty lesson list", !coerceModuleFallback({ moduleTitle: "M", lessons: [] }).skeleton);
 
   // ── 3. The real-bug regression: text recovered from message items.
   const output = [

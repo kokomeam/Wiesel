@@ -58,7 +58,7 @@ export function AgentPlanHost() {
   const isModule = pending?.kind === "module";
   const title = isModule ? "Review the module plan" : "Review the lesson plan";
   const summary = isModule
-    ? `${pending.outline.moduleTitle} · ${pending.outline.lessons.length} lesson${pending.outline.lessons.length === 1 ? "" : "s"}`
+    ? `${pending.skeleton.moduleTitle} · ${pending.skeleton.lessons.length} lesson${pending.skeleton.lessons.length === 1 ? "" : "s"}`
     : pending
       ? `${pending.outline.slides.length} slides`
       : "";
@@ -106,15 +106,39 @@ export function AgentPlanHost() {
             <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 py-4">
               {isModule ? (
                 <div className="space-y-4">
-                  {pending.outline.lessons.map((l, i) => (
+                  {pending.skeleton.summary && (
+                    <p className="text-[12px] leading-relaxed text-stone-500">{pending.skeleton.summary}</p>
+                  )}
+                  {pending.skeleton.lessons.map((l, i) => (
                     <div key={i} className="rounded-xl border border-stone-200 p-3">
-                      <p className="text-[13px] font-semibold text-stone-800">
-                        <span className="text-stone-400">Lesson {i + 1}:</span> {l.title}
-                      </p>
-                      {l.objective && <p className="mb-2 mt-0.5 text-[12px] text-stone-500">{l.objective}</p>}
-                      <SlideList rows={l.slides.map((s) => ({ label: s.concept, layout: s.layout, depth: s.depth }))} />
+                      <div className="flex items-baseline gap-2">
+                        <p className="min-w-0 flex-1 text-[13px] font-semibold text-stone-800">
+                          <span className="text-stone-400">Lesson {i + 1}:</span> {l.title}
+                        </p>
+                        <span className="shrink-0 rounded bg-stone-100 px-1.5 py-px text-[10px] font-medium text-stone-500">
+                          {l.minSlides === l.maxSlides ? `${l.minSlides}` : `${l.minSlides}–${l.maxSlides}`} slides
+                        </span>
+                      </div>
+                      {l.objective && <p className="mt-0.5 text-[12px] text-stone-500">{l.objective}</p>}
+                      {(l.recommendQuiz || l.recommendHomework) && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {l.recommendQuiz && (
+                            <span className="rounded-full bg-brand-50 px-2 py-px text-[10px] font-medium text-brand-700 ring-1 ring-brand-100">
+                              Knowledge check
+                            </span>
+                          )}
+                          {l.recommendHomework && (
+                            <span className="rounded-full bg-brand-50 px-2 py-px text-[10px] font-medium text-brand-700 ring-1 ring-brand-100">
+                              Practice
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
+                  <p className="text-[11px] italic text-stone-400">
+                    Each lesson’s slides are planned in detail right before it’s built.
+                  </p>
                 </div>
               ) : (
                 <SlideList rows={pending.outline.slides.map((s) => ({ label: s.title || s.teachingGoal, layout: s.layout, depth: s.depth }))} />

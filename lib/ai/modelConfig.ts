@@ -34,18 +34,42 @@ function effort(envVar: string, fallback: ReasoningEffort): ReasoningEffort {
   return v === "minimal" || v === "low" || v === "medium" || v === "high" ? v : fallback;
 }
 
+/** Parse a boolean env flag (`"true"`/`"false"`), falling back when unset/garbage. */
+function bool(envVar: string, fallback: boolean): boolean {
+  const v = process.env[envVar];
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return fallback;
+}
+
+/** Parse a positive-integer env value, falling back when unset/non-positive. */
+function int(envVar: string, fallback: number): number {
+  const n = Number(process.env[envVar]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
 /**
  * Phase configs. Read these instead of literal model strings. Env overrides:
  *   AI_PLAN_MODEL / AI_PLAN_EFFORT
  *   AI_GENERATE_MODEL / AI_GENERATE_EFFORT
  *   AI_EDIT_MODEL / AI_EDIT_EFFORT
  *   AI_CRITIQUE_ENABLED / AI_CRITIQUE_MODEL / AI_CRITIQUE_EFFORT
- *   AI_CLASSIFIER_MODEL (intent routing; effort is always minimal)
+ *   AI_CLASSIFIER_MODEL / AI_CLASSIFIER_EFFORT (intent routing — low by default)
  */
 export const AI_PHASE_MODELS = {
   plan: {
     model: process.env.AI_PLAN_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_PLAN_EFFORT", "high"),
+  } satisfies PhaseModel,
+  /** The MODULE plan is the heaviest single call (a whole multi-lesson outline in
+   *  one structured response) — high/medium routinely blew past the request
+   *  timeout during the model's long silent reasoning phase. It now defaults to
+   *  LOW effort over a DELIBERATELY LEAN schema (concept + layout + depth only, no
+   *  per-slide keyPoints/notes) so it returns fast; the single-lesson plan stays
+   *  high, and the per-lesson GENERATE phase (medium) is where depth is built. */
+  modulePlan: {
+    model: process.env.AI_MODULE_PLAN_MODEL ?? DEFAULT_MODEL,
+    effort: effort("AI_MODULE_PLAN_EFFORT", "low"),
   } satisfies PhaseModel,
   generate: {
     model: process.env.AI_GENERATE_MODEL ?? DEFAULT_MODEL,
@@ -62,8 +86,72 @@ export const AI_PHASE_MODELS = {
   } satisfies CritiquePhaseModel,
 } as const;
 
-/** Cheap model for intent classification (always minimal effort). */
+/**
+ * Deterministic validation + repair gate (the correctness layer that replaces a
+ * heavy critique pass). VALIDATE inspects the generated deck against the approved
+ * plan; REPAIR fixes hard failures (missing planned slides, placeholder slides,
+ * decks short of the contract) — first deterministically, then with ONE targeted,
+ * narrow model pass per round. Both default ON: they catch embarrassing failures
+ * (the 3-slide deck, the leftover "Section title" placeholder) for near-zero cost.
+ * Env: AI_VALIDATE_GENERATION / AI_REPAIR_HARD_FAILURES / AI_MAX_REPAIR_PASSES.
+ */
+export const AI_VALIDATION = {
+  validateGeneration: bool("AI_VALIDATE_GENERATION", true),
+  repairHardFailures: bool("AI_REPAIR_HARD_FAILURES", true),
+  /** How many targeted model-repair rounds to attempt before settling with a
+   *  checkpoint (each round re-validates; deterministic fixes run every round). */
+  maxRepairPasses: int("AI_MAX_REPAIR_PASSES", 2),
+} as const;
+
+/**
+ * Per-call timeout (ms) for the PLAN structured-output call — a single big request
+ * that legitimately runs longer than a quick tool turn, so it gets more headroom
+ * than the client default (`OPENAI_TIMEOUT_MS`, 120s). Env: AI_PLAN_TIMEOUT_MS.
+ */
+export const AI_PLAN_TIMEOUT_MS = int("AI_PLAN_TIMEOUT_MS", 180_000);
+
+/**
+ * OPTIONAL OpenAI background mode for plan calls — create the response then POLL
+ * to completion instead of holding one long HTTP connection open through the
+ * model's silent reasoning (which an idle proxy/LB can drop). OFF by default (the
+ * primary fix is small/fast plans); the module FALLBACK plan also uses it
+ * automatically after a transport timeout. Env: AI_USE_BACKGROUND_FOR_PLANS.
+ */
+export const AI_USE_BACKGROUND_FOR_PLANS = bool("AI_USE_BACKGROUND_FOR_PLANS", false);
+
+/**
+ * Minimum slide floors a NON-micro lesson plan should hit (PLAN re-asks once if a
+ * normal/technical lesson came back too thin). A micro-lesson (the user explicitly
+ * asked for a short one) is exempt. Env: AI_MIN_NORMAL_LESSON_SLIDES /
+ * AI_MIN_TECHNICAL_LESSON_SLIDES.
+ */
+export const AI_LESSON_FLOORS = {
+  normal: int("AI_MIN_NORMAL_LESSON_SLIDES", 6),
+  technical: int("AI_MIN_TECHNICAL_LESSON_SLIDES", 7),
+} as const;
+
+/**
+ * OPTIONAL lightweight review — NOT the old heavy critique loop. ONE model call,
+ * no tool loop, no regeneration: it returns soft, subjective suggestions the user
+ * may apply. OFF by default; `onLintThreshold` fires it only when the deterministic
+ * linter raises at least `lintThreshold` warnings (i.e. the deck is visibly rough).
+ * Env: AI_LIGHT_REVIEW_ENABLED / AI_LIGHT_REVIEW_ON_LINT_THRESHOLD /
+ * AI_LIGHT_REVIEW_LINT_THRESHOLD / AI_LIGHT_REVIEW_MODEL / AI_LIGHT_REVIEW_EFFORT.
+ */
+export const AI_LIGHT_REVIEW = {
+  enabled: bool("AI_LIGHT_REVIEW_ENABLED", false),
+  onLintThreshold: bool("AI_LIGHT_REVIEW_ON_LINT_THRESHOLD", true),
+  lintThreshold: int("AI_LIGHT_REVIEW_LINT_THRESHOLD", 4),
+  model: process.env.AI_LIGHT_REVIEW_MODEL ?? DEFAULT_MODEL,
+  effort: effort("AI_LIGHT_REVIEW_EFFORT", "medium"),
+} as const;
+
+/** Cheap model + effort for intent classification. IMPORTANT: gpt-5.4-mini does
+ *  NOT support "minimal" reasoning effort (it accepts none/low/medium/high/xhigh),
+ *  so the classifier defaults to "low" — the cheapest value it takes. Do not set
+ *  AI_CLASSIFIER_EFFORT=minimal with a 5.4-mini classifier. */
 export const AI_CLASSIFIER_MODEL = process.env.AI_CLASSIFIER_MODEL ?? DEFAULT_MODEL;
+export const AI_CLASSIFIER_EFFORT: ReasoningEffort = effort("AI_CLASSIFIER_EFFORT", "low");
 
 /**
  * Product-tier hook. `standard` is the testing default. For now ALL tiers resolve
