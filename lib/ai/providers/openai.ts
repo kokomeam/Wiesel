@@ -8,6 +8,7 @@
  * this process.
  */
 
+import { createRequire } from "node:module";
 import OpenAI from "openai";
 import type {
   ModelClient,
@@ -30,10 +31,65 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 16000;
 // turn. No hand-rolled backoff. Env-overridable.
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_TIMEOUT_MS = 120_000;
+// Background-mode poll loop (create → poll → retrieve). Generous overall budget
+// (a backgrounded plan can take minutes) + a short poll interval. Env-overridable.
+const DEFAULT_BG_POLL_TIMEOUT_MS = 300_000;
+const DEFAULT_BG_POLL_INTERVAL_MS = 2_000;
 
 /** Whether the server is configured to talk to OpenAI. */
 export function isOpenAIConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
+}
+
+/**
+ * The proxy URL the OpenAI client should tunnel through, or "" for a DIRECT
+ * connection. An EXPLICIT `OPENAI_PROXY_URL` wins; otherwise the conventional
+ * `HTTPS_PROXY`/`HTTP_PROXY` (what a local Clash/VPN sets) is honored.
+ *
+ * Why this exists: Node's built-in `fetch` (undici) — which the OpenAI SDK uses —
+ * does NOT read `HTTPS_PROXY`, so on a machine where `api.openai.com` is only
+ * reachable via a local proxy the SDK connects DIRECTLY, the socket never
+ * establishes, and it dies at the OS TCP-connect timeout (~75s on macOS:
+ * `net.inet.tcp.keepinit`). That is the "module planning timed out at ~76s" bug.
+ *
+ * PRODUCTION is unaffected: it sets no proxy env, so this returns "" and the
+ * client connects directly exactly as before.
+ */
+export function resolveProxyUrl(): string {
+  return (
+    process.env.OPENAI_PROXY_URL ||
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    ""
+  );
+}
+
+/**
+ * Build the proxy transport for `proxyUrl` — undici's `fetch` PLUS a `ProxyAgent`
+ * dispatcher — or null if `undici` isn't installed. Both MUST come from the same
+ * undici package: the OpenAI SDK's bundled fetch rejects a foreign dispatcher
+ * ("Connection error … incompatible with the fetch implementation"), so we pass
+ * undici's own `fetch` alongside the dispatcher (per the SDK's own guidance).
+ *
+ * Loaded via `createRequire` with a NON-LITERAL specifier so the Next bundler
+ * never tries to resolve `undici` at build time — it's a devDependency, only
+ * needed where a proxy env is set (local dev behind Clash); production never
+ * reaches this (no proxy env) and never needs the package.
+ */
+function makeProxyTransport(proxyUrl: string): { fetch: unknown; dispatcher: unknown } | null {
+  try {
+    const req = createRequire(import.meta.url);
+    const specifier = "undici"; // variable defeats bundler static analysis
+    const { fetch, ProxyAgent } = req(specifier) as {
+      fetch: unknown;
+      ProxyAgent: new (u: string) => unknown;
+    };
+    return { fetch, dispatcher: new ProxyAgent(proxyUrl) };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -122,7 +178,50 @@ export function createOpenAIModelClient(): ModelClient {
 
   const maxRetries = Number(process.env.OPENAI_MAX_RETRIES) || DEFAULT_MAX_RETRIES;
   const timeout = Number(process.env.OPENAI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  const client = new OpenAI({ apiKey, maxRetries, timeout });
+
+  // Route through a proxy ONLY when one is configured. Scoped to THIS client via
+  // its own undici fetch + dispatcher, so Supabase and every other fetch in the
+  // process keep their direct connection — we never touch the global dispatcher.
+  // No proxy env ⇒ no custom transport ⇒ direct connection (production default).
+  const proxyUrl = resolveProxyUrl();
+  let proxied = false;
+  const clientOpts: ConstructorParameters<typeof OpenAI>[0] = { apiKey, maxRetries, timeout };
+  if (proxyUrl) {
+    const transport = makeProxyTransport(proxyUrl);
+    if (transport) {
+      // Pass undici's fetch + dispatcher TOGETHER, scoped to this client only — the
+      // global dispatcher (Supabase + every other fetch) is untouched and stays direct.
+      clientOpts.fetch = transport.fetch as never;
+      clientOpts.fetchOptions = { dispatcher: transport.dispatcher } as never;
+      proxied = true;
+    } else {
+      console.warn(
+        JSON.stringify({
+          tag: "openai_proxy_unavailable",
+          proxyUrl,
+          message:
+            "A proxy is configured (OPENAI_PROXY_URL/HTTPS_PROXY) but the 'undici' package isn't installed — the OpenAI SDK can't tunnel through it and will connect DIRECTLY (likely to time out). Run `npm i -D undici`.",
+        })
+      );
+    }
+  }
+
+  const client = new OpenAI(clientOpts);
+
+  // One line that states the ACTUAL transport config the SDK will use — so logs
+  // show whether the proxy is engaged and what timeout/retries are really applied
+  // (not just what we intended). Grep `openai_client_config`.
+  console.log(
+    JSON.stringify({
+      tag: "openai_client_config",
+      proxy: proxied ? "on" : "off",
+      proxyUrl: proxied ? proxyUrl : undefined,
+      transport: proxied ? "undici.fetch+ProxyAgent" : "default",
+      clientTimeoutMs: timeout,
+      maxRetries,
+    })
+  );
+
   const defaultModel = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
   const defaultEffort = (process.env.OPENAI_REASONING_EFFORT ?? DEFAULT_EFFORT) as
     | "minimal"
@@ -172,29 +271,63 @@ export function createOpenAIModelClient(): ModelClient {
       try {
         // BACKGROUND mode: create then POLL — never hold one long HTTP request
         // open through the model's silent reasoning (which an idle proxy can drop).
+        // The CREATE call still has to connect (and is short), so its own timeout
+        // applies; the long wait happens across cheap retrieve() polls, NOT one
+        // held connection.
         if (params.background) {
-          const created = await client.responses.create(
-            { ...body, store: true, background: true, stream: false },
-            { signal: params.signal, ...requestTimeout }
-          );
-          const deadline = params.timeoutMs ?? maxOutputTokens; // ms budget for the poll loop
+          let created: OpenAI.Responses.Response;
+          try {
+            created = await client.responses.create(
+              { ...body, store: true, background: true, stream: false },
+              { signal: params.signal, ...requestTimeout }
+            );
+          } catch (createErr) {
+            // The CREATE itself failed (couldn't even start the job) — log it
+            // SEPARATELY from a poll failure so the two are distinguishable.
+            const { kind, message, status } = classifyError(createErr);
+            console.log(JSON.stringify({ tag: "openai_background", phase: "create", errorKind: kind, status, message }));
+            onEvent({ type: "error", message, kind });
+            return { text: "", toolCalls: [], finishReason: "error", errorKind: kind };
+          }
+
+          // ms budget for the WHOLE poll loop (not a token count — the prior bug
+          // used maxOutputTokens here). Configurable; defaults generous for plans.
+          const pollTimeout = Number(process.env.AI_BACKGROUND_POLL_TIMEOUT_MS) || params.timeoutMs || DEFAULT_BG_POLL_TIMEOUT_MS;
+          const pollInterval = Number(process.env.AI_BACKGROUND_POLL_INTERVAL_MS) || DEFAULT_BG_POLL_INTERVAL_MS;
+          console.log(JSON.stringify({ tag: "openai_background", phase: "create", responseId: created.id, status: created.status, pollTimeoutMs: pollTimeout, pollIntervalMs: pollInterval }));
+
           const start = Date.now();
           let resp = created;
+          let prevStatus = resp.status;
           while (resp.status === "queued" || resp.status === "in_progress") {
-            if (Date.now() - start > Math.max(deadline, 120_000)) {
-              onEvent({ type: "error", message: "Background plan timed out.", kind: "transport_timeout" });
-              console.log(JSON.stringify({ tag: "openai_error", mode: "background", message: "poll deadline exceeded" }));
+            if (Date.now() - start > pollTimeout) {
+              const message = "Background plan timed out while polling for the result.";
+              onEvent({ type: "error", message, kind: "transport_timeout" });
+              console.log(JSON.stringify({ tag: "openai_background", phase: "poll", outcome: "poll_timeout", responseId: resp.id, lastStatus: resp.status, waitedMs: Date.now() - start }));
               return { text: "", toolCalls: [], finishReason: "error", errorKind: "transport_timeout" };
             }
-            await sleep(2000, params.signal);
-            resp = await client.responses.retrieve(resp.id);
+            await sleep(pollInterval, params.signal);
+            try {
+              resp = await client.responses.retrieve(resp.id);
+            } catch (pollErr) {
+              const { kind, message } = classifyError(pollErr);
+              console.log(JSON.stringify({ tag: "openai_background", phase: "poll", outcome: "poll_failed", responseId: created.id, errorKind: kind, message }));
+              onEvent({ type: "error", message, kind });
+              return { text: "", toolCalls: [], finishReason: "error", errorKind: kind };
+            }
+            if (resp.status !== prevStatus) {
+              console.log(JSON.stringify({ tag: "openai_background", phase: "poll", responseId: resp.id, status: resp.status, elapsedMs: Date.now() - start }));
+              prevStatus = resp.status;
+            }
           }
-          if (resp.status === "failed" || resp.status === "cancelled") {
+          // Terminal non-success states: failed / cancelled / (expired surfaces here too).
+          if (resp.status !== "completed") {
             const message = resp.error?.message ?? `Background plan ${resp.status}.`;
             onEvent({ type: "error", message, kind: "model_error" });
-            console.log(JSON.stringify({ tag: "openai_error", mode: "background", status: resp.status, message }));
+            console.log(JSON.stringify({ tag: "openai_background", phase: "terminal", responseId: resp.id, status: resp.status, message }));
             return { text: "", toolCalls: [], finishReason: "error", errorKind: "model_error" };
           }
+          console.log(JSON.stringify({ tag: "openai_background", phase: "terminal", responseId: resp.id, status: "completed", elapsedMs: Date.now() - start }));
           return resultFromResponse(resp, "");
         }
 

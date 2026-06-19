@@ -359,7 +359,24 @@ never import a provider SDK.
   `CourseEditorShell` (collapsible `agentPanel` PanelKey), studio server-loads
   pending blocks → `StudioLoader` → `agentStore.hydratePending`.
 - **Env:** set `OPENAI_API_KEY` (required) in `.env.local`; optional
-  `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS`.
+  `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS` /
+  `OPENAI_TIMEOUT_MS` (client default 120s) / `OPENAI_MAX_RETRIES`.
+- **Transport / proxy (2026-06-19):** the OpenAI SDK's bundled undici `fetch`
+  **ignores `HTTPS_PROXY`**, so on a proxy-only machine (e.g. Clash `:7890`) it
+  connects DIRECTLY, the socket never establishes, and it dies at the OS TCP-connect
+  timeout (**~75s** on macOS = `net.inet.tcp.keepinit`) → a `transport_timeout` that
+  was mis-blamed on "slow module planning". `createOpenAIModelClient` now reads
+  `OPENAI_PROXY_URL` (else `HTTPS_PROXY`/`HTTP_PROXY`) and, when set, routes through a
+  proxy **scoped to the OpenAI client** (`new OpenAI({ fetch, fetchOptions:{ dispatcher:
+  new ProxyAgent(url) } })` — undici's fetch + dispatcher MUST be from the same undici;
+  global dispatcher untouched so Supabase stays direct). **No proxy env ⇒ direct
+  connection (production unchanged).** `undici` is a **devDependency** (runtime deps stay
+  14), `require`d via a variable-specifier `createRequire` so the bundler never resolves
+  it at build (prod never needs it). Logs `openai_client_config {proxy,transport,…}`.
+  Diagnose with `npm run smoke:openai` (`scripts/smoke-openai.ts`): Phase A = no-proxy
+  reproduction (~75s), Phase B/C = proxied success (1–3s, incl. structured + background);
+  `SMOKE_SKIP_A=1` skips the slow part. Background mode (poll loop) is env-tunable via
+  `AI_BACKGROUND_POLL_TIMEOUT_MS` / `AI_BACKGROUND_POLL_INTERVAL_MS`.
 - **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
   `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **76**
   checks incl. the phased lesson pipeline, the **module SKELETON → approve →

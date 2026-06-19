@@ -64,16 +64,25 @@ export function logModelCall(
   turn: number,
   usage: ModelTurnResult["usage"]
 ): void {
+  // No usage object ⇒ the provider never returned usage (almost always a TRANSPORT
+  // failure: the request died before the model ran). Logging `inputTokens: 0` then
+  // FALSELY reads as "no prompt was sent". Emit `usageAvailable: false` instead so
+  // a timeout is never mistaken for an empty/zero-token request.
+  if (!usage) {
+    console.log(JSON.stringify({ tag: "agent_call", label, turn, model, usageAvailable: false }));
+    return;
+  }
   console.log(
     JSON.stringify({
       tag: "agent_call",
       label,
       turn,
       model,
-      inputTokens: usage?.inputTokens ?? 0,
-      cachedTokens: usage?.cachedTokens ?? 0,
-      outputTokens: usage?.outputTokens ?? 0,
-      reasoningTokens: usage?.reasoningTokens ?? 0,
+      usageAvailable: true,
+      inputTokens: usage.inputTokens ?? 0,
+      cachedTokens: usage.cachedTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      reasoningTokens: usage.reasoningTokens ?? 0,
     })
   );
 }

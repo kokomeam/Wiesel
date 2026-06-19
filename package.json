@@ -12,7 +12,8 @@
     "verify:validation": "tsx scripts/verify-validation.ts",
     "verify:ai:int": "tsx scripts/verify-agent-integration.ts",
     "verify:reject": "tsx scripts/verify-reject-revert.ts",
-    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts"
+    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts",
+    "smoke:openai": "tsx scripts/smoke-openai.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -39,6 +40,7 @@
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "undici": "^8.5.0"
   }
 }
