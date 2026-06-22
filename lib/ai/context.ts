@@ -13,6 +13,7 @@
 
 import { findLesson } from "@/lib/course/queries";
 import type { CourseDocument } from "@/lib/course/types";
+import { diagramCatalogText } from "@/lib/course/diagram/catalog";
 import { stickerCatalogText } from "@/lib/course/slide/stickers";
 import { structuredLayoutCatalog } from "@/lib/course/slide/structuredLayouts";
 import { outlinePromptFragment, type LessonOutline } from "./outline";
@@ -48,7 +49,10 @@ SLIDE AUTHORING
 DESIGNED LAYOUTS & PRIMITIVES (use the richer vocabulary)
 - For a slide whose content has a clear SHAPE, prefer a DESIGNED (structured) layout over the flat ones: a sequence/process → add_structured_slide process_steps; a key term + supporting points → key_concept (use the serif variant for an editorial title); headline numbers → metrics_overview; code explained step by step → code_walkthrough_steps; CONTRASTING 2–3 options → comparison_columns when each option is a name + a few standalone traits, or comparison_matrix when you compare them across the SAME several dimensions (a spec/tradeoff grid). You ONLY fill typed slots — the renderer owns all arrangement, colors, A/B/C badges, the VS divider, numbering, arrows, and reflow. Never position elements, pick option colors, or draw connectors yourself.
 - Match the layout to the content; fill EVERY slot; keep copy tight (lengths are enforced — an over-long heading/body will be returned to you to shorten). Reach for a sticker (the icon slot on a card, or add_sticker on a freeform slide) ONLY when it clarifies — skip it otherwise. Stickers are referenced by id from the catalog; never invent ids or draw shapes.
-- Size text with the SEMANTIC scale via set_text_style (display/title/heading/body/caption), never raw pixels; choose the "display" font family for key-concept or section titles.`;
+- Size text with the SEMANTIC scale via set_text_style (display/title/heading/body/caption), never raw pixels; choose the "display" font family for key-concept or section titles.
+
+PROGRAMMATIC VISUALS (diagrams as teaching objects)
+- When a slide explains something a DIAGRAM teaches better — a graph (supply & demand, a distribution, a regression), a chart, an array with pointers (two-pointers / sliding window / binary search), a tree (BST, traversal, recursion, hierarchy), a node-link graph (BFS/DFS, weighted/Dijkstra), a flowchart, a number line, or a 2-set Venn — add it with add_diagram. The renderer draws ACCURATE SVG from your typed data (a supply curve literally slopes up; a weighted graph weights every edge), so these are precise, accessible, and editable — never decoration. Prefer a templateId for canonical diagrams so the geometry is correct by construction.`;
 
 /** The GENERATE phase's teaching bar + layout decision guide, layered on top of
  *  the catalog when authoring an approved lesson outline. */
@@ -72,7 +76,13 @@ TEACH WITH REAL CONTENT (this is what's been missing):
 - Length discipline still caps the MAX per slot (tighten, never truncate mid-thought) — but fill substantively up to it; do not under-fill.
 - Follow the approved outline: cover every planned concept; keep the planned order + depth; vary layouts so the deck isn't five identical slides.
 
-Rich text is structured data (runs + marks), never markdown. Stickers by id, sparingly; never emit SVG. No generative images, no fabricated charts (metrics_overview = real data or omit) — if a concept needs a drawing, explain it in prose / a worked example.`;
+VISUALS ARE TEACHING OBJECTS — BUILD THE PLANNED ONES. Honor each slide's planned visualIntent, and build it (don't just leave the slide as prose):
+- A visual marked REQUIRED, or accuracy-critical, or a graph-conventional topic (supply & demand, binary search, a weighted graph, a distribution): add a programmatic diagram with add_diagram — it renders as ACCURATE SVG (a supply curve really slopes up; a Dijkstra graph really weights every edge). Use a templateId for canonical diagrams so they're correct by construction.
+- A visual marked RECOMMENDED that a programmatic diagram CAN draw (a structure, process, relationship, comparison, timeline, array/tree/graph): build it with add_diagram too — recommended is a build signal, not an afterthought.
+- A visual for a concept NO diagram fits (a historical scene, a biological structure, a real-world analogy, an evocative concept image): add an educational illustration with add_image — give it a precise prompt and required alt text; it's generated and stored automatically.
+Aim for a deck that USES its planned visuals (a typical full lesson lands 2–4). Do NOT add a visual that merely restates the title, decorates, crowds the slide, or that a table/code/text conveys more precisely. Never use add_image for anything accuracy-critical (a graph/chart/labeled diagram) — that MUST be a programmatic diagram. Every visual carries alt text + the reason it was added; never fabricate chart data.
+
+Rich text is structured data (runs + marks), never markdown. Stickers by id, sparingly; never emit raw SVG. Still NO AI-generated/stock images and no fabricated chart data (metrics_overview / a data_chart = real data or omit) — but a PROGRAMMATIC diagram is the right way to draw the picture a concept needs.`;
 
 function slideCatalogText(): string {
   const lines = slideLayoutCatalog().map((l) => {
@@ -139,6 +149,7 @@ export function buildSystemPrompt(opts?: { layered?: boolean }): string {
   const lines: string[] = [ROLE_AND_RULES];
   lines.push("", slideCatalogText());
   lines.push("", structuredCatalogText());
+  lines.push("", diagramCatalogText());
   lines.push("", `STICKER CATALOG (id — label; reference by id, themed automatically)\n${stickerCatalogText()}`);
   if (opts?.layered) lines.push("", GENERATE_TEACHING_BAR);
   return lines.join("\n");

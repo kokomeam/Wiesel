@@ -209,8 +209,9 @@ never import a provider SDK.
   tests / the no-key path (records each call's params via `getCalls()`).
   **MODEL + `reasoning.effort` are PER CALL** (2026-06-17): `ModelTurnParams.model`
   + `.effort` override the env default. Central config = `lib/ai/modelConfig.ts`:
-  every phase defaults to `gpt-5.4-mini` — PLAN high · GENERATE/EDIT/REPAIR medium ·
-  LIGHT REVIEW medium (off by default) · CRITIQUE off by default (legacy) ·
+  every phase defaults to `gpt-5.4-mini` — PLAN high · **GENERATE/REPAIR high**
+  (2026-06-22 — the hardest phase, was medium; `AI_GENERATE_MAX_OUTPUT_TOKENS` 24k) ·
+  EDIT medium · LIGHT REVIEW medium (off by default) · CRITIQUE off by default (legacy) ·
   classifier **low** (NOT `minimal` — gpt-5.4-mini rejects it: accepts
   none/low/medium/high/xhigh); each env-overridable (`AI_PLAN_MODEL`/`AI_PLAN_EFFORT`/
   …/`AI_CLASSIFIER_EFFORT`). The correctness gate is its own config block:
@@ -275,14 +276,22 @@ never import a provider SDK.
   reusing the single repair-call slot; a valid-but-thin plan is never lost). The
   outline is **transient** (round-trips client→server, never persisted). An
   **auto-approve** toggle (OFF by default) skips the pause.
-  **GENERATE** runs the narrow **`generateTools`** (`GENERATE_TOOL_NAMES`: reads +
-  structured slide tools + create_block + write_quiz/homework/lecture — **no
-  `write_slide_deck`/flat slide ops**). It **pre-creates an EMPTY deck** and threads
-  its `deckBlockId` into the context (`buildContextMessage`), so the model authors
-  real slides into a known deck and **never seeds a placeholder**;
+  **GENERATE** runs the narrow **`generateTools`** (`GENERATE_TOOL_NAMES`: the slide-
+  inspection reads + structured slide tools + create_block + write_quiz/homework/
+  lecture — **no `write_slide_deck`/flat slide ops**, and as of 2026-06-22 **no
+  `get_course_context`/`list_modules`/`list_lessons`/`get_lesson`** either: the
+  course/lesson/plan/authored set already ride in the context + generation-state, so
+  GENERATE/REPAIR can't burn turns re-reading them). It **pre-creates an EMPTY deck**
+  and threads its `deckBlockId` into the context (`buildContextMessage`), so the model
+  authors real slides into a known deck and **never seeds a placeholder**.
   `add_structured_slides_batch` takes a **nullable** `deckBlockId` resolving to the
-  lesson's deck (robust to a mis-cited/absent id). The edit path runs
-  `authoringOnly` (`AUTHORING_TOOL_NAMES`). The outline's per-slide `keyPoints` brief
+  lesson's deck, and **CLAMPS-not-rejects** (2026-06-22): each slide's over-length
+  slots are auto-shortened to their cap server-side (`clampStructuredTemplate`,
+  schema-driven via Zod `too_big` issues) and the slide is SAVED with its specId — a
+  formatting overflow never bounces back, so coverage closes; only a slide MISSING
+  required content (unclampable) comes back. (The single-slide `add_structured_slide`/
+  `set_structured_slide` tools stay strict.) The edit path runs `authoringOnly`
+  (`AUTHORING_TOOL_NAMES`). The outline's per-slide `keyPoints` brief
   is expanded; the teaching bar frames the plan as a binding contract + bans skeletal
   slides (`agent_thin_slides` log).
   **VALIDATE/REPAIR** (`lib/ai/validation.ts` pure + `slideDiagnostics.ts` leaf):
@@ -300,10 +309,23 @@ never import a provider SDK.
   after hard validation passes, a no-model linter emits SOFT warnings; an OPTIONAL
   **one-call** review (no tool loop, no regen, gpt-5.4-mini/medium, OFF by default,
   fires only when lint ≥ `AI_LIGHT_REVIEW_LINT_THRESHOLD`) adds ≤3 suggestions.
-  Neither blocks staging. The whole run reconciles once → ONE change-set.
-  **Known hazard:** the agent's server reconcile and the browser autosave both
-  full-snapshot the same course with no coordination (can transiently orphan rows →
-  a `lessons_module_id_fkey`); follow-up = pause autosave during a run / scoped reconcile. Orchestration in `lib/ai/phases.ts`
+  Neither blocks staging. The whole run stages ONE change-set, but now via
+  **flush-on-exit** (2026-06-22): the pipeline reconciles the doc to the DB
+  INCREMENTALLY (the driven loop persists each authored batch the turn it lands;
+  each lesson persists as it completes; a module's scaffold persists the instant it's
+  planned) and stages the change-set in a guarded `finalize()` that runs on EVERY
+  termination — completion, token cap, turn cap, no-progress guard, **user Stop
+  (abort)**, or a thrown error — so partial work is NEVER discarded (the "module
+  spun 10 min, persisted nothing" fix). `reconcileAndStage` is split into a
+  repeatable `reconcileDoc` + a one-shot `stageChangeSet`.
+  **Autosave coordination (the former hazard, now fixed):** the editor store's
+  `agentRunActive` flag PAUSES the browser autosave for a run's duration (so the
+  agent's server reconcile and a browser full-snapshot can't race + orphan rows),
+  and a debounced `scheduleLiveSync` (`lib/editor/liveSync.ts`) re-loads the doc via
+  `syncLiveDoc` (no full re-hydrate) so the deck renders LIVE as it's built; a
+  Supabase Realtime sub on `change_set_items` (`useChangeSetRealtime`, migration
+  `20260622010000`) drives the same re-sync (degrades gracefully if unpublished).
+  Orchestration in `lib/ai/phases.ts`
   (`runContentAgentTurn`/`runGenerateLessonTurn`/`runGenerateModuleTurn`/
   `runModuleSkeletonPlan`/`runRichLessonPlan`/`runLessonPipeline`/`validateAndRepairLesson`/
   `runGenerateModule`/`resumeGeneratePlan`; legacy `runLegacyCritique` gated by
@@ -317,9 +339,17 @@ never import a provider SDK.
 - **Loop:** `lib/ai/agentLoop.ts` — per turn: persist user msg → load doc +
   replayed history → stream a model turn → execute each tool call (validate args
   → apply CoursePatches to the in-memory doc → stream `tool_result`) → feed
-  output back → repeat until no tool calls (cap 12, with a `checkpoint`). Then
+  output back → repeat (cap `AGENT_MAX_TURNS`, with a `checkpoint`). Then
   reconcile the doc to the DB ONCE and stage the net block diff as one
   change-set.
+  **Coverage driver (2026-06-22):** GENERATE/REPAIR pass `driveToCoverage` — the
+  loop no longer stops the instant the model returns a no-tool-call turn; while
+  plan specs remain it injects a concrete "STILL TO BUILD …" nudge
+  (`buildContinuationNudge`) and keeps building (turns scaled to the plan via
+  `coverageMaxTurns`/`repairMaxTurns`), with a no-progress guard
+  (`AGENT_NO_PROGRESS_LIMIT`) stopping a stalled run. Driven loops DON'T emit
+  their own checkpoint (`stopShort` only records it) — the validate/repair
+  pipeline owns the ONE final checkpoint. This is the fix for the "3-of-10 deck".
 - **Tools = the ops layer:** `lib/ai/tools/*`. Read (get_course_context /
   list_modules / list_lessons / get_lesson / get_block), structural
   (create_module/lesson/block, delete_block, reorder_blocks), and content
@@ -378,14 +408,21 @@ never import a provider SDK.
   `SMOKE_SKIP_A=1` skips the slow part. Background mode (poll loop) is env-tunable via
   `AI_BACKGROUND_POLL_TIMEOUT_MS` / `AI_BACKGROUND_POLL_INTERVAL_MS`.
 - **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
-  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **76**
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **99**
   checks incl. the phased lesson pipeline, the **module SKELETON → approve →
   per-lesson rich-plan → generate → validate** flow, **skeleton-timeout →
   background fallback**, **both-timeout → clear-message** (not "invalid JSON"),
   per-call effort + layered system-prompt via the mock's `getCalls()`, the 3-way
-  classifier routing, and clean-validate · missing-spec repair · placeholder
-  removal · light-review-trigger end-to-end paths). The mock can inject a transport
-  error (`MockTurn.error`) to exercise timeout handling.
+  classifier routing, clean-validate · missing-spec repair · placeholder removal ·
+  light-review-trigger paths, the **coverage driver** (a model that stops at
+  1/3 is nudged to completion), the **no-progress guard** (one pipeline checkpoint),
+  the **live AI-image path** (add_image → mock bytes → Supabase upload →
+  `illustration` slide with a real public URL), and (2026-06-22) **CLAMP-not-reject**
+  (an over-length slot auto-shortens + saves → coverage closes, no repair) and
+  **flush-on-exit** (a stalled run AND a simulated user-Stop both STAGE + PERSIST
+  their partial deck to the Accept/Reject gate)). The mock can inject a transport
+  error (`MockTurn.error`), a deterministic `generateImage`, and (via a thin runTurn
+  wrapper) an abort mid-run.
   Slide-vocabulary suites (no key): `npm run verify:slides` (stickers + font
   tokens + all 8 structured layouts incl. near-max overflow + the structured
   agent tools) and `npm run verify:reject` (atomic byte-for-byte revert, incl. a
@@ -426,6 +463,63 @@ never import a provider SDK.
 - **Low-stakes assessments enforced structurally:** quiz/homework schemas no
   longer contain scores/passing/time/attempts/difficulty/points/due-dates (the
   fields, patches, and UI were removed 2026-06-15).
+
+## Visual pipeline — programmatic diagrams (2026-06-20, see CHANGELOG.md)
+
+A teaching visual is a **teaching object, not decoration**. The LIVE path renders
+**programmatic diagrams**: typed deterministic data drawn as crisp SVG, so a graph
+is **accurate by construction** (a supply curve slopes up; a Dijkstra graph weights
+every edge), editable, accessible, exportable, and persisted in `blocks.content`
+with **no blob URLs**. A diagram is just an **11th structured layout** (`SlideTemplate`
+`layoutId: "diagram"`), so it reuses the SAME patch pipeline, validate→repair,
+change-set staging/reject, and picker — **no new patch actions, no new storage**.
+
+- **Model** = `lib/course/diagram/*` (pure): `types.ts` (`DiagramSpec` union of 9
+  kinds: supply_demand [+ price ceiling/floor], coordinate_plot, bar_chart,
+  array_diagram, tree_diagram, graph_diagram, flowchart, number_line, venn; plus
+  `VisualSpec` [purpose + alt text + reason] and `DiagramContent`) · `schemas.ts`
+  (STRICT AI Zod with caps + a `.superRefine` running `validateDiagram`; permissive
+  STORAGE schema; AI tree node is FIXED-DEPTH so it inlines to OpenAI-strict JSON
+  with no recursive `$ref`) · `validate.ts` (deterministic correctness — the spec's
+  named failure cases) · `catalog.ts` (19 correct named templates; whole-WORD topic
+  matching) · `geometry.ts` (tree/graph/flow layout, scales, equilibrium).
+- **Renderers** = `components/editor/slide/diagram/*` (PURE → SSR/thumbnail/export
+  safe): `svg.tsx` toolkit + `DiagramView` (9 renderers) + `structured/DiagramLayout`
+  (`role="img"` + alt text + the `data-ai-component="slide-visual"` envelope). The
+  diagram is registered in `STRUCTURED_LAYOUTS` + `StructuredTemplateInputSchema` +
+  storage `SlideTemplateSchema` + the `SlideTemplate` union; auto-exposed to picker,
+  plan catalog, and AI tools.
+- **Planning** = `lib/ai/outline.ts` `visualIntent` is now a STRUCTURED object
+  (required/role/reason/expectedVisualType/placement/priority/mustBeAccurate; tolerant
+  of a legacy string). **AI tools** = `add_diagram` / `set_diagram` (templateId
+  seeds an accurate canonical diagram; a custom diagram is validated at the tool
+  boundary). **Validation** = a `REQUIRED_VISUAL_MISSING` hard failure (accuracy-
+  critical roles demand a real diagram/image) + a repair brief + `VISUAL_SKIPPED`
+  soft lint. **Inspector** = `DiagramEditor` in `StructuredContentEditor`.
+- **Pipeline architecture** = `lib/ai/visuals/*` — `config.ts` flags (defaults
+  2026-06-22: programmatic ON, **image-gen ON**, web OFF, validation ON;
+  `AI_VISUAL_MAX_PER_LESSON` 5), full `VisualSpec`/`VisualAsset`, the source
+  `router.ts` (programmatic → AI-generated → web → manual, by priority),
+  `imagePrompt.ts`, the `generate.ts` seam, and `storeImage.ts`. **Web sourcing
+  stays Phase 5 (OFF).**
+- **AI IMAGE GENERATION — LIVE (2026-06-22).** For a concept no programmatic
+  diagram fits (a historical scene, a biological structure, an analogy) the
+  **`add_image`** tool generates an educational illustration via
+  `ModelClient.generateImage` (gpt-image-1, `OPENAI_IMAGE_MODEL`, through the SAME
+  proxied OpenAI client — base64 out), **stores the bytes to the Supabase
+  `course-assets` bucket** under `{ownerId}/ai-visuals/{courseId}/…`
+  (`storeImage.ts`; public URL on the slide, NEVER a blob/data URL), and lands it
+  as a first-class **`illustration` structured layout** (registry + strict schema +
+  `IllustrationLayout.tsx` + `SlideTemplate` union + `SlideStage` dispatch). It's
+  the ONE impure tool path: a `VisualGenContext` capability injected into the tool
+  ctx by `loopContext` (present only when image-gen is on AND the client can make
+  images; absent ⇒ `add_image` ToolErrors → the model falls back to a diagram/
+  prose). `illustration` is authored ONLY by `add_image` — it's intentionally NOT
+  in the hand-authored `StructuredTemplateInputSchema`. Accuracy-critical figures
+  still go programmatic; capped per lesson (`AI_VISUAL_MAX_PER_LESSON`). The mock
+  provider has a deterministic `generateImage` so the whole generate→store→slide
+  path is tested with no key. Tests: `npm run verify:visuals` (84 checks) + the
+  live image path in `npm run verify:ai:int`.
 
 ## Where things live
 
@@ -607,7 +701,10 @@ never import a provider SDK.
    embedded image/path) · **renderer-owned structured layouts** (each
    `slide.template` component's arrangement must be re-derived as native PPTX
    shapes/text boxes — costs more than flat layouts) · **Shiki code** (token
-   spans → run-level colored text). The `metrics_overview` chart slot is
-   deferred to the charts-as-data workstream — do NOT fake it in export.
+   spans → run-level colored text) · **`diagram` slides** (`DiagramView` already
+   emits pure deterministic SVG → the EASIEST export: embed the SVG, or rasterize
+   to PNG; the alt text + caption carry over verbatim). The `metrics_overview`
+   chart slot is deferred to the charts-as-data workstream — do NOT fake it in
+   export.
 6. `/pricing` marketing page — the landing nav currently points Pricing at
    `/settings`, which is a known wart.

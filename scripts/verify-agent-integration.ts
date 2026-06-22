@@ -347,7 +347,7 @@ async function main() {
   check("a clean deck passes validation (validation ok, no repair)", !!valEvt && valEvt.type === "validation" && valEvt.ok && !valEvt.repaired);
   const csApprove = evApprove.filter((e) => e.type === "change_set");
   check("the pipeline produces exactly ONE change-set", csApprove.length === 1, `got ${csApprove.length}`);
-  check("GENERATE used effort:medium + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "medium" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
+  check("GENERATE used effort:high + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "high" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
   const pLessonDoc = await loadCourseDoc(supabase, courseId);
   const pDeck = pLessonDoc?.modules.find((m) => m.id === pModuleId)?.lessons[0].blocks.find((b) => b.type === "slide_deck");
   check("generated deck persisted with the 3 planned structured slides", !!pDeck && pDeck.type === "slide_deck" && pDeck.slides.length === 3 && pDeck.slides.every((s) => !!s.template), `${pDeck && pDeck.type === "slide_deck" ? pDeck.slides.length : "none"}`);
@@ -392,17 +392,20 @@ async function main() {
   check("classifier call used effort:low (NOT minimal) + model gpt-5.4-mini + responseFormat", editMock.getCalls()[0]?.effort === "low" && editMock.getCalls()[0]?.model === "gpt-5.4-mini" && !!editMock.getCalls()[0]?.responseFormat, editMock.getCalls()[0]?.effort);
   check("the edit path is now LAYERED (teaching bar in the system prompt)", (editMock.getCalls()[1]?.system ?? "").includes("TEACHING BAR"));
 
-  // 11e. MISSING-SPEC REPAIR — generate only s1+s2, validation finds s3 missing,
-  //      a targeted repair pass builds it, re-validation passes.
+  // 11e. MISSING-SPEC REPAIR — GENERATE builds only s1+s2 and then STALLS (the
+  //      coverage driver nudges, but the model produces nothing new, so the
+  //      no-progress guard stops it short of the plan). VALIDATE finds s3 missing,
+  //      a targeted REPAIR pass builds it, re-validation passes.
   const rLessonId = crypto.randomUUID();
   await supabase.from("lessons").insert({ id: rLessonId, module_id: pModuleId, course_id: courseId, title: "Repair lesson", objective: "x", order: 2 });
   const rConvo = await getOrCreateConversation(supabase, courseId, rLessonId);
   const repairMock = createMockModelClient([
     { text: JSON.stringify(LESSON_PLAN) },                                  // PLAN
     { text: "Partial.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion")])] }, // GENERATE (missing s3)
-    { text: "", toolCalls: [] },                                            // end GENERATE
-    { text: "Fixing the gap.", toolCalls: [batchCall([slide("s3", "Recap")])] }, // REPAIR builds s3
-    { text: "", toolCalls: [] },                                            // end REPAIR
+    { text: "", toolCalls: [] },                                            // generate: no progress 1 (driver nudges)
+    { text: "", toolCalls: [] },                                            // generate: no progress 2
+    { text: "", toolCalls: [] },                                            // generate: no progress 3 → guard stops generate at 2/3
+    { text: "Fixing the gap.", toolCalls: [batchCall([slide("s3", "Recap")])] }, // REPAIR builds s3 → 3/3
   ], { finalText: "Done." });
   const evRepair: AgentEvent[] = [];
   await runGenerateLessonTurn({
@@ -455,9 +458,10 @@ async function main() {
   const FOUR_SPEC_PLAN = { ...LESSON_PLAN, slides: [...LESSON_PLAN.slides, { segmentId: "seg", title: "Edge case", teachingGoal: "x", role: "edge_case", kind: "enrichment", layout: "prose", depth: "analysis", keyPoints: ["a"], notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "x" }] };
   const lrMock = createMockModelClient([
     { text: JSON.stringify(FOUR_SPEC_PLAN) },
-    // 4 slides, all WITHOUT speaker notes → ≥4 lint warnings → review fires.
+    // 4 slides built in one batch → coverage complete → the driver ends GENERATE
+    // (planMet) without needing a trailing empty turn. All WITHOUT speaker notes →
+    // ≥4 lint warnings → review fires.
     { text: "Authoring.", toolCalls: [batchCall([slide("s1", "A", null), slide("s2", "B", null), slide("s3", "C", null), slide("s4", "D", null)])] },
-    { text: "", toolCalls: [] },
     // The single light-review call (responseFormat) returns suggestions.
     { text: JSON.stringify({ coherent: true, matchesPlan: true, topSuggestions: [{ title: "Add speaker notes", detail: "Each slide should carry a spoken explanation." }] }) },
   ], { finalText: "Done." });
@@ -471,6 +475,155 @@ async function main() {
   const qr = evLr.find((e) => e.type === "quality_report");
   check("a quality_report carries lint warnings + review suggestions", !!qr && qr.type === "quality_report" && qr.warnings.length >= 4 && qr.suggestions.length >= 1, JSON.stringify(qr && qr.type === "quality_report" ? { w: qr.warnings.length, s: qr.suggestions.length } : null));
   check("the light review used the cheap model at medium effort (one call, no tools)", lrMock.getCalls().some((c) => c.effort === "medium" && c.model === "gpt-5.4-mini" && (c.tools?.length ?? 0) === 0 && !!c.responseFormat));
+
+  // 11g-2. COVERAGE DRIVER — the model "stops" (a no-tool turn) after building only
+  //        ONE slide, but specs remain, so the driver NUDGES it to keep building
+  //        until the plan is complete. No repair phase needed; no checkpoint.
+  const cdLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: cdLessonId, module_id: pModuleId, course_id: courseId, title: "Driver lesson", objective: "x", order: 5 });
+  const cdConvo = await getOrCreateConversation(supabase, courseId, cdLessonId);
+  const cdMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },                                                                  // PLAN
+    { text: "Authoring the opener.", toolCalls: [batchCall([slide("s1", "What a tree is")])] },             // 1/3
+    { text: "I think that covers it.", toolCalls: [] },                                                     // model tries to STOP early → driver nudges
+    { text: "Continuing.", toolCalls: [batchCall([slide("s2", "Insertion"), slide("s3", "Recap")])] },     // → 3/3 (planMet)
+  ], { finalText: "Done." });
+  const evCd: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: cdMock, courseId, lessonId: cdLessonId, ownerId: userId, conversationId: cdConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evCd.push(e),
+  });
+  const cdPhases = evCd.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("coverage driver completes a deck the model tried to abandon early (no repair needed)", JSON.stringify(cdPhases) === JSON.stringify(["plan", "generate", "validate"]), JSON.stringify(cdPhases));
+  check("the driver injected a 'STILL TO BUILD' continuation nudge", cdMock.getCalls().some((c) => (c.input ?? []).some((i) => "role" in i && i.role === "user" && /STILL TO BUILD/.test(i.content))));
+  check("driven generation met the contract → no checkpoint", !evCd.some((e) => e.type === "checkpoint"));
+  const cdDoc = await loadCourseDoc(supabase, courseId);
+  const cdDeck = cdDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === cdLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("the driven deck has all 3 planned slides", !!cdDeck && cdDeck.type === "slide_deck" && cdDeck.slides.length === 3, `${cdDeck && cdDeck.type === "slide_deck" ? cdDeck.slides.length : "none"}`);
+
+  // 11g-3. NO-PROGRESS GUARD — the model builds s1 then produces nothing more.
+  //        GENERATE stalls (silently), REPAIR can't make progress either, and the
+  //        PIPELINE emits exactly ONE final "couldn't satisfy the plan" checkpoint.
+  const npLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: npLessonId, module_id: pModuleId, course_id: courseId, title: "Stall lesson", objective: "x", order: 6 });
+  const npConvo = await getOrCreateConversation(supabase, courseId, npLessonId);
+  const npMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },
+    { text: "Only the opener.", toolCalls: [batchCall([slide("s1", "What a tree is")])] }, // then every later turn is empty (no progress)
+  ], { finalText: "" });
+  const evNp: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: npMock, courseId, lessonId: npLessonId, ownerId: userId, conversationId: npConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evNp.push(e),
+  });
+  const npCheckpoints = evNp.filter((e) => e.type === "checkpoint");
+  check("a stalled generation+repair emits exactly ONE pipeline-owned checkpoint", npCheckpoints.length === 1, `${npCheckpoints.length}`);
+  check("the checkpoint names the unmet plan", npCheckpoints[0]?.type === "checkpoint" && /couldn't fully satisfy|missing/i.test(npCheckpoints[0].reason), npCheckpoints[0]?.type === "checkpoint" ? npCheckpoints[0].reason : "(none)");
+  // FLUSH-ON-EXIT on the stall (the practical "turn cap"): the partial work is NOT
+  // discarded — it's staged AND persisted, so the user can keep / continue it.
+  check("the stalled run still STAGED its partial work (flush-on-exit)", evNp.some((e) => e.type === "change_set"));
+  const npDoc = await loadCourseDoc(supabase, courseId);
+  const npDeck = npDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === npLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("the stalled deck kept the one real slide it built", !!npDeck && npDeck.type === "slide_deck" && npDeck.slides.length === 1, `${npDeck && npDeck.type === "slide_deck" ? npDeck.slides.length : "none"}`);
+  const npPending = await getPendingBlocks(supabase, courseId);
+  check("the stalled run's partial deck is in the Accept/Reject gate (pending)", npPending.some((p) => p.blockId === npDeck?.id));
+  // Coverage was measured by SAVED slides: 1 saved → 1/3, and a 0-new-slide pass is
+  // what tripped the no-progress stop (not an endless repair loop). Repair passes
+  // are bounded — never an unbounded stream of repair phases on a stalled deck.
+  const npRepairPhases = evNp.filter((e) => e.type === "phase" && e.phase === "repair").length;
+  check("a 0-new-slide stall stops via the guard, not an unbounded repair loop", npRepairPhases <= 4, `${npRepairPhases}`);
+
+  // 11j. CLAMP-NOT-REJECT — the model authors a slide with an OVER-LENGTH slot.
+  //      It's auto-shortened server-side and SAVED (stamped with its specId), so
+  //      coverage closes (3/3) and NO repair loop fires. (BUG B: the strictness
+  //      death-spiral fix — a formatting overflow no longer blocks the contract.)
+  const clLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: clLessonId, module_id: pModuleId, course_id: courseId, title: "Clamp lesson", objective: "x", order: 7 });
+  const clConvo = await getOrCreateConversation(supabase, courseId, clLessonId);
+  // s3's title is way over the prose-title cap (60) — used to be rejected → churn.
+  const longTitle = "x".repeat(90);
+  const overLongS3 = { slideSpecId: "s3", template: { layoutId: "prose", content: { title: { text: longTitle }, body: { text: BODY } } }, notes: "notes" };
+  const clMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },
+    { text: "Authoring (s3 title is long).", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), overLongS3])] },
+  ], { finalText: "Done." });
+  const evCl: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: clMock, courseId, lessonId: clLessonId, ownerId: userId, conversationId: clConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evCl.push(e),
+  });
+  const clPhases = evCl.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("an over-length slot is clamped+saved → coverage closes, NO repair phase", JSON.stringify(clPhases) === JSON.stringify(["plan", "generate", "validate"]), JSON.stringify(clPhases));
+  check("the clamp run met the contract → no checkpoint", !evCl.some((e) => e.type === "checkpoint"));
+  const clValEvt = evCl.filter((e) => e.type === "validation").pop();
+  check("the clamp run passed validation cleanly", !!clValEvt && clValEvt.type === "validation" && clValEvt.ok && !clValEvt.repaired);
+  const clDoc = await loadCourseDoc(supabase, courseId);
+  const clDeck = clDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === clLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("all 3 planned slides saved (the over-length one included)", !!clDeck && clDeck.type === "slide_deck" && clDeck.slides.length === 3 && clDeck.slides.every((s) => !!s.ai?.specId), `${clDeck && clDeck.type === "slide_deck" ? clDeck.slides.length : "none"}`);
+  const clS3 = clDeck && clDeck.type === "slide_deck" ? clDeck.slides.find((s) => s.ai?.specId === "s3") : undefined;
+  const clS3Title = clS3?.template?.layoutId === "prose" ? clS3.template.content.title.text : "";
+  check("the over-length title was auto-shortened to the cap (≤60), not rejected", clS3Title.length > 0 && clS3Title.length <= 60 && clS3Title.length < longTitle.length, `${clS3Title.length}`);
+
+  // 11k. FLUSH-ON-EXIT (abort) — the user presses Stop mid-generation (after s1+s2).
+  //      The loop sees the aborted signal between turns and stops; flush-on-exit
+  //      STAGES + PERSISTS the partial work — it is never discarded.
+  const abLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: abLessonId, module_id: pModuleId, course_id: courseId, title: "Abort lesson", objective: "x", order: 8 });
+  const abConvo = await getOrCreateConversation(supabase, courseId, abLessonId);
+  const abortController = new AbortController();
+  const baseAbortMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },                                                                  // PLAN
+    { text: "Built s1+s2.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion")])] }, // GENERATE turn 1 → then Stop
+    { text: "s3 next.", toolCalls: [batchCall([slide("s3", "Recap")])] },                                   // never reached (aborted between turns)
+  ], { finalText: "" });
+  let sawBatch = 0;
+  const abortMock: typeof baseAbortMock = {
+    ...baseAbortMock,
+    async runTurn(params, onEvent) {
+      const res = await baseAbortMock.runTurn(params, onEvent);
+      // Simulate the user pressing Stop right after the first authored batch.
+      if (res.toolCalls.some((t) => t.name === "add_structured_slides_batch") && ++sawBatch === 1) abortController.abort();
+      return res;
+    },
+  };
+  const evAb: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: abortMock, courseId, lessonId: abLessonId, ownerId: userId, conversationId: abConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evAb.push(e), signal: abortController.signal,
+  });
+  check("an aborted run did NOT build the post-Stop slide (s3 skipped)", abortMock.getCalls().length <= 3);
+  check("flush-on-exit STAGED the partial work after Stop (change_set emitted)", evAb.some((e) => e.type === "change_set"));
+  const abDoc = await loadCourseDoc(supabase, courseId);
+  const abDeck = abDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === abLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("the partial deck (s1+s2) was PERSISTED to the DB on abort", !!abDeck && abDeck.type === "slide_deck" && abDeck.slides.length === 2, `${abDeck && abDeck.type === "slide_deck" ? abDeck.slides.length : "none"}`);
+  const abPending = await getPendingBlocks(supabase, courseId);
+  check("the aborted run's partial work is in the Accept/Reject gate (pending)", abPending.some((p) => p.blockId === abDeck?.id));
+
+  // 11g-4. AI IMAGE GENERATION (end to end) — the model calls add_image for a
+  //        concept slide; the bytes are generated (mock PNG) and STORED to the live
+  //        course-assets bucket, and the slide lands as an `illustration` with a
+  //        real public URL (no blob), required alt text, and its plan spec stamp.
+  const imgLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: imgLessonId, module_id: pModuleId, course_id: courseId, title: "Image lesson", objective: "x", order: 7 });
+  const imgConvo = await getOrCreateConversation(supabase, courseId, imgLessonId);
+  const addImageCall = (specId: string, prompt: string, alt: string) => ({ name: "add_image", arguments: { deckBlockId: null, slideSpecId: specId, prompt, alt, title: null, caption: "What to notice." } });
+  const imgMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },
+    { text: "With a visual.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion")]), addImageCall("s3", "A branching tree of nodes", "An illustration of a branching tree of connected nodes.")] },
+  ], { finalText: "Done." });
+  const evImg: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: imgMock, courseId, lessonId: imgLessonId, ownerId: userId, conversationId: imgConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evImg.push(e),
+  });
+  check("add_image asked the image model once, with a no-embedded-text prompt", imgMock.getImageCalls().length === 1 && /no embedded text/i.test(imgMock.getImageCalls()[0]?.prompt ?? ""), `${imgMock.getImageCalls().length}`);
+  const imgDoc = await loadCourseDoc(supabase, courseId);
+  const imgDeck = imgDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === imgLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  const illus = imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.find((s) => s.template?.layoutId === "illustration") : undefined;
+  check("the deck has all 3 planned slides incl. the generated illustration", !!imgDeck && imgDeck.type === "slide_deck" && imgDeck.slides.length === 3 && !!illus, `${imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.length : "none"}`);
+  const illusContent = illus?.template?.layoutId === "illustration" ? illus.template.content : null;
+  check("the illustration carries a STORED public course-assets URL (not a blob/data URL)", !!illusContent && /\/storage\/v1\/object\/public\/course-assets\//.test(illusContent.imageUrl) && illusContent.source === "ai_generated", illusContent?.imageUrl?.slice(0, 64));
+  check("the illustration kept required alt text + its plan spec stamp", !!illusContent && illusContent.alt.length > 0 && illus?.ai?.specId === "s3");
 
   // 11h. MODULE BUILD — the FIRST call is a COMPACT SKELETON (low effort, lean),
   //      NOT a slide-by-slide plan. Approve → each lesson gets a LAZY rich plan →
@@ -492,11 +645,9 @@ async function main() {
   // Approve → per lesson: RICH plan → generate → validate. One change-set.
   const mGenMock = createMockModelClient([
     { text: JSON.stringify(LESSON_PLAN) },                                  // L1 rich plan (lazy)
-    { text: "L1.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
-    { text: "", toolCalls: [] },
+    { text: "L1.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] }, // generate planMet → break
     { text: JSON.stringify(LESSON_PLAN) },                                  // L2 rich plan (lazy)
-    { text: "L2.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
-    { text: "", toolCalls: [] },
+    { text: "L2.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] }, // generate planMet → break
   ], { finalText: "" });
   const evModGen: AgentEvent[] = [];
   await resumeGeneratePlan({
@@ -515,7 +666,7 @@ async function main() {
     [...genToolNames].join(",")
   );
   check("GENERATE toolset includes structured authoring (+ create_block, write_quiz)", genToolNames.has("add_structured_slides_batch") && genToolNames.has("create_block") && genToolNames.has("write_quiz"));
-  check("module generate ran at effort:medium, layered", genCall?.effort === "medium" && (genCall?.system ?? "").includes("TEACHING BAR"));
+  check("module generate ran at effort:high, layered", genCall?.effort === "high" && (genCall?.system ?? "").includes("TEACHING BAR"));
   const modDoc = await loadCourseDoc(supabase, courseId);
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");
   const modDeckCounts = newMod?.lessons.map((l) => { const d = l.blocks.find((b) => b.type === "slide_deck"); return d && d.type === "slide_deck" ? d.slides.length : -1; });

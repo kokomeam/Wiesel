@@ -108,6 +108,24 @@ export interface ModelTurnParams {
   responseFormat?: { name: string; schema: JsonSchema };
 }
 
+/** Raw bytes produced by the image model (base64, with its mime type). The caller
+ *  stores them (e.g. Supabase) and references the resulting URL — we never embed a
+ *  data/blob URL on a slide. Null = generation unavailable or it returned nothing. */
+export interface GeneratedImage {
+  base64: string;
+  mimeType: string;
+  width?: number;
+  height?: number;
+}
+
+/** Options for one image generation (kept tiny + provider-neutral). */
+export interface ImageGenParams {
+  prompt: string;
+  /** e.g. "4:3" / "1:1" — the provider maps it to its nearest supported size. */
+  aspectRatio?: string;
+  signal?: AbortSignal;
+}
+
 /**
  * The single provider seam. Implementations:
  *   - providers/openai.ts — the real OpenAI Responses adapter (only file that
@@ -126,4 +144,11 @@ export interface ModelClient {
     params: ModelTurnParams,
     onEvent: (event: ModelStreamEvent) => void
   ): Promise<ModelTurnResult>;
+  /**
+   * Generate ONE educational illustration. OPTIONAL — present on the OpenAI client
+   * (gpt-image-1, through the same proxy/retry config) and the mock; absent ⇒ the
+   * visual layer treats image generation as unavailable. Returns raw bytes (the
+   * caller stores them), or null when the model produced nothing.
+   */
+  generateImage?(params: ImageGenParams): Promise<GeneratedImage | null>;
 }

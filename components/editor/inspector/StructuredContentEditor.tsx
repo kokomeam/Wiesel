@@ -12,6 +12,9 @@
 
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { updateTemplateContentPatch } from "@/lib/course/commands";
+import { DIAGRAM_TEMPLATES, findDiagramTemplate } from "@/lib/course/diagram/catalog";
+import type { DiagramContent, DiagramSpec } from "@/lib/course/diagram/types";
+import { diagramRequiredElements, validateDiagram } from "@/lib/course/diagram/validate";
 import { STICKER_REGISTRY } from "@/lib/course/slide/stickers";
 import { ITEM_BOUNDS, findStructuredLayout } from "@/lib/course/slide/structuredLayouts";
 import { useEditorStore } from "@/lib/course/store";
@@ -711,6 +714,257 @@ function ComparisonMatrixEditor({ slide, blockId, content }: { slide: Slide; blo
   );
 }
 
+/* ─────────────────────────────── diagram ───────────────────────────────── */
+
+/** A multi-line text slot (alt text / reason) edited in the inspector. */
+function TextAreaField({ label, value, placeholder, onChange }: { label: string; value: string | undefined; placeholder: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={label}>
+      <textarea
+        value={value ?? ""}
+        rows={2}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full resize-y rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+      />
+    </Field>
+  );
+}
+
+/** Strip optional ornamentation from a diagram (the "make simpler" action). */
+function simplifyDiagram(d: DiagramSpec): DiagramSpec {
+  switch (d.kind) {
+    case "coordinate_plot":
+      return { ...d, markers: undefined, shaded: undefined };
+    case "array_diagram":
+      return { ...d, marks: undefined };
+    case "tree_diagram":
+      return { ...d, highlightOrder: undefined };
+    case "graph_diagram":
+      return { ...d, highlightPath: undefined };
+    case "supply_demand":
+      return { ...d, intervention: undefined };
+    default:
+      return d;
+  }
+}
+
+function DiagramFieldEditor({ diagram, set }: { diagram: DiagramSpec; set: (path: Path, value: unknown) => void }) {
+  const d = diagram;
+  switch (d.kind) {
+    case "supply_demand":
+      return (
+        <>
+          <PlainSlotField label="X axis" value={d.xLabel} maxLength={20} placeholder="Quantity" onChange={(v) => set(["diagram", "xLabel"], v)} />
+          <PlainSlotField label="Y axis" value={d.yLabel} maxLength={20} placeholder="Price" onChange={(v) => set(["diagram", "yLabel"], v)} />
+          <Field label="Intervention">
+            <PillGroup
+              options={["none", "price_ceiling", "price_floor"] as const}
+              value={d.intervention?.kind ?? "none"}
+              label="Intervention"
+              onChange={(k) => {
+                if (k === "none") set(["diagram", "intervention"], undefined);
+                else set(["diagram", "intervention"], { kind: k, level: d.intervention?.level ?? (k === "price_ceiling" ? 0.32 : 0.7), label: d.intervention?.label ?? (k === "price_ceiling" ? "Ceiling" : "Floor") });
+              }}
+            />
+          </Field>
+          {d.intervention && (
+            <Field label={`Level (${d.intervention.level.toFixed(2)})`}>
+              <input type="range" min={0} max={1} step={0.02} value={d.intervention.level} onChange={(e) => set(["diagram", "intervention", "level"], Number(e.target.value))} className="w-full accent-brand-600" />
+            </Field>
+          )}
+        </>
+      );
+    case "coordinate_plot":
+      return (
+        <>
+          <PlainSlotField label="X axis" value={d.xLabel} maxLength={28} placeholder="x" onChange={(v) => set(["diagram", "xLabel"], v ?? "")} />
+          <PlainSlotField label="Y axis" value={d.yLabel} maxLength={28} placeholder="y" onChange={(v) => set(["diagram", "yLabel"], v ?? "")} />
+        </>
+      );
+    case "bar_chart":
+      return (
+        <>
+          <PlainSlotField label="Value axis" value={d.yLabel} maxLength={28} placeholder="Value" onChange={(v) => set(["diagram", "yLabel"], v)} />
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">bars ({d.bars.length})</p>
+          <div className="space-y-1.5">
+            {d.bars.map((b, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={b.label}
+                  aria-label={`Bar ${i + 1} label`}
+                  onChange={(e) => set(["diagram", "bars"], d.bars.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                  className="min-w-0 flex-1 rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+                />
+                <input
+                  type="number"
+                  value={b.value}
+                  aria-label={`Bar ${i + 1} value`}
+                  onChange={(e) => set(["diagram", "bars"], d.bars.map((x, j) => (j === i ? { ...x, value: Number(e.target.value) } : x)))}
+                  className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+                />
+              </div>
+            ))}
+          </div>
+        </>
+      );
+    case "array_diagram":
+      return (
+        <>
+          <Field label="Values (comma-separated)">
+            <input
+              type="text"
+              value={d.values.join(", ")}
+              onChange={(e) => set(["diagram", "values"], e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+              className="w-full rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+            />
+          </Field>
+          <Field label="Sorted">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-stone-600">
+              <input type="checkbox" checked={!!d.sorted} onChange={(e) => set(["diagram", "sorted"], e.target.checked)} className="size-3.5 accent-brand-600" />
+              Array is sorted (required for binary search)
+            </label>
+          </Field>
+        </>
+      );
+    case "graph_diagram":
+      return (
+        <div className="flex flex-wrap gap-4">
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-stone-600">
+            <input type="checkbox" checked={!!d.directed} onChange={(e) => set(["diagram", "directed"], e.target.checked)} className="size-3.5 accent-brand-600" /> Directed
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-stone-600">
+            <input type="checkbox" checked={!!d.weighted} onChange={(e) => set(["diagram", "weighted"], e.target.checked)} className="size-3.5 accent-brand-600" /> Weighted
+          </label>
+        </div>
+      );
+    case "number_line":
+      return (
+        <div className="flex items-center gap-2">
+          <PlainSlotField label="Min" value={String(d.min)} maxLength={8} placeholder="-5" onChange={(v) => set(["diagram", "min"], Number(v ?? 0))} />
+          <PlainSlotField label="Max" value={String(d.max)} maxLength={8} placeholder="5" onChange={(v) => set(["diagram", "max"], Number(v ?? 0))} />
+          <PlainSlotField label="Step" value={d.step != null ? String(d.step) : undefined} maxLength={6} placeholder="1" onChange={(v) => set(["diagram", "step"], v ? Number(v) : undefined)} />
+        </div>
+      );
+    case "venn":
+      return (
+        <>
+          <PlainSlotField label="Left set" value={d.aLabel} maxLength={28} placeholder="Set A" onChange={(v) => set(["diagram", "aLabel"], v ?? "")} />
+          <PlainSlotField label="Right set" value={d.bLabel} maxLength={28} placeholder="Set B" onChange={(v) => set(["diagram", "bLabel"], v ?? "")} />
+          <PlainSlotField label="Left only" value={d.aOnly} maxLength={60} placeholder="…" onChange={(v) => set(["diagram", "aOnly"], v)} />
+          <PlainSlotField label="Overlap" value={d.both} maxLength={60} placeholder="…" onChange={(v) => set(["diagram", "both"], v)} />
+          <PlainSlotField label="Right only" value={d.bOnly} maxLength={60} placeholder="…" onChange={(v) => set(["diagram", "bOnly"], v)} />
+        </>
+      );
+    default:
+      return <p className="text-[11px] text-stone-400">Use “Swap diagram” to regenerate this {d.kind.replace(/_/g, " ")} from a template, or ask the AI to revise it.</p>;
+  }
+}
+
+function DiagramEditor({ slide, blockId, content }: { slide: Slide; blockId: string; content: DiagramContent }) {
+  const set = useSet(blockId, slide.id);
+  const { spec, diagram } = content;
+  const issues = validateDiagram(diagram);
+  const takeaways = (content.takeaways as unknown as AnyItem[] | undefined) ?? [];
+  const setTakeaways = (next: AnyItem[]) => set(["takeaways"], next.length ? next : undefined);
+
+  return (
+    <>
+      {/* Visual spec — why it's here + status */}
+      <div
+        className="space-y-1 rounded-xl border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs text-stone-600"
+        data-ai-component="visual-spec"
+        data-ai-role={spec.role}
+        data-ai-validation-status={issues.length ? "warning" : "passed"}
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-brand-700">{spec.role.replace(/_/g, " ")}</span>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${issues.length ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+            {issues.length ? "needs review" : "valid"}
+          </span>
+          {spec.mustBeAccurate && <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[10px] text-stone-600">accuracy-critical</span>}
+        </div>
+        {spec.reason && <p className="italic">“{spec.reason}”</p>}
+        {issues.length > 0 && (
+          <ul className="list-disc pl-4 text-[11px] text-amber-700">
+            {issues.slice(0, 4).map((m, i) => (
+              <li key={i}>{m}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Swap / regenerate from a programmatic template */}
+      <Field label="Swap diagram (regenerate accurately)">
+        <select
+          value=""
+          aria-label="Swap diagram template"
+          data-ai-tool="diagram-swap-template"
+          onChange={(e) => {
+            const tpl = findDiagramTemplate(e.target.value);
+            if (!tpl) return;
+            const next = tpl.seed();
+            set(["diagram"], next);
+            set(["spec", "requiredElements"], diagramRequiredElements(next));
+            set(["spec", "mustBeAccurate"], tpl.accuracyCritical || undefined);
+          }}
+          className="w-full rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-700 outline-none focus:border-brand-300"
+        >
+          <option value="">Choose a template…</option>
+          {DIAGRAM_TEMPLATES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} ({t.domain})
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <DiagramFieldEditor diagram={diagram} set={set} />
+
+      <TextAreaField label="Alt text (accessibility)" value={spec.altText} placeholder="Describe the visual for screen readers + AI." onChange={(v) => set(["spec", "altText"], v)} />
+      <TextAreaField label="Why this visual was added" value={spec.reason} placeholder="e.g. Equilibrium is conventionally taught with intersecting curves." onChange={(v) => set(["spec", "reason"], v || undefined)} />
+
+      <Field label="Accuracy-critical">
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-stone-600">
+          <input type="checkbox" checked={!!spec.mustBeAccurate} onChange={(e) => set(["spec", "mustBeAccurate"], e.target.checked || undefined)} className="size-3.5 accent-brand-600" />
+          Labels / numbers / shapes must be exact
+        </label>
+      </Field>
+
+      {/* Takeaways beside the diagram */}
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">takeaways ({takeaways.length})</p>
+        <AddButton label="Add takeaway" disabled={takeaways.length >= 4} onClick={() => takeaways.length < 4 && setTakeaways([...takeaways, { text: "" }])} />
+      </div>
+      <div className="space-y-2">
+        {takeaways.map((p, i) => (
+          <div key={i} className="flex items-center gap-2 rounded-xl border border-stone-200 p-2.5">
+            <span className="grid size-5 shrink-0 place-items-center rounded-md bg-stone-100 text-[10px] font-semibold text-stone-500">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-stone-700">{richText(p) || `Takeaway ${i + 1}`}</span>
+            <ListControls count={takeaways.length} index={i} min={0} onMove={(dir) => setTakeaways(reorder(takeaways, i, dir))} onRemove={() => setTakeaways(takeaways.filter((_, idx) => idx !== i))} />
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          data-ai-tool="diagram-simplify"
+          onClick={() => {
+            set(["diagram"], simplifyDiagram(diagram));
+            if (takeaways.length) setTakeaways([]);
+          }}
+          className="rounded-md px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50"
+        >
+          Make simpler
+        </button>
+        <p className="text-[10px] text-stone-400">Edit the title, caption, and takeaways directly on the slide.</p>
+      </div>
+    </>
+  );
+}
+
 /* ───────────────────────────── Dispatcher ──────────────────────────────── */
 
 export function StructuredContentEditor({ slide, blockId }: { slide: Slide; blockId: string }) {
@@ -733,6 +987,8 @@ export function StructuredContentEditor({ slide, blockId }: { slide: Slide; bloc
         <ComparisonColumnsEditor slide={slide} blockId={blockId} content={template.content} />
       ) : template.layoutId === "comparison_matrix" ? (
         <ComparisonMatrixEditor slide={slide} blockId={blockId} content={template.content} />
+      ) : template.layoutId === "diagram" ? (
+        <DiagramEditor slide={slide} blockId={blockId} content={template.content} />
       ) : (
         <GenericItemEditor slide={slide} blockId={blockId} />
       )}

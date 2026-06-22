@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { DiagramContentStorageSchema } from "./diagram/schemas";
 import type {
   AIMeta,
   CourseDocument,
@@ -404,6 +405,22 @@ export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
       ),
       footer: ComparisonFooterStorageSchema.optional(),
       decor: DecorLevelSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("diagram"),
+    content: DiagramContentStorageSchema,
+  }),
+  z.object({
+    layoutId: z.literal("illustration"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      title: RichTextSchema.optional(),
+      caption: RichTextSchema.optional(),
+      points: z.array(RichTextSchema).optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
     }),
   }),
 ]) satisfies z.ZodType<SlideTemplate>;

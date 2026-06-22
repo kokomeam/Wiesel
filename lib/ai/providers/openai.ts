@@ -25,6 +25,20 @@ import type {
 const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_EFFORT = "medium";
 const DEFAULT_MAX_OUTPUT_TOKENS = 16000;
+// The image model for educational illustrations (the non-diagram visual path).
+// gpt-image-1 returns base64; the caller stores it. OPENAI_IMAGE_MODEL overrides.
+const DEFAULT_IMAGE_MODEL = "gpt-image-1";
+
+/** Map a coarse aspect ratio to gpt-image-1's nearest supported size. */
+function aspectToImageSize(aspect?: string): "1024x1024" | "1536x1024" | "1024x1536" {
+  if (aspect === "1:1") return "1024x1024";
+  if (aspect === "3:4" || aspect === "9:16") return "1024x1536";
+  return "1536x1024"; // 4:3 / 16:9 / default — landscape suits a slide
+}
+function imageSizeDims(size: string): { width: number; height: number } {
+  const [w, h] = size.split("x").map((n) => Number(n));
+  return { width: w || 1536, height: h || 1024 };
+}
 // The SDK retries 429/5xx/connection errors with exponential backoff and honors
 // Retry-After itself — we just give it MORE headroom than its default of 2 so an
 // occasional per-minute TPM burst rides out instead of surfacing as a failed
@@ -223,6 +237,7 @@ export function createOpenAIModelClient(): ModelClient {
   );
 
   const defaultModel = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
+  const imageModel = process.env.OPENAI_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL;
   const defaultEffort = (process.env.OPENAI_REASONING_EFFORT ?? DEFAULT_EFFORT) as
     | "minimal"
     | "low"
@@ -369,6 +384,28 @@ export function createOpenAIModelClient(): ModelClient {
         console.log(JSON.stringify({ tag: "openai_error", errorKind: kind, status, message }));
         onEvent({ type: "error", message, kind });
         return { text: "", toolCalls: [], finishReason: "error", errorKind: kind };
+      }
+    },
+
+    async generateImage(params) {
+      const size = aspectToImageSize(params.aspectRatio);
+      try {
+        const res = await client.images.generate(
+          { model: imageModel, prompt: params.prompt, size, n: 1 },
+          { signal: params.signal }
+        );
+        const b64 = res.data?.[0]?.b64_json;
+        if (!b64) {
+          console.log(JSON.stringify({ tag: "openai_image", outcome: "empty", model: imageModel, size }));
+          return null;
+        }
+        const { width, height } = imageSizeDims(size);
+        console.log(JSON.stringify({ tag: "openai_image", outcome: "ok", model: imageModel, size, bytes: b64.length }));
+        return { base64: b64, mimeType: "image/png", width, height };
+      } catch (error) {
+        const { kind, message, status } = classifyError(error);
+        console.log(JSON.stringify({ tag: "openai_image_error", errorKind: kind, status, message, model: imageModel }));
+        return null;
       }
     },
   };

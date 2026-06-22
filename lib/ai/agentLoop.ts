@@ -21,6 +21,7 @@ import { buildContextMessage, buildSystemPrompt } from "./context";
 import { createChangeSet } from "./changeSet";
 import { diffBlocks, type BlockChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
+import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
 import { buildBoundedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
 import {
   loadHistory,
@@ -33,7 +34,9 @@ import type { AgentEvent } from "./events";
 import type { ModelClient, ModelInputItem, ModelTurnResult, ReasoningEffort } from "./modelClient";
 import type { LessonOutline } from "./outline";
 import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
-import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext } from "./tools";
+import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext, type VisualGenContext } from "./tools";
+import { AI_VISUALS } from "./visuals/config";
+import { storeGeneratedImage } from "./visuals/storeImage";
 
 type DB = SupabaseClient<Database>;
 // Per-turn step cap (one model call + its tool batch = one step). Env-overridable;
@@ -41,8 +44,10 @@ type DB = SupabaseClient<Database>;
 const MAX_TURNS = Number(process.env.AGENT_MAX_TURNS) || 16;
 // A whole agent run (PLAN + every lesson's GENERATE/CRITIQUE) shares ONE call
 // budget — the runaway ceiling, mainly for module builds (N lessons × MAX_TURNS).
-// Paired with the per-turn cap so the raise above isn't unbounded.
-const MAX_TOTAL_CALLS = Number(process.env.AGENT_MAX_TOTAL_CALLS) || 64;
+// The per-lesson coverage driver + no-progress guard now prevent per-lesson
+// runaway, so this can be generous enough that an 8-lesson module doesn't starve
+// its later lessons. Env: AGENT_MAX_TOTAL_CALLS.
+const MAX_TOTAL_CALLS = Number(process.env.AGENT_MAX_TOTAL_CALLS) || 200;
 
 /** A mutable per-run model-call budget, shared by every phase/lesson of one agent
  *  run (passed by reference through the loop contexts). */
@@ -123,6 +128,14 @@ export interface LoopOptions {
   /** How history is replayed each turn. Omit → the env default (bounded). Pass
    *  `{ mode: "full" }` for the byte-identical legacy full-replay behavior. */
   historyPolicy?: HistoryPolicy;
+  /** Per-call max output tokens (authoring turns get more headroom than the
+   *  provider default so high-effort reasoning doesn't starve slide content). */
+  maxOutputTokens?: number;
+  /** GENERATE/REPAIR: drive the loop to PLAN COVERAGE instead of stopping the
+   *  instant the model returns no tool calls. When specs remain the loop nudges
+   *  the model to keep building (up to maxTurns), and a no-progress guard stops a
+   *  stalled run. Requires `outline`. Off (legacy stop-when-model-stops) otherwise. */
+  driveToCoverage?: boolean;
 }
 
 /** Accumulated token usage across a phase's model turns (instrumentation). */
@@ -163,6 +176,50 @@ export interface AgentRunParams {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Plan-coverage snapshot for the coverage driver — derived from the SAME
+ *  deterministic generation-state the bounded input already builds (no model). */
+interface CoverageProgress {
+  covered: number;
+  remaining: string[];
+  missingBlocks: string[];
+}
+
+function coverageProgress(doc: CourseDocument, lessonId: string, outline: LessonOutline): CoverageProgress {
+  const p = buildGenerationState(doc, lessonId, { phase: "drive", outline }).planProgress;
+  return {
+    covered: p?.slideSpecsCompleted.length ?? 0,
+    remaining: p?.slideSpecsRemaining ?? [],
+    missingBlocks: p?.requiredBlocksMissing ?? [],
+  };
+}
+
+/** The concrete "keep going" message injected when the model stops early but the
+ *  plan isn't fully built — it names the exact specs + blocks still owed so the
+ *  model resumes building instead of ending the turn. */
+function buildContinuationNudge(prog: CoverageProgress, outline: LessonOutline, deckBlockId?: string): string {
+  const byId = new Map(outline.slides.map((s) => [s.id, s]));
+  const lines = [
+    "You stopped, but the approved plan is NOT fully built yet. Keep going — do NOT summarize, explain, or end the turn until every planned slide exists.",
+  ];
+  if (prog.remaining.length) {
+    lines.push(
+      `STILL TO BUILD (${prog.remaining.length} slide spec(s)): author the next 1–3 NOW with add_structured_slides_batch into deck ${deckBlockId ?? "(this lesson's deck)"}, stamping each slideSpecId:`
+    );
+    for (const id of prog.remaining.slice(0, 4)) {
+      const s = byId.get(id);
+      if (s) lines.push(`  - [${id} · ${s.role} · layout=${s.layout}] ${s.title} — ${s.teachingGoal}.`);
+    }
+    if (prog.remaining.length > 4) lines.push(`  …and ${prog.remaining.length - 4} more after those.`);
+  }
+  if (prog.missingBlocks.includes("quiz") && outline.quizPlan) {
+    lines.push(`Also still owed: the knowledge check — create it with write_quiz (${outline.quizPlan.questionCount} question(s)).`);
+  }
+  if (prog.missingBlocks.includes("homework") && outline.homeworkPlan) {
+    lines.push("Also still owed: the practice — create it with write_homework.");
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -217,35 +274,57 @@ export interface LoopContext {
   /** The per-run model-call budget, shared across every phase/lesson of one run.
    *  Seeded by `loopContext()`; decremented per model call. */
   callBudget?: CallBudget;
+  /** Image-generation capability (built by `loopContext` when configured) — passed
+   *  into each tool's ctx so `add_image` can generate + store an illustration. */
+  visuals?: VisualGenContext;
 }
 
-/** Reconcile the doc to the DB ONCE and stage the net diff (vs `baselineDoc`) as
- *  one reviewable change-set. Shared by the single-turn loop and the phased
- *  pipeline (which finalizes once after CRITIQUE). The change_sets.lesson_id FK
- *  requires an existing row, so the docked lessonId is coalesced to a changed
- *  block's lesson (always persisted) or NULL. */
+/** Persist the doc to the DB (full-snapshot reconcile). IDEMPOTENT + repeatable —
+ *  the phased pipeline calls it incrementally (after each lesson / phase) so the
+ *  DB reflects progress even if a later phase dies or the run is aborted (the
+ *  "Module 5 has no data" fix). Never aborts on `c.signal`: a flush MUST complete
+ *  even when the run was just cancelled. */
+export async function reconcileDoc(c: LoopContext, doc: CourseDocument): Promise<void> {
+  const err = await reconcileCourseDoc(c.supabase, doc, c.ownerId);
+  if (err && !c.signal?.aborted) c.emit({ type: "error", message: `Some changes may not have saved: ${err}` });
+}
+
+/** Stage the net block diff (vs `baselineDoc`) as ONE reviewable change-set.
+ *  Returns true if a change-set was created. The change_sets.lesson_id FK requires
+ *  an existing row, so the docked lessonId is coalesced to a changed block's lesson
+ *  (always persisted) or NULL. Does NOT reconcile — call `reconcileDoc` first. */
+export async function stageChangeSet(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null
+): Promise<boolean> {
+  const changes = diffBlocks(baselineDoc, doc);
+  if (changes.length === 0) return false;
+  const summary = changeSummary(changes);
+  const stagedLessonId = findLesson(doc, c.lessonId)
+    ? c.lessonId
+    : (changes.find((ch) => ch.lessonId)?.lessonId ?? null);
+  const cs = await createChangeSet(
+    c.supabase,
+    { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId, messageId: lastAssistantMessageId, summary },
+    changes
+  );
+  if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary });
+  return !!cs;
+}
+
+/** Reconcile the doc to the DB and stage the net diff as one change-set. Shared by
+ *  the single-turn loop (which finalizes here). The phased pipeline uses the split
+ *  `reconcileDoc` + `stageChangeSet` for incremental persistence + flush-on-exit. */
 export async function reconcileAndStage(
   c: LoopContext,
   doc: CourseDocument,
   baselineDoc: CourseDocument,
   lastAssistantMessageId: string | null
 ): Promise<void> {
-  const err = await reconcileCourseDoc(c.supabase, doc, c.ownerId);
-  if (err) c.emit({ type: "error", message: `Some changes may not have saved: ${err}` });
-
-  const changes = diffBlocks(baselineDoc, doc);
-  if (changes.length > 0) {
-    const summary = changeSummary(changes);
-    const stagedLessonId = findLesson(doc, c.lessonId)
-      ? c.lessonId
-      : (changes.find((ch) => ch.lessonId)?.lessonId ?? null);
-    const cs = await createChangeSet(
-      c.supabase,
-      { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId, messageId: lastAssistantMessageId, summary },
-      changes
-    );
-    if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary });
-  }
+  await reconcileDoc(c, doc);
+  await stageChangeSet(c, doc, baselineDoc, lastAssistantMessageId);
 }
 
 /**
@@ -302,6 +381,20 @@ export async function runConversationLoop(
   let toolCallCount = 0;
   let turnsRun = 0;
 
+  // Coverage driver state (GENERATE/REPAIR). `prevCovered` seeds from the doc the
+  // loop STARTS with, so a repair pass measures NET new coverage, not absolute.
+  const driveOutline = options.driveToCoverage ? options.outline : undefined;
+  let prevCovered = driveOutline ? coverageProgress(doc, c.lessonId, driveOutline).covered : 0;
+  let noProgressTurns = 0;
+  // A driven GENERATE/REPAIR loop runs INSIDE the validate/repair pipeline, which
+  // owns the ONE authoritative end-of-run checkpoint — so the loop only RECORDS
+  // that it stopped short (sets `checkpointed`) without emitting a duplicate. The
+  // standalone edit/critique path (no driver) still emits its own checkpoint.
+  const stopShort = (reason: string, completedSteps: number) => {
+    if (!driveOutline) c.emit({ type: "checkpoint", reason, completedSteps });
+    checkpointed = true;
+  };
+
   for (let turn = 0; turn < maxTurns; turn++) {
     if (c.signal?.aborted) break;
 
@@ -342,17 +435,12 @@ export async function runConversationLoop(
     // it's spent, stop here the same way the per-turn cap does — emit a checkpoint
     // so the user can ask to continue, then settle whatever's been built.
     if (c.callBudget && c.callBudget.remaining <= 0) {
-      c.emit({
-        type: "checkpoint",
-        reason: "Reached the overall step budget for this request. Ask me to continue if there's more to do.",
-        completedSteps: turn,
-      });
-      checkpointed = true;
+      stopShort("Reached the overall step budget for this request. Ask me to continue if there's more to do.", turn);
       break;
     }
     if (c.callBudget) c.callBudget.remaining -= 1;
 
-    const result = await c.model.runTurn({ system, input, tools, signal: c.signal, effort: options.effort, model: options.model }, (ev) => {
+    const result = await c.model.runTurn({ system, input, tools, signal: c.signal, effort: options.effort, model: options.model, maxOutputTokens: options.maxOutputTokens }, (ev) => {
       if (ev.type === "text_delta") {
         fullAssistantText += ev.delta;
         c.emit({ type: "assistant_delta", text: ev.delta });
@@ -383,8 +471,12 @@ export async function runConversationLoop(
     }
 
     if (result.finishReason === "error") break;
-    if (result.toolCalls.length === 0) break;
+    const noToolCalls = result.toolCalls.length === 0;
+    // Legacy paths (edit/critique/delete) stop the instant the model stops. The
+    // coverage driver instead checks the plan after the group settles (below).
+    if (noToolCalls && !driveOutline) break;
 
+    const docBeforeTools = doc;
     for (const call of result.toolCalls) {
       // Once paused, every remaining call in this batch gets a benign deferred
       // output so the saved turn stays a valid (every function_call answered)
@@ -406,7 +498,7 @@ export async function runConversationLoop(
       let blockType: string | undefined;
 
       try {
-        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId };
+        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals };
         const outcome = await executeTool(call.name, call.arguments, ctx);
         summary = outcome.summary;
 
@@ -490,13 +582,44 @@ export async function runConversationLoop(
     eventGroups.push(group);
 
     if (paused) break;
+
+    // LIVE PERSISTENCE (driven GENERATE/REPAIR only): reconcile this turn's new
+    // slides to the DB the moment the batch lands — so the editor can render them
+    // live AND a hard stop / crash never loses more than the current turn's work
+    // (flush-on-exit then only has to stage what's already persisted). Edit/critique
+    // persist once at the end (deferFinalize), so they're byte-identical to before.
+    if (driveOutline && doc !== docBeforeTools) {
+      await reconcileDoc(c, doc);
+    }
+
+    // COVERAGE DRIVER (GENERATE/REPAIR): keep building until the plan is met,
+    // instead of stopping the instant the model emits a no-tool-call turn. A
+    // no-progress guard stops a stalled run (e.g. repeated schema failures) so it
+    // can't burn the budget spinning.
+    if (driveOutline) {
+      const prog = coverageProgress(doc, c.lessonId, driveOutline);
+      if (prog.covered > prevCovered) {
+        prevCovered = prog.covered;
+        noProgressTurns = 0;
+      } else {
+        noProgressTurns += 1;
+      }
+      const planMet = prog.remaining.length === 0 && prog.missingBlocks.length === 0;
+      if (planMet) break; // contract satisfied — done even if the model wanted to keep talking
+
+      if (noProgressTurns >= AGENT_NO_PROGRESS_LIMIT) {
+        stopShort("Generation stalled before the plan was complete (no new slides over several steps). Ask me to continue and I'll finish what's left.", prog.covered);
+        break;
+      }
+      // The model stopped early but specs remain — inject a concrete nudge so the
+      // NEXT turn resumes building exactly what's still owed.
+      if (noToolCalls) {
+        eventGroups.push([{ role: "user", content: buildContinuationNudge(prog, driveOutline, options.deckBlockId) }]);
+      }
+    }
+
     if (turn === maxTurns - 1) {
-      c.emit({
-        type: "checkpoint",
-        reason: "Reached the per-turn step limit. Ask me to continue if there's more to do.",
-        completedSteps: turn + 1,
-      });
-      checkpointed = true;
+      stopShort("Reached the per-turn step limit. Ask me to continue if there's more to do.", turn + 1);
     }
   }
 
@@ -528,6 +651,28 @@ export interface LoopContextSource {
   callBudget?: CallBudget;
 }
 
+/** Build the illustration capability for `add_image` — present only when image
+ *  generation is enabled AND the model client can produce images. It wraps the
+ *  model's `generateImage` (gpt-image-1, through the same proxy) and stores the
+ *  bytes to Supabase, returning a public URL. The educational-style + no-text
+ *  suffix steers the model away from garbled embedded labels. */
+function makeVisualGenContext(p: LoopContextSource): VisualGenContext | undefined {
+  if (!AI_VISUALS.enabled || !AI_VISUALS.imageGeneration) return undefined;
+  const generate = p.model.generateImage?.bind(p.model);
+  if (!generate) return undefined;
+  return {
+    maxPerLesson: AI_VISUALS.maxPerLesson,
+    async generateIllustration({ prompt }) {
+      const styled =
+        `${prompt}\n\nStyle: clean, modern flat educational illustration; a single clear subject; soft neutral palette; ` +
+        `no embedded text, words, letters, numbers, labels, captions, logos, or watermark.`;
+      const img = await generate({ prompt: styled, aspectRatio: "4:3", signal: p.signal });
+      if (!img) return null;
+      return storeGeneratedImage(p.supabase, { ownerId: p.ownerId, courseId: p.courseId, image: img });
+    },
+  };
+}
+
 export function loopContext(p: LoopContextSource): LoopContext {
   return {
     supabase: p.supabase,
@@ -541,6 +686,7 @@ export function loopContext(p: LoopContextSource): LoopContext {
     // One budget per agent run, shared across every phase/lesson it spawns
     // (downstream contexts spread from this one, so they share the reference).
     callBudget: p.callBudget ?? newCallBudget(),
+    visuals: makeVisualGenContext(p),
   };
 }
 

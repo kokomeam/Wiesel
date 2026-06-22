@@ -75,8 +75,18 @@ interface EditorState {
   autosaveSkipOnce: boolean;
   /** Internal: the next hydrate is a Reject refetch (→ resume + skip-once). */
   rejectRefetch: boolean;
+  /** True while an AI agent run is streaming. Autosave pauses (the agent persists
+   *  server-side; a competing browser full-snapshot would race + can orphan rows)
+   *  and the live-render re-sync runs instead. Survives `syncLiveDoc`. */
+  agentRunActive: boolean;
 
   hydrate: (doc: CourseDocument, courseId: string) => void;
+  /** Replace the live document from a server re-load DURING an agent run (live
+   *  render) — WITHOUT touching undo/redo, courseId, save state, or the run flag.
+   *  Distinct from `hydrate`, which is the authoritative full reset. */
+  syncLiveDoc: (doc: CourseDocument) => void;
+  /** Mark an AI agent run as active/inactive (pauses autosave for its duration). */
+  setAgentRunActive: (v: boolean) => void;
   select: (sel: Selection) => void;
   openLesson: (lessonId: string) => void;
   apply: (patch: unknown, source: PatchSource) => PatchResult;
@@ -188,6 +198,7 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     autosaveSuspended: false,
     autosaveSkipOnce: false,
     rejectRefetch: false,
+    agentRunActive: false,
 
     /** Install a freshly loaded course; resets history and save state. A Reject
      *  refetch resumes autosave and skips re-saving the reverted doc. */
@@ -210,6 +221,18 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         rejectRefetch: false,
       });
     },
+
+    /** Live-render re-sync during an agent run: swap in the freshly-persisted doc
+     *  without resetting history / save state / the run flag (so undo + the paused
+     *  autosave are untouched). Repairs the selection if a referenced node moved. */
+    syncLiveDoc: (doc) =>
+      set((state) => ({
+        doc,
+        selection: repairSelection(doc, state.selection),
+        activeLessonId: repairActiveLesson(doc, state.activeLessonId),
+      })),
+
+    setAgentRunActive: (v) => set({ agentRunActive: v }),
 
     suspendAutosaveForReject: () => set({ autosaveSuspended: true, rejectRefetch: true }),
 

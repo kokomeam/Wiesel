@@ -10,6 +10,8 @@
  */
 
 import type {
+  GeneratedImage,
+  ImageGenParams,
   ModelClient,
   ModelErrorKind,
   ModelStreamEvent,
@@ -17,6 +19,11 @@ import type {
   ModelTurnParams,
   ModelTurnResult,
 } from "../modelClient";
+
+/** A 1×1 transparent PNG — deterministic bytes so the image path (generate →
+ *  store → slide) is exercised end-to-end with no API key. */
+const MOCK_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 /** One scripted turn. `arguments` may be an object (stringified for you) or a
  *  raw JSON string (to test malformed input). `error` simulates a TRANSPORT
@@ -32,12 +39,16 @@ export interface MockOptions {
   model?: string;
   /** Text returned once the script is exhausted (the final, no-tool turn). */
   finalText?: string;
+  /** Make generateImage return null (simulate an unavailable / failed image model). */
+  failImages?: boolean;
 }
 
 /** A mock client that also records every call's params — lets tests assert the
  *  per-phase reasoning effort + responseFormat the loop passed, with no key. */
 export interface MockModelClient extends ModelClient {
   getCalls(): ModelTurnParams[];
+  /** Every image prompt the agent asked for (lets tests assert visual wiring). */
+  getImageCalls(): ImageGenParams[];
 }
 
 let callSeq = 0;
@@ -54,10 +65,17 @@ export function createMockModelClient(
   let turnIndex = 0;
   const model = opts.model ?? "mock-model";
   const calls: ModelTurnParams[] = [];
+  const imageCalls: ImageGenParams[] = [];
 
   return {
     model,
     getCalls: () => calls,
+    getImageCalls: () => imageCalls,
+    async generateImage(params: ImageGenParams): Promise<GeneratedImage | null> {
+      imageCalls.push(params);
+      if (opts.failImages) return null;
+      return { base64: MOCK_PNG_BASE64, mimeType: "image/png", width: 1536, height: 1024 };
+    },
     async runTurn(
       params: ModelTurnParams,
       onEvent: (event: ModelStreamEvent) => void

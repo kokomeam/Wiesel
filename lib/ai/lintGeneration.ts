@@ -16,8 +16,8 @@ import type {
   Slide,
   SlideDeckBlock,
 } from "@/lib/course/types";
-import type { LessonOutline, PlannedSlide } from "./outline";
-import { density, slideTextLength } from "./slideDiagnostics";
+import { slideRequiresVisual, type LessonOutline, type PlannedSlide } from "./outline";
+import { density, slideIsVisual, slideTextLength } from "./slideDiagnostics";
 
 export interface LintWarning {
   code: string;
@@ -66,6 +66,15 @@ export function lintLessonGeneration(
       const wantsCode = spec.role === "code_walkthrough" || spec.layout === "code_walkthrough_steps";
       if (wantsCode && layout !== "code_walkthrough_steps") {
         warnings.push({ code: "NO_CODE", message: "Slide was planned as a code walkthrough but carries no code.", slideId: s.id });
+      }
+      // A RECOMMENDED (not required — that's a hard check) visual that was skipped.
+      const vi = spec.visualIntent;
+      if (vi && vi.role !== "none" && !slideRequiresVisual(spec) && !slideIsVisual(s)) {
+        warnings.push({
+          code: "VISUAL_SKIPPED",
+          message: `Slide could use the planned ${vi.expectedVisualType ?? vi.role} visual (add_diagram) — optional.`,
+          slideId: s.id,
+        });
       }
     }
   }

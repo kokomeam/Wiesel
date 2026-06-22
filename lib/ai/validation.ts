@@ -18,8 +18,8 @@ import type { CoursePatch } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
 import type { CourseDocument, Slide, SlideDeckBlock } from "@/lib/course/types";
 import { computePlanCoverage, type PlanCoverage } from "./generationState";
-import type { LessonOutline } from "./outline";
-import { isEmptySlide, isPlaceholderSlide } from "./slideDiagnostics";
+import { slideRequiresVisual, type LessonOutline, type PlannedSlide } from "./outline";
+import { isEmptySlide, isPlaceholderSlide, slideIsDiagram, slideIsVisual } from "./slideDiagnostics";
 
 export type HardFailureCode =
   | "NO_DECK"
@@ -27,7 +27,28 @@ export type HardFailureCode =
   | "EMPTY_SLIDE"
   | "MISSING_SLIDE_SPECS"
   | "DUPLICATE_SPEC"
-  | "REQUIRED_BLOCK_MISSING";
+  | "REQUIRED_BLOCK_MISSING"
+  | "REQUIRED_VISUAL_MISSING";
+
+/** Visual roles a slide MUST satisfy with a drawn diagram/image (not just any
+ *  visual layout) — these are inherently precise pictures. */
+const ACCURATE_VISUAL_ROLES: ReadonlySet<string> = new Set([
+  "graph",
+  "data_chart",
+  "chart",
+  "flowchart",
+  "timeline",
+  "tree_or_graph",
+  "spatial_example",
+]);
+
+/** Does a built slide satisfy a planned REQUIRED visual? Accuracy-critical
+ *  intents demand a real `diagram`/image; others accept any visual layout. */
+function visualSatisfied(slide: Slide, spec: PlannedSlide): boolean {
+  const vi = spec.visualIntent;
+  const accurate = !!vi && (vi.mustBeAccurate === true || ACCURATE_VISUAL_ROLES.has(vi.role));
+  return accurate ? slideIsDiagram(slide) : slideIsVisual(slide);
+}
 
 export interface ValidationIssue {
   code: HardFailureCode;
@@ -49,6 +70,10 @@ export interface ValidationReport {
   emptySlideIds: string[];
   /** Auxiliary blocks the plan required but that don't exist. */
   requiredBlocksMissing: ("quiz" | "homework")[];
+  /** Spec ids whose plan REQUIRED a visual, whose slide was built, but which
+   *  carries no (adequate) visual. (A spec with no slide at all is in
+   *  `missingSpecIds`; rebuilding it via the repair brief restores the visual.) */
+  missingRequiredVisualSpecIds: string[];
   /** Planned slide count (the contract). */
   expectedSlides: number;
   /** Real (non-placeholder, non-empty) slides currently in the deck(s). */
@@ -64,7 +89,8 @@ export function hasModelRepairableFailure(report: ValidationReport): boolean {
   return (
     report.missingSpecIds.length > 0 ||
     report.duplicateSpecIds.length > 0 ||
-    report.requiredBlocksMissing.length > 0
+    report.requiredBlocksMissing.length > 0 ||
+    report.missingRequiredVisualSpecIds.length > 0
   );
 }
 
@@ -112,6 +138,23 @@ export function validateLessonGeneration(
   if (outline.quizPlan && !blocks.some((b) => b.type === "quiz")) requiredBlocksMissing.push("quiz");
   if (outline.homeworkPlan && !blocks.some((b) => b.type === "homework")) requiredBlocksMissing.push("homework");
 
+  // Required visuals: a spec that REQUIRES a visual must have a built slide that
+  // actually carries one. (A missing slide is already a MISSING_SLIDE_SPECS issue;
+  // here we catch a built-but-visual-less slide where the plan demanded a diagram.)
+  const slideBySpec = new Map<string, Slide>();
+  for (const s of slides) {
+    const id = s.ai?.specId;
+    if (id && !slideBySpec.has(id)) slideBySpec.set(id, s);
+  }
+  const missingRequiredVisualSpecIds: string[] = [];
+  for (const spec of outline.slides) {
+    if (!slideRequiresVisual(spec)) continue;
+    const built = slideBySpec.get(spec.id);
+    if (built && !junk.has(built.id) && !visualSatisfied(built, spec)) {
+      missingRequiredVisualSpecIds.push(spec.id);
+    }
+  }
+
   const expectedSlides = outline.slides.length;
   const issues: ValidationIssue[] = [];
 
@@ -145,6 +188,12 @@ export function validateLessonGeneration(
       message: `The plan required a ${requiredBlocksMissing.join(" and ")} block that wasn't created.`,
     });
   }
+  if (missingRequiredVisualSpecIds.length > 0) {
+    issues.push({
+      code: "REQUIRED_VISUAL_MISSING",
+      message: `${missingRequiredVisualSpecIds.length} slide(s) the plan required a visual for have none (${missingRequiredVisualSpecIds.join(", ")}).`,
+    });
+  }
 
   const ok = issues.length === 0;
   const budgetExhausted =
@@ -159,6 +208,7 @@ export function validateLessonGeneration(
     placeholderSlideIds,
     emptySlideIds,
     requiredBlocksMissing,
+    missingRequiredVisualSpecIds,
     expectedSlides,
     realSlides: realSlides.length,
     budgetExhausted,
@@ -214,5 +264,6 @@ export function validationSummaryLine(report: ValidationReport): string {
   if (report.emptySlideIds.length) parts.push(`${report.emptySlideIds.length} empty slide(s)`);
   if (report.duplicateSpecIds.length) parts.push(`${report.duplicateSpecIds.length} duplicate slide(s)`);
   if (report.requiredBlocksMissing.length) parts.push(`a missing ${report.requiredBlocksMissing.join(" + ")}`);
+  if (report.missingRequiredVisualSpecIds.length) parts.push(`${report.missingRequiredVisualSpecIds.length} missing required visual(s)`);
   return parts.length ? `Found ${parts.join(", ")}.` : "Found issues to repair.";
 }

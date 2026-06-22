@@ -20,6 +20,7 @@ import {
   coerceModuleFallback,
   coerceModuleSkeleton,
   coerceOutline,
+  ensureLessonArc,
   lessonBriefToPlanRequest,
   moduleFallbackResponseFormat,
   moduleSkeletonResponseFormat,
@@ -92,15 +93,34 @@ async function main() {
   // Idempotent: re-coercing the flat (already-ided) form keeps the same ids.
   const re = coerceOutline(one.outline);
   check("coerceOutline is idempotent on the flat form (ids preserved)", re.outline?.slides[0].id === one.outline?.slides[0].id);
-  const many = coerceOutline({ objective: "o", segments: [], slides: Array.from({ length: 20 }, () => slide) });
-  check(`coerceOutline clamps to ${MAX_LESSON_SLIDES} slides`, many.outline?.slides.length === MAX_LESSON_SLIDES);
+  const many = coerceOutline({ objective: "o", segments: [], slides: Array.from({ length: MAX_LESSON_SLIDES + 12 }, () => slide) });
+  check(`coerceOutline clamps to the ${MAX_LESSON_SLIDES}-slide safety rail`, many.outline?.slides.length === MAX_LESSON_SLIDES, `${many.outline?.slides.length}`);
   check("coerceOutline rejects 0 slides", !coerceOutline({ objective: "o", segments: [], slides: [] }).outline);
   check("coerceOutline rejects a bad layout enum", !coerceOutline({ objective: "o", segments: [], slides: [{ ...slide, layout: "title_bullets" }] }).outline);
 
+  // ── 2b. ensureLessonArc — guarantees a titled opener + recap closer (non-micro),
+  //        applied by the pipeline AFTER the depth floor (so the floor measures the
+  //        model's real content) and BEFORE approval. coerceOutline stays PURE.
+  const arcSeg = [{ id: "seg1", name: "Core", purpose: "concept_intro", targetSlideCount: 2 }];
+  const arcSlide = (role: string, layout: string, title: string) => ({ segmentId: "seg1", title, teachingGoal: "g", role, kind: "core", layout, depth: "definition", keyPoints: ["a point"], notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "x" });
+  const arcBase = coerceOutline({ objective: "Teach X", targetStudent: "ts", estimatedMinutes: 10, microLesson: false, segments: arcSeg, slides: [arcSlide("hook", "prose", "Hook"), arcSlide("concept_intro", "key_concept", "Concept")] }).outline!;
+  const arced = ensureLessonArc(arcBase);
+  check("ensureLessonArc prepends a section_break opener", arced.slides[0].layout === "section_break" && arced.slides[0].role === "hook");
+  check("ensureLessonArc appends a recap closer", arced.slides[arced.slides.length - 1].role === "recap");
+  check("ensureLessonArc grew the deck by exactly 2 (opener + recap)", arced.slides.length === arcBase.slides.length + 2);
+  check("ensureLessonArc re-ids slides contiguously s1..sN", arced.slides.every((s, i) => s.id === `s${i + 1}`));
+  check("ensureLessonArc re-derives segment slideSpecIds to include opener+recap", arced.segments[0].slideSpecIds.length === arced.slides.length);
+  check("ensureLessonArc is idempotent (re-applying is a no-op ref)", ensureLessonArc(arced) === arced);
+
+  const goodArc = coerceOutline({ objective: "o", microLesson: false, segments: arcSeg, slides: [arcSlide("hook", "section_break", "Title"), arcSlide("recap", "prose", "Recap")] }).outline!;
+  check("ensureLessonArc leaves an already-arc'd plan untouched (same ref)", ensureLessonArc(goodArc) === goodArc);
+  const micro = coerceOutline({ objective: "o", microLesson: true, segments: arcSeg, slides: [arcSlide("concept_intro", "prose", "One")] }).outline!;
+  check("ensureLessonArc skips a micro lesson (same ref)", ensureLessonArc(micro) === micro);
+
   // ── Module SKELETON coerce — the compact lesson MAP (NO per-slide arrays).
   const brief = { title: "Linear search", objective: "Scan an array in order.", rationale: "starts the unit", skillsIntroduced: ["scanning"], minSlides: 2, maxSlides: 99, suggestedBlocks: ["quiz"], recommendQuiz: true };
-  const sk = coerceModuleSkeleton({ moduleTitle: "Searching", moduleObjective: "find things", lessons: Array.from({ length: 12 }, () => brief) });
-  check(`coerceModuleSkeleton clamps to ${MAX_MODULE_LESSONS} lessons`, sk.skeleton?.lessons.length === MAX_MODULE_LESSONS, `${sk.skeleton?.lessons.length}`);
+  const sk = coerceModuleSkeleton({ moduleTitle: "Searching", moduleObjective: "find things", lessons: Array.from({ length: MAX_MODULE_LESSONS + 6 }, () => brief) });
+  check(`coerceModuleSkeleton clamps to the ${MAX_MODULE_LESSONS}-lesson safety rail`, sk.skeleton?.lessons.length === MAX_MODULE_LESSONS, `${sk.skeleton?.lessons.length}`);
   check("coerceModuleSkeleton normalizes the slide range (min≥3, max≤cap)", sk.skeleton?.lessons[0].minSlides === 3 && sk.skeleton.lessons[0].maxSlides === MAX_LESSON_SLIDES, `${sk.skeleton?.lessons[0].minSlides}-${sk.skeleton?.lessons[0].maxSlides}`);
   check("coerceModuleSkeleton forces slide_deck into suggestedBlocks", sk.skeleton?.lessons[0].suggestedBlocks.includes("slide_deck") === true);
   check("coerceModuleSkeleton drops untitled lessons + requires ≥1", coerceModuleSkeleton({ moduleTitle: "M", lessons: [{ title: "" }, brief] }).skeleton?.lessons.length === 1);

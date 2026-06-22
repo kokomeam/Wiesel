@@ -71,9 +71,13 @@ export const AI_PHASE_MODELS = {
     model: process.env.AI_MODULE_PLAN_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_MODULE_PLAN_EFFORT", "low"),
   } satisfies PhaseModel,
+  /** GENERATE (and the REPAIR pass that reuses this config) is the HARDEST phase —
+   *  it authors rich, complete, multi-slide decks. It now defaults to HIGH effort
+   *  (was medium): authoring quality + completeness is where the cost is worth it,
+   *  and the coverage-driven loop keeps turns bounded. Env: AI_GENERATE_EFFORT. */
   generate: {
     model: process.env.AI_GENERATE_MODEL ?? DEFAULT_MODEL,
-    effort: effort("AI_GENERATE_EFFORT", "medium"),
+    effort: effort("AI_GENERATE_EFFORT", "high"),
   } satisfies PhaseModel,
   edit: {
     model: process.env.AI_EDIT_MODEL ?? DEFAULT_MODEL,
@@ -99,9 +103,28 @@ export const AI_VALIDATION = {
   validateGeneration: bool("AI_VALIDATE_GENERATION", true),
   repairHardFailures: bool("AI_REPAIR_HARD_FAILURES", true),
   /** How many targeted model-repair rounds to attempt before settling with a
-   *  checkpoint (each round re-validates; deterministic fixes run every round). */
-  maxRepairPasses: int("AI_MAX_REPAIR_PASSES", 2),
+   *  checkpoint (each round re-validates; deterministic fixes run every round).
+   *  Each round is now coverage-DRIVEN (it keeps building until done or stalled),
+   *  so a round does far more than before — but a fresh round resets the
+   *  no-progress guard + the compacted view, so a stalled round gets another shot.
+   *  Raised 2→4. Env: AI_MAX_REPAIR_PASSES. */
+  maxRepairPasses: int("AI_MAX_REPAIR_PASSES", 4),
 } as const;
+
+/**
+ * Per-call max output tokens for the GENERATE/REPAIR authoring turns. High
+ * reasoning effort can consume a lot of the budget before any slide content is
+ * emitted, so authoring turns get more headroom than the client default
+ * (`OPENAI_MAX_OUTPUT_TOKENS`, 16k). Env: AI_GENERATE_MAX_OUTPUT_TOKENS.
+ */
+export const AI_GENERATE_MAX_OUTPUT_TOKENS = int("AI_GENERATE_MAX_OUTPUT_TOKENS", 24_000);
+
+/**
+ * Coverage-driver guard: how many CONSECUTIVE turns may pass with zero new plan
+ * specs built before the loop stops and checkpoints (kills the "spin with tiny
+ * failed tool calls" burn). Env: AGENT_NO_PROGRESS_LIMIT.
+ */
+export const AGENT_NO_PROGRESS_LIMIT = int("AGENT_NO_PROGRESS_LIMIT", 3);
 
 /**
  * Per-call timeout (ms) for the PLAN structured-output call — a single big request

@@ -10,6 +10,8 @@
  * lessons as rows, blocks as jsonb, ISO-8601 timestamps throughout.
  */
 
+import type { DiagramContent } from "./diagram/types";
+
 /* ───────────────────────── AI metadata envelope ───────────────────────── */
 
 export interface AIMeta {
@@ -440,6 +442,30 @@ export interface ComparisonMatrixContent {
   decor?: DecorLevel;
 }
 
+/** A renderer-owned IMAGE slide — a generated (or human-uploaded) educational
+ *  ILLUSTRATION for a concept no diagram type fits (a historical scene, a
+ *  biological structure, an evocative concept image). The image lives at a stored
+ *  URL (Supabase course-assets — never a blob/data URL); alt text is REQUIRED.
+ *  The AI creates these through `add_image` (which generates + stores the image),
+ *  never by hand-authoring a URL. Accuracy-critical figures stay programmatic
+ *  diagrams — an illustration is never trusted for exact labels/values. */
+export interface IllustrationContent {
+  /** Public URL of the stored image. Empty string = pending / awaiting upload. */
+  imageUrl: string;
+  /** Required alt text (accessibility + AI grounding). */
+  alt: string;
+  /** Optional slide title shown above the image. */
+  title?: RichText;
+  /** Optional caption under the image — what the learner should notice. */
+  caption?: RichText;
+  /** Optional 0–4 supporting points shown beside the image. */
+  points?: RichText[];
+  /** Provenance (review / export): an AI-generated image vs a human upload. */
+  source?: "ai_generated" | "upload";
+  /** Storage path within the bucket (for later cleanup / re-fetch). */
+  storagePath?: string;
+}
+
 /** A renderer-owned structured slide: a typed content payload that a dedicated
  *  component draws (it owns arrangement / arrows / reflow). When set on a slide
  *  it is the source of truth and the freeform `elements` are ignored. */
@@ -453,7 +479,12 @@ export type SlideTemplate =
   | { layoutId: "outline_list"; content: OutlineListContent }
   | { layoutId: "prose"; content: ProseContent }
   | { layoutId: "comparison_columns"; content: ComparisonColumnsContent }
-  | { layoutId: "comparison_matrix"; content: ComparisonMatrixContent };
+  | { layoutId: "comparison_matrix"; content: ComparisonMatrixContent }
+  /** A programmatic teaching VISUAL — a typed diagram the renderer draws as crisp
+   *  SVG (accurate by construction, accessible, exportable). See lib/course/diagram. */
+  | { layoutId: "diagram"; content: DiagramContent }
+  /** A generated / uploaded educational IMAGE (alt-text required). */
+  | { layoutId: "illustration"; content: IllustrationContent };
 
 export type StructuredLayoutId = SlideTemplate["layoutId"];
 

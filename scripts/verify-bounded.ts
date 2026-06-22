@@ -11,8 +11,11 @@
  *  3. compactToolResult shrinks a bulky get_deck and caps everything else.
  *  4. The EDIT path policy is genuinely roomier than the GENERATE default.
  *  5. computePlanCoverage reports exact covered / missing / extra specs.
- *  6. add_structured_slides_batch is atomic: one bad slide (or > 4) bounces the
- *     WHOLE batch with no patches; a clean batch stamps each slide's specId.
+ *  6. add_structured_slides_batch CLAMPS-not-rejects: an over-length slot is auto-
+ *     shortened to its cap and the slide SAVED (never bounced for formatting); the
+ *     stamped specId is kept so coverage closes; only a slide MISSING required
+ *     content comes back, while its valid siblings still land. The leaf
+ *     `clampStructuredTemplate` is unit-checked too.
  */
 
 import {
@@ -25,6 +28,7 @@ import { buildGenerationState, computePlanCoverage, serializeGenerationState } f
 import { coerceOutline } from "@/lib/ai/outline";
 import type { ModelInputItem } from "@/lib/ai/modelClient";
 import { executeTool, ToolError, type ToolContext } from "@/lib/ai/tools";
+import { clampStructuredTemplate } from "@/lib/course/slide/clampStructured";
 import { createBlock, createLesson, createModule, createStructuredSlide } from "@/lib/course/factories";
 import { applyCoursePatch } from "@/lib/course/patches";
 import { defaultCourseTheme } from "@/lib/course/persistence";
@@ -167,11 +171,15 @@ async function main() {
   const ser = serializeGenerationState(state, 40);
   check("serialized state respects maxChars cap", ser.length <= 40 + "\n…(truncated)".length, `${ser.length}`);
 
-  // ── 6. Batch tool atomicity ────────────────────────────────────────────────
-  console.log("\n# add_structured_slides_batch — atomic, capped, stamps specId");
+  // ── 6. Batch tool — CLAMP-not-reject, per-slide partial success ─────────────
+  console.log("\n# add_structured_slides_batch — clamp over-length + save, stamps specId");
   const ctx: ToolContext = { doc, courseId: doc.id, lessonId };
   const validProse = { layoutId: "prose", content: { title: { text: "Greedy works" }, body: { text: "A greedy algorithm builds the answer one safe choice at a time, adding the cheapest valid option each step." } } };
-  const badProse = { layoutId: "prose", content: { title: { text: "x".repeat(61) }, body: { text: "A valid enough body sentence for the test." } } };
+  // Over-length TITLE (prose title cap = 60). Used to be rejected → now auto-shortened.
+  const longTitle = "Why the greedy choice is provably safe for this whole family of problems";
+  const overLong = { layoutId: "prose", content: { title: { text: longTitle }, body: { text: "A valid enough body sentence for the test." } } };
+  // UNSAVEABLE for a non-length reason (body is empty → min(1), can't be invented).
+  const noContent = { layoutId: "prose", content: { title: { text: "Has a title" }, body: { text: "" } } };
 
   const okBatch = await executeTool("add_structured_slides_batch", JSON.stringify({
     deckBlockId: deckBlk.id,
@@ -186,23 +194,61 @@ async function main() {
   const deckAfter = applied.modules[0].lessons[0].blocks.find((b): b is SlideDeckBlock => b.id === deckBlk.id);
   check("both batch slides applied to the deck", deckAfter?.slides.length === 5, `${deckAfter?.slides.length}`);
 
-  let bouncedBad = false;
-  try {
-    await executeTool("add_structured_slides_batch", JSON.stringify({
-      deckBlockId: deckBlk.id,
-      slides: [{ slideSpecId: "s1", template: validProse, notes: null }, { slideSpecId: "s2", template: badProse, notes: null }],
-    }), ctx);
-  } catch (e) { bouncedBad = e instanceof ToolError; }
-  check("one over-limit slide bounces the WHOLE batch (ToolError, no patches)", bouncedBad);
+  // CLAMP-AND-SAVE: an over-long slot is auto-shortened to its max and the slide is
+  // SAVED (never bounced back as a formatting failure). The shortened slot is noted
+  // in `autoShortened`, NOT in `failed`. This is the death-spiral fix.
+  const clampBatch = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: deckBlk.id,
+    slides: [{ slideSpecId: "s1", template: validProse, notes: null }, { slideSpecId: "s2", template: overLong, notes: null }],
+  }), ctx);
+  check("over-length slide is SAVED, not rejected (2 patches)", clampBatch.patches?.length === 2 && (clampBatch.patches ?? []).every((p) => p.action === "ADD_SLIDE"));
+  const clampData = clampBatch.data as { failed?: unknown[]; autoShortened?: { index: number; shortened: string[] }[] };
+  check("the auto-shortened slide is NOT reported as failed", (clampData.failed ?? []).length === 0);
+  check("the auto-shortened slide IS noted as autoShortened (with the slot)", (clampData.autoShortened ?? []).length === 1 && (clampData.autoShortened![0].shortened.join() || "").includes("title"));
+  // The saved over-long slide's title was truncated to the cap.
+  const clampPatch = (clampBatch.patches ?? [])[1] as { slide?: { template?: { content?: { title?: { text?: string } } } } };
+  const savedTitle = clampPatch.slide?.template?.content?.title?.text ?? "";
+  check("the saved title was truncated to ≤ the cap (60)", savedTitle.length > 0 && savedTitle.length <= 60 && savedTitle.length < longTitle.length, `${savedTitle.length}`);
 
-  let bouncedCap = false;
+  // ONLY a slide missing required content (unsaveable by clamping) comes back; the
+  // valid sibling still SAVES — so "Added 0 slides" can't happen with a valid slide.
+  const mixed = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: deckBlk.id,
+    slides: [{ slideSpecId: "s4", template: validProse, notes: null }, { slideSpecId: "s5", template: noContent, notes: null }],
+  }), ctx);
+  check("valid slide still SAVES when a sibling is unbuildable (1 patch, not zero)", mixed.patches?.length === 1 && mixed.patches[0].action === "ADD_SLIDE");
+  const mixedFailed = (mixed.data as { failed?: { index: number; slideSpecId?: string }[] }).failed ?? [];
+  check("only the genuinely-unbuildable slide comes back as failed", mixedFailed.length === 1 && mixedFailed[0].index === 1 && mixedFailed[0].slideSpecId === "s5");
+
+  // A > 4-slide batch is guided against by the description, but still makes
+  // progress (all valid slides land) rather than bouncing — partial success.
+  const bigBatch = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: deckBlk.id,
+    slides: Array.from({ length: 5 }, () => ({ slideSpecId: null, template: validProse, notes: null })),
+  }), ctx);
+  check("a > 4-slide batch still adds all valid slides (no whole-batch bounce)", bigBatch.patches?.length === 5);
+
+  // An empty/garbage slides array is still a clear ToolError (the lenient path
+  // validates per-item, but the call itself must carry slides).
+  let bouncedEmpty = false;
   try {
-    await executeTool("add_structured_slides_batch", JSON.stringify({
-      deckBlockId: deckBlk.id,
-      slides: Array.from({ length: 5 }, () => ({ slideSpecId: null, template: validProse, notes: null })),
-    }), ctx);
-  } catch (e) { bouncedCap = e instanceof ToolError; }
-  check("> 4 slides bounces (cap enforced)", bouncedCap);
+    await executeTool("add_structured_slides_batch", JSON.stringify({ deckBlockId: deckBlk.id, slides: [] }), ctx);
+  } catch (e) { bouncedEmpty = e instanceof ToolError; }
+  check("an empty slides array is a ToolError", bouncedEmpty);
+
+  // ── 6b. clampStructuredTemplate (the leaf) — direct unit checks ─────────────
+  console.log("\n# clampStructuredTemplate — leaf behavior");
+  const c1 = clampStructuredTemplate(validProse);
+  check("a valid template clamps to itself (not clamped)", !!c1.template && c1.clamped === false);
+  const c2 = clampStructuredTemplate(overLong);
+  check("an over-length template clamps + reports which slot", !!c2.template && c2.clamped === true && c2.clampedPaths.some((p) => p.includes("title")));
+  const c3 = clampStructuredTemplate(noContent);
+  check("a content-missing template is unsaveable (no template, has error)", !c3.template && !!c3.error);
+  // Over-count array (prose allows ≤5 points) is sliced, not rejected.
+  const manyPoints = { layoutId: "prose", content: { title: { text: "T" }, body: { text: "A real body sentence here." }, points: Array.from({ length: 9 }, (_, i) => ({ text: `point ${i}` })) } };
+  const c4 = clampStructuredTemplate(manyPoints);
+  const c4points = (c4.template?.content as { points?: unknown[] } | undefined)?.points ?? [];
+  check("an over-count item array is sliced to the cap (≤5), still saved", !!c4.template && c4points.length === 5, `${c4points.length}`);
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   process.exit(fail === 0 ? 0 : 1);

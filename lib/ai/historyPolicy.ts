@@ -46,7 +46,10 @@ export function defaultHistoryPolicy(): HistoryPolicy {
     keepRecentToolEvents: num(process.env.AI_KEEP_RECENT_TOOL_EVENTS, 4),
     keepRecentChatMessages: num(process.env.AI_KEEP_RECENT_CHAT_MESSAGES, 3),
     maxToolResultChars: num(process.env.AI_MAX_TOOL_RESULT_CHARS, 4000),
-    maxStateSummaryChars: num(process.env.AI_MAX_STATE_SUMMARY_CHARS, 8000),
+    // Headroom so a ~12-slide deck's built-slide listing (which tells the model
+    // what NOT to rebuild) + the remaining-spec line both survive uncapped. The
+    // plan briefs themselves ride verbatim in the context message, never here.
+    maxStateSummaryChars: num(process.env.AI_MAX_STATE_SUMMARY_CHARS, 12000),
     includeGenerationState: true,
   };
 }

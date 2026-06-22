@@ -30,13 +30,26 @@ export const AUTHORING_TOOL_NAMES: ReadonlySet<string> = new Set(
   [...readTools, ...writerTools, ...slideTools, ...structuredSlideTools].map((t) => t.name)
 );
 
-/** The even-narrower set for the PLAN-driven GENERATE/CRITIQUE phases: read
- *  context + STRUCTURED slide authoring + auxiliary blocks (quiz/homework/
- *  lecture). EXCLUDES `write_slide_deck` and the FLAT slide ops so generation
- *  must honor the plan's structured layout and can't fall back to a flat
- *  tip/text deck. (The edit path keeps the full `AUTHORING_TOOL_NAMES`.) */
+/** Course-level READ tools the GENERATE/REPAIR phases must NOT call — the course
+ *  context, the lesson, the PLAN, and the authored-so-far set are ALREADY carried
+ *  verbatim in the context message + the generation-state summary every turn, so
+ *  re-running these just burns turns (the death-spiral REPAIR was caught doing).
+ *  The slide-inspection reads (get_deck/get_slide/get_block) stay available. */
+const GENERATE_EXCLUDED_READS: ReadonlySet<string> = new Set([
+  "get_course_context",
+  "list_modules",
+  "list_lessons",
+  "get_lesson",
+]);
+
+/** The even-narrower set for the PLAN-driven GENERATE/REPAIR phases: STRUCTURED
+ *  slide authoring + auxiliary blocks (quiz/homework/lecture), plus only the
+ *  slide-inspection reads. EXCLUDES `write_slide_deck` and the FLAT slide ops so
+ *  generation must honor the plan's structured layout, AND the course-level reads
+ *  (context/modules/lessons already in context+state). (The edit path keeps the
+ *  full `AUTHORING_TOOL_NAMES`.) */
 export const GENERATE_TOOL_NAMES: ReadonlySet<string> = new Set([
-  ...readTools.map((t) => t.name),
+  ...readTools.filter((t) => !GENERATE_EXCLUDED_READS.has(t.name)).map((t) => t.name),
   // create_block is the ONLY structural tool allowed — it makes the empty
   // slide_deck the structured slides go into (additive + safe; the off-script
   // risk was create_lesson/delete_*, which stay excluded).
@@ -81,6 +94,12 @@ export async function executeTool(
     throw new ToolError(`Invalid JSON arguments for ${name}`);
   }
 
+  // Lenient tools validate per-item inside execute (partial success), so a single
+  // malformed entry can't reject the whole call. The model schema is still strict.
+  if (tool.lenientArgs) {
+    return tool.execute(json as never, ctx);
+  }
+
   const parsed = tool.params.safeParse(json);
   if (!parsed.success) {
     throw new ToolError(`Invalid arguments for ${name}: ${parsed.error.message}`);
@@ -89,4 +108,4 @@ export async function executeTool(
 }
 
 export { ToolError } from "./types";
-export type { Tool, ToolContext, ToolOutcome } from "./types";
+export type { Tool, ToolContext, ToolOutcome, VisualGenContext } from "./types";

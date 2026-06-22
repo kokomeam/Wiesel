@@ -6,6 +6,195 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## AI agent — strictness death-spiral fix, flush-on-exit, stop & live render, 2026-06-22
+
+A second reliability pass. A module-generation run had spun for **10+ minutes and
+persisted nothing** — the module had no data and the agent couldn't see it on a
+follow-up turn. Root cause was a strictness death-spiral (valid slides rejected for
+formatting → phantom coverage gaps → endless repair) compounded by **all persistence
+happening once at the very end** (a kill before that lost everything). Fixed with
+targeted changes; suites green (`npm run verify:ai` 170 · `verify:ai:int` 99 ·
+`verify:visuals` 84 · `verify:slides` · `verify:reject`) + `tsc`/lint/`build`.
+
+- **Clamp, don't reject (the death-spiral fix).** `add_structured_slides_batch` no
+  longer bounces an over-length slot back to the model. A new schema-driven
+  `clampStructuredTemplate` (`lib/course/slide/clampStructured.ts`) auto-shortens any
+  over-length string / over-count array to its cap, **saves the slide**, and attaches
+  a non-blocking `autoShortened` note. Only a slide MISSING required content (which
+  clamping can't invent) comes back — so a valid slide can never be dropped for
+  formatting, and "Added 0 slides" can't happen when any slide is valid.
+  (`lib/ai/tools/structuredSlides.ts`.)
+- **Coverage = a SAVED slide.** Because clamped slides save (stamped with their
+  specId), coverage closes and REPAIR stops — no phantom gaps. Coverage is the
+  saved-slide delta; a pass that saves zero new slides trips the no-progress guard
+  rather than another repair pass.
+- **No hard slide-count cap.** The PLAN's spec list is the length target. The
+  `coerceOutline`/skeleton caps were raised to runaway-only safety rails
+  (`MAX_LESSON_SLIDES` 14→40, `MAX_LESSON_SEGMENTS` 6→16, `MAX_MODULE_LESSONS` 8→20)
+  so a legitimately long lesson/module is never truncated; token budget + the turn
+  cap remain the operative limits. (`lib/ai/outline.ts`.)
+- **REPAIR doesn't re-read the world.** The GENERATE/REPAIR toolset now excludes
+  `get_course_context` / `list_modules` / `list_lessons` / `get_lesson` — the course,
+  lesson, plan and authored-so-far set are already carried in the context message +
+  generation-state every turn, so repair stops burning turns re-reading them.
+  (`lib/ai/tools/index.ts`.)
+- **Flush-on-exit — never discard partial work.** The lesson/module pipelines now
+  reconcile to the DB **incrementally** (each authored batch persists at the turn it
+  lands, via the driven loop; each lesson persists as it completes) and stage the
+  change-set in a guarded `finalize()` that runs on **every** termination — completion,
+  token cap, turn cap, no-progress guard, user Stop, or a thrown error. The module
+  scaffold is persisted the instant it's planned, so a build that's killed mid-run
+  still leaves the module + its built lessons in the DB (the "Module 5 has no data"
+  fix). `reconcileAndStage` was split into a repeatable `reconcileDoc` + a one-shot
+  `stageChangeSet`. Still ONE change-set per run. (`lib/ai/agentLoop.ts`,
+  `lib/ai/phases.ts`.)
+- **Stop button.** While a run streams, the composer's send arrow becomes a stop
+  square; it aborts the request via an `AbortController`. The server sees the
+  connection signal between tool turns, runs flush-on-exit, and returns cleanly; the
+  input is freed for the next message. (`components/editor/agent/{AgentPanel,useAgentStream}.tsx`.)
+- **Live rendering + autosave coordination.** A new `agentRunActive` flag pauses the
+  browser autosave for the duration of a run (the agent persists server-side; a
+  competing full-snapshot would race the reconcile and could orphan rows — the known
+  hazard), and a debounced `scheduleLiveSync` (`lib/editor/liveSync.ts`) re-loads the
+  doc into the editor via `syncLiveDoc` (no full re-hydrate — undo/selection intact),
+  so the deck fills in as the agent authors it. A Supabase **Realtime** subscription
+  on the staging table (`change_set_items`, `lib/editor/useChangeSetRealtime.ts` +
+  migration `20260622010000_realtime_change_set_items.sql`) drives the same re-sync;
+  it degrades gracefully if the publication isn't enabled. An **"Accept what's here"**
+  affordance (the review bar's accept button while generating) lets the user gate out
+  of a long repair loop early.
+- **Investigation — the agent is NOT scope-limited.** The "I only have access to the
+  current lesson" claim was a downstream effect of the data loss above, not a real
+  scope limit: `runContentAgentTurn` loads the whole course tree, the edit path has
+  the full structural toolset (`list_modules`/`create_module`/`create_lesson`), and
+  `classifyIntent` already routes "build module N" → `generate_module`. So acting on
+  an existing populated module works; only the empty/missing module failed. No scope
+  changes made — the data-loss fix resolves it.
+
+## AI slide generation — reliability, arc & live AI images, 2026-06-22
+
+The big quality fix. Decks were coming out **incomplete** (a 10-slide plan shipped
+3 slides — "Supply and equilibrium" never reached equilibrium), **inconsistent**
+(one deck opened on a title, another cold-opened on a HOOK), and **visually
+sparse**. Root cause was architectural, not prompting. Fixed across six
+workstreams; all suites green (`npm run verify:ai` 162 · `verify:ai:int` 87 ·
+`verify:slides` · `verify:visuals` 84 · `verify:reject`) + `tsc`/lint/`build`.
+
+- **Coverage-driven GENERATE/REPAIR controller** (`lib/ai/agentLoop.ts`,
+  `lib/ai/phases.ts`). The loop used to **stop the instant the model returned a
+  no-tool-call turn** — a small model that "felt done" at 3/10 ended generation
+  there, and a separate cold-start repair (capped 2×6 turns) burned ~3 min without
+  catching up. GENERATE/REPAIR now opt into `driveToCoverage`: after each turn the
+  loop computes plan coverage from the deterministic generation-state, and while
+  specs remain it **injects a concrete "STILL TO BUILD …" nudge and keeps building**
+  (turns scaled to the plan: `coverageMaxTurns`/`repairMaxTurns`). A **no-progress
+  guard** (`AGENT_NO_PROGRESS_LIMIT`, 3) stops a stalled run instead of spinning.
+  The driven loops no longer emit their own checkpoint — the validate/repair
+  pipeline owns the ONE authoritative end-of-run checkpoint. Repair passes raised
+  2→4 (`AI_MAX_REPAIR_PASSES`); the shared call budget 64→200 so module lessons
+  don't starve.
+- **High-effort authoring.** GENERATE/REPAIR default to **`high`** reasoning effort
+  (was medium) with a generous `AI_GENERATE_MAX_OUTPUT_TOKENS` (24k) — the hardest
+  phase finally gets the horsepower PLAN already had. (`lib/ai/modelConfig.ts`.)
+- **Partial-success batch tool.** `add_structured_slides_batch` was all-or-nothing
+  — one over-long slot rejected the WHOLE batch ("Had to reshape the slide layout
+  and retry" churn). It's now `lenientArgs` (validates each slide in `execute`):
+  every valid slide is SAVED and only the failures come back (with the exact slot)
+  to re-send. The model schema stays strict. (`lib/ai/tools/{types,index,structuredSlides}.ts`.)
+- **Title-opener + recap-closer arc.** Every full (non-micro) lesson now opens with
+  a titled `section_break` and closes with a `recap`. The PLAN prompt asks for it;
+  `ensureLessonArc` guarantees it in the pipeline AFTER the depth-floor re-ask (so
+  the floor still measures the model's real content) and BEFORE approval — it
+  prepends/appends the specs, re-ids, and re-derives segments (idempotent;
+  `coerceOutline` stays pure). (`lib/ai/outline.ts`, `lib/ai/phases.ts`.)
+- **Visuals, abundant but purposeful.** The planner bar was rewritten — dropped
+  *"MOST slides need no visual"*; it now adds a visual wherever a learner would SEE
+  the idea better (structure/process/relationship/comparison/timeline/worked
+  example), uses `recommended` generously, and reserves `required`+`mustBeAccurate`
+  for accuracy-critical diagrams. The GENERATE teaching bar BUILDS recommended
+  visuals. `AI_VISUAL_MAX_PER_LESSON` 3→5.
+- **AI image generation — now LIVE** (`AI_IMAGE_GENERATION_ENABLED` defaults true).
+  For a concept no programmatic diagram fits, the new **`add_image`** tool generates
+  an educational illustration (gpt-image-1 via the SAME OpenAI client + proxy:
+  `ModelClient.generateImage`), **stores the bytes to the Supabase `course-assets`
+  bucket** under the owner's folder (`lib/ai/visuals/storeImage.ts` — public URL on
+  the slide, **never a blob/data URL**), and lands it as a first-class
+  **`illustration` structured layout** (registry + strict schema + renderer +
+  `SlideTemplate` union + dispatch — `IllustrationLayout.tsx`). Accuracy-critical
+  figures still go programmatic; image generation is capped per lesson and routed
+  through the planner's `visualIntent`, so it's purposeful, not spammy. The tool is
+  an injected, side-effectful capability on the tool context (`VisualGenContext`),
+  the one impure tool path. The mock provider gains a deterministic `generateImage`
+  so the whole path (generate → store → slide) is tested with no key.
+- **Tests:** new coverage-driver / no-progress / live-image-path checks in
+  `verify-agent-integration.ts`; `ensureLessonArc` + partial-batch + add_image unit
+  checks across `verify-outline.ts` / `verify-bounded.ts` / `verify-visuals.ts`;
+  the `illustration` layout in `verify-structured-layouts.ts`.
+
+## AI-assisted VISUAL pipeline — programmatic teaching diagrams, 2026-06-20
+
+A visual is a TEACHING OBJECT, not decoration. Added a full visual pipeline whose
+LIVE path renders **programmatic diagrams** — typed, deterministic data the
+renderer draws as crisp SVG, so a teaching graph is **accurate by construction**
+(a supply curve literally slopes up; a Dijkstra graph weights every edge),
+editable, accessible, exportable, and persisted with **no blob URLs**. A diagram
+is just a renderer-owned **structured slide layout** (`SlideTemplate` with
+`layoutId: "diagram"`), so it flows through the EXISTING patch pipeline,
+validate→repair loop, change-set staging/reject, and picker — **no new patch
+actions, no new storage**. Verification: `npm run verify:visuals` (75 checks,
+no key/DB) + `tsc` clean + existing suites green.
+
+- **Diagram model** (`lib/course/diagram/*`, pure): a `DiagramSpec` union of **9
+  kinds** — `supply_demand` (+ price ceiling/floor), `coordinate_plot`,
+  `bar_chart`, `array_diagram` (two-pointers / sliding window / binary search),
+  `tree_diagram`, `graph_diagram` (weighted/Dijkstra), `flowchart`,
+  `number_line`, `venn` — plus a `VisualSpec` (pedagogical purpose + alt text +
+  the reason it was added) and `DiagramContent` (title + caption + takeaways +
+  spec + diagram). STRICT AI Zod schema (`schemas.ts`) with length/count caps and
+  a `.superRefine` running the deterministic **`validateDiagram`** correctness
+  check; a permissive STORAGE schema so loading never breaks. The AI tree node is
+  FIXED-DEPTH (no `z.lazy`) so it inlines into OpenAI-strict JSON with no
+  recursive `$ref`. A **template catalog** (`catalog.ts`, 19 named correct
+  diagrams across econ/CS/math/business) seeds canonical visuals accurately and
+  powers the router's "is there a programmatic template?" match (whole-WORD
+  matching — `"bst"` can't match inside `"abstract"`).
+- **Renderers** (`components/editor/slide/diagram/*`, pure → SSR/thumbnail/export
+  safe): a shared SVG toolkit + 9 deterministic renderers (`DiagramView`) +
+  `DiagramLayout` (the `diagram` structured layout — title + SVG + caption +
+  optional takeaways column, `role="img"` + alt text + the machine-readable
+  `data-ai-component="slide-visual"` envelope from spec §14). Auto-dispatched in
+  `StructuredSlide`, auto-listed in the `LayoutPicker` "Structured" section.
+- **Planning** (`lib/ai/outline.ts`): `visualIntent` upgraded from a bare string
+  to a structured object (`required`/`role`/`reason`/`expectedVisualType`/
+  `placement`/`priority`/`mustBeAccurate`) — tolerant coerce accepts the object
+  OR a legacy string. The PLAN prompt gained visual-necessity rules (most slides
+  need none; require one only when it materially improves teaching) and the old
+  "explain drawings in prose" prohibition was REVERSED ("we render accurate
+  programmatic diagrams — plan one when conventional").
+- **Generation** (`lib/ai/tools/structuredSlides.ts`): `add_diagram` /
+  `set_diagram` tools (a `templateId` seeds an accurate canonical diagram, or a
+  custom `diagram` validated at the tool boundary); the `diagram` variant is also
+  in the structured-slide batch schema. The teaching bar now tells the model to
+  draw the picture a concept needs with `add_diagram` (still no AI/stock images,
+  no fabricated chart data).
+- **Validation/repair** (`lib/ai/validation.ts` + `phases.ts`): a new
+  `REQUIRED_VISUAL_MISSING` hard failure — a slide whose plan REQUIRED a visual
+  must carry one (accuracy-critical roles demand a real diagram/image; others
+  accept any visual layout). The repair brief tells the model exactly which
+  slides need a diagram and to prefer a `templateId`. Soft `VISUAL_SKIPPED` lint
+  for recommended visuals. Human controls: an inspector **DiagramEditor** (view
+  the spec + live validation, edit alt/caption/takeaways, swap template /
+  regenerate, per-kind label editing, "make simpler") — change-set Accept/Reject
+  already covers a diagram block.
+- **Pipeline scaffold** (`lib/ai/visuals/*`): the full router-facing
+  `VisualSpec`/`VisualAsset`, the source **router** (programmatic → AI-generated →
+  web → manual, by priority), an image-prompt builder, and a flag-gated
+  image/web generation seam — all matching the conservative **defaults**
+  (`AI_VISUALS_ENABLED=true`, `AI_PROGRAMMATIC_DIAGRAMS_ENABLED=true`,
+  `AI_IMAGE_GENERATION_ENABLED=false`, `AI_WEB_IMAGE_SEARCH_ENABLED=false`,
+  `AI_VISUAL_VALIDATION_ENABLED=true`). AI image generation + web sourcing are
+  Phase 3/5, scaffolded OFF; the programmatic path is the impressive, working one.
+
 ## Module SKELETON plan + lazy per-lesson rich planning — kill the module-plan timeout, 2026-06-19
 
 Even after a lean schema + low effort, `generate_module` STILL timed out (~76s,

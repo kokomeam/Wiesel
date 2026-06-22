@@ -87,7 +87,10 @@ function slideSummary(s: Slide): SlideSummary {
     title: s.title,
     layout: s.template?.layoutId ?? s.layout,
     textDensity: density(len),
-    hasVisual: s.elements.some((e) => e.type === "image" || e.type === "sticker"),
+    hasVisual:
+      s.template?.layoutId === "diagram" ||
+      s.template?.layoutId === "illustration" ||
+      s.elements.some((e) => e.type === "image" || e.type === "sticker"),
     hasSpeakerNotes: !!s.speakerNotes?.trim(),
     specId: s.ai?.specId,
   };

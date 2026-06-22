@@ -10,6 +10,7 @@
 import { useEffect } from "react";
 import { useEditorStore } from "@/lib/course/store";
 import { useAgentStore } from "@/lib/editor/agentStore";
+import { useChangeSetRealtime } from "@/lib/editor/useChangeSetRealtime";
 import { useCoursePersistence } from "@/lib/editor/coursePersistence";
 import type { CourseDocument } from "@/lib/course/types";
 import { CourseEditorShell } from "./CourseEditorShell";
@@ -57,6 +58,8 @@ export function StudioLoader({
   // the effect then installs the loaded course and the editor mounts. Also
   // re-gates when navigating between courses.
   const activeCourseId = useEditorStore((s) => s.courseId);
+  // Live render: stream staged blocks into the editor as the agent builds them.
+  useChangeSetRealtime(courseId);
 
   useEffect(() => {
     hydrate(initialDoc, courseId);

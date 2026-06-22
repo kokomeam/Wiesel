@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, CheckCheck, ChevronDown, Lightbulb, PanelRightClose, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowUp, Check, CheckCheck, ChevronDown, Lightbulb, PanelRightClose, ShieldCheck, Sparkles, Square, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useAgentStore, type QualityReport, type ValidationStatus } from "@/lib/editor/agentStore";
@@ -144,7 +144,7 @@ export function AgentPanel() {
   const autoApprovePlan = useAgentStore((s) => s.autoApprovePlan);
   const setAutoApprovePlan = useAgentStore((s) => s.setAutoApprovePlan);
   const togglePanel = useUIStore((s) => s.togglePanel);
-  const { send, resolve } = useAgentStream();
+  const { send, resolve, stop } = useAgentStream();
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -346,7 +346,9 @@ export function AgentPanel() {
             className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
           >
             <CheckCheck className="size-3" />
-            Accept all
+            {/* Mid-run, accepting locks in what's built so far — lets the user gate
+                out of a long repair loop early. */}
+            {thinking ? "Accept what's here" : "Accept all"}
           </button>
         </div>
       )}
@@ -385,15 +387,27 @@ export function AgentPanel() {
             disabled={!!pendingConfirmation || !!pendingOutline}
             className="max-h-32 min-h-[1.5rem] flex-1 resize-none bg-transparent text-[13px] text-stone-700 outline-none placeholder:text-stone-400 disabled:cursor-not-allowed"
           />
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!input.trim() || blocked}
-            {...toolAttrs({ tool: "agent-send", action: "AGENT_SEND", label: "Send message to the agent" })}
-            className="grid size-7 shrink-0 place-items-center rounded-lg brand-gradient text-white transition-opacity disabled:opacity-40"
-          >
-            <ArrowUp className="size-4" />
-          </button>
+          {thinking ? (
+            <button
+              type="button"
+              onClick={stop}
+              title="Stop generating"
+              {...toolAttrs({ tool: "agent-stop", action: "AGENT_STOP", label: "Stop the agent" })}
+              className="grid size-7 shrink-0 place-items-center rounded-lg bg-stone-800 text-white transition-colors hover:bg-stone-900"
+            >
+              <Square className="size-3 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!input.trim() || blocked}
+              {...toolAttrs({ tool: "agent-send", action: "AGENT_SEND", label: "Send message to the agent" })}
+              className="grid size-7 shrink-0 place-items-center rounded-lg brand-gradient text-white transition-opacity disabled:opacity-40"
+            >
+              <ArrowUp className="size-4" />
+            </button>
+          )}
         </div>
       </div>
     </aside>

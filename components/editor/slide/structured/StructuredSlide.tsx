@@ -16,6 +16,8 @@ import { CodeWalkthroughLayout } from "./CodeWalkthroughLayout";
 import { ComparisonColumnsLayout } from "./ComparisonColumnsLayout";
 import { ComparisonMatrixLayout } from "./ComparisonMatrixLayout";
 import { ConceptExampleLayout } from "./ConceptExampleLayout";
+import { DiagramLayout } from "./DiagramLayout";
+import { IllustrationLayout } from "./IllustrationLayout";
 import { KeyConceptLayout } from "./KeyConceptLayout";
 import { MetricsLayout } from "./MetricsLayout";
 import { OutlineListLayout } from "./OutlineListLayout";
@@ -102,6 +104,8 @@ export function StructuredSlide({
       {template.layoutId === "prose" && <ProseLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "comparison_columns" && <ComparisonColumnsLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "comparison_matrix" && <ComparisonMatrixLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "diagram" && <DiagramLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "illustration" && <IllustrationLayout content={template.content} ctx={ctx} />}
     </div>
   );
 }

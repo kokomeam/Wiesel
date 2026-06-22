@@ -3,16 +3,26 @@
 /**
  * Drives the docked agent: POST /api/ai/agent, parse the normalized SSE event
  * protocol, and fan it into the agentStore (chat transcript + tool cards +
- * pending-block highlights). After a turn that mutated content, router.refresh()
- * pulls the agent's new/changed blocks into the editor (client state survives
- * the soft refresh, so highlights persist). Also exposes accept/reject.
+ * pending-block highlights).
+ *
+ * Two cross-cutting behaviors wrap every run:
+ *  - ABORT: each run carries an AbortController; `stop()` aborts the request. The
+ *    server checks the connection signal between tool turns, flushes whatever it
+ *    built (flush-on-exit), and returns — so a stopped run keeps its staged work.
+ *  - LIVE RENDER: while a run streams, autosave pauses (`agentRunActive`) and the
+ *    editor re-syncs from the DB on each mutating event (`scheduleLiveSync`), so
+ *    the deck fills in as the agent authors it. The authoritative `router.refresh`
+ *    runs once at the end.
+ *
+ * Also exposes accept/reject for a change-set.
  */
 
 import { useRouter } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { decodeSSE, type AgentEvent } from "@/lib/ai/events";
 import { useEditorStore } from "@/lib/course/store";
 import { useAgentStore } from "@/lib/editor/agentStore";
+import { cancelLiveSync, scheduleLiveSync } from "@/lib/editor/liveSync";
 
 function dispatch(ev: AgentEvent): boolean {
   const s = useAgentStore.getState();
@@ -70,9 +80,11 @@ function dispatch(ev: AgentEvent): boolean {
   }
 }
 
-/** Read an SSE body to completion, fanning each event into the store. Returns
- *  whether any event mutated the course (→ caller refreshes the editor). */
-async function consumeStream(res: Response): Promise<boolean> {
+/** Read an SSE body to completion, fanning each event into the store. `onMutate`
+ *  fires (debounced by the caller) whenever an event changed course content — it
+ *  drives the live re-render. Returns whether any event mutated the course. A
+ *  deliberate Stop (`signal.aborted`) is silent; a genuine drop surfaces an error. */
+async function consumeStream(res: Response, onMutate?: () => void, signal?: AbortSignal): Promise<boolean> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -87,17 +99,81 @@ async function consumeStream(res: Response): Promise<boolean> {
         const frame = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
         const ev = decodeSSE(frame);
-        if (ev && dispatch(ev)) mutated = true;
+        if (ev && dispatch(ev)) {
+          mutated = true;
+          onMutate?.();
+        }
       }
     }
   } catch {
-    useAgentStore.getState().setError("The agent stream was interrupted.");
+    if (!signal?.aborted) useAgentStore.getState().setError("The agent stream was interrupted.");
   }
   return mutated;
 }
 
 export function useAgentStream() {
   const router = useRouter();
+  // The in-flight run's abort controller (one run at a time in the docked panel).
+  const controllerRef = useRef<AbortController | null>(null);
+
+  /** Run one agent SSE request end-to-end with abort + live-render wiring. */
+  const runStream = useCallback(
+    async (url: string, body: unknown): Promise<void> => {
+      const editor = useEditorStore.getState();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      editor.setAgentRunActive(true); // pause autosave; enable live re-sync
+
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch {
+        editor.setAgentRunActive(false);
+        controllerRef.current = null;
+        // A deliberate Stop aborts the fetch — that's not an error to surface.
+        if (!controller.signal.aborted) {
+          useAgentStore.getState().setError("Couldn't reach the agent — check your connection.");
+        }
+        return;
+      }
+      if (!res.ok || !res.body) {
+        editor.setAgentRunActive(false);
+        controllerRef.current = null;
+        useAgentStore.getState().setError(`The agent returned an error (${res.status}).`);
+        return;
+      }
+
+      const mutated = await consumeStream(res, () => scheduleLiveSync(), controller.signal);
+      editor.setAgentRunActive(false);
+      cancelLiveSync();
+      controllerRef.current = null;
+      // The agent's edits are in the DB — pull the authoritative state into the editor.
+      if (mutated) router.refresh();
+    },
+    [router]
+  );
+
+  /** Stop the in-flight run. Aborting the fetch closes the connection, so the
+   *  server's between-turns signal check fires: it flushes + stages whatever it
+   *  built (flush-on-exit) and returns. We settle the UI immediately, then refresh
+   *  once the server has had a moment to persist the flush, so the staged work
+   *  shows up for Accept/Reject. */
+  const stop = useCallback(() => {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    const store = useAgentStore.getState();
+    store.finishTurn(""); // settle the streaming bubble; thinking → false
+    store.setPhase(null);
+    useEditorStore.getState().setAgentRunActive(false);
+    cancelLiveSync();
+    // Give the server a beat to finish its flush-on-exit, then pull the staged work.
+    setTimeout(() => router.refresh(), 1500);
+  }, [router]);
 
   const send = useCallback(
     async (message: string) => {
@@ -108,36 +184,17 @@ export function useAgentStream() {
         useAgentStore.getState().setError("Open a lesson before asking the agent.");
         return;
       }
-
       const store = useAgentStore.getState();
       store.startTurn(trimmed);
-
-      let res: Response;
-      try {
-        res = await fetch("/api/ai/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            courseId,
-            lessonId: activeLessonId,
-            message: trimmed,
-            conversationId: store.conversationId,
-            autoApprove: store.autoApprovePlan,
-          }),
-        });
-      } catch {
-        useAgentStore.getState().setError("Couldn't reach the agent — check your connection.");
-        return;
-      }
-      if (!res.ok || !res.body) {
-        useAgentStore.getState().setError(`The agent returned an error (${res.status}).`);
-        return;
-      }
-
-      const mutated = await consumeStream(res);
-      if (mutated) router.refresh();
+      await runStream("/api/ai/agent", {
+        courseId,
+        lessonId: activeLessonId,
+        message: trimmed,
+        conversationId: store.conversationId,
+        autoApprove: store.autoApprovePlan,
+      });
     },
-    [router]
+    [runStream]
   );
 
   /** Resolve the agent's paused destructive action (confirm/cancel) and resume
@@ -148,43 +205,24 @@ export function useAgentStream() {
       const pending = store.pendingConfirmation;
       if (!pending) return;
       const { courseId, activeLessonId } = useEditorStore.getState();
-
       store.resumeTurn(); // keeps the transcript; clears the pending confirmation
-
-      let res: Response;
-      try {
-        res = await fetch("/api/ai/agent/confirm", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            courseId,
-            lessonId: activeLessonId,
-            conversationId: store.conversationId,
-            toolCallId: pending.toolCallId,
-            toolMessageId: pending.toolMessageId,
-            kind: pending.kind,
-            label: pending.label,
-            patch: pending.patch,
-            decision,
-          }),
-        });
-      } catch {
-        useAgentStore.getState().setError("Couldn't reach the agent — check your connection.");
-        return;
-      }
-      if (!res.ok || !res.body) {
-        useAgentStore.getState().setError(`The agent returned an error (${res.status}).`);
-        return;
-      }
-
-      const mutated = await consumeStream(res);
-      if (mutated) router.refresh();
+      await runStream("/api/ai/agent/confirm", {
+        courseId,
+        lessonId: activeLessonId,
+        conversationId: store.conversationId,
+        toolCallId: pending.toolCallId,
+        toolMessageId: pending.toolMessageId,
+        kind: pending.kind,
+        label: pending.label,
+        patch: pending.patch,
+        decision,
+      });
     },
-    [router]
+    [runStream]
   );
 
-  /** Resolve the agent's paused PLAN outline (approve → generate+critique, or
-   *  discard) and stream the continuation into the same transcript. */
+  /** Resolve the agent's paused PLAN outline (approve → generate, or discard) and
+   *  stream the continuation into the same transcript. */
   const approvePlan = useCallback(
     async (decision: "approve" | "discard") => {
       const store = useAgentStore.getState();
@@ -200,33 +238,15 @@ export function useAgentStream() {
       }
 
       store.resumeTurn(); // keeps the transcript; clears the pending outline
-
-      let res: Response;
-      try {
-        res = await fetch("/api/ai/agent/plan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            courseId,
-            lessonId: activeLessonId,
-            conversationId: store.conversationId,
-            plan: pending,
-            decision,
-          }),
-        });
-      } catch {
-        useAgentStore.getState().setError("Couldn't reach the agent — check your connection.");
-        return;
-      }
-      if (!res.ok || !res.body) {
-        useAgentStore.getState().setError(`The agent returned an error (${res.status}).`);
-        return;
-      }
-
-      const mutated = await consumeStream(res);
-      if (mutated) router.refresh();
+      await runStream("/api/ai/agent/plan", {
+        courseId,
+        lessonId: activeLessonId,
+        conversationId: store.conversationId,
+        plan: pending,
+        decision,
+      });
     },
-    [router]
+    [runStream]
   );
 
   const resolve = useCallback(
@@ -253,5 +273,5 @@ export function useAgentStream() {
     [router]
   );
 
-  return { send, resolve, confirmAction, approvePlan };
+  return { send, resolve, confirmAction, approvePlan, stop };
 }

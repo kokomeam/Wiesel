@@ -93,6 +93,40 @@ export function density(len: number): "low" | "medium" | "high" {
   return "medium";
 }
 
+/* ──────────────────────────── Visual detection ────────────────────────── */
+
+/** Structured layouts that present information VISUALLY / diagrammatically (vs a
+ *  prose / key-concept / outline / section text slide). */
+const VISUAL_STRUCTURED_LAYOUTS: ReadonlySet<string> = new Set([
+  "diagram",
+  "illustration",
+  "process_steps",
+  "comparison_columns",
+  "comparison_matrix",
+  "metrics_overview",
+  "code_walkthrough_steps",
+]);
+
+/** Does the slide carry a real (non-empty) image element? */
+export function slideHasImage(s: Slide): boolean {
+  return s.elements.some((e) => e.type === "image" && e.src.trim() !== "");
+}
+
+/** Is this slide a drawn/precise visual — a programmatic `diagram` or an image?
+ *  The bar for satisfying an ACCURACY-critical required visual (a graph, a search
+ *  interval, a weighted graph) — a prose or metrics slide does NOT clear it. */
+export function slideIsDiagram(s: Slide): boolean {
+  return s.template?.layoutId === "diagram" || slideHasImage(s);
+}
+
+/** Does the slide present its content VISUALLY at all (a diagram, an inherently
+ *  visual structured layout, or an image)? The bar for a non-accuracy-critical
+ *  required visual. */
+export function slideIsVisual(s: Slide): boolean {
+  if (s.template) return VISUAL_STRUCTURED_LAYOUTS.has(s.template.layoutId);
+  return slideHasImage(s);
+}
+
 /**
  * Every seed/placeholder string the layout library and element factory stamp into
  * a fresh, UNFILLED slide — normalized to lower-case + trimmed. A flat slide whose

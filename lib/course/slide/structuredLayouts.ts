@@ -12,11 +12,15 @@
  */
 
 import { z } from "zod";
+import { findDiagramTemplate } from "../diagram/catalog";
+import { DiagramContentInputSchema } from "../diagram/schemas";
+import type { DiagramContent } from "../diagram/types";
 import type {
   CodeWalkthroughContent,
   ComparisonColumnsContent,
   ComparisonMatrixContent,
   ConceptExampleContent,
+  IllustrationContent,
   KeyConceptContent,
   MetricsContent,
   OutlineListContent,
@@ -66,6 +70,11 @@ export const LIMITS = {
   proseTitle: 60,
   proseBody: 700,
   prosePoint: 120,
+  // ── illustration (a generated/uploaded image slide)
+  illTitle: 60,
+  illAlt: 320,
+  illCaption: 180,
+  illPoint: 120,
   // ── comparison (shared header + columnar + matrix). Caps lean GENEROUS/soft:
   //    tight caps cause reshape churn; the renderer reflows, it doesn't clip.
   cmpEyebrow: 24,
@@ -298,6 +307,20 @@ export const ProseContentSchema = z.object({
     .describe("Optional 0–5 key takeaways."),
 }) satisfies z.ZodType<ProseContent>;
 
+/** Illustration (image) slide. NOTE: this layout is authored by the `add_image`
+ *  tool (it generates + stores the image and supplies `imageUrl`), NOT by the
+ *  hand-authored structured-slide union — so the model can never invent a URL.
+ *  The schema validates the stored/edited content + the inspector. */
+export const IllustrationContentSchema = z.object({
+  imageUrl: z.string().describe("Public URL of the stored image (set by add_image / upload)."),
+  alt: z.string().min(1).max(LIMITS.illAlt, `Alt text ≤ ${LIMITS.illAlt} characters.`).describe("Required alt text describing the image."),
+  title: rich(LIMITS.illTitle, "Optional title above the image.").optional(),
+  caption: rich(LIMITS.illCaption, "Optional caption: what the learner should notice.").optional(),
+  points: z.array(rich(LIMITS.illPoint, "An optional supporting point beside the image.")).max(4).optional(),
+  source: z.enum(["ai_generated", "upload"]).optional(),
+  storagePath: z.string().optional(),
+}) satisfies z.ZodType<IllustrationContent>;
+
 /* ── comparison layouts (contrast 2–3 options). Option colors, letter badges,
       the VS divider, row striping, and footer icon/tint are renderer-owned —
       NONE of them appear here, so the model can never request them. ── */
@@ -408,6 +431,7 @@ export const StructuredTemplateInputSchema = z.discriminatedUnion("layoutId", [
   z.object({ layoutId: z.literal("prose"), content: ProseContentSchema }),
   z.object({ layoutId: z.literal("comparison_columns"), content: ComparisonColumnsContentSchema }),
   z.object({ layoutId: z.literal("comparison_matrix"), content: ComparisonMatrixContentSchema }),
+  z.object({ layoutId: z.literal("diagram"), content: DiagramContentInputSchema }),
 ]);
 
 /* ───────────────────────────── Registry ───────────────────────────────── */
@@ -717,6 +741,67 @@ export const STRUCTURED_LAYOUTS: StructuredLayoutDef[] = [
           points: [t("All persist data durably"), t("All offer managed cloud options")],
         },
       },
+    }),
+  },
+  {
+    id: "diagram",
+    name: "Diagram / graph",
+    description:
+      "A programmatic teaching VISUAL the renderer draws as crisp SVG — an economics graph, a chart, an array/search diagram, a tree, a node-link graph, a flowchart, a number line, or a Venn diagram. Accurate by construction; pick a diagram.kind (or an add_diagram templateId).",
+    ai: {
+      bestFor: [
+        "a supply & demand / price-control graph",
+        "a function, distribution, or regression plot",
+        "a bar chart / data chart",
+        "an array with pointers (two-pointers / sliding window / binary search)",
+        "a tree (BST, traversal, recursion, hierarchy)",
+        "a node-link graph (BFS/DFS, weighted/Dijkstra)",
+        "a flowchart / decision diagram",
+        "a number line / interval",
+        "a 2-set Venn diagram",
+      ],
+      avoidWhen: ["a decorative picture", "content a text/table/code slide conveys more accurately", "a photo or illustration"],
+    },
+    schema: DiagramContentInputSchema,
+    seed: (): SlideTemplate => ({
+      layoutId: "diagram",
+      content: {
+        title: t("Market equilibrium"),
+        caption: t("Price settles where the upward-sloping supply curve meets the downward-sloping demand curve — the equilibrium point E."),
+        spec: {
+          role: "graph",
+          pedagogicalPurpose: "Show how the equilibrium price and quantity arise where supply meets demand.",
+          altText:
+            "A supply and demand graph with an upward-sloping supply curve and a downward-sloping demand curve intersecting at equilibrium point E, with dashed guides to P* on the price axis and Q* on the quantity axis.",
+          requiredElements: ["upward-sloping supply curve", "downward-sloping demand curve", "labeled price/quantity axes", "equilibrium point"],
+          placement: "center",
+          source: "programmatic",
+          mustBeAccurate: true,
+          reason: "Supply and demand is conventionally taught with intersecting curves and a labeled equilibrium.",
+        },
+        diagram: findDiagramTemplate("supply_demand_equilibrium")!.seed(),
+      } satisfies DiagramContent,
+    }),
+  },
+  {
+    id: "illustration",
+    name: "Illustration (image)",
+    description:
+      "An educational IMAGE — generated by the AI (add_image) or uploaded — with required alt text, an optional title, caption, and supporting points. For a concept a picture conveys better than text when NO diagram type fits (a historical scene, a biological structure, a real-world analogy). Never for accuracy-critical figures — those are programmatic diagrams.",
+    ai: {
+      bestFor: ["a concept image", "a historical / real-world scene", "a biological or physical structure", "an evocative analogy picture"],
+      avoidWhen: ["anything accuracy-critical (use a diagram)", "a chart / graph / labeled figure", "decorative-only filler", "content text conveys precisely"],
+    },
+    schema: IllustrationContentSchema,
+    seed: (): SlideTemplate => ({
+      layoutId: "illustration",
+      content: {
+        imageUrl: "",
+        alt: "An educational illustration relevant to the lesson.",
+        title: t("Illustration"),
+        caption: t("A short caption explaining what the image shows and why it matters."),
+        source: "upload",
+      } satisfies IllustrationContent,
     }),
   },
 ];

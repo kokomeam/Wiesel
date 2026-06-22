@@ -13,6 +13,21 @@ import type { z } from "zod";
 import type { CoursePatch } from "@/lib/course/patches";
 import type { CourseDocument } from "@/lib/course/types";
 
+/** An injected, side-effectful capability for generating + storing an
+ *  illustration (the ONLY impure tool path). Present only when image generation
+ *  is configured (an image-capable model client + an authenticated Supabase
+ *  client); absent ⇒ `add_image` reports generation is unavailable. */
+export interface VisualGenContext {
+  /** Generate an educational illustration and store it; returns a public URL +
+   *  storage path (+ pixel dims), or null when unavailable/failed. */
+  generateIllustration(input: {
+    prompt: string;
+    alt: string;
+  }): Promise<{ url: string; storagePath: string; width?: number; height?: number } | null>;
+  /** Max illustrations per lesson — the tool enforces it against the live deck. */
+  maxPerLesson: number;
+}
+
 /** What a tool sees when it runs. `doc` is the CURRENT document (the loop keeps
  *  it in sync after each applied mutation). `lessonId` is the lesson the agent
  *  is docked beside — the default target for writes. */
@@ -20,6 +35,8 @@ export interface ToolContext {
   doc: CourseDocument;
   courseId: string;
   lessonId: string;
+  /** Image-generation capability (injected by the loop for the GENERATE phase). */
+  visuals?: VisualGenContext;
 }
 
 /** A tool's result. Read tools set `data`; write tools set `patches` (applied +
@@ -48,6 +65,15 @@ export interface Tool<P extends z.ZodTypeAny = z.ZodTypeAny> {
    *  generates the strict JSON schema the model is constrained by. */
   params: P;
   readOnly?: boolean;
+  /**
+   * Skip the loop's strict `params.safeParse` gate and hand `execute` the raw
+   * parsed JSON instead. The model-facing JSON schema is STILL generated from
+   * `params` (so the model sees the full shape) — but a single malformed entry no
+   * longer rejects the whole call. The tool MUST then validate defensively and
+   * apply what it can (partial success). Used by `add_structured_slides_batch` so
+   * one over-long slot doesn't drop a whole segment.
+   */
+  lenientArgs?: boolean;
   execute(args: z.infer<P>, ctx: ToolContext): ToolOutcome | Promise<ToolOutcome>;
 }
 
