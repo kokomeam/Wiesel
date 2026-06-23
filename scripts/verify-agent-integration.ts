@@ -785,6 +785,62 @@ async function main() {
   check("budget exhaustion drained remaining to 0", bCtx.callBudget?.remaining === 0, String(bCtx.callBudget?.remaining));
   check("budget exhaustion emits a checkpoint", evBudget.some((e) => e.type === "checkpoint"), JSON.stringify(evBudget.map((e) => e.type)));
 
+  // 11m. METHOD 1 — content-first planning + a CONTINUATION split. The plan emits a
+  //      slide whose points overflow one card, split into a parent + a continuation
+  //      (same heading + "(cont.)", no repeated points). The plan card shows the
+  //      normalized split; approving builds BOTH slides (coverage passes, no repair).
+  console.log("\n# Method 1 — content-first plan + continuation split");
+  const m1LessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: m1LessonId, module_id: pModuleId, course_id: courseId, title: "Deadweight loss", objective: "Explain deadweight loss.", order: 10 });
+  const m1Convo = await getOrCreateConversation(supabase, courseId, m1LessonId);
+  const spec = (title: string, layout: string, pts: string[], continuationOf: string | null = null) => ({
+    segmentId: "seg", title, teachingGoal: "g", role: "concept_intro", kind: "core", keyPoints: pts, layout, depth: "mechanism",
+    continuationOf, notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "x",
+  });
+  const SPLIT_PLAN = {
+    objective: "Explain deadweight loss.", targetStudent: "beginners", estimatedMinutes: 10, microLesson: true,
+    teachingArc: { hook: "taxes", coreConcepts: ["deadweight loss"], workedExamples: [], commonMisconceptions: [], recapGoal: "" },
+    segments: [{ id: "seg", name: "Core", purpose: "concept_intro", targetSlideCount: 3 }],
+    slides: [
+      spec("What deadweight loss is", "key_concept", ["It is lost surplus", "Neither side captures it"]),
+      spec("Causes of deadweight loss", "outline_list", ["A tax wedge", "A price ceiling", "A price floor", "A subsidy distortion"]),
+      // continuation of the causes slide — one extra point + a duplicate that must drop.
+      spec("Causes of deadweight loss", "outline_list", ["A tax wedge", "A monopoly markup"], "Causes of deadweight loss"),
+    ],
+    quizPlan: null, homeworkPlan: null,
+  };
+  // PLAN pause → inspect the normalized split on the plan card.
+  const m1PlanMock = createMockModelClient([{ text: JSON.stringify(SPLIT_PLAN) }], { finalText: "" });
+  const evM1Plan: AgentEvent[] = [];
+  await runContentAgentTurn({
+    supabase, model: m1PlanMock, courseId, lessonId: m1LessonId, ownerId: userId, conversationId: m1Convo,
+    userMessage: "Build a full lesson deck on deadweight loss", emit: (e) => evM1Plan.push(e),
+  });
+  const m1Evt = evM1Plan.find((e) => e.type === "plan_outline");
+  const m1Plan = m1Evt && m1Evt.type === "plan_outline" && m1Evt.plan.kind === "lesson" ? m1Evt.plan.outline : null;
+  const m1Cont = m1Plan?.slides.find((s) => s.continuationOf);
+  const m1Parent = m1Plan?.slides.find((s) => s.title === "Causes of deadweight loss");
+  check("Method 1 plan: a continuation slide is titled '(cont.)' + linked to its parent", !!m1Cont && /\(cont\.?\)$/i.test(m1Cont.title) && m1Cont.continuationOf === "Causes of deadweight loss", m1Cont?.title);
+  check("Method 1 plan: the continuation drops the duplicated point (no repeat of the parent)", !!m1Cont && !!m1Parent && !m1Cont.keyPoints.some((p) => m1Parent.keyPoints.includes(p)), m1Cont?.keyPoints.join(","));
+  check("Method 1 plan: every unique point is preserved across the split (no info loss)", !!m1Cont && m1Cont.keyPoints.includes("A monopoly markup"));
+  check("Method 1 plan: the deck uses MORE THAN ONE layout (content-driven variety)", !!m1Plan && new Set(m1Plan.slides.map((s) => s.layout)).size >= 2, m1Plan?.slides.map((s) => s.layout).join(","));
+
+  // Approve → GENERATE builds all 3 (incl. the continuation) → coverage passes, no repair.
+  const m1GenMock = createMockModelClient([
+    { text: "Authoring.", toolCalls: [batchCall([slide("s1", "What deadweight loss is"), slide("s2", "Causes of deadweight loss"), slide("s3", "Causes of deadweight loss (cont.)")])] },
+    { text: "", toolCalls: [] },
+  ], { finalText: "Done." });
+  const evM1Gen: AgentEvent[] = [];
+  await resumeGeneratePlan({
+    supabase, model: m1GenMock, courseId, lessonId: m1LessonId, ownerId: userId, conversationId: m1Convo,
+    plan: m1Evt && m1Evt.type === "plan_outline" ? m1Evt.plan : undefined, decision: "approve", emit: (e) => evM1Gen.push(e),
+  });
+  const m1Phases = evM1Gen.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("Method 1: a continuation slide counts toward coverage → no repair phase", !m1Phases.includes("repair") && !evM1Gen.some((e) => e.type === "checkpoint"), JSON.stringify(m1Phases));
+  const m1Doc = await loadCourseDoc(supabase, courseId);
+  const m1Deck = m1Doc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === m1LessonId)?.blocks.find((b) => b.type === "slide_deck");
+  check("Method 1: all 3 split slides were built (parent + continuation counted)", !!m1Deck && m1Deck.type === "slide_deck" && m1Deck.slides.length === 3, `${m1Deck && m1Deck.type === "slide_deck" ? m1Deck.slides.length : "none"}`);
+
   // 12. cleanup
   await supabase.from("courses").delete().eq("id", courseId);
   console.log("\n# cleaned up course");

@@ -6,6 +6,39 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Method 1 — content-first planning + split-at-plan-time, 2026-06-23
+
+The PLAN now finalizes a slide's CONTENT before its layout, and splits an
+overflowing slide into two at plan time (no truncation, ever). Builds on commit
+`48a92a2`. Suites green (`verify:ai` 181 · `verify:ai:int` 113 · `verify:visuals`
+93 · `verify:slides` · `verify:reject`) + `tsc`/lint/`build`.
+
+- **Content-first slide spec.** `SlideSpecSchema` (`lib/ai/outline.ts`) is reordered
+  so `keyPoints` (the slide's finalized real content) precedes `layout`, and the
+  prompt makes the model FINALIZE the points first, then pick the structured layout
+  whose shape FITS them (and vary layouts across the deck) — instead of choosing a
+  layout and hoping content fits. One plan pass, no extra round-trip.
+- **Split decision at plan time (no truncation).** When a slide's points would
+  genuinely overflow one card (cards auto-grow, so only real overflow), the model
+  SPLITS into two slides rather than cram or drop any point:
+  - **Continuation** (one idea, more points than a card holds): a new
+    `continuationOf` field links the second slide to its parent; `normalizeContinuations`
+    in `coerceOutline` stamps its title with " (cont.)" off the parent's base title and
+    drops any point it repeats verbatim from the parent (an exact dup is not info — it
+    lives on the parent), preserving every UNIQUE point. The GENERATE prompt has it
+    carry the parent heading + a "continuing from …" cue and author ONLY its own points.
+  - **Sub-topic split** (the points are two distinct sub-ideas): two slides with
+    distinct descriptive titles ("Causes of X" / "Effects of X"), preferred over a bare
+    continuation when the points naturally group.
+- **Coverage unchanged.** A continuation is its own slide spec, so it counts toward
+  coverage (no fit/repair loop reintroduced); GENERATE just fills the plan-assigned
+  layout. `isContinuationSlide` exposes the relationship; the "(cont.)" title is the
+  renderer's visual cue.
+- Tests: `verify-outline.ts` (content-first field order, continuation stamp + dedup +
+  zero-info-loss, sub-topic distinct titles, deck layout variety) and a `verify:ai:int`
+  end-to-end split (plan card shows the normalized split; approving builds both slides,
+  coverage passes, no repair).
+
 ## Stretching, fewer model calls, lighter validation, 2026-06-22
 
 Adopt Gamma-style stretching (within the fixed 16:9 frame), kill the remaining

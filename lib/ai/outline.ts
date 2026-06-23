@@ -111,17 +111,24 @@ const VisualIntentSchema = z.object({
   mustBeAccurate: z.boolean().nullable().describe("True when label/number/shape accuracy is correctness-critical (a graph, a search interval, a weighted graph) — forces a programmatic diagram over an illustration."),
 });
 
+// CONTENT-FIRST ORDER (Method 1): the model finalizes the slide's POINTS first,
+// then picks the `layout` that fits THOSE points (and splits if they overflow one
+// card). The field order mirrors that reasoning — keyPoints precede layout.
 const SlideSpecSchema = z.object({
   segmentId: z.string().describe("The id of the segment this slide belongs to (must match a segment.id)."),
-  title: z.string().describe("The slide's working title."),
+  title: z.string().describe("The slide's working title. For a CONTINUATION slide, this is the parent's title + ' (cont.)'."),
   teachingGoal: z.string().describe("The single thing a learner should understand after this slide."),
   role: z.enum(SLIDE_ROLES).describe("The pedagogical role this slide plays (hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition)."),
   kind: z.enum(SLIDE_KINDS).describe("'core' = essential to the objective; 'enrichment' = a worked example / check / edge case / practice that deepens it."),
-  layout: z.enum(OUTLINE_LAYOUTS).describe("The structured layout that best fits this slide's intent."),
-  depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
   keyPoints: z
     .array(z.string())
-    .describe("The ACTUAL CONTENT to convey — real points / worked-example steps / the definition, each a full clause (NOT a title). GENERATE's brief; aim 2–5."),
+    .describe("FINALIZE THIS FIRST — the slide's actual content: the real points / claims / worked-example steps / definition it will make, each a full clause (NOT a title). The layout is chosen to fit THESE. A continuation slide must NOT repeat any of its parent's points. Aim 2–5; if more would genuinely overflow one card, SPLIT into another slide instead."),
+  layout: z.enum(OUTLINE_LAYOUTS).describe("Chosen AFTER the points, to FIT them: the structured layout whose shape holds this slide's keyPoints well (e.g. a definition → key_concept; 2–3 compared options → comparison_columns; a sequence → process_steps; key numbers → metrics_overview; a plain explanation → prose). Vary the layout across the deck — don't default every slide to the same one."),
+  depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
+  continuationOf: z
+    .string()
+    .nullable()
+    .describe("If this slide CONTINUES a previous one — the SAME single idea overflowing one card — put the EXACT title of that parent slide here; else null. A continuation carries the parent's heading + ' (cont.)', adds a 'continuing from …' cue, and must NOT repeat the parent's points. When the overflowing points instead form TWO distinct sub-ideas, do a SUB-TOPIC split: two slides with distinct descriptive titles (e.g. 'Causes of X' / 'Effects of X'), both continuationOf=null. Prefer a sub-topic split over a bare continuation when the points naturally group."),
   notes: z.string().describe("Load-bearing specifics to get exactly right (a runtime O(log n), a quantity, a formula, exact conditions, term(s) to define)."),
   visualIntent: VisualIntentSchema.nullable().describe("Whether this slide needs a visual, and what kind — see the VISUALS rules. Default to required=false / role='none' when no visual materially helps."),
   requiredElements: z.array(z.enum(REQUIRED_ELEMENTS)).nullable().describe("Elements this slide MUST contain (else null)."),
@@ -192,6 +199,10 @@ export interface PlannedSlide {
   depth: (typeof OUTLINE_DEPTHS)[number];
   keyPoints: string[];
   notes: string;
+  /** Set on a CONTINUATION slide — the title of the parent slide it continues
+   *  (same idea overflowing one card). Its title carries "(cont.)" and it never
+   *  repeats the parent's points. Undefined for normal / sub-topic-split slides. */
+  continuationOf?: string;
   visualIntent?: PlannedVisualIntent;
   requiredElements?: (typeof REQUIRED_ELEMENTS)[number][];
   speakerNotesGoal: string;
@@ -237,6 +248,7 @@ const RelaxedSlideSchema = z.object({
   layout: z.enum(OUTLINE_LAYOUTS),
   depth: z.enum(OUTLINE_DEPTHS).optional().default("definition"),
   keyPoints: z.array(z.string()).optional().default([]),
+  continuationOf: z.string().nullish(),
   notes: z.string().optional().default(""),
   // Tolerant: accept the structured object, a legacy free-text string, or null.
   visualIntent: z
@@ -409,6 +421,43 @@ function withArcSpecs(slides: PlannedSlide[], objective: string, arc: { coreConc
   return out;
 }
 
+/* ─────────────────── Method 1 — content-first split helpers ───────────────── */
+
+const CONT_RE = /\s*\(cont\.?\)\s*$/i;
+/** The base (parent) title with any "(cont.)" marker stripped. */
+const stripCont = (title: string): string => title.replace(CONT_RE, "").trim();
+
+/** True when a planned slide is a CONTINUATION (it links to a parent and/or carries
+ *  the "(cont.)" title marker). The renderer/title convention shows the marker. */
+export function isContinuationSlide(s: PlannedSlide): boolean {
+  return !!s.continuationOf || CONT_RE.test(s.title);
+}
+
+/**
+ * Normalize CONTINUATION splits (Method 1): for each slide whose `continuationOf`
+ * names a parent, (1) ensure its title ends with "(cont.)" off the parent's base
+ * title, and (2) drop any point it repeats VERBATIM from the parent (an exact dup is
+ * not information — the point lives on the parent). PURE; preserves every UNIQUE
+ * point (never truncates). Only non-continuation slides are eligible parents, so a
+ * "X" / "X (cont.)" pair resolves correctly.
+ */
+function normalizeContinuations(slides: PlannedSlide[]): PlannedSlide[] {
+  const parents = new Map<string, PlannedSlide>();
+  for (const s of slides) if (!s.continuationOf) parents.set(stripCont(s.title), s);
+  return slides.map((s) => {
+    if (!s.continuationOf) return s;
+    const parent = parents.get(stripCont(s.continuationOf));
+    const base = stripCont(parent?.title ?? s.title);
+    const title = CONT_RE.test(s.title) ? s.title : `${base} (cont.)`;
+    let keyPoints = s.keyPoints;
+    if (parent) {
+      const parentPts = new Set(parent.keyPoints.map((p) => p.trim().toLowerCase()).filter(Boolean));
+      keyPoints = s.keyPoints.filter((p) => !parentPts.has(p.trim().toLowerCase()));
+    }
+    return { ...s, title, keyPoints, continuationOf: base };
+  });
+}
+
 /** Coerce a parsed value into a lesson outline: assign stable slide ids (keeping
  *  any already present), clamp slide + segment counts, and DERIVE each segment's
  *  slideSpecIds from the slides' segmentId grouping. Idempotent on the flat form.
@@ -420,7 +469,7 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
   const d = res.data;
   if (d.slides.length === 0) return { errors: ["slides: the outline has no slides."] };
 
-  const slides: PlannedSlide[] = d.slides.slice(0, MAX_LESSON_SLIDES).map((s, i) => ({
+  const mapped: PlannedSlide[] = d.slides.slice(0, MAX_LESSON_SLIDES).map((s, i) => ({
     id: s.id && s.id.trim() ? s.id : `s${i + 1}`,
     segmentId: s.segmentId,
     title: s.title,
@@ -431,10 +480,15 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     depth: s.depth,
     keyPoints: s.keyPoints,
     notes: s.notes,
+    continuationOf: s.continuationOf?.trim() || undefined,
     visualIntent: coerceVisualIntent(s.visualIntent),
     requiredElements: s.requiredElements ?? undefined,
     speakerNotesGoal: s.speakerNotesGoal,
   }));
+  // Method 1: normalize CONTINUATION splits — stamp "(cont.)" into the title and
+  // strip any point the continuation duplicates from its parent (no info loss — the
+  // point stays on the parent; we only drop an exact repeat). Never truncates.
+  const slides = normalizeContinuations(mapped);
 
   // Derive each segment's slide ids from the slides' segmentId grouping (order
   // preserved). Drop empty segments; cap segment count.
@@ -501,6 +555,9 @@ export function outlinePromptFragment(outline: LessonOutline): string {
   const slideById = new Map(outline.slides.map((s) => [s.id, s]));
   const renderSlide = (s: PlannedSlide): string => {
     const pre = `   - [${s.id} · ${s.role}/${s.kind} · layout=${s.layout} · ${s.depth}] ${s.title} — ${s.teachingGoal}`;
+    const cont = s.continuationOf
+      ? `\n     CONTINUATION of "${s.continuationOf}": keep its heading + add a brief "continuing from ${s.continuationOf}" cue; author ONLY the points below — do NOT repeat the parent slide's points.`
+      : "";
     const cover = s.keyPoints.length ? `\n     cover: ${s.keyPoints.map((p) => `• ${p}`).join("  ")}` : "";
     const exact = s.notes ? `\n     exact: ${s.notes}` : "";
     const vi = s.visualIntent;
@@ -510,7 +567,7 @@ export function outlinePromptFragment(outline: LessonOutline): string {
         : "";
     const req = s.requiredElements?.length ? `\n     must include: ${s.requiredElements.join(", ")}` : "";
     const notes = s.speakerNotesGoal ? `\n     speaker notes: ${s.speakerNotesGoal}` : "";
-    return `${pre}${cover}${exact}${visual}${req}${notes}`;
+    return `${pre}${cont}${cover}${exact}${visual}${req}${notes}`;
   };
 
   const segBlocks = outline.segments.length
@@ -567,14 +624,17 @@ OPENING & CLOSING (house style — every full, non-micro lesson):
 
 Then DECOMPOSE the lesson into ordered SEGMENTS (2–6), each a pedagogical beat of 1–3 slides — e.g. hook → concept_intro → worked_example → guided_practice → common_mistakes → recap → assessment. Give every segment an id, a name, a purpose, and a targetSlideCount.
 
-Then write the ordered SLIDES. For each slide:
+Then write the ordered SLIDES — CONTENT FIRST, layout SECOND. For each slide, finalize WHAT it says before deciding HOW it looks:
 - segmentId: which segment it belongs to (must match a segment id).
 - title + teachingGoal: the working title and the single thing the learner should understand.
 - role: the slide's pedagogical job — hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition.
 - kind: "core" (essential to the objective) or "enrichment" (a worked example / check / edge case / practice that deepens it). Mark them honestly — a normal lesson carries several enrichment slides.
-- layout: the structured layout that best fits, from the catalog below.
+- keyPoints — FINALIZE THESE FIRST: the slide's real content (the actual points / claims / worked-example steps / definition it will make), each a full clause (NOT a title), aim 2–5. This is the slide's substance; everything else fits around it.
+- layout — choose AFTER the points, to FIT them: the structured layout whose shape best HOLDS those points (a definition → key_concept; 2–3 options compared → comparison_columns; many shared dimensions → comparison_matrix; a sequence → process_steps; headline numbers → metrics_overview; a plain explanation → prose). VARY the layout across the deck — pick the shape the content wants; do NOT default every slide to the same layout.
+- SPLIT at plan time if the points overflow ONE card (don't cram, never drop a point — cards auto-grow, so split only for REAL overflow, not a fixed bullet count):
+   · CONTINUATION (one idea, more points than a card holds): add a second slide — same heading + " (cont.)", set continuationOf to the parent's exact title, and put the OVERFLOW points there (NEVER repeat the parent's points).
+   · SUB-TOPIC split (the points form two distinct sub-ideas): two slides with distinct DESCRIPTIVE titles ("Causes of X" / "Effects of X"), continuationOf=null on both. PREFER this over a bare continuation when the points naturally group.
 - depth: motivation / definition / mechanism / example / analysis.
-- keyPoints: the ACTUAL CONTENT to convey — real points / worked-example steps / the definition, each a full clause (NOT a title), 2–5.
 - notes: the exact load-bearing specifics (a runtime like O(log n), a quantity, a formula, a rule's exact conditions, term(s) to define).
 - visualIntent: whether this slide needs a VISUAL, and what — see VISUALS below. Default to required=false / role="none".
 - requiredElements: elements the slide MUST contain, or null.

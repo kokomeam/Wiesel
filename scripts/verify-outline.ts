@@ -21,6 +21,7 @@ import {
   coerceModuleSkeleton,
   coerceOutline,
   ensureLessonArc,
+  isContinuationSlide,
   lessonBriefToPlanRequest,
   moduleFallbackResponseFormat,
   moduleSkeletonResponseFormat,
@@ -116,6 +117,59 @@ async function main() {
   check("ensureLessonArc leaves an already-arc'd plan untouched (same ref)", ensureLessonArc(goodArc) === goodArc);
   const micro = coerceOutline({ objective: "o", microLesson: true, segments: arcSeg, slides: [arcSlide("concept_intro", "prose", "One")] }).outline!;
   check("ensureLessonArc skips a micro lesson (same ref)", ensureLessonArc(micro) === micro);
+
+  // ── 2c. METHOD 1 — content-first planning + splits (no truncation).
+  // (i) The model-facing slide schema lists keyPoints BEFORE layout (points decided
+  //     first, layout chosen to fit them).
+  const lessonSchema = outlineResponseFormat().schema as { properties?: { slides?: { items?: { properties?: Record<string, unknown> } } } };
+  const slideProps = Object.keys(lessonSchema.properties?.slides?.items?.properties ?? {});
+  const kpIdx = slideProps.indexOf("keyPoints");
+  const layoutIdx = slideProps.indexOf("layout");
+  check("content-first: keyPoints precedes layout in the slide schema", kpIdx >= 0 && layoutIdx >= 0 && kpIdx < layoutIdx, `keyPoints@${kpIdx} layout@${layoutIdx}`);
+  check("the slide schema exposes a continuationOf split field", slideProps.includes("continuationOf"));
+
+  const cf = (title: string, layout: string, pts: string[], continuationOf: string | null = null) => ({
+    segmentId: "seg1", title, teachingGoal: "g", role: "concept_intro", kind: "core", layout, depth: "definition",
+    keyPoints: pts, continuationOf, notes: "", visualIntent: null, requiredElements: null, speakerNotesGoal: "x",
+  });
+
+  // (ii) CONTINUATION split — one idea overflowing: a 2nd slide titled "X (cont.)",
+  //      linked to the parent, repeating NONE of its points, dropping ZERO unique info.
+  const split = coerceOutline({
+    objective: "o", targetStudent: "ts", estimatedMinutes: 10, microLesson: true,
+    segments: [{ id: "seg1", name: "Core", purpose: "concept_intro", targetSlideCount: 2 }],
+    slides: [
+      cf("Deadweight loss", "key_concept", ["A claim", "B claim", "C claim", "D claim"]),
+      cf("Deadweight loss", "key_concept", ["D claim", "E claim", "F claim"], "Deadweight loss"), // "D claim" duplicates the parent
+    ],
+  }).outline!;
+  const parent = split.slides[0], cont = split.slides[1];
+  check("continuation: title stamped with '(cont.)' off the parent", /\(cont\.?\)$/i.test(cont.title) && cont.title.startsWith("Deadweight loss"), cont.title);
+  check("continuation: continuationOf resolves to the parent's base title", cont.continuationOf === "Deadweight loss", String(cont.continuationOf));
+  check("continuation: shares NO bullet with the parent (exact dup dropped)", !cont.keyPoints.some((p) => parent.keyPoints.includes(p)), cont.keyPoints.join(","));
+  const originalUnique = new Set(["A claim", "B claim", "C claim", "D claim", "E claim", "F claim"]);
+  const acrossPair = new Set([...parent.keyPoints, ...cont.keyPoints]);
+  check("continuation: ZERO unique points dropped (no information loss)", [...originalUnique].every((p) => acrossPair.has(p)), [...acrossPair].join(","));
+  check("isContinuationSlide flags the continuation, not the parent", isContinuationSlide(cont) && !isContinuationSlide(parent));
+  check("the parent slide is NOT mutated by the split (keeps all its points)", parent.keyPoints.length === 4 && !parent.continuationOf);
+
+  // (iii) SUB-TOPIC split — two distinct sub-ideas get two real descriptive titles,
+  //       neither a continuation.
+  const sub = coerceOutline({
+    objective: "o", microLesson: true,
+    segments: [{ id: "seg1", name: "C", purpose: "concept_intro", targetSlideCount: 2 }],
+    slides: [cf("Causes of deadweight loss", "outline_list", ["c1", "c2"]), cf("Effects of deadweight loss", "outline_list", ["e1", "e2"])],
+  }).outline!;
+  check("sub-topic split: two DISTINCT descriptive titles, neither '(cont.)'", sub.slides[0].title !== sub.slides[1].title && !sub.slides.some((s) => /\(cont\.?\)/i.test(s.title)), sub.slides.map((s) => s.title).join(" / "));
+  check("sub-topic split: neither slide is a continuation", !sub.slides[0].continuationOf && !sub.slides[1].continuationOf && !isContinuationSlide(sub.slides[0]) && !isContinuationSlide(sub.slides[1]));
+
+  // (iv) Deck-level layout VARIETY is preserved (the model varies; coerce keeps it).
+  const variety = coerceOutline({
+    objective: "o", microLesson: true,
+    segments: [{ id: "seg1", name: "C", purpose: "concept_intro", targetSlideCount: 4 }],
+    slides: [cf("A", "key_concept", ["x"]), cf("B", "process_steps", ["x"]), cf("C", "comparison_columns", ["x"]), cf("D", "metrics_overview", ["x"])],
+  }).outline!;
+  check("deck-level layout variety preserved (≥3 distinct layout types)", new Set(variety.slides.map((s) => s.layout)).size >= 3, variety.slides.map((s) => s.layout).join(","));
 
   // ── Module SKELETON coerce — the compact lesson MAP (NO per-slide arrays).
   const brief = { title: "Linear search", objective: "Scan an array in order.", rationale: "starts the unit", skillsIntroduced: ["scanning"], minSlides: 2, maxSlides: 99, suggestedBlocks: ["quiz"], recommendQuiz: true };

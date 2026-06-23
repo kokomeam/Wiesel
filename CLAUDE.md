@@ -269,7 +269,15 @@ never import a provider SDK.
     plan gate, no validate — stays fast. The delete-resume loop is layered too.
   **PLAN is the contract** (`lib/ai/outline.ts`): each slide spec carries a `role`
   (hook/worked_example/common_mistake/conceptual_check/…) + `kind` (core|enrichment);
-  the lesson carries `microLesson`. Slide-count guidance (micro 3–4 only on request ·
+  the lesson carries `microLesson`. **CONTENT-FIRST (Method 1, 2026-06-23):** the
+  slide spec is ordered + prompted so the model FINALIZES the slide's `keyPoints` (its
+  real content) BEFORE choosing the `layout` that fits them (and varies layout across
+  the deck) — not layout-first. If a slide's points overflow one card it SPLITS at plan
+  time (never truncates): a **continuation** (`continuationOf` links to the parent;
+  `normalizeContinuations` stamps a " (cont.)" title + drops points repeated verbatim
+  from the parent, preserving every unique point) or a **sub-topic split** (two distinct
+  descriptive titles). A continuation is its own spec → counts toward coverage;
+  `isContinuationSlide` + the "(cont.)" title are the cue. Slide-count guidance (micro 3–4 only on request ·
   normal 6–10 · technical 7–12 · complex 9–14) + a **depth floor**
   (`lessonDepthShortfall`, `AI_MIN_NORMAL_/TECHNICAL_LESSON_SLIDES`) that re-asks
   ONCE for a too-thin non-micro plan (via `runStructuredPlan`'s `postValidate` hook,
@@ -408,7 +416,7 @@ never import a provider SDK.
   `SMOKE_SKIP_A=1` skips the slow part. Background mode (poll loop) is env-tunable via
   `AI_BACKGROUND_POLL_TIMEOUT_MS` / `AI_BACKGROUND_POLL_INTERVAL_MS`.
 - **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
-  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **107**
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **113**
   checks incl. the phased lesson pipeline, the **module SKELETON → approve →
   per-lesson rich-plan → generate → validate** flow, **skeleton-timeout →
   background fallback**, **both-timeout → clear-message** (not "invalid JSON"),
