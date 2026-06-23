@@ -8,6 +8,7 @@ import { z } from "zod";
 import { findBlock, findLesson } from "@/lib/course/queries";
 import type { LessonBlock, LessonNode } from "@/lib/course/types";
 import { defineTool, ToolError, type Tool } from "./types";
+import { debugAgent } from "../debugLog";
 
 /** One-line, content-aware summary of a block (for grounding without dumping
  *  the whole payload). */
@@ -139,7 +140,28 @@ const getBlock = defineTool({
   params: z.object({ blockId: z.string() }),
   execute(args, ctx) {
     const hit = findBlock(ctx.doc, args.blockId);
-    if (!hit) throw new ToolError(`Block ${args.blockId} not found`);
+    if (!hit) {
+      // FAIL GRACEFULLY (not a throw → no retry loop): the id resolves nowhere in the
+      // doc (a made-up / stale id, e.g. when editing a half-built module). Return the
+      // current lesson's REAL blocks so the model picks a valid one in ONE step.
+      const lesson = findLesson(ctx.doc, ctx.lessonId)?.lesson;
+      const availableBlocks = (lesson?.blocks ?? []).map((b) => ({ blockId: b.id, type: b.type, title: b.title ?? null, summary: summarizeBlock(b) }));
+      debugAgent("get_block_unresolved", {
+        requestedBlockId: args.blockId,
+        currentLessonId: ctx.lessonId,
+        availableBlockIds: availableBlocks.map((b) => b.blockId),
+        reason: "not_found_in_doc",
+      });
+      return {
+        summary: `No block ${args.blockId} — listed this lesson's blocks instead`,
+        data: {
+          found: false,
+          requestedBlockId: args.blockId,
+          message: `No block with id "${args.blockId}" exists in this course. Do NOT retry the same id. Use one of the blocks listed in availableBlocks, or create what you need.`,
+          availableBlocks,
+        },
+      };
+    }
     return { summary: `Read block "${hit.block.title ?? hit.block.type}"`, data: hit.block };
   },
 });

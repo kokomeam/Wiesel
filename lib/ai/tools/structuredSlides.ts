@@ -24,8 +24,35 @@ import { STICKER_IDS } from "@/lib/course/slide/stickers";
 import { StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
 import type { ElementStyle, IllustrationContent, ProseContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
 import { defineTool, ToolError, type Tool, type ToolContext } from "./types";
+import { debugAgent, previewJson } from "../debugLog";
 
 const StickerIdEnum = z.enum(STICKER_IDS as [string, ...string[]]);
+
+/**
+ * DIAGNOSTIC: log the ACTUAL reason a structured slide was rejected as "missing
+ * content" — the raw Zod failure (field + message, NOT the summarized string), the
+ * payload the author produced (to see if fields are empty / malformed / cut off),
+ * the spec it was fulfilling + whether that spec exists with real points. This is
+ * the visibility the telemetry lacked. (Logging only — no behavior change.)
+ */
+function logSlideReject(
+  ctx: ToolContext,
+  info: { tool: string; index: number | null; slideSpecId: string | null; template: unknown; error: string | undefined }
+): void {
+  const specId = (info.slideSpecId ?? "").trim();
+  const { preview, length } = previewJson(info.template);
+  debugAgent("slide_reject", {
+    tool: info.tool,
+    index: info.index,
+    slideSpecId: specId || null,
+    planSpecExists: !!specId && (ctx.planSpecIds ?? []).includes(specId),
+    planSpecPointCount: specId ? (ctx.planSpecPoints?.[specId] ?? null) : null,
+    layoutId: ((info.template ?? {}) as { layoutId?: unknown }).layoutId ?? null,
+    zodError: info.error ?? "(no detail)", // the REAL field+message, not "missing content"
+    payloadLength: length,
+    payloadPreview: preview,
+  });
+}
 
 function deck(ctx: ToolContext, blockId: string): { block: SlideDeckBlock; lessonId: string } {
   const hit = findBlock(ctx.doc, blockId);
@@ -80,7 +107,10 @@ const addStructuredSlide = defineTool({
     const blockId = typeof o.blockId === "string" ? o.blockId : "";
     const { block, lessonId } = deck(ctx, blockId);
     const res = bestEffortTemplate(o.template);
-    if (!res.template) throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
+    if (!res.template) {
+      logSlideReject(ctx, { tool: "add_structured_slide", index: null, slideSpecId: null, template: o.template, error: res.error });
+      throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
+    }
     const slide = createStructuredSlide(res.template.layoutId, deckThemeId(block, ctx));
     slide.template = res.template;
     if (typeof o.notes === "string" && o.notes.trim()) slide.speakerNotes = o.notes.trim();
@@ -152,6 +182,7 @@ const addStructuredSlidesBatch = defineTool({
       // for a non-length reason (missing required content) is unsaveable.
       const res = bestEffortTemplate(e.template);
       if (!res.template) {
+        logSlideReject(ctx, { tool: "add_structured_slides_batch", index: i, slideSpecId: e.slideSpecId ?? null, template: e.template, error: res.error });
         failed.push({ index: i, slideSpecId: e.slideSpecId ?? undefined, errors: res.error ?? "invalid template" });
         return;
       }
@@ -228,7 +259,10 @@ const setStructuredSlide = defineTool({
     const hit = findSlide(ctx.doc, blockId, slideId);
     if (!hit) throw new ToolError(`Slide ${slideId} not found in deck ${blockId}.`);
     const res = bestEffortTemplate(o.template);
-    if (!res.template) throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
+    if (!res.template) {
+      logSlideReject(ctx, { tool: "set_structured_slide", index: null, slideSpecId: null, template: o.template, error: res.error });
+      throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
+    }
     return {
       summary: `Set the ${res.template.layoutId} layout${res.clamped ? " (auto-shortened to fit)" : ""}`,
       patches: [setSlideTemplatePatch(blockId, slideId, res.template)],

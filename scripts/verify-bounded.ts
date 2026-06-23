@@ -78,6 +78,8 @@ const callIdsOf = (items: ModelInputItem[]): string[] =>
 const contentOf = (it: ModelInputItem | undefined): string | undefined =>
   it && "content" in it ? it.content : undefined;
 
+type GbData = { found?: boolean; availableBlocks?: { blockId: string }[] };
+
 async function main() {
   // ── 1–3. Bounded input assembly ───────────────────────────────────────────
   console.log("\n# bounded input — does not grow, pairs intact, stale dropped");
@@ -335,6 +337,63 @@ async function main() {
   check("a parent (user Stop) abort is forwarded — NOT flagged as a timeout", dl2.signal!.aborted && !dl2.timedOut());
   dl2.dispose();
   check("no deadline + no parent → no signal (prior behavior preserved)", withTimeoutSignal(undefined, undefined).signal === undefined);
+
+  // ── 10. DIAGNOSTIC — discriminate the causes of "missing content" (STEP 2) ──
+  console.log("\n# missing-content rejection — cause discrimination");
+  // A. VALIDATOR-TOO-STRICT? Run obviously-valid payloads through the EXACT validation
+  //    the batch tool uses (clampStructuredTemplate). A valid slide MUST be accepted; an
+  //    OPTIONAL field omitted MUST NOT cause rejection.
+  const validFull = { layoutId: "prose", content: { title: { text: "Greedy choice" }, body: { text: "A greedy algorithm takes the locally optimal option at each step, never reconsidering." }, points: [{ text: "optimal substructure" }, { text: "greedy-choice property" }] } };
+  const validMinimal = { layoutId: "prose", content: { title: { text: "Loop invariant" }, body: { text: "A condition that holds before and after every iteration of the loop." } } };
+  check("A. validator ACCEPTS a full valid slide (NOT over-strict)", !!clampStructuredTemplate(validFull).template, clampStructuredTemplate(validFull).error);
+  check("A. validator ACCEPTS a minimal valid slide — omitting an OPTIONAL field is fine", !!clampStructuredTemplate(validMinimal).template, clampStructuredTemplate(validMinimal).error);
+
+  // C. EMPTY-FIELD-FROM-AUTHOR? An empty REQUIRED field is rejected with a PRECISE field
+  //    path (so the log pinpoints what the author left empty) — distinct from a valid slide.
+  const emptyBody = clampStructuredTemplate({ layoutId: "prose", content: { title: { text: "Has a title" }, body: { text: "" } } });
+  check("C. an empty REQUIRED field is rejected (genuinely missing content)", !emptyBody.template && !!emptyBody.error);
+  check("C. the rejection NAMES the exact field (body), not a vague 'missing content'", /body/i.test(emptyBody.error ?? ""), emptyBody.error);
+
+  // B. TRUNCATION manifests DIFFERENTLY: a batch JSON cut mid-string is a PARSE error
+  //    ("Invalid JSON arguments"), NOT an Added-0/missing-content result.
+  const diagDoc = freshDoc();
+  const diagDeck = createBlock("slide_deck") as SlideDeckBlock; diagDeck.slides = [];
+  diagDoc.doc.modules[0].lessons[0].blocks.push(diagDeck);
+  const diagCtx = (extra: Partial<ToolContext> = {}): ToolContext => ({ doc: diagDoc.doc, courseId: diagDoc.doc.id, lessonId: diagDoc.lessonId, ...extra });
+  const fullBatch = JSON.stringify({ deckBlockId: diagDeck.id, slides: [{ slideSpecId: "s1", template: validMinimal, notes: null }] });
+  let truncMsg = "";
+  try { await executeTool("add_structured_slides_batch", fullBatch.slice(0, fullBatch.length - 25), diagCtx()); }
+  catch (e) { truncMsg = e instanceof ToolError ? e.message : "other"; }
+  check("B. a truncated batch JSON is a PARSE error (distinct from missing-content)", /Invalid JSON arguments/.test(truncMsg), truncMsg);
+
+  // B2. A COMPLETE-but-empty final slide (the 'ran out of budget' degenerate {}) parses
+  //     and reads as missing-content: the valid sibling SAVES, only the empty one fails.
+  const degenerate = { layoutId: "prose", content: {} };
+  const b2 = await executeTool("add_structured_slides_batch", JSON.stringify({ deckBlockId: diagDeck.id, slides: [{ slideSpecId: "s1", template: validMinimal, notes: null }, { slideSpecId: "s2", template: degenerate, notes: null }] }), diagCtx());
+  check("B2. a complete-but-empty slide reads as missing-content; the valid sibling still SAVES", b2.patches?.length === 1, `${b2.patches?.length}`);
+  const b2failed = (b2.data as { failed?: { slideSpecId?: string }[] }).failed ?? [];
+  check("B2. only the empty slide is reported failed", b2failed.length === 1 && b2failed[0].slideSpecId === "s2");
+
+  // Prove the INSTRUMENTATION emits the raw Zod reason + payload + spec context.
+  const captured: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
+  try {
+    await executeTool("add_structured_slides_batch", JSON.stringify({ deckBlockId: diagDeck.id, slides: [{ slideSpecId: "s3", template: degenerate, notes: null }] }), diagCtx({ planSpecIds: ["s3"], planSpecPoints: { s3: 4 } }));
+  } finally { console.log = origLog; }
+  const rejectLog = captured.find((l) => l.includes('"slide_reject"'));
+  check("instrumentation emits slide_reject with the raw zodError + payload + plan-spec context", !!rejectLog && /zodError/.test(rejectLog!) && /payloadPreview/.test(rejectLog!) && /"planSpecPointCount":4/.test(rejectLog!), rejectLog?.slice(0, 160));
+
+  // D. REFERENCE RESOLUTION — get_block resolves a valid id, and FAILS GRACEFULLY on a
+  //    missing one (returns the lesson's real blocks, never throws → no retry loop).
+  const gbOk = await executeTool("get_block", JSON.stringify({ blockId: diagDeck.id }), diagCtx());
+  check("D. get_block resolves a VALID block id", (gbOk.data as { id?: string }).id === diagDeck.id);
+  let gbThrew = false;
+  let gbData: GbData | null = null;
+  try { gbData = (await executeTool("get_block", JSON.stringify({ blockId: "made-up-id" }), diagCtx())).data as GbData; }
+  catch { gbThrew = true; }
+  check("D. get_block does NOT throw on a missing id (no retry loop)", !gbThrew);
+  check("D. get_block returns found:false + the lesson's real blocks for self-correction", gbData?.found === false && !!gbData.availableBlocks?.some((b) => b.blockId === diagDeck.id));
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   process.exit(fail === 0 ? 0 : 1);

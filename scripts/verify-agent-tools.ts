@@ -267,10 +267,14 @@ async function main() {
     try { await executeTool("write_quiz", JSON.stringify({ questions: "nope" }), ctx); }
     catch (e) { threw = e instanceof ToolError; }
     check("invalid args → ToolError", threw);
-    let threw2 = false;
-    try { await executeTool("get_block", JSON.stringify({ blockId: "does-not-exist" }), ctx); }
-    catch (e) { threw2 = e instanceof ToolError; }
-    check("missing block → ToolError", threw2);
+    // get_block on a missing id now FAILS GRACEFULLY (returns found:false + the
+    // lesson's real blocks) instead of throwing into a retry loop — the half-built-
+    // module reference-resolution fix. (A truly invalid SHAPE still ToolErrors.)
+    let gbThrew = false;
+    let gbData: { found?: boolean } | null = null;
+    try { gbData = (await executeTool("get_block", JSON.stringify({ blockId: "does-not-exist" }), ctx)).data as { found?: boolean }; }
+    catch (e) { gbThrew = e instanceof ToolError; }
+    check("missing block → graceful found:false (NOT a throw/retry loop)", !gbThrew && gbData?.found === false);
   }
 
   console.log("\n# change-set diff (create / update / delete)");

@@ -5,6 +5,7 @@
  */
 
 import { toStrictJsonSchema } from "../schema";
+import { debugAgent } from "../debugLog";
 import type { ToolDefinition } from "../modelClient";
 import { readTools } from "./read";
 import { slideTools } from "./slides";
@@ -90,7 +91,17 @@ export async function executeTool(
   let json: unknown;
   try {
     json = rawArgs.trim() ? JSON.parse(rawArgs) : {};
-  } catch {
+  } catch (err) {
+    // DIAGNOSTIC: a parse failure here is the TRUNCATION signature — the model hit
+    // its output cap mid-JSON, so the tool-call arguments are cut off. Log the size +
+    // head/tail so we can see it's truncated (unclosed) rather than malformed.
+    debugAgent("tool_args_parse_fail", {
+      tool: name,
+      rawLen: rawArgs.length,
+      head: rawArgs.slice(0, 300),
+      tail: rawArgs.slice(-300),
+      parseError: err instanceof Error ? err.message : String(err),
+    });
     throw new ToolError(`Invalid JSON arguments for ${name}`);
   }
 

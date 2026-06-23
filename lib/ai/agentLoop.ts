@@ -21,6 +21,7 @@ import { buildContextMessage, buildSystemPrompt } from "./context";
 import { createChangeSet } from "./changeSet";
 import { diffBlocks, type BlockChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
+import { debugAgent } from "./debugLog";
 import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
 import { buildBoundedAgentInput, buildScopedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
 import {
@@ -388,6 +389,10 @@ export async function runConversationLoop(
   // DETERMINISTICALLY stamp each slide with its spec id (guaranteeing coverage even
   // if the model omits/mis-types slideSpecId). Empty when there's no plan.
   const planSpecIds = options.outline?.slides.map((s) => s.id) ?? [];
+  // DIAGNOSTIC: spec id → its plan keyPoint count (so a slide-reject log can tell
+  // an author-ignored-a-real-brief from an empty/absent brief).
+  const planSpecPoints: Record<string, number> = {};
+  for (const s of options.outline?.slides ?? []) planSpecPoints[s.id] = s.keyPoints.length;
   // Generous cap on the scoped generation-state summary (the plan rides in the
   // context message; this carries the built/remaining list).
   const scopedStateMaxChars = policy.mode === "bounded" ? policy.maxStateSummaryChars : 12000;
@@ -498,6 +503,19 @@ export async function runConversationLoop(
       }
     });
     logModelCall(options.callLabel ?? "loop", options.model ?? c.model.model, turn, result.usage);
+    // DIAGNOSTIC: per-authoring-turn finish_reason + tool-call arg sizes. A
+    // finishReason of "incomplete" (or a tool-call args length near the output cap)
+    // means the model hit max_output_tokens MID-JSON — the truncation signature that
+    // can read downstream as a parse failure or a half-built slide.
+    debugAgent("authoring_turn", {
+      phase: options.callLabel ?? "loop",
+      turn,
+      finishReason: result.finishReason,
+      outputTokens: result.usage?.outputTokens ?? null,
+      maxOutputTokens: options.maxOutputTokens ?? null,
+      textLen: result.text.length,
+      toolCalls: result.toolCalls.map((tc) => ({ name: tc.name, argsLen: tc.arguments.length })),
+    });
     turnsRun += 1;
     usage.inputTokens += result.usage?.inputTokens ?? 0;
     usage.outputTokens += result.usage?.outputTokens ?? 0;
@@ -545,7 +563,7 @@ export async function runConversationLoop(
       let blockType: string | undefined;
 
       try {
-        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, planSpecIds };
+        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, planSpecIds, planSpecPoints };
         const outcome = await executeTool(call.name, call.arguments, ctx);
         summary = outcome.summary;
 

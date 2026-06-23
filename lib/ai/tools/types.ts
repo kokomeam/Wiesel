@@ -42,6 +42,10 @@ export interface ToolContext {
    *  matches even when the model omits or mistypes slideSpecId. Empty/absent on the
    *  edit path (no plan). */
   planSpecIds?: string[];
+  /** DIAGNOSTIC ONLY: spec id → its plan keyPoint count. Lets a slide-reject log say
+   *  whether the plan spec it was fulfilling actually had real points (author ignored
+   *  a real brief) vs. an empty/absent brief. Never affects behavior. */
+  planSpecPoints?: Record<string, number>;
 }
 
 /** A tool's result. Read tools set `data`; write tools set `patches` (applied +
