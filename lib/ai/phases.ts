@@ -572,8 +572,8 @@ async function validateAndRepairLesson(
         c.emit({ type: "phase", phase: "repair", detail: opts.detail });
         const t = Date.now();
         const rr = await runConversationLoop(lc, working, working, false, {
-          effort: AI_PHASE_MODELS.generate.effort,
-          model: AI_PHASE_MODELS.generate.model,
+          effort: AI_PHASE_MODELS.repair.effort,
+          model: AI_PHASE_MODELS.repair.model,
           layered: true,
           outline,
           deckBlockId: deckBlockId ?? undefined,
@@ -589,7 +589,7 @@ async function validateAndRepairLesson(
         mutated = mutated || rr.docMutated;
         lastMsgId = rr.lastAssistantMessageId ?? lastMsgId;
         repaired = true;
-        logPhase(lc, "repair", AI_PHASE_MODELS.generate.model, AI_PHASE_MODELS.generate.effort, rr.usage, rr.toolCalls, Date.now() - t, true, rr.turns);
+        logPhase(lc, "repair", AI_PHASE_MODELS.repair.model, AI_PHASE_MODELS.repair.effort, rr.usage, rr.toolCalls, Date.now() - t, true, rr.turns);
 
         // The model could leave a stray placeholder (e.g. a second deck) — strip again.
         const interim = validateLessonGeneration(working, lessonId, outline, {});

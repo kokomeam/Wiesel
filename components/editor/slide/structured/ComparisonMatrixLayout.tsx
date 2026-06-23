@@ -21,23 +21,20 @@ export function ComparisonMatrixLayout({ content, ctx }: { content: ComparisonMa
   const { options, dimensions } = content;
   const n = options.length;
   const footer = content.footer;
-  const bodyBottom = footer ? 116 : 52;
   const hairline = withAlpha(ctx.muted, 0.18);
 
+  // Flow column: header → grid (rows size to content, so a long cell GROWS its row
+  // instead of clipping) → spacer (pushes a short matrix's footer to the bottom).
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0 flex flex-col" style={{ padding: "52px 64px 38px" }}>
       <ComparisonHeader eyebrow={content.eyebrow} title={content.title} subtitle={content.subtitle} ctx={ctx} />
 
-      <div
-        className="absolute"
-        style={{ left: 64, right: 64, top: content.subtitle?.text || ctx.interactive ? 214 : 184, bottom: bodyBottom }}
-      >
+      <div style={{ flex: "0 1 auto", minHeight: 0 }}>
         <div
           style={{
             display: "grid",
             gridTemplateColumns: `minmax(150px, 230px) repeat(${n}, minmax(0, 1fr))`,
-            gridTemplateRows: `auto repeat(${dimensions.length}, minmax(0, 1fr))`,
-            height: "100%",
+            gridTemplateRows: `auto repeat(${dimensions.length}, auto)`,
             borderRadius: 18,
             overflow: "hidden",
             border: `1px solid ${hairline}`,
@@ -119,6 +116,7 @@ export function ComparisonMatrixLayout({ content, ctx }: { content: ComparisonMa
         </div>
       </div>
 
+      <div style={{ flex: 1, minHeight: 0 }} aria-hidden />
       {footer && <ComparisonFooterBand footer={footer} ctx={ctx} />}
     </div>
   );

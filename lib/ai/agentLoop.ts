@@ -229,23 +229,27 @@ function buildContinuationNudge(prog: CoverageProgress, outline: LessonOutline, 
  * a message addressed to them.
  */
 function friendlyToolError(toolName: string, detail: string): string {
-  const label = TOOL_VERB[toolName] ?? "make that change";
+  const noun = TOOL_VERB[toolName]; // e.g. "diagram", "slide" — undefined for generic tools
   if (/invalid (json )?arguments|invalid input|expected /i.test(detail)) {
-    return `Had to reshape the ${label} and retry.`;
+    return noun ? `Had to adjust the ${noun} and retry.` : "Had to adjust that and retry.";
   }
   if (/not found|no access|don'?t have/i.test(detail)) {
-    return `Couldn't find what that ${label} pointed at — retrying.`;
+    return noun ? `Couldn't find what that ${noun} pointed at — retrying.` : "Couldn't find what that pointed at — retrying.";
   }
-  return `Couldn't ${label} on that pass — retrying.`;
+  return noun ? `Couldn't update the ${noun} on that pass — retrying.` : "Couldn't make that change on that pass — retrying.";
 }
 
-/** Short verb phrases for the friendly error line (kept generic on purpose). */
+/** Short NOUN phrases for the friendly error line (the thing the tool acts on). */
 const TOOL_VERB: Record<string, string> = {
-  set_structured_slide: "slide layout",
-  add_structured_slide: "slide layout",
+  set_structured_slide: "slide",
+  add_structured_slide: "slide",
+  add_structured_slides_batch: "slides",
   set_slide_layout: "slide layout",
   update_slide: "slide",
   add_slide: "slide",
+  add_diagram: "diagram",
+  set_diagram: "diagram",
+  add_image: "image",
   write_slide_deck: "slide deck",
   write_quiz: "knowledge check",
   write_homework: "practice",

@@ -61,9 +61,9 @@ export default function SettingsPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Full name" defaultValue={currentUser.name} />
-            <Field label="Email" defaultValue="arjun@coursegen.pro" />
+            <Field label="Email" defaultValue="arjun@wisesel.pro" />
             <Field label="Headline" defaultValue="USACO & Algorithms Coach" />
-            <Field label="Storefront" prefix="coursegen.pro/@" defaultValue="arjun" />
+            <Field label="Storefront" prefix="wisesel.pro/@" defaultValue="arjun" />
           </div>
           <div className="flex justify-end gap-2 border-t border-stone-100 pt-4">
             <Button variant="ghost" size="sm">

@@ -5,13 +5,14 @@
  * The model only ever reaches the doc through these tools. This proves: the
  * strict JSON schemas generate (union + length limits), the new tools are
  * registered, valid calls produce applic­able patches, and — critically — an
- * over-long slot is REJECTED with a readable error (the validate→repair loop).
+ * over-long slot is now CLAMPED + SAVED (never rejected for fit), while a slide
+ * MISSING required content still comes back.
  */
 
 import { applyCoursePatch } from "@/lib/course/patches";
 import { getToolDefinitions, executeTool, ToolError } from "@/lib/ai/tools";
 import { createBlock, createLesson, createModule } from "@/lib/course/factories";
-import { STRUCTURED_LAYOUT_IDS, findStructuredLayout } from "@/lib/course/slide/structuredLayouts";
+import { LIMITS, STRUCTURED_LAYOUT_IDS, findStructuredLayout } from "@/lib/course/slide/structuredLayouts";
 import type { CourseDocument, SlideDeckBlock } from "@/lib/course/types";
 
 let pass = 0,
@@ -140,16 +141,15 @@ async function main() {
     check(`a ${id} slide now exists in the deck`, decks().slides.some((s) => s.template?.layoutId === id));
   }
 
-  // ── Self-correction: an over-long outline item is REJECTED (validate→repair).
+  // ── STRETCHING: an over-long outline item is CLAMPED + SAVED (never rejected for
+  //    fit — the card grows / the text auto-shortens; the model is never bounced).
   const outlineOverflow = JSON.parse(JSON.stringify(findStructuredLayout("outline_list")!.seed()));
-  outlineOverflow.content.items[0].text.text = "x".repeat(120);
-  let outlineRejected = false;
-  try {
-    await executeTool("add_structured_slide", JSON.stringify({ blockId, position: null, template: outlineOverflow, notes: null }), ctx);
-  } catch (e) {
-    outlineRejected = e instanceof ToolError;
-  }
-  check("over-long outline item is rejected (validate→repair)", outlineRejected);
+  outlineOverflow.content.items[0].text.text = "x".repeat(120); // olItem cap = 80
+  const olOut = await executeTool("add_structured_slide", JSON.stringify({ blockId, position: null, template: outlineOverflow, notes: null }), ctx);
+  const olPatch = (olOut.patches ?? []).find((p) => p.action === "ADD_SLIDE");
+  const olSlide = olPatch && olPatch.action === "ADD_SLIDE" ? olPatch.slide : null;
+  const olItem0 = olSlide?.template?.layoutId === "outline_list" ? olSlide.template.content.items[0].text.text : "";
+  check("over-long outline item is auto-shortened + SAVED (not rejected)", !!olPatch && olItem0.length > 0 && olItem0.length <= LIMITS.olItem && olItem0.length < 120, `${olItem0.length}`);
 
   // ── A malformed concept_example body kind is rejected by the discriminated union.
   const badBody = JSON.parse(JSON.stringify(findStructuredLayout("concept_example")!.seed()));
@@ -162,19 +162,26 @@ async function main() {
   }
   check("invalid concept_example body kind is rejected", badBodyRejected);
 
-  // ── Over-long slot → ToolError (the repair signal the loop feeds back).
+  // ── STRETCHING: an over-long title is CLAMPED + SAVED (no fit rejection).
   const overflow = JSON.parse(JSON.stringify(findStructuredLayout("metrics_overview")!.seed()));
-  overflow.content.title.text = "x".repeat(80);
-  let rejected = false;
-  let msg = "";
+  overflow.content.title.text = "x".repeat(80); // title cap = 48
+  const mOut = await executeTool("add_structured_slide", JSON.stringify({ blockId, position: null, template: overflow, notes: null }), ctx);
+  const mPatch = (mOut.patches ?? []).find((p) => p.action === "ADD_SLIDE");
+  const mSlide = mPatch && mPatch.action === "ADD_SLIDE" ? mPatch.slide : null;
+  const mTitle = mSlide?.template?.layoutId === "metrics_overview" ? mSlide.template.content.title.text : "";
+  check("over-long title is auto-shortened + SAVED (not rejected)", !!mPatch && mTitle.length > 0 && mTitle.length <= LIMITS.title && mTitle.length < 80, `${mTitle.length}`);
+
+  // ── A slide MISSING required content (an empty body, not a length issue) DOES
+  //    still come back — clamp can't invent content. add_structured_slide throws.
+  const noBody = JSON.parse(JSON.stringify(findStructuredLayout("prose")!.seed()));
+  noBody.content.body.text = "";
+  let missingContentRejected = false;
   try {
-    await executeTool("add_structured_slide", JSON.stringify({ blockId, position: null, template: overflow, notes: null }), ctx);
+    await executeTool("add_structured_slide", JSON.stringify({ blockId, position: null, template: noBody, notes: null }), ctx);
   } catch (e) {
-    rejected = e instanceof ToolError;
-    msg = e instanceof Error ? e.message : "";
+    missingContentRejected = e instanceof ToolError;
   }
-  check("over-long title is rejected (validate→repair)", rejected);
-  check("rejection message is readable (length)", /character|48|≤/.test(msg), msg.slice(0, 80));
+  check("a content-MISSING slide still comes back (not a fit reject)", missingContentRejected);
 
   // ── add_sticker onto a freeform slide.
   const flat = await run("add_structured_slide", { blockId, position: null, template: findStructuredLayout("metrics_overview")!.seed(), notes: null }, ctx);

@@ -8,6 +8,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 
 const links = [
   { label: "Product", href: "#product" },
@@ -16,12 +17,13 @@ const links = [
   { label: "Marketplace", href: "/marketplace" },
 ];
 
+/** The WiseSel wordmark with an optional mono tagline (used by the footer). */
 export function Wordmark({ suffix }: { suffix?: string }) {
   return (
-    <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-      CourseGen<span className="text-orange-500">*</span>
+    <span className="inline-flex items-center gap-2.5">
+      <WiseSelLogo variant="wordmark" className="h-5 w-auto" />
       {suffix && (
-        <span className="ml-2 font-mono text-[10px] font-normal uppercase tracking-[0.2em] text-stone-400">
+        <span className="font-mono text-[10px] font-normal uppercase tracking-[0.2em] text-stone-400">
           {suffix}
         </span>
       )}
@@ -50,8 +52,8 @@ export function IntroNav() {
       )}
     >
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <Link href="/" aria-label="CourseGen home">
-          <Wordmark />
+        <Link href="/" aria-label="WiseSel home">
+          <WiseSelLogo variant="horizontal" priority className="h-8" />
         </Link>
 
         <div className="hidden items-center gap-7 md:flex">

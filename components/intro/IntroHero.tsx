@@ -36,7 +36,7 @@ export function IntroHero() {
             {...entrance(!!reduce, 0)}
             className="font-mono text-[11px] uppercase tracking-[0.28em] text-orange-600"
           >
-            CourseGen* — the course studio
+            WiseSel — the course studio
           </motion.p>
 
           <motion.h1
@@ -61,7 +61,7 @@ export function IntroHero() {
             {...entrance(!!reduce, 0.18)}
             className="mt-6 max-w-md text-[15px] leading-relaxed text-stone-500"
           >
-            One side teaches, the other learns. CourseGen is the first studio
+            One side teaches, the other learns. WiseSel is the first studio
             built for both — where educators craft courses like products, and
             learners actually finish them.
           </motion.p>

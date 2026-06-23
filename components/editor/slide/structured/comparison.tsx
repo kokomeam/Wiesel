@@ -24,8 +24,8 @@ export function optionColor(index: number, accent: string): string {
 
 export const OPTION_LETTERS = ["A", "B", "C"] as const;
 
-/** The shared header (eyebrow + serif title + optional subtitle), pinned to the
- *  top of the slide. */
+/** The shared header (eyebrow + serif title + optional subtitle) — a FLOW child at
+ *  the top of the layout's flex column (so the body below grows/stretches to fit). */
 export function ComparisonHeader({
   eyebrow,
   title,
@@ -38,7 +38,7 @@ export function ComparisonHeader({
   ctx: StructuredCtx;
 }) {
   return (
-    <div className="absolute" style={{ left: 64, right: 64, top: 52 }}>
+    <div style={{ flex: "0 0 auto", marginBottom: 22 }}>
       <Eyebrow value={eyebrow} path={["eyebrow"]} ctx={ctx} />
       <EditableText
         value={title}
@@ -62,19 +62,18 @@ export function ComparisonHeader({
   );
 }
 
-/** The bottom footer band. Rendered only when a footer is present; its icon and
- *  tint are renderer-owned and keyed off `footer.kind`. */
+/** The bottom footer band — a FLOW child at the end of the layout's flex column.
+ *  Rendered only when a footer is present; its icon and tint are renderer-owned. */
 export function ComparisonFooterBand({ footer, ctx }: { footer: ComparisonFooter; ctx: StructuredCtx }) {
   const summary = footer.kind === "summary";
   const tint = summary ? ctx.accent : SECONDARY;
   const Icon = summary ? Star : Users;
   return (
     <div
-      className="absolute flex items-center"
+      className="flex items-center"
       style={{
-        left: 64,
-        right: 64,
-        bottom: 38,
+        flex: "0 0 auto",
+        marginTop: 18,
         gap: 14,
         padding: "12px 20px",
         borderRadius: 14,

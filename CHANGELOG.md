@@ -6,6 +6,46 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Stretching, fewer model calls, lighter validation, 2026-06-22
+
+Adopt Gamma-style stretching (within the fixed 16:9 frame), kill the remaining
+reject-retry loops, drop fit-driven validation, and cut redundant model calls —
+without losing slide completeness. Revert point: commit `bcf3ff6`. Suites green
+(`verify:ai` 170 · `verify:ai:int` 107 · `verify:visuals` 85 · `verify:slides`
+incl. the new `verify:stretch` 19 · `verify:reject`) + `tsc`/lint/`build`.
+
+- **STRETCHING — containers grow to fit (within the 16:9 frame).** The structured
+  layouts were absolute-positioned boxes with `overflow:hidden` that CLIPPED heavy
+  content. The clip-prone ones (`concept_example`, `comparison_columns`,
+  `comparison_matrix`, `outline_list`, `prose`) are now FLOW layouts — a flex column
+  (header → body that grows → footer); columns grow independently and stretch to the
+  taller; the matrix grid uses content-sized (`auto`) rows; `outline_list` items flow
+  in a column; `code_walkthrough` scales its font to the line count. No text container
+  clips; the only guard kept is the existing horizontal break-word on long strings.
+  (The user chose "fit within the fixed frame" over a variable-height-canvas rewrite.)
+- **No more reject-retry.** Single-slide tools (`add_structured_slide`/
+  `set_structured_slide`) now CLAMP like the batch (lenient + `clampStructuredTemplate`)
+  — an over-long slot auto-shortens and saves, never bounces. **Diagrams** were the
+  last reshape-and-retry path: `add_diagram`/`set_diagram` (and a `diagram` entry in the
+  batch) are now best-effort — `lib/course/diagram/repair.ts` `repairDiagram`/
+  `coerceDiagramBestEffort` fix the off invariants (slope, sort, dangling edges, missing
+  weights) or fall back to a topic-matched template / minimal seed, so a malformed
+  diagram is ACCEPTED + rendered, never bounced. The garbled "Had to reshape the make
+  that change and retry" string is fixed (proper tool nouns; natural fallback).
+- **Keep coverage, drop fit.** Repair now ONLY fills a genuinely MISSING slide spec or
+  required quiz/homework block (`hasModelRepairableFailure`); a complete deck SKIPS
+  repair. Duplicate specs + a missing recommended visual are now SOFT (reported, never
+  repaired) — `ok` is computed from the hard-failure set only (`HARD_FAILURE_CODES`).
+- **Cut calls / reuse data.** GENERATE/REPAIR can't re-fetch the course context /
+  module list / lesson list (excluded from the toolset — they ride in the context +
+  generation-state). The teaching bar now authors ALL of a lesson's slides in ONE
+  `add_structured_slides_batch` (cap raised 4→24), not one segment per turn. REPAIR
+  drops to MEDIUM effort (`AI_PHASE_MODELS.repair`); PLAN + the creative initial
+  authoring stay high.
+- **Concise authoring kept in the prompt.** Stretching removes crashes, not bloat —
+  the teaching bar now says cards GROW to fit but to still write tight, scannable cards
+  (short headings, 1–2-sentence bodies), putting depth across more slides.
+
 ## AI agent — strictness death-spiral fix, flush-on-exit, stop & live render, 2026-06-22
 
 A second reliability pass. A module-generation run had spun for **10+ minutes and

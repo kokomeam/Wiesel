@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X } from "lucide-react";
 import { marketingNav } from "@/lib/marketing";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 
 export function MarketingNav() {
   const [scrolled, setScrolled] = useState(false);
@@ -27,10 +28,8 @@ export function MarketingNav() {
       />
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         {/* Brand */}
-        <Link href="/" className="flex items-baseline gap-2">
-          <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-            CourseGen<span className="text-orange-500">*</span>
-          </span>
+        <Link href="/" aria-label="WiseSel home" className="flex items-center gap-2.5">
+          <WiseSelLogo variant="horizontal" priority className="h-8" />
           <span className="hidden font-mono text-[10px] uppercase tracking-[0.2em] text-stone-400 sm:inline">
             for educators
           </span>

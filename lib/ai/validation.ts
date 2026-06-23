@@ -84,15 +84,27 @@ export interface ValidationReport {
   deckBlockId: string | null;
 }
 
-/** Hard failures a MODEL repair pass can fix (vs the deterministic ones). */
+/**
+ * Hard failures a MODEL repair pass can fix. KEEP COVERAGE, DROP FIT (2026-06-22):
+ * repair now ONLY fills a genuinely MISSING slide spec or a missing required
+ * quiz/homework block. Duplicate specs and a missing-but-recommended visual are
+ * "reshape formatting" — they're SOFT (reported, never repaired), so a deck with
+ * full coverage skips the repair loop entirely.
+ */
 export function hasModelRepairableFailure(report: ValidationReport): boolean {
-  return (
-    report.missingSpecIds.length > 0 ||
-    report.duplicateSpecIds.length > 0 ||
-    report.requiredBlocksMissing.length > 0 ||
-    report.missingRequiredVisualSpecIds.length > 0
-  );
+  return report.missingSpecIds.length > 0 || report.requiredBlocksMissing.length > 0;
 }
+
+/** The issue codes that BLOCK a "done" claim (drive `ok` + the repair loop). A
+ *  duplicate slide or a missing recommended visual is SOFT — present for
+ *  transparency but it never blocks staging or triggers repair. */
+const HARD_FAILURE_CODES: ReadonlySet<HardFailureCode> = new Set<HardFailureCode>([
+  "NO_DECK",
+  "PLACEHOLDER_SLIDE",
+  "EMPTY_SLIDE",
+  "MISSING_SLIDE_SPECS",
+  "REQUIRED_BLOCK_MISSING",
+]);
 
 function lessonDecks(doc: CourseDocument, lessonId: string): SlideDeckBlock[] {
   const lesson = findLesson(doc, lessonId)?.lesson;
@@ -195,7 +207,9 @@ export function validateLessonGeneration(
     });
   }
 
-  const ok = issues.length === 0;
+  // `ok` ignores SOFT issues (duplicate / missing-recommended-visual) — full
+  // coverage with no placeholders/empties + the required blocks present = done.
+  const ok = issues.every((i) => !HARD_FAILURE_CODES.has(i.code));
   const budgetExhausted =
     !ok && !!opts.checkpointed && (missingSpecIds.length > 0 || requiredBlocksMissing.length > 0);
 

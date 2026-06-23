@@ -31,6 +31,10 @@ function useHighlighted(code: string, lang: string): string | null {
 export function CodeWalkthroughLayout({ content, ctx }: { content: CodeWalkthroughContent; ctx: StructuredCtx }) {
   const html = useHighlighted(content.code.code, content.code.language);
   const steps = content.steps;
+  // Scale the code type to the line count so a long block fits its panel without
+  // clipping (the panel height is fixed; more lines → slightly smaller text).
+  const codeLines = content.code.code.split("\n").length;
+  const codeFont = codeLines <= 12 ? 17 : codeLines <= 16 ? 15 : 13;
 
   return (
     <div className="absolute inset-0" style={{ padding: "52px 80px" }}>
@@ -55,8 +59,8 @@ export function CodeWalkthroughLayout({ content, ctx }: { content: CodeWalkthrou
           <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#27c93f" }} />
         </div>
         <div
-          className="flex-1 overflow-hidden [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
-          style={{ padding: "4px 22px 22px", fontSize: 17, lineHeight: 1.55, fontFamily: "var(--font-geist-mono), ui-monospace, monospace" }}
+          className="flex-1 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
+          style={{ padding: "4px 22px 22px", fontSize: codeFont, lineHeight: 1.5, fontFamily: "var(--font-geist-mono), ui-monospace, monospace" }}
         >
           {html ? (
             <div dangerouslySetInnerHTML={{ __html: html }} />

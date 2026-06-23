@@ -7,7 +7,7 @@ import { courseDocFromRows } from "@/lib/course/persistence";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
-  title: "Creator Studio — CourseGen Pro",
+  title: "Creator Studio — WiseSel",
 };
 
 export default async function StudioPage({

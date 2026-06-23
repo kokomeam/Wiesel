@@ -13,7 +13,7 @@
     "verify:ai:int": "tsx scripts/verify-agent-integration.ts",
     "verify:reject": "tsx scripts/verify-reject-revert.ts",
     "verify:visuals": "tsx scripts/verify-visuals.ts",
-    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts && tsx scripts/verify-visuals.ts",
+    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts && tsx scripts/verify-stretch.ts && tsx scripts/verify-visuals.ts",
     "smoke:openai": "tsx scripts/smoke-openai.ts"
   },
   "dependencies": {

@@ -23,6 +23,7 @@ import { DIAGRAM_TEMPLATES, findDiagramTemplate, templateRequiredElements } from
 import { DiagramContentInputSchema, DiagramSpecInputSchema } from "@/lib/course/diagram/schemas";
 import { DIAGRAM_KINDS, type DiagramSpec } from "@/lib/course/diagram/types";
 import { diagramRequiredElements, validateDiagram } from "@/lib/course/diagram/validate";
+import { coerceDiagramBestEffort, repairDiagram } from "@/lib/course/diagram/repair";
 import { applyCoursePatch } from "@/lib/course/patches";
 import { courseDocFromRows, courseDocToRows } from "@/lib/course/persistence";
 import { SlideSchema } from "@/lib/course/schemas";
@@ -30,7 +31,7 @@ import { createBlock, createLesson, createModule, createStructuredSlide } from "
 import type { CourseDocument, SlideDeckBlock } from "@/lib/course/types";
 import { toStrictJsonSchema } from "@/lib/ai/schema";
 import { coerceOutline, slideRequiresVisual, type LessonOutline } from "@/lib/ai/outline";
-import { validateLessonGeneration } from "@/lib/ai/validation";
+import { hasModelRepairableFailure, validateLessonGeneration } from "@/lib/ai/validation";
 import { routeVisual } from "@/lib/ai/visuals/router";
 import { imagePromptFromSpec } from "@/lib/ai/visuals/imagePrompt";
 import { executeTool, getToolDefinitions } from "@/lib/ai/tools";
@@ -228,17 +229,21 @@ async function main() {
     check("the diagram's requiredElements were filled from the diagram",
       slide?.template?.layoutId === "diagram" && (slide.template.content.spec.requiredElements?.length ?? 0) > 0);
   }
-  // add_diagram with an INVALID custom diagram is rejected (the tool boundary).
+  // add_diagram with an INVALID custom diagram is ACCEPTED + REPAIRED best-effort
+  // (never reshape-and-retry): a demand curve sloping the wrong way is corrected,
+  // and the slide still lands as a valid supply_demand diagram.
   {
     const { doc, deckId, lessonId } = deckDoc();
     let threw = false;
+    let outcome: Awaited<ReturnType<typeof executeTool>> | null = null;
     try {
-      await executeTool(
+      outcome = await executeTool(
         "add_diagram",
         JSON.stringify({
           deckBlockId: deckId, slideSpecId: null, position: null,
           title: "Bad", caption: null, takeaways: null, role: "graph",
           pedagogicalPurpose: "x", altText: "x", reason: null, templateId: null,
+          // demand slopes UP (rightY > leftY) — invalid; the tool repairs it.
           diagram: { kind: "supply_demand", supply: { leftY: 0.2, rightY: 0.85 }, demand: { leftY: 0.2, rightY: 0.85 } },
         }),
         { doc, courseId: doc.id, lessonId }
@@ -246,7 +251,48 @@ async function main() {
     } catch {
       threw = true;
     }
-    check("add_diagram rejects an invalid custom diagram (demand up)", threw);
+    check("add_diagram NO LONGER rejects an invalid custom diagram (best-effort)", !threw);
+    const addPatch = (outcome?.patches ?? []).find((p) => p.action === "ADD_SLIDE");
+    const slide = addPatch && addPatch.action === "ADD_SLIDE" ? addPatch.slide : null;
+    const dg = slide?.template?.layoutId === "diagram" ? slide.template.content.diagram : null;
+    check("the off-slope diagram was REPAIRED to a valid one (demand slopes down)", !!dg && dg.kind === "supply_demand" && dg.demand.rightY < dg.demand.leftY && dg.supply.rightY > dg.supply.leftY, JSON.stringify(dg));
+  }
+
+  // NO PLACEHOLDER DIAGRAMS: an UNUSABLE custom diagram (empty bars — no real data,
+  // not repairable) is NOT rendered as a demo diagram. It degrades to a PROSE slide
+  // built from the model's real title/caption — never a default A/B/C chart.
+  {
+    const { doc, deckId, lessonId } = deckDoc();
+    const outcome = await executeTool(
+      "add_diagram",
+      JSON.stringify({
+        deckBlockId: deckId, slideSpecId: "s1", position: null,
+        title: "Tax revenue by year", caption: "Revenue climbed steadily over the decade.", takeaways: ["Up every year"], role: "data_chart",
+        pedagogicalPurpose: "show the trend", altText: "a bar chart of tax revenue", reason: null, templateId: null,
+        diagram: { kind: "bar_chart", bars: [] }, // EMPTY — no real data; unrepairable
+      }),
+      { doc, courseId: doc.id, lessonId }
+    );
+    const p = (outcome.patches ?? []).find((x) => x.action === "ADD_SLIDE");
+    const sl = p && p.action === "ADD_SLIDE" ? p.slide : null;
+    check("an unusable (empty-data) diagram does NOT render a placeholder diagram", sl?.template?.layoutId !== "diagram", sl?.template?.layoutId);
+    check("it degrades to a PROSE slide carrying the model's real title/caption", sl?.template?.layoutId === "prose" && /tax revenue/i.test(sl.template.content.title.text) && sl.template.content.body.text.length > 0, JSON.stringify(sl?.template?.layoutId));
+    check("the degraded slide keeps its plan spec stamp (coverage holds)", sl?.ai?.specId === "s1");
+  }
+
+  // repairDiagram / coerceDiagramBestEffort — NO fabrication, NO demo seed.
+  {
+    // Repairs an invariant on REAL data (off-slope demand → corrected).
+    const fixed = repairDiagram({ kind: "supply_demand", supply: { leftY: 0.2, rightY: 0.85 }, demand: { leftY: 0.2, rightY: 0.85 } });
+    check("repairDiagram fixes an invariant on real data (slope)", fixed.kind === "supply_demand" && validateDiagram(fixed).length === 0);
+    // Does NOT invent data: empty bars stay empty (still invalid) → coerce returns null.
+    const emptyBars = repairDiagram({ kind: "bar_chart", bars: [] });
+    check("repairDiagram does NOT fabricate bars for an empty chart", emptyBars.kind === "bar_chart" && emptyBars.bars.length === 0);
+    check("coerceDiagramBestEffort returns null for unusable data (no demo seed)", coerceDiagramBestEffort({ kind: "bar_chart", bars: [] }) === null);
+    check("coerceDiagramBestEffort returns null for a null diagram (never a default)", coerceDiagramBestEffort(null) === null);
+    // A weighted graph missing weights renders UNWEIGHTED (real edges) — not faked weights.
+    const gw = repairDiagram({ kind: "graph_diagram", weighted: true, nodes: [{ id: "A" }, { id: "B" }], edges: [{ from: "A", to: "B" }] });
+    check("repairDiagram drops the 'weighted' claim rather than invent weights", gw.kind === "graph_diagram" && gw.weighted === false && validateDiagram(gw).length === 0);
   }
 
   console.log("\n# 9. add_image authors a STORED illustration slide (+ guards)");
@@ -318,8 +364,10 @@ async function main() {
     pslide.ai.specId = "s1";
     deck.slides = [pslide];
     const report = validateLessonGeneration(doc, lessonId, outline);
-    check("required visual MISSING on a prose slide → flagged", report.missingRequiredVisualSpecIds.includes("s1"));
-    check("REQUIRED_VISUAL_MISSING is a hard failure", !report.ok && report.issues.some((i) => i.code === "REQUIRED_VISUAL_MISSING"));
+    check("required visual MISSING on a prose slide → flagged (still reported)", report.missingRequiredVisualSpecIds.includes("s1") && report.issues.some((i) => i.code === "REQUIRED_VISUAL_MISSING"));
+    // KEEP COVERAGE, DROP FIT: a missing recommended visual is now SOFT — it does
+    // NOT block `ok` and does NOT trigger the repair loop (no "reshape" repairs).
+    check("REQUIRED_VISUAL_MISSING is SOFT — coverage complete → ok, no repair", report.ok && !hasModelRepairableFailure(report), JSON.stringify({ ok: report.ok }));
   }
 
   console.log("\n# 10. diagramRequiredElements describe the visual");

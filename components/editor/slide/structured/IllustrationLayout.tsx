@@ -41,7 +41,7 @@ export function IllustrationLayout({ content, ctx }: { content: IllustrationCont
     : {};
 
   return (
-    <div className="absolute inset-0" style={{ overflow: "hidden" }}>
+    <div className="absolute inset-0">
       {hasTitle && (
         <EditableText
           value={content.title}

@@ -408,7 +408,7 @@ never import a provider SDK.
   `SMOKE_SKIP_A=1` skips the slow part. Background mode (poll loop) is env-tunable via
   `AI_BACKGROUND_POLL_TIMEOUT_MS` / `AI_BACKGROUND_POLL_INTERVAL_MS`.
 - **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
-  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **99**
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **107**
   checks incl. the phased lesson pipeline, the **module SKELETON → approve →
   per-lesson rich-plan → generate → validate** flow, **skeleton-timeout →
   background fallback**, **both-timeout → clear-message** (not "invalid JSON"),
@@ -417,12 +417,15 @@ never import a provider SDK.
   light-review-trigger paths, the **coverage driver** (a model that stops at
   1/3 is nudged to completion), the **no-progress guard** (one pipeline checkpoint),
   the **live AI-image path** (add_image → mock bytes → Supabase upload →
-  `illustration` slide with a real public URL), and (2026-06-22) **CLAMP-not-reject**
-  (an over-length slot auto-shortens + saves → coverage closes, no repair) and
-  **flush-on-exit** (a stalled run AND a simulated user-Stop both STAGE + PERSIST
-  their partial deck to the Accept/Reject gate)). The mock can inject a transport
-  error (`MockTurn.error`), a deterministic `generateImage`, and (via a thin runTurn
-  wrapper) an abort mid-run.
+  `illustration` slide with a real public URL), **CLAMP-not-reject** (an over-length
+  slot auto-shortens + saves → coverage closes, no repair), **flush-on-exit** (a
+  stalled run AND a simulated user-Stop both STAGE + PERSIST their partial deck), and
+  (the stretching/call-reduction pass) **diagram best-effort** (an off-slope
+  add_diagram resolves in ONE shot — no error/retry — and renders a repaired valid
+  diagram), **REPAIR at medium effort**, and the **course-level reads excluded** from
+  GENERATE (loaded once, never re-fetched)). The mock can inject a transport error
+  (`MockTurn.error`), a deterministic `generateImage`, and (via a thin runTurn wrapper)
+  an abort mid-run.
   Slide-vocabulary suites (no key): `npm run verify:slides` (stickers + font
   tokens + all 8 structured layouts incl. near-max overflow + the structured
   agent tools) and `npm run verify:reject` (atomic byte-for-byte revert, incl. a
@@ -441,8 +444,20 @@ never import a provider SDK.
   — `SlideStage` branches on `template`, the `LayoutPicker` "Structured" section
   + `StructuredContentEditor` edit them. AI tools: `add_structured_slide` /
   `set_structured_slide` / `set_text_style` / `add_sticker`
-  (`lib/ai/tools/structuredSlides.ts`); the strict schema's `.max()` IS the
-  validate→repair guard. **Reject is atomic** (`revertChangeSet`).
+  (`lib/ai/tools/structuredSlides.ts`); the strict schema's `.max()` no longer
+  REJECTS — it CLAMPS (auto-shortens + saves; `clampStructuredTemplate`), so no slide
+  is ever bounced for fit. **Reject is atomic** (`revertChangeSet`).
+  **STRETCHING (Gamma-style, within the fixed 16:9 frame, 2026-06-22):** the clip-prone
+  renderers (`concept_example`, `comparison_columns`/`_matrix`, `outline_list`, `prose`,
+  `code_walkthrough`) were rebuilt from absolute boxes with `overflow:hidden` into FLOW
+  layouts — a flex column (header → growing body → footer); columns grow independently +
+  stretch to the taller; the matrix grid uses `auto` rows; `outline_list` flows; code
+  font scales to line count. No text container clips (only the horizontal break-word
+  guard remains). `SlideStage` is still a fixed 1280×720 canvas, so concise/capped
+  content fits the frame — the canvas itself was deliberately NOT made variable-height.
+  Runnable guard: `scripts/verify-stretch.ts` (SSR-renders heavy content, asserts
+  nothing is dropped + the layout flows); pixel-level no-overflow is the temporary
+  `/zz-layout-preview` + Playwright visual pass.
   **8 structured layouts:** the original four (process_steps,
   key_concept, metrics_overview, code_walkthrough_steps) PLUS **section_break**
   (chapter divider; variants standard/hero_numeral × titleStyle serif/sans;
@@ -492,10 +507,20 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
 - **Planning** = `lib/ai/outline.ts` `visualIntent` is now a STRUCTURED object
   (required/role/reason/expectedVisualType/placement/priority/mustBeAccurate; tolerant
   of a legacy string). **AI tools** = `add_diagram` / `set_diagram` (templateId
-  seeds an accurate canonical diagram; a custom diagram is validated at the tool
-  boundary). **Validation** = a `REQUIRED_VISUAL_MISSING` hard failure (accuracy-
-  critical roles demand a real diagram/image) + a repair brief + `VISUAL_SKIPPED`
-  soft lint. **Inspector** = `DiagramEditor` in `StructuredContentEditor`.
+  seeds an accurate canonical diagram). **BEST-EFFORT + REAL-DATA-ONLY, never reshape-
+  and-retry (2026-06-22):** the diagram tools are `lenientArgs` — a custom diagram is
+  parsed permissively then `coerceDiagramBestEffort` (`lib/course/diagram/repair.ts`)
+  REPAIRS the invariants on the model's OWN data (re-slope/re-sort/drop-dangling-edge/
+  drop-the-weighted-claim) and renders it iff it validates, ELSE returns `null`. It
+  **never fabricates or seeds placeholder/demo data** (the old minimal-seed / topic-
+  template fallback was a regression — a generic A/B/C chart on an econ lesson); an
+  unusable diagram **degrades to a real-text PROSE slide** built from the model's
+  title/caption (so coverage still holds, no retry). A templateId is reserved for the
+  canonical STRUCTURAL diagrams. (`bestEffortVisualTemplate` is the shared builder; a
+  `diagram` entry inside `add_structured_slides_batch` routes through it too.)
+  **Validation (2026-06-22):** `REQUIRED_VISUAL_MISSING` is now SOFT —
+  reported, but it does NOT block `ok` or trigger repair (KEEP COVERAGE, DROP FIT:
+  repair only fills a genuinely missing slide/block). **Inspector** = `DiagramEditor`.
 - **Pipeline architecture** = `lib/ai/visuals/*` — `config.ts` flags (defaults
   2026-06-22: programmatic ON, **image-gen ON**, web OFF, validation ON;
   `AI_VISUAL_MAX_PER_LESSON` 5), full `VisualSpec`/`VisualAsset`, the source

@@ -417,6 +417,9 @@ async function main() {
   const rValEvents = evRepair.filter((e) => e.type === "validation");
   check("validation reports the missing slide, then passes after repair", rValEvents.length >= 2 && rValEvents.some((e) => e.type === "validation" && !e.ok) && rValEvents[rValEvents.length - 1].type === "validation" && (rValEvents[rValEvents.length - 1] as Extract<AgentEvent, { type: "validation" }>).ok);
   check("repair did NOT emit a checkpoint (the contract was met)", !evRepair.some((e) => e.type === "checkpoint"));
+  // REPAIR is a MECHANICAL fill → MEDIUM effort (GENERATE's creative authoring stays
+  // high). A tool-bearing call at medium effort is the repair pass.
+  check("repair ran at MEDIUM effort (cheaper than the high-effort GENERATE)", repairMock.getCalls().some((c) => c.effort === "medium" && (c.tools?.length ?? 0) > 0), repairMock.getCalls().map((c) => c.effort).join(","));
   const rDoc = await loadCourseDoc(supabase, courseId);
   const rDeck = rDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === rLessonId)?.blocks.find((b) => b.type === "slide_deck");
   check("the repaired deck has all 3 planned slides", !!rDeck && rDeck.type === "slide_deck" && rDeck.slides.length === 3, `${rDeck && rDeck.type === "slide_deck" ? rDeck.slides.length : "none"}`);
@@ -599,6 +602,44 @@ async function main() {
   const abPending = await getPendingBlocks(supabase, courseId);
   check("the aborted run's partial work is in the Accept/Reject gate (pending)", abPending.some((p) => p.blockId === abDeck?.id));
 
+  // 11l. DIAGRAM — NO RESHAPE-AND-RETRY. The model authors the deck AND an
+  //      add_diagram with an off-slope shape (demand sloping up). It's accepted +
+  //      REPAIRED best-effort in ONE shot — no error tool_result, no retry — and
+  //      coverage is complete, so no repair phase.
+  const dgLessonId = crypto.randomUUID();
+  await supabase.from("lessons").insert({ id: dgLessonId, module_id: pModuleId, course_id: courseId, title: "Diagram lesson", objective: "x", order: 9 });
+  const dgConvo = await getOrCreateConversation(supabase, courseId, dgLessonId);
+  const badDiagramCall = {
+    name: "add_diagram",
+    arguments: {
+      deckBlockId: null, slideSpecId: null, position: null,
+      title: "Supply & demand", caption: null, takeaways: null, role: "graph",
+      pedagogicalPurpose: "show the equilibrium", altText: "supply and demand graph", reason: null, templateId: null,
+      // demand slopes UP (rightY > leftY) — invalid; best-effort repairs it, never bounces.
+      diagram: { kind: "supply_demand", supply: { leftY: 0.2, rightY: 0.85 }, demand: { leftY: 0.2, rightY: 0.85 } },
+    },
+  };
+  const dgMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },
+    { text: "Deck + a graph.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")]), badDiagramCall] },
+  ], { finalText: "Done." });
+  const evDg: AgentEvent[] = [];
+  await runGenerateLessonTurn({
+    supabase, model: dgMock, courseId, lessonId: dgLessonId, ownerId: userId, conversationId: dgConvo,
+    userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evDg.push(e),
+  });
+  const dgDiagramResults = evDg.filter((e) => e.type === "tool_result" && e.tool === "add_diagram");
+  check("the off-slope add_diagram resolved in ONE shot (a single tool_result)", dgDiagramResults.length === 1, `${dgDiagramResults.length}`);
+  check("the off-slope diagram did NOT error / reshape-retry (ok=true)", dgDiagramResults[0]?.type === "tool_result" && dgDiagramResults[0].ok === true);
+  check("no tool_result errored on the diagram run (no churn)", !evDg.some((e) => e.type === "tool_result" && !e.ok));
+  const dgPhases = evDg.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
+  check("the diagram run had no repair phase (coverage complete)", !dgPhases.includes("repair"));
+  const dgDoc = await loadCourseDoc(supabase, courseId);
+  const dgDeck = dgDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === dgLessonId)?.blocks.find((b) => b.type === "slide_deck");
+  const dgSlide = dgDeck && dgDeck.type === "slide_deck" ? dgDeck.slides.find((s) => s.template?.layoutId === "diagram") : undefined;
+  const dgSpec = dgSlide?.template?.layoutId === "diagram" ? dgSlide.template.content.diagram : null;
+  check("the saved diagram was repaired to a VALID supply/demand (demand slopes down)", !!dgSpec && dgSpec.kind === "supply_demand" && dgSpec.demand.rightY < dgSpec.demand.leftY && dgSpec.supply.rightY > dgSpec.supply.leftY, JSON.stringify(dgSpec));
+
   // 11g-4. AI IMAGE GENERATION (end to end) — the model calls add_image for a
   //        concept slide; the bytes are generated (mock PNG) and STORED to the live
   //        course-assets bucket, and the slide lands as an `illustration` with a
@@ -666,6 +707,18 @@ async function main() {
     [...genToolNames].join(",")
   );
   check("GENERATE toolset includes structured authoring (+ create_block, write_quiz)", genToolNames.has("add_structured_slides_batch") && genToolNames.has("create_block") && genToolNames.has("write_quiz"));
+  // CUT CALLS / REUSE DATA: the course/module/lesson context + the PLAN ride in the
+  // context message + generation-state every turn, so GENERATE (and REPAIR) CANNOT
+  // re-fetch them — the duplicate "Read course context / List modules / List lessons"
+  // calls are eliminated by construction (the tools aren't in the toolset).
+  check(
+    "GENERATE toolset excludes the course-level reads (loaded once, never re-fetched)",
+    !genToolNames.has("get_course_context") && !genToolNames.has("list_modules") && !genToolNames.has("list_lessons") && !genToolNames.has("get_lesson"),
+    [...genToolNames].join(",")
+  );
+  // And, across the WHOLE run, those reads were never actually invoked (≤1 — here 0).
+  const courseReadCalls = evModGen.filter((e) => e.type === "tool_result" && ["get_course_context", "list_modules", "list_lessons"].includes(e.tool)).length;
+  check("Read course context / List modules / List lessons run ≤ once per generate (here 0)", courseReadCalls <= 1, `${courseReadCalls}`);
   check("module generate ran at effort:high, layered", genCall?.effort === "high" && (genCall?.system ?? "").includes("TEACHING BAR"));
   const modDoc = await loadCourseDoc(supabase, courseId);
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");

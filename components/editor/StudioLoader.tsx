@@ -8,6 +8,7 @@
  */
 
 import { useEffect } from "react";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 import { useEditorStore } from "@/lib/course/store";
 import { useAgentStore } from "@/lib/editor/agentStore";
 import { useChangeSetRealtime } from "@/lib/editor/useChangeSetRealtime";
@@ -20,10 +21,15 @@ function StudioSkeleton() {
   return (
     <div className="flex h-full flex-col">
       <div className="h-[53px] border-b border-stone-200 bg-white" />
-      <div className="flex flex-1 animate-pulse">
-        <div className="w-72 border-r border-stone-200 bg-white/60" />
-        <div className="flex-1 bg-stone-50/40" />
-        <div className="w-80 border-l border-stone-200 bg-white/60" />
+      <div className="flex flex-1">
+        <div className="w-72 animate-pulse border-r border-stone-200 bg-white/60" />
+        <div className="grid flex-1 place-items-center bg-stone-50/40">
+          <WiseSelLogo
+            variant="mark"
+            className="h-12 w-auto animate-pulse opacity-60"
+          />
+        </div>
+        <div className="w-80 animate-pulse border-l border-stone-200 bg-white/60" />
       </div>
     </div>
   );

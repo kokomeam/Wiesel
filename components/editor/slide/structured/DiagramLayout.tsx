@@ -44,7 +44,7 @@ export function DiagramLayout({ content, ctx }: { content: DiagramContent; ctx: 
     : {};
 
   return (
-    <div className="absolute inset-0" style={{ overflow: "hidden" }}>
+    <div className="absolute inset-0">
       <EditableText
         value={content.title}
         path={["title"]}

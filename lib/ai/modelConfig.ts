@@ -71,13 +71,19 @@ export const AI_PHASE_MODELS = {
     model: process.env.AI_MODULE_PLAN_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_MODULE_PLAN_EFFORT", "low"),
   } satisfies PhaseModel,
-  /** GENERATE (and the REPAIR pass that reuses this config) is the HARDEST phase —
-   *  it authors rich, complete, multi-slide decks. It now defaults to HIGH effort
-   *  (was medium): authoring quality + completeness is where the cost is worth it,
-   *  and the coverage-driven loop keeps turns bounded. Env: AI_GENERATE_EFFORT. */
+  /** GENERATE — the CREATIVE initial slide authoring — is the phase worth the most
+   *  horsepower, so it defaults to HIGH effort (the coverage-driven loop keeps turns
+   *  bounded). Env: AI_GENERATE_EFFORT. */
   generate: {
     model: process.env.AI_GENERATE_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_GENERATE_EFFORT", "high"),
+  } satisfies PhaseModel,
+  /** REPAIR is a MECHANICAL fill — it's handed the plan + the exact missing slide
+   *  briefs and just builds them, so it runs at MEDIUM effort (cheaper than the
+   *  creative GENERATE pass). Env: AI_REPAIR_MODEL / AI_REPAIR_EFFORT. */
+  repair: {
+    model: process.env.AI_REPAIR_MODEL ?? DEFAULT_MODEL,
+    effort: effort("AI_REPAIR_EFFORT", "medium"),
   } satisfies PhaseModel,
   edit: {
     model: process.env.AI_EDIT_MODEL ?? DEFAULT_MODEL,

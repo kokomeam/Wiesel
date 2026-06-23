@@ -47,7 +47,7 @@ export function TopicMarquee() {
   return (
     <section
       ref={ref}
-      aria-label="Subjects taught on CourseGen"
+      aria-label="Subjects taught on WiseSel"
       className="relative overflow-hidden border-y border-stone-900/[0.07] bg-[#FAF7F1] py-5"
     >
       <div

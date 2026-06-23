@@ -11,17 +11,18 @@
 import { z } from "zod";
 import { addBlockPatch, addStickerPatch, setSlideTemplatePatch, updateElementPatch } from "@/lib/course/commands";
 import { DIAGRAM_TEMPLATE_IDS, findDiagramTemplate } from "@/lib/course/diagram/catalog";
-import { DiagramSpecInputSchema } from "@/lib/course/diagram/schemas";
+import { DiagramSpecInputSchema, DiagramSpecStorageSchema } from "@/lib/course/diagram/schemas";
+import { coerceDiagramBestEffort } from "@/lib/course/diagram/repair";
 import { DIAGRAM_KINDS, VISUAL_ROLES, type DiagramContent, type DiagramSpec, type VisualSpec } from "@/lib/course/diagram/types";
-import { diagramRequiredElements, validateDiagram } from "@/lib/course/diagram/validate";
+import { diagramRequiredElements, diagramSummary } from "@/lib/course/diagram/validate";
 import { createStructuredSlide } from "@/lib/course/factories";
 import type { CoursePatch } from "@/lib/course/patches";
 import { findBlock, findLesson, findSlide } from "@/lib/course/queries";
 import { FontFamilyIdSchema, FontScaleSchema } from "@/lib/course/schemas";
-import { clampStructuredTemplate } from "@/lib/course/slide/clampStructured";
+import { clampStructuredTemplate, type StructuredClampResult } from "@/lib/course/slide/clampStructured";
 import { STICKER_IDS } from "@/lib/course/slide/stickers";
 import { StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
-import type { ElementStyle, IllustrationContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
+import type { ElementStyle, IllustrationContent, ProseContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
 import { defineTool, ToolError, type Tool, type ToolContext } from "./types";
 
 const StickerIdEnum = z.enum(STICKER_IDS as [string, ...string[]]);
@@ -66,28 +67,34 @@ function deckThemeId(block: SlideDeckBlock, ctx: ToolContext): SlideThemeId {
 const addStructuredSlide = defineTool({
   name: "add_structured_slide",
   description:
-    "Add ONE DESIGNED (structured) slide. Pick the layoutId whose shape matches the content (see the layout catalog): e.g. a process → process_steps, a definition → key_concept, key numbers → metrics_overview, code → code_walkthrough_steps, 2–3 options compared with a few traits each → comparison_columns, options compared across several shared dimensions → comparison_matrix. Fill every slot, keep copy tight (length limits are enforced — you'll be told to shorten). The renderer owns all arrangement, colors, badges, arrows, numbering, and reflow; you only fill slots.",
+    "Add ONE DESIGNED (structured) slide. Pick the layoutId whose shape matches the content (see the layout catalog): e.g. a process → process_steps, a definition → key_concept, key numbers → metrics_overview, code → code_walkthrough_steps, 2–3 options compared with a few traits each → comparison_columns, options compared across several shared dimensions → comparison_matrix. Fill every slot, keep copy tight and scannable (cards auto-fit — over-long text is shortened, never bounced). The renderer owns all arrangement, colors, badges, arrows, numbering, and reflow; you only fill slots.",
+  lenientArgs: true,
   params: z.object({
     blockId: z.string(),
     position: z.number().int().nullable(),
     template: StructuredTemplateInputSchema,
     notes: z.string().nullable(),
   }),
-  execute(args, ctx) {
-    const { block, lessonId } = deck(ctx, args.blockId);
-    const slide = createStructuredSlide(args.template.layoutId, deckThemeId(block, ctx));
-    slide.template = args.template as SlideTemplate;
-    if (args.notes && args.notes.trim()) slide.speakerNotes = args.notes.trim();
+  execute(rawArgs, ctx) {
+    const o = (rawArgs ?? {}) as { blockId?: unknown; position?: unknown; template?: unknown; notes?: unknown };
+    const blockId = typeof o.blockId === "string" ? o.blockId : "";
+    const { block, lessonId } = deck(ctx, blockId);
+    const res = bestEffortTemplate(o.template);
+    if (!res.template) throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
+    const slide = createStructuredSlide(res.template.layoutId, deckThemeId(block, ctx));
+    slide.template = res.template;
+    if (typeof o.notes === "string" && o.notes.trim()) slide.speakerNotes = o.notes.trim();
+    const position = typeof o.position === "number" ? o.position : null;
     const patch: CoursePatch = {
       action: "ADD_SLIDE",
-      blockId: args.blockId,
+      blockId,
       slide,
-      ...(args.position != null ? { atIndex: args.position } : {}),
+      ...(position != null ? { atIndex: position } : {}),
     };
     return {
-      summary: `Added a ${args.template.layoutId} slide`,
+      summary: `Added a ${res.template.layoutId} slide${res.clamped ? " (auto-shortened to fit)" : ""}`,
       patches: [patch],
-      data: { slideId: slide.id, blockId: args.blockId, lessonId, blockType: "slide_deck" },
+      data: { slideId: slide.id, blockId, lessonId, blockType: "slide_deck" },
     };
   },
 });
@@ -95,9 +102,9 @@ const addStructuredSlide = defineTool({
 const addStructuredSlidesBatch = defineTool({
   name: "add_structured_slides_batch",
   description:
-    "Add a BATCH of designed (structured) slides in ONE call — author a whole pedagogical SEGMENT at once (e.g. hook+concept, or a worked example, or practice+recap) rather than one slide per call. Pass the lesson's slide-deck blockId as deckBlockId (or null to target this lesson's deck). Each entry is a full structured slide (pick the layoutId whose shape fits the content), plus optional speaker notes and the plan slideSpecId it satisfies. Keep copy tight, but DON'T worry about exact lengths: any slot that runs slightly long is AUTO-SHORTENED server-side and the slide is still saved — formatting is never bounced back to you. Every valid slide is SAVED independently; only a slide that's missing required content comes back. Author 1–4 per batch (one segment at a time) and strongly prefer this over repeated add_structured_slide calls.",
+    "Author the lesson's slides in ONE call — pass ALL of the planned slides for the deck here at once (not one per call, and not a segment at a time). Pass the lesson's slide-deck blockId as deckBlockId (or null to target this lesson's deck). Each entry is a full structured slide (pick the layoutId whose shape fits the content), plus optional speaker notes and the plan slideSpecId it satisfies. Keep each card tight and scannable — short headings, 1–2-sentence bodies — but DON'T worry about exact lengths: a slot that runs long is AUTO-SHORTENED server-side and the slide is still saved (cards also grow to fit), so formatting is never bounced back. Every valid slide is SAVED independently; only a slide missing required content comes back. For a programmatic graph/diagram, prefer the dedicated add_diagram tool.",
   // Validate + CLAMP per-slide inside execute so one over-long slot can't drop the
-  // whole segment (the model schema is still the strict per-slide template).
+  // whole batch (the model schema is still the strict per-slide template).
   lenientArgs: true,
   params: z.object({
     deckBlockId: z.string().nullable(),
@@ -110,7 +117,7 @@ const addStructuredSlidesBatch = defineTool({
         })
       )
       .min(1)
-      .max(4, "Author at most 4 slides per batch — one segment (1–3 slides) at a time."),
+      .max(24, "Author the whole deck in one batch — up to ~24 slides."),
   }),
   execute(rawArgs, ctx) {
     const args = rawArgs as { deckBlockId?: string | null; slides?: unknown };
@@ -125,10 +132,11 @@ const addStructuredSlidesBatch = defineTool({
 
     rawSlides.forEach((entry, i) => {
       const e = (entry ?? {}) as { slideSpecId?: string | null; template?: unknown; notes?: string | null };
-      // CLAMP-not-reject: over-length slots are auto-shortened + the slide saved.
-      // Only a template that's invalid for a non-length reason (missing required
-      // content / too few items) is unsaveable and comes back.
-      const res = clampStructuredTemplate(e.template);
+      // CLAMP-not-reject: over-length slots are auto-shortened + the slide saved; a
+      // `diagram` entry is routed through the best-effort diagram builder so a
+      // slightly-off shape is fixed in code, not bounced. Only a template invalid
+      // for a non-length reason (missing required content) is unsaveable.
+      const res = bestEffortTemplate(e.template);
       if (!res.template) {
         failed.push({ index: i, slideSpecId: e.slideSpecId ?? undefined, errors: res.error ?? "invalid template" });
         return;
@@ -184,19 +192,25 @@ const addStructuredSlidesBatch = defineTool({
 const setStructuredSlide = defineTool({
   name: "set_structured_slide",
   description:
-    "Convert ONE existing slide into a designed (structured) layout, or replace its structured content. Other slides untouched.",
+    "Convert ONE existing slide into a designed (structured) layout, or replace its structured content. Other slides untouched. Over-long copy auto-fits, never bounces.",
+  lenientArgs: true,
   params: z.object({
     blockId: z.string(),
     slideId: z.string(),
     template: StructuredTemplateInputSchema,
   }),
-  execute(args, ctx) {
-    const hit = findSlide(ctx.doc, args.blockId, args.slideId);
-    if (!hit) throw new ToolError(`Slide ${args.slideId} not found in deck ${args.blockId}.`);
+  execute(rawArgs, ctx) {
+    const o = (rawArgs ?? {}) as { blockId?: unknown; slideId?: unknown; template?: unknown };
+    const blockId = typeof o.blockId === "string" ? o.blockId : "";
+    const slideId = typeof o.slideId === "string" ? o.slideId : "";
+    const hit = findSlide(ctx.doc, blockId, slideId);
+    if (!hit) throw new ToolError(`Slide ${slideId} not found in deck ${blockId}.`);
+    const res = bestEffortTemplate(o.template);
+    if (!res.template) throw new ToolError(`Couldn't build that slide: ${res.error ?? "missing required content"}.`);
     return {
-      summary: `Set the ${args.template.layoutId} layout`,
-      patches: [setSlideTemplatePatch(args.blockId, args.slideId, args.template as SlideTemplate)],
-      data: { slideId: args.slideId, blockId: args.blockId, lessonId: hit.lesson.id, blockType: "slide_deck" },
+      summary: `Set the ${res.template.layoutId} layout${res.clamped ? " (auto-shortened to fit)" : ""}`,
+      patches: [setSlideTemplatePatch(blockId, slideId, res.template)],
+      data: { slideId, blockId, lessonId: hit.lesson.id, blockType: "slide_deck" },
     };
   },
 });
@@ -271,10 +285,7 @@ function accuracyCriticalKind(d: DiagramSpec): boolean {
 
 const rt = (s: string): RichText => ({ text: s.trim() });
 
-/** Shared content-builder for add_diagram / set_diagram: resolve the diagram
- *  (custom or seeded from a template), validate it deterministically, and wrap it
- *  in a DiagramContent with a complete VisualSpec (source = programmatic). */
-function buildDiagramContent(args: {
+interface DiagramFields {
   title: string;
   caption: string | null;
   takeaways: string[] | null;
@@ -284,41 +295,113 @@ function buildDiagramContent(args: {
   reason: string | null;
   templateId: string | null;
   diagram: DiagramSpec | null;
-}): DiagramContent {
+}
+
+/** Read diagram fields DEFENSIVELY from raw (lenient) args — never rejects for
+ *  shape. Handles BOTH shapes: the add_diagram tool args (role/purpose/alt at the
+ *  top level) and a batch's diagram-slide CONTENT (those fields under `spec`). The
+ *  diagram itself is parsed with the PERMISSIVE storage schema (no superRefine), so
+ *  a semantically-off diagram is captured here and fixed downstream, not bounced. */
+function readDiagramFields(raw: unknown): DiagramFields {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const spec = (o.spec && typeof o.spec === "object" ? (o.spec as Record<string, unknown>) : o);
+  const s = (v: unknown) => (typeof v === "string" ? v : "");
+  const sOrNull = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const role = (typeof spec.role === "string" && (VISUAL_ROLES as readonly string[]).includes(spec.role) ? spec.role : "concept_diagram") as (typeof VISUAL_ROLES)[number];
+  let diagram: DiagramSpec | null = null;
+  if (o.diagram && typeof o.diagram === "object") {
+    const parsed = DiagramSpecStorageSchema.safeParse(o.diagram);
+    if (parsed.success) diagram = parsed.data;
+  }
+  return {
+    title: s(o.title),
+    caption: sOrNull(o.caption),
+    takeaways: Array.isArray(o.takeaways) ? (o.takeaways.filter((t) => typeof t === "string") as string[]) : null,
+    role,
+    pedagogicalPurpose: s(spec.pedagogicalPurpose),
+    altText: s(spec.altText),
+    reason: sOrNull(spec.reason),
+    templateId: sOrNull(o.templateId),
+    diagram,
+  };
+}
+
+/** Build a DiagramContent from the model's REAL data — or `null` when there's no
+ *  usable diagram (so the caller degrades to a prose slide). NEVER throws, NEVER a
+ *  retry, and NEVER a placeholder/demo diagram: an explicit templateId seeds an
+ *  accurate canonical diagram (the model's deliberate choice); a custom diagram is
+ *  repaired (`coerceDiagramBestEffort`) and used only if it validates from real data,
+ *  else `null`. Alt text + title are synthesized from the diagram if omitted. */
+function buildBestEffortDiagramContent(f: DiagramFields): DiagramContent | null {
   let diagram: DiagramSpec;
   let templateCritical: boolean | undefined;
-  if (args.diagram) {
-    diagram = args.diagram;
-  } else if (args.templateId) {
-    const tpl = findDiagramTemplate(args.templateId);
-    if (!tpl) throw new ToolError(`Unknown diagram template "${args.templateId}". Valid: ${DIAGRAM_TEMPLATE_IDS.join(", ")}.`);
+  const tpl = f.templateId ? findDiagramTemplate(f.templateId) : undefined;
+  if (tpl) {
     diagram = tpl.seed();
     templateCritical = tpl.accuracyCritical;
   } else {
-    throw new ToolError("Provide a templateId (recommended for canonical diagrams) OR a custom `diagram`.");
+    const coerced = coerceDiagramBestEffort(f.diagram);
+    if (!coerced) return null; // no real-data diagram → degrade to prose, not demo data
+    diagram = coerced;
   }
-  const errs = validateDiagram(diagram);
-  if (errs.length) throw new ToolError(`That diagram isn't valid: ${errs.join("; ")}`);
-
-  if (!args.altText.trim()) throw new ToolError("Every visual needs alt text.");
-  const takeaways = (args.takeaways ?? []).map((t) => t.trim()).filter(Boolean).map(rt);
+  const altText = f.altText.trim() || diagramSummary(diagram);
+  const takeaways = (f.takeaways ?? []).map((t) => t.trim()).filter(Boolean).map(rt);
   const spec: VisualSpec = {
-    role: args.role,
-    pedagogicalPurpose: args.pedagogicalPurpose.trim(),
-    altText: args.altText.trim(),
+    role: f.role,
+    pedagogicalPurpose: f.pedagogicalPurpose.trim() || "A teaching visual for this concept.",
+    altText,
     requiredElements: diagramRequiredElements(diagram),
     placement: takeaways.length ? "left" : "center",
     source: "programmatic",
     mustBeAccurate: templateCritical ?? accuracyCriticalKind(diagram),
-    reason: args.reason?.trim() || undefined,
+    reason: f.reason ?? undefined,
   };
   return {
-    title: rt(args.title),
-    caption: args.caption?.trim() ? rt(args.caption) : undefined,
+    title: rt(f.title || diagramSummary(diagram)),
+    caption: f.caption ? rt(f.caption) : undefined,
     takeaways: takeaways.length ? takeaways : undefined,
     spec,
     diagram,
   };
+}
+
+/** A GRACEFUL degrade from a visual request to a real-text PROSE slide — used when
+ *  the model supplied no usable diagram data (and no explicit templateId). It keeps
+ *  the model's real title / caption / takeaways; it NEVER invents a placeholder
+ *  diagram. (No retry — the slide is authored, coverage holds.) */
+function proseDegradeTemplate(f: DiagramFields): SlideTemplate {
+  const body = f.caption || f.pedagogicalPurpose || f.altText || f.title || "See the notes for this point.";
+  const points = (f.takeaways ?? []).map((x) => x.trim()).filter(Boolean).slice(0, 5).map(rt);
+  const content: ProseContent = {
+    title: rt(f.title || "Key idea"),
+    body: rt(body),
+    ...(points.length ? { points } : {}),
+  };
+  return { layoutId: "prose", content };
+}
+
+/** Build the slide template for a visual request: a real-data diagram, else a prose
+ *  degrade — then clamp to schema. NO placeholder diagram, NO reject, NO retry. */
+function bestEffortVisualTemplate(f: DiagramFields): StructuredClampResult {
+  const content = buildBestEffortDiagramContent(f);
+  const res = clampStructuredTemplate(content ? { layoutId: "diagram", content } : proseDegradeTemplate(f));
+  // The AI-input spec schema OMITS `source`, so clamping strips it — re-stamp it
+  // (a programmatic diagram is always `source: "programmatic"`).
+  if (res.template && res.template.layoutId === "diagram") res.template.content.spec.source = "programmatic";
+  return res;
+}
+
+/** Clamp a structured template to its schema, BUT route a `diagram` layout through
+ *  the best-effort visual builder first (so a semantically-off diagram is repaired in
+ *  code — or degraded to prose when its data is unusable — never bounced by the strict
+ *  superRefine and never rendered as placeholder demo data). */
+function bestEffortTemplate(raw: unknown): StructuredClampResult {
+  const o = (raw ?? {}) as { layoutId?: unknown; content?: unknown };
+  if (o.layoutId === "diagram") {
+    const content = (o.content ?? {}) as Record<string, unknown>;
+    return bestEffortVisualTemplate(readDiagramFields(content));
+  }
+  return clampStructuredTemplate(raw);
 }
 
 const diagramParams = {
@@ -334,30 +417,38 @@ const diagramParams = {
 } as const;
 
 const DIAGRAM_TOOL_HINT =
-  "Add a programmatic teaching VISUAL — a diagram/graph the renderer draws as crisp, ACCURATE SVG (supply & demand, a plot, a bar chart, an array with pointers, a tree, a node-link graph, a flowchart, a number line, a Venn). Use it ONLY when a diagram materially improves teaching (a topic conventionally taught with a graph; a structure/process/relationship; a worked example that benefits from visual tracing) — never as decoration. Prefer a templateId for canonical diagrams (the geometry is then correct by construction); supply a custom `diagram` otherwise. Every visual REQUIRES alt text + a pedagogical purpose.";
+  "Add a programmatic teaching VISUAL — a diagram/graph the renderer draws as crisp, ACCURATE SVG (supply & demand, a plot, a bar chart, an array with pointers, a tree, a node-link graph, a flowchart, a number line, a Venn). Use it ONLY when a diagram materially improves teaching (a topic conventionally taught with a graph; a structure/process/relationship; a worked example that benefits from visual tracing) — never as decoration. Supply REAL, subject-specific data in a custom `diagram` (your actual numbers/nodes/edges); a templateId is only for the canonical STRUCTURAL diagrams (supply & demand, binary search, a tree/graph shape). The diagram is accepted BEST-EFFORT — a slightly-off shape is repaired automatically, never bounced — but it is NEVER rendered with placeholder/demo data: if its data is unusable it degrades to a prose slide. So give it real data, or teach the point in prose. Give alt text + a pedagogical purpose.";
 
 const addDiagram = defineTool({
   name: "add_diagram",
   description: DIAGRAM_TOOL_HINT + " Pass the lesson's slide-deck blockId (or null to target this lesson's deck) and, if it satisfies a plan spec, its slideSpecId.",
+  // Lenient: the diagram is built best-effort in execute (repaired / clamped /
+  // template-fallback), so a malformed shape NEVER reshape-and-retries.
+  lenientArgs: true,
   params: z.object({
     deckBlockId: z.string().nullable(),
     slideSpecId: z.string().nullable(),
     position: z.number().int().nullable(),
     ...diagramParams,
   }),
-  execute(args, ctx) {
-    const { deckId, lessonId, themeId, createPatch } = resolveDeck(ctx, args.deckBlockId);
-    const content = buildDiagramContent({ ...args, diagram: (args.diagram ?? null) as DiagramSpec | null });
-    const slide = createStructuredSlide("diagram", themeId);
-    slide.template = { layoutId: "diagram", content };
-    if (args.slideSpecId && args.slideSpecId.trim()) slide.ai.specId = args.slideSpecId.trim();
+  execute(rawArgs, ctx) {
+    const o = (rawArgs ?? {}) as Record<string, unknown>;
+    const { deckId, lessonId, themeId, createPatch } = resolveDeck(ctx, typeof o.deckBlockId === "string" ? o.deckBlockId : null);
+    const res = bestEffortVisualTemplate(readDiagramFields(o));
+    if (!res.template) throw new ToolError("Couldn't build a slide for that visual — teach it in prose instead.");
+    const slide = createStructuredSlide(res.template.layoutId, themeId);
+    slide.template = res.template;
+    const specId = typeof o.slideSpecId === "string" && o.slideSpecId.trim() ? o.slideSpecId.trim() : null;
+    if (specId) slide.ai.specId = specId;
+    const position = typeof o.position === "number" ? o.position : null;
     const patches: CoursePatch[] = [];
     if (createPatch) patches.push(createPatch);
-    patches.push({ action: "ADD_SLIDE", blockId: deckId, slide, ...(args.position != null ? { atIndex: args.position } : {}) });
+    patches.push({ action: "ADD_SLIDE", blockId: deckId, slide, ...(position != null ? { atIndex: position } : {}) });
+    const layoutId = res.template.layoutId;
     return {
-      summary: `Added a ${content.diagram.kind} diagram`,
+      summary: res.template.layoutId === "diagram" ? `Added a ${res.template.content.diagram.kind} diagram` : "No usable diagram data — taught this point in prose instead",
       patches,
-      data: { slideId: slide.id, blockId: deckId, lessonId, blockType: "slide_deck", diagramKind: content.diagram.kind },
+      data: { slideId: slide.id, blockId: deckId, lessonId, blockType: "slide_deck", layoutId },
     };
   },
 });
@@ -365,19 +456,25 @@ const addDiagram = defineTool({
 const setDiagram = defineTool({
   name: "set_diagram",
   description: "Convert ONE existing slide into a programmatic diagram, or replace its diagram content. " + DIAGRAM_TOOL_HINT,
+  lenientArgs: true,
   params: z.object({
     blockId: z.string(),
     slideId: z.string(),
     ...diagramParams,
   }),
-  execute(args, ctx) {
-    const hit = findSlide(ctx.doc, args.blockId, args.slideId);
-    if (!hit) throw new ToolError(`Slide ${args.slideId} not found in deck ${args.blockId}.`);
-    const content = buildDiagramContent({ ...args, diagram: (args.diagram ?? null) as DiagramSpec | null });
+  execute(rawArgs, ctx) {
+    const o = (rawArgs ?? {}) as Record<string, unknown>;
+    const blockId = typeof o.blockId === "string" ? o.blockId : "";
+    const slideId = typeof o.slideId === "string" ? o.slideId : "";
+    const hit = findSlide(ctx.doc, blockId, slideId);
+    if (!hit) throw new ToolError(`Slide ${slideId} not found in deck ${blockId}.`);
+    const res = bestEffortVisualTemplate(readDiagramFields(o));
+    if (!res.template) throw new ToolError("Couldn't build a visual for that — teach it in prose instead.");
+    const layoutId = res.template.layoutId;
     return {
-      summary: `Set a ${content.diagram.kind} diagram`,
-      patches: [setSlideTemplatePatch(args.blockId, args.slideId, { layoutId: "diagram", content })],
-      data: { slideId: args.slideId, blockId: args.blockId, lessonId: hit.lesson.id, blockType: "slide_deck", diagramKind: content.diagram.kind },
+      summary: res.template.layoutId === "diagram" ? `Set a ${res.template.content.diagram.kind} diagram` : "No usable diagram data — set this slide to prose instead",
+      patches: [setSlideTemplatePatch(blockId, slideId, res.template)],
+      data: { slideId, blockId, lessonId: hit.lesson.id, blockType: "slide_deck", layoutId },
     };
   },
 });

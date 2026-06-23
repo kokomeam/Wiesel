@@ -27,7 +27,7 @@ export function IntroFooter() {
           ))}
         </nav>
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-stone-400">
-          © 2026 CourseGen
+          © 2026 WiseSel
         </p>
       </div>
     </footer>

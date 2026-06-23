@@ -129,7 +129,7 @@ export function SectionBreakLayout({ content, ctx }: { content: SectionBreakCont
       {/* Centered title block */}
       <div
         className="absolute flex flex-col justify-center"
-        style={{ left: 80, right: hero ? 600 : 120, top: 150, bottom: 120, overflow: "hidden" }}
+        style={{ left: 80, right: hero ? 600 : 120, top: 150, bottom: 120 }}
       >
         <EditableText
           value={content.title}
