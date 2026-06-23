@@ -44,7 +44,18 @@ import type { PlanOutline } from "./events";
 import { classifyIntent } from "./intent";
 import { lintLessonGeneration, type LintWarning } from "./lintGeneration";
 import { runLightReview, shouldRunLightReview, type ReviewSuggestion } from "./lightReview";
-import { AI_GENERATE_MAX_OUTPUT_TOKENS, AI_LIGHT_REVIEW, AI_PHASE_MODELS, AI_PLAN_TIMEOUT_MS, AI_USE_BACKGROUND_FOR_PLANS, AI_VALIDATION } from "./modelConfig";
+import {
+  AI_GENERATE_MAX_OUTPUT_TOKENS,
+  AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+  AI_LESSON_RETRY_BACKOFF_MS,
+  AI_LIGHT_REVIEW,
+  AI_PHASE_MODELS,
+  AI_PLAN_MAX_RETRIES,
+  AI_PLAN_STREAMING,
+  AI_PLAN_TIMEOUT_MS,
+  AI_USE_BACKGROUND_FOR_PLANS,
+  AI_VALIDATION,
+} from "./modelConfig";
 import type { FinishReason, JsonSchema, ModelErrorKind, ModelTurnResult, ReasoningEffort } from "./modelClient";
 import {
   coerceModuleSkeleton,
@@ -150,6 +161,10 @@ interface PlanCallOpts<T> {
   postValidate?: (outline: T) => string | null;
   /** Run in OpenAI background mode (poll instead of holding a long connection). */
   background?: boolean;
+  /** Output-token budget for this plan call. Lesson plans pass a SMALL budget
+   *  (structurally caps the reasoning spiral); the module skeleton keeps the
+   *  larger default. Falls back to PLAN_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number;
   /** Per-lesson / fallback progress label for the `phase` event. */
   detail?: string;
 }
@@ -183,15 +198,20 @@ async function runStructuredPlan<T>(
   const ctx = { role: "developer" as const, content: contextMessage };
   const schemaChars = JSON.stringify(responseFormat.schema).length;
   const inputChars = system.length + contextMessage.length + userMessage.length;
+  const planMaxOutputTokens = opts.maxOutputTokens ?? PLAN_MAX_OUTPUT_TOKENS;
   const turn = {
     tools: [],
     effort: opts.effort,
     model: opts.model,
     responseFormat,
-    maxOutputTokens: PLAN_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: planMaxOutputTokens,
     timeoutMs: AI_PLAN_TIMEOUT_MS,
-    stream: false, // a plan doesn't need token streaming; one-shot is cleaner + safer
+    // STREAM (default): keeps the proxy connection active so an idle socket isn't
+    // dropped mid-reasoning (the cause of every plan death in the logs). Background
+    // mode, when enabled, still takes precedence in the provider.
+    stream: AI_PLAN_STREAMING,
     background: opts.background,
+    maxRetries: AI_PLAN_MAX_RETRIES, // don't retry a dead socket 5×
     signal: c.signal,
   };
 
@@ -206,9 +226,10 @@ async function runStructuredPlan<T>(
       timeoutMs: AI_PLAN_TIMEOUT_MS,
       approxInputChars: inputChars,
       approxSchemaChars: schemaChars,
-      maxOutputTokens: PLAN_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: planMaxOutputTokens,
+      maxRetries: AI_PLAN_MAX_RETRIES,
       background: !!opts.background,
-      streaming: false,
+      streaming: AI_PLAN_STREAMING,
       courseId: c.courseId,
       lessonId: c.lessonId,
     })
@@ -433,6 +454,9 @@ async function generateLesson(
     deferFinalize: true,
     generateTools: true,
     driveToCoverage: true,
+    // SCOPED: build the input from system + the full plan + generation-state + this
+    // run's tool I/O — never the conversation transcript (so the plan can't be lost).
+    scopedInput: true,
     maxTurns: coverageMaxTurns(outline.slides.length),
     maxOutputTokens: AI_GENERATE_MAX_OUTPUT_TOKENS,
     callLabel: "generate",
@@ -581,6 +605,8 @@ async function validateAndRepairLesson(
           deferFinalize: true,
           generateTools: true,
           driveToCoverage: true,
+          // SCOPED: same as GENERATE — system + plan + state + this run's I/O only.
+          scopedInput: true,
           maxTurns: repairMaxTurns(report.missingSpecIds.length),
           maxOutputTokens: AI_GENERATE_MAX_OUTPUT_TOKENS,
           callLabel: "repair",
@@ -811,8 +837,9 @@ async function runModuleSkeletonPlan(
 }
 
 /** Plan ONE lesson's RICH contract lazily (the full lesson PLAN, seeded from the
- *  brief). NON-streaming, single lesson → small + fast. A transport failure here
- *  skips just THAT lesson; the module continues + checkpoints what's left. */
+ *  brief). Single lesson → small + fast (medium effort, bounded output budget). A
+ *  transport failure here is surfaced via `errorType` so the module loop can retry
+ *  the lesson once before skipping it (resumability). */
 async function runRichLessonPlan(
   c: LoopContext,
   lessonId: string,
@@ -820,7 +847,7 @@ async function runRichLessonPlan(
   moduleTitle: string,
   doc: CourseDocument,
   detail: string
-): Promise<LessonOutline | null> {
+): Promise<{ outline: LessonOutline | null; errorType: PlanErrorType }> {
   const lc: LoopContext = { ...c, lessonId };
   const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
   const context = courseContextLines(doc, lessonId).join("\n");
@@ -828,12 +855,50 @@ async function runRichLessonPlan(
     planType: "lesson_rich",
     model: AI_PHASE_MODELS.plan.model,
     effort: AI_PHASE_MODELS.plan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
     detail,
     // No depth-floor re-ask — the brief's slide range already sets the size, and a
     // second call per lesson would multiply latency across the module.
   });
   // Guarantee the titled-opener + recap-closer arc before generation.
-  return r.outline ? ensureLessonArc(r.outline) : null;
+  return { outline: r.outline ? ensureLessonArc(r.outline) : null, errorType: r.errorType };
+}
+
+/** True for a TRANSPORT failure category (timeout / connection drop) — the ONLY
+ *  kind the module loop retries a lesson for (a schema/model error won't fix on a
+ *  blind retry). */
+function isTransportError(errorType: PlanErrorType): boolean {
+  return errorType === "transport_timeout" || errorType === "transport";
+}
+
+/** Resolve the lesson plan after the SDK abort, then sleep (abortable). */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted || ms <= 0) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+/** Plan one lesson's rich contract, retrying ONCE with backoff on a transport
+ *  failure (a transient proxy blip shouldn't cost the whole lesson). Returns null
+ *  only after the retry also fails (or on a non-transport error) → skip + surface. */
+async function runRichLessonPlanResilient(
+  c: LoopContext,
+  lessonId: string,
+  brief: LessonBrief,
+  moduleTitle: string,
+  doc: CourseDocument,
+  detail: string
+): Promise<LessonOutline | null> {
+  const first = await runRichLessonPlan(c, lessonId, brief, moduleTitle, doc, detail);
+  if (first.outline) return first.outline;
+  if (!isTransportError(first.errorType) || c.signal?.aborted) return null;
+  console.log(JSON.stringify({ tag: "agent_lesson_retry", lessonId, brief: brief.title, errorType: first.errorType }));
+  await delay(AI_LESSON_RETRY_BACKOFF_MS, c.signal);
+  if (c.signal?.aborted) return null;
+  const second = await runRichLessonPlan(c, lessonId, brief, moduleTitle, doc, `${detail} — retry`);
+  return second.outline;
 }
 
 /**
@@ -906,8 +971,11 @@ async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, skele
       const { id, brief } = lessons[i];
       const detail = `${brief.title} (${i + 1}/${n})`;
 
-      // 1. RICH per-lesson plan (lazy). A timeout here skips just this lesson.
-      const outline = await runRichLessonPlan(c, id, brief, skeleton.moduleTitle, doc, detail);
+      // 1. RICH per-lesson plan (lazy), retried ONCE with backoff on a transport
+      //    failure. Only after the retry also fails is the lesson skipped + surfaced
+      //    — a single lesson's death never kills the module (prior lessons are
+      //    already flushed; the remaining ones still build).
+      const outline = await runRichLessonPlanResilient(c, id, brief, skeleton.moduleTitle, doc, detail);
       if (!outline) {
         skipped.push(brief.title);
         continue;
@@ -981,6 +1049,7 @@ export async function runGenerateLessonTurn(
     planType: "lesson",
     model: AI_PHASE_MODELS.plan.model,
     effort: AI_PHASE_MODELS.plan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
     postValidate: lessonDepthShortfall,
   });
   if (!outline) {

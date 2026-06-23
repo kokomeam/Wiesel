@@ -57,9 +57,15 @@ function int(envVar: string, fallback: number): number {
  *   AI_CLASSIFIER_MODEL / AI_CLASSIFIER_EFFORT (intent routing — low by default)
  */
 export const AI_PHASE_MODELS = {
+  /** The single-lesson / per-lesson RICH plan. Defaults to MEDIUM (was high):
+   *  high effort sent the lesson-plan call into a reasoning spiral — output grew
+   *  2.9K → 23K and reasoning 0.5K → 20.7K across a module's lessons for a plan a
+   *  fraction that size. The plan is a structured contract, not creative prose;
+   *  medium produces it well and bounds the reasoning. The downstream GENERATE
+   *  phase (high) is where depth is actually built. Env: AI_PLAN_EFFORT. */
   plan: {
     model: process.env.AI_PLAN_MODEL ?? DEFAULT_MODEL,
-    effort: effort("AI_PLAN_EFFORT", "high"),
+    effort: effort("AI_PLAN_EFFORT", "medium"),
   } satisfies PhaseModel,
   /** The MODULE plan is the heaviest single call (a whole multi-lesson outline in
    *  one structured response) — high/medium routinely blew past the request
@@ -135,9 +141,48 @@ export const AGENT_NO_PROGRESS_LIMIT = int("AGENT_NO_PROGRESS_LIMIT", 3);
 /**
  * Per-call timeout (ms) for the PLAN structured-output call — a single big request
  * that legitimately runs longer than a quick tool turn, so it gets more headroom
- * than the client default (`OPENAI_TIMEOUT_MS`, 120s). Env: AI_PLAN_TIMEOUT_MS.
+ * than the client default (`OPENAI_TIMEOUT_MS`, 120s). This is now a HARD deadline:
+ * the provider wires an AbortController to the underlying fetch, so a plan call can
+ * NOT exceed it (the old SDK `timeout` option was silently ignored by the proxied
+ * undici fetch — calls ran 11–18 min). Env: AI_PLAN_TIMEOUT_MS.
  */
 export const AI_PLAN_TIMEOUT_MS = int("AI_PLAN_TIMEOUT_MS", 180_000);
+
+/**
+ * Output-token budget for a single LESSON plan (the lesson + per-lesson rich plan).
+ * SEPARATE from the module skeleton's larger budget: the lesson plan is the call
+ * that ran away (high effort + a 32k ceiling let reasoning balloon). A lesson
+ * outline is a compact contract — 16k is comfortable headroom for the JSON + bounded
+ * (medium-effort) reasoning, and STRUCTURALLY caps a spiral. Env:
+ * AI_LESSON_PLAN_MAX_OUTPUT_TOKENS.
+ */
+export const AI_LESSON_PLAN_MAX_OUTPUT_TOKENS = int("AI_LESSON_PLAN_MAX_OUTPUT_TOKENS", 16_000);
+
+/**
+ * Retries for a PLAN call. Low on purpose (was the client default of 5): a plan
+ * that dies on a transport timeout used to be retried 5× through the same dead
+ * proxy socket, turning one 180s deadline into ~15 min of wasted wall-clock. One
+ * retry rides out a transient blip; a real outage fails fast (the module falls
+ * back / the lesson is skipped + retried at the loop level). Env: AI_PLAN_MAX_RETRIES.
+ */
+export const AI_PLAN_MAX_RETRIES = int("AI_PLAN_MAX_RETRIES", 1);
+
+/**
+ * STREAM plan calls (default ON). A non-streaming plan holds one idle HTTP socket
+ * open through the model's long silent reasoning, which a China-Clash-style proxy
+ * drops as dead — the deaths in the logs were all `stream:false` plan calls.
+ * Streaming keeps the connection active and lets partial output be salvaged. The
+ * background-mode path (create+poll) still wins when explicitly enabled. Env:
+ * AI_PLAN_STREAMING.
+ */
+export const AI_PLAN_STREAMING = bool("AI_PLAN_STREAMING", true);
+
+/**
+ * Module loop resumability: backoff (ms) before the ONE retry of a lesson whose
+ * rich plan died on a transport error, so a transient proxy blip doesn't skip the
+ * lesson. Env: AI_LESSON_RETRY_BACKOFF_MS.
+ */
+export const AI_LESSON_RETRY_BACKOFF_MS = int("AI_LESSON_RETRY_BACKOFF_MS", 1_500);
 
 /**
  * OPTIONAL OpenAI background mode for plan calls — create the response then POLL

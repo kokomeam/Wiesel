@@ -280,6 +280,52 @@ async function main() {
     check("the degraded slide keeps its plan spec stamp (coverage holds)", sl?.ai?.specId === "s1");
   }
 
+  // FIX 2: the prose degrade NEVER renders an author-DIRECTIVE (pedagogicalPurpose /
+  // altText) as slide content — only the model's real caption / takeaways. This is
+  // the "Key idea: Show a concrete lunch-choice …" leak the user reported.
+  {
+    const { doc, deckId, lessonId } = deckDoc();
+    const outcome = await executeTool(
+      "add_diagram",
+      JSON.stringify({
+        deckBlockId: deckId, slideSpecId: "s1", position: null,
+        title: "Opportunity cost", caption: "Choosing one option means giving up the next-best one.", takeaways: null, role: "concept_diagram",
+        pedagogicalPurpose: "Show a concrete lunch-choice ranking of options by utility.", // an author DIRECTIVE, not content
+        altText: "an illustration of the choices", reason: null, templateId: null,
+        diagram: { kind: "bar_chart", bars: [] }, // unusable → degrade to prose
+      }),
+      { doc, courseId: doc.id, lessonId }
+    );
+    const p = (outcome.patches ?? []).find((x) => x.action === "ADD_SLIDE");
+    const sl = p && p.action === "ADD_SLIDE" ? p.slide : null;
+    const body = sl?.template?.layoutId === "prose" ? sl.template.content.body.text : "";
+    check("degrade body = the model's real CAPTION (real teaching content)", /giving up the next-best/i.test(body), body);
+    check("degrade NEVER renders the author directive (pedagogicalPurpose) as content", !/Show a concrete/i.test(body), body);
+  }
+
+  // A visual request with NO real teaching content (only a directive) FAILS to build
+  // (reported back) rather than rendering the directive — a directive-only slide is
+  // never authored ("thin slides dropped, not passed through").
+  {
+    const { doc, deckId, lessonId } = deckDoc();
+    let threw = false;
+    try {
+      await executeTool(
+        "add_diagram",
+        JSON.stringify({
+          deckBlockId: deckId, slideSpecId: "s1", position: null,
+          title: "", caption: null, takeaways: null, role: "concept_diagram",
+          pedagogicalPurpose: "Explain the tradeoff somehow.", altText: "", reason: null, templateId: null,
+          diagram: { kind: "bar_chart", bars: [] },
+        }),
+        { doc, courseId: doc.id, lessonId }
+      );
+    } catch {
+      threw = true;
+    }
+    check("a content-less visual request fails (no directive-only slide authored)", threw);
+  }
+
   // repairDiagram / coerceDiagramBestEffort — NO fabrication, NO demo seed.
   {
     // Repairs an invariant on REAL data (off-slope demand → corrected).

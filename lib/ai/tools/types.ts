@@ -37,6 +37,11 @@ export interface ToolContext {
   lessonId: string;
   /** Image-generation capability (injected by the loop for the GENERATE phase). */
   visuals?: VisualGenContext;
+  /** The approved plan's ORDERED slide-spec ids (GENERATE/REPAIR only). Lets batch
+   *  authoring deterministically stamp each new slide with its spec id — so coverage
+   *  matches even when the model omits or mistypes slideSpecId. Empty/absent on the
+   *  edit path (no plan). */
+  planSpecIds?: string[];
 }
 
 /** A tool's result. Read tools set `data`; write tools set `patches` (applied +

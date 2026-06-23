@@ -112,26 +112,25 @@ const VisualIntentSchema = z.object({
 });
 
 // CONTENT-FIRST ORDER (Method 1): the model finalizes the slide's POINTS first,
-// then picks the `layout` that fits THOSE points (and splits if they overflow one
-// card). The field order mirrors that reasoning — keyPoints precede layout.
+// then picks the `layout` that fits THOSE points. The field order mirrors that —
+// keyPoints precede layout. The SPLIT decision is NOT the model's job: it just
+// lists each slide's points, and a deterministic rule (splitOverflowingSpecs)
+// splits any slide whose points overflow one card. That keeps this schema lean
+// (fewer constrained fields per slide = far less reasoning the model has to burn
+// satisfying it — the lesson-plan reasoning-runaway fix).
 const SlideSpecSchema = z.object({
   segmentId: z.string().describe("The id of the segment this slide belongs to (must match a segment.id)."),
-  title: z.string().describe("The slide's working title. For a CONTINUATION slide, this is the parent's title + ' (cont.)'."),
+  title: z.string().describe("The slide's working title."),
   teachingGoal: z.string().describe("The single thing a learner should understand after this slide."),
   role: z.enum(SLIDE_ROLES).describe("The pedagogical role this slide plays (hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition)."),
   kind: z.enum(SLIDE_KINDS).describe("'core' = essential to the objective; 'enrichment' = a worked example / check / edge case / practice that deepens it."),
   keyPoints: z
     .array(z.string())
-    .describe("FINALIZE THIS FIRST — the slide's actual content: the real points / claims / worked-example steps / definition it will make, each a full clause (NOT a title). The layout is chosen to fit THESE. A continuation slide must NOT repeat any of its parent's points. Aim 2–5; if more would genuinely overflow one card, SPLIT into another slide instead."),
+    .describe("FINALIZE THIS FIRST — the slide's actual content: the real points / claims / worked-example steps / definition it will make, each a full clause (NOT a title). Aim 2–5; if a slide has a lot, that's fine (the card grows, and the system splits a genuinely overloaded one for you) — just put one idea's points on one slide."),
   layout: z.enum(OUTLINE_LAYOUTS).describe("Chosen AFTER the points, to FIT them: the structured layout whose shape holds this slide's keyPoints well (e.g. a definition → key_concept; 2–3 compared options → comparison_columns; a sequence → process_steps; key numbers → metrics_overview; a plain explanation → prose). Vary the layout across the deck — don't default every slide to the same one."),
   depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
-  continuationOf: z
-    .string()
-    .nullable()
-    .describe("If this slide CONTINUES a previous one — the SAME single idea overflowing one card — put the EXACT title of that parent slide here; else null. A continuation carries the parent's heading + ' (cont.)', adds a 'continuing from …' cue, and must NOT repeat the parent's points. When the overflowing points instead form TWO distinct sub-ideas, do a SUB-TOPIC split: two slides with distinct descriptive titles (e.g. 'Causes of X' / 'Effects of X'), both continuationOf=null. Prefer a sub-topic split over a bare continuation when the points naturally group."),
   notes: z.string().describe("Load-bearing specifics to get exactly right (a runtime O(log n), a quantity, a formula, exact conditions, term(s) to define)."),
   visualIntent: VisualIntentSchema.nullable().describe("Whether this slide needs a visual, and what kind — see the VISUALS rules. Default to required=false / role='none' when no visual materially helps."),
-  requiredElements: z.array(z.enum(REQUIRED_ELEMENTS)).nullable().describe("Elements this slide MUST contain (else null)."),
   speakerNotesGoal: z.string().describe("What the speaker notes for this slide should cover (the spoken explanation behind the slide)."),
 });
 
@@ -458,11 +457,47 @@ function normalizeContinuations(slides: PlannedSlide[]): PlannedSlide[] {
   });
 }
 
+/** Max key points a single card holds before a DETERMINISTIC split kicks in. The
+ *  model no longer decides splits (that was a heavy per-slide reasoning task — a
+ *  top driver of the lesson-plan reasoning runaway); it just lists points, and a
+ *  slide that genuinely overflows is split in code. Env: AI_MAX_POINTS_PER_SLIDE. */
+const MAX_POINTS_PER_SLIDE = Math.max(3, Number(process.env.AI_MAX_POINTS_PER_SLIDE) || 6);
+
+/**
+ * Deterministic Method-1 split: a slide the model crammed with more than
+ * MAX_POINTS_PER_SLIDE points is split into a parent (first chunk) + continuation
+ * slide(s) (the rest), with `continuationOf` set in CODE — so `normalizeContinuations`
+ * then stamps the "(cont.)" title. No point is ever dropped. Returns the SAME ref
+ * when nothing overflows (the common case → caller keeps original ids, idempotent on
+ * resume). PURE.
+ */
+function splitOverflowingSpecs(slides: PlannedSlide[]): PlannedSlide[] {
+  if (!slides.some((s) => !s.continuationOf && s.keyPoints.length > MAX_POINTS_PER_SLIDE)) return slides;
+  const out: PlannedSlide[] = [];
+  for (const s of slides) {
+    if (s.continuationOf || s.keyPoints.length <= MAX_POINTS_PER_SLIDE) {
+      out.push(s);
+      continue;
+    }
+    const chunks: string[][] = [];
+    for (let i = 0; i < s.keyPoints.length; i += MAX_POINTS_PER_SLIDE) {
+      chunks.push(s.keyPoints.slice(i, i + MAX_POINTS_PER_SLIDE));
+    }
+    out.push({ ...s, keyPoints: chunks[0] });
+    for (let c = 1; c < chunks.length; c++) {
+      // continuationOf = the parent's exact title; normalizeContinuations does the rest.
+      out.push({ ...s, id: `${s.id}_c${c}`, title: s.title, keyPoints: chunks[c], continuationOf: s.title });
+    }
+  }
+  return out;
+}
+
 /** Coerce a parsed value into a lesson outline: assign stable slide ids (keeping
- *  any already present), clamp slide + segment counts, and DERIVE each segment's
- *  slideSpecIds from the slides' segmentId grouping. Idempotent on the flat form.
- *  PURE — the opener/recap arc guarantee is applied separately (ensureLessonArc),
- *  AFTER the depth-floor re-ask, so the floor measures the model's real content. */
+ *  any already present), clamp slide + segment counts, DETERMINISTICALLY split any
+ *  overflowing slide, and DERIVE each segment's slideSpecIds from the slides'
+ *  segmentId grouping. Idempotent on the flat form. PURE — the opener/recap arc
+ *  guarantee is applied separately (ensureLessonArc), AFTER the depth-floor re-ask,
+ *  so the floor measures the model's real content. */
 export function coerceOutline(value: unknown): { outline?: LessonOutline; errors: string[] } {
   const res = RelaxedLessonOutlineSchema.safeParse(value);
   if (!res.success) return { errors: res.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`) };
@@ -485,10 +520,14 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     requiredElements: s.requiredElements ?? undefined,
     speakerNotesGoal: s.speakerNotesGoal,
   }));
-  // Method 1: normalize CONTINUATION splits — stamp "(cont.)" into the title and
-  // strip any point the continuation duplicates from its parent (no info loss — the
-  // point stays on the parent; we only drop an exact repeat). Never truncates.
-  const slides = normalizeContinuations(mapped);
+  // Method 1: DETERMINISTIC split of any overflowing slide (code, not model reasoning),
+  // then normalize CONTINUATION splits — stamp "(cont.)" into the title and strip any
+  // point the continuation duplicates from its parent (no info loss — the point stays on
+  // the parent; we only drop an exact repeat). Never truncates. Re-id contiguously only
+  // when a split actually happened (else keep ids for resume idempotency).
+  const splitOut = splitOverflowingSpecs(mapped);
+  const reIded = splitOut === mapped ? mapped : splitOut.map((s, i) => ({ ...s, id: `s${i + 1}` }));
+  const slides = normalizeContinuations(reIded);
 
   // Derive each segment's slide ids from the slides' segmentId grouping (order
   // preserved). Drop empty segments; cap segment count.
@@ -610,12 +649,7 @@ First decide the lesson-level frame:
 - microLesson: TRUE only if the user EXPLICITLY asked for a short / micro / quick lesson. Otherwise FALSE.
 - teachingArc: the hook (why care), the core concepts, the worked example(s), the common misconceptions to pre-empt, and what the recap consolidates.
 
-HOW MANY SLIDES (the single most important planning decision — a too-short deck is the #1 failure):
-- Micro lesson: 3–4 slides — ONLY when microLesson is true (the user explicitly asked for a short one).
-- Normal instructional lesson: 6–10 slides.
-- Technical / conceptual lesson: 7–12 slides.
-- Complex lesson with examples + practice: 9–14 slides.
-Never plan a 3–5-slide deck for a normal lesson just because the topic "seems simple". Almost every real topic has depth to teach. Do NOT pad with filler — DEEPEN with useful instructional material: a concrete motivating example, a full worked example, a common mistake / misconception, a check-for-understanding, a short practice prompt, an edge case or limitation, and a recap. Add each only where it improves the lesson.
+HOW MANY SLIDES — let the CONTENT decide, not a target number. Plan exactly as many slides as the lesson's depth needs (one idea per slide, a worked example for each core concept, a check, a recap). Typical decks land around 6–10 slides for a normal lesson and 7–12 for a technical one, more for a complex lesson with lots of practice; a micro lesson (only when microLesson is true) is 3–4. Treat those as the usual SHAPE, not a quota: never pad to reach a number, and never cut real teaching to stay under one. A normal topic almost always has genuine depth — a motivating example, a worked example, a common mistake/misconception, a check-for-understanding, an edge case, a recap — so include each where it actually teaches.
 
 OPENING & CLOSING (house style — every full, non-micro lesson):
 - OPEN with a titled overview slide: the FIRST slide is role="hook" on layout="section_break" — a chapter-style divider carrying the lesson title (and, if useful, a one-line "what we'll cover"). Never cold-open straight into content; a deck always announces itself first.
@@ -631,9 +665,7 @@ Then write the ordered SLIDES — CONTENT FIRST, layout SECOND. For each slide, 
 - kind: "core" (essential to the objective) or "enrichment" (a worked example / check / edge case / practice that deepens it). Mark them honestly — a normal lesson carries several enrichment slides.
 - keyPoints — FINALIZE THESE FIRST: the slide's real content (the actual points / claims / worked-example steps / definition it will make), each a full clause (NOT a title), aim 2–5. This is the slide's substance; everything else fits around it.
 - layout — choose AFTER the points, to FIT them: the structured layout whose shape best HOLDS those points (a definition → key_concept; 2–3 options compared → comparison_columns; many shared dimensions → comparison_matrix; a sequence → process_steps; headline numbers → metrics_overview; a plain explanation → prose). VARY the layout across the deck — pick the shape the content wants; do NOT default every slide to the same layout.
-- SPLIT at plan time if the points overflow ONE card (don't cram, never drop a point — cards auto-grow, so split only for REAL overflow, not a fixed bullet count):
-   · CONTINUATION (one idea, more points than a card holds): add a second slide — same heading + " (cont.)", set continuationOf to the parent's exact title, and put the OVERFLOW points there (NEVER repeat the parent's points).
-   · SUB-TOPIC split (the points form two distinct sub-ideas): two slides with distinct DESCRIPTIVE titles ("Causes of X" / "Effects of X"), continuationOf=null on both. PREFER this over a bare continuation when the points naturally group.
+- SPLITTING is RARE (cards auto-grow to fit) — only split a slide that genuinely has more points than one card holds, and never drop a point. Don't agonize over how: if it's the same idea continuing, start a second slide with the same title and set continuationOf to the parent's title (the system adds the "(cont.)" marker and trims repeats for you); if the overflow is really two sub-ideas, just make two slides with their own descriptive titles. Either is fine — pick one and move on.
 - depth: motivation / definition / mechanism / example / analysis.
 - notes: the exact load-bearing specifics (a runtime like O(log n), a quantity, a formula, a rule's exact conditions, term(s) to define).
 - visualIntent: whether this slide needs a VISUAL, and what — see VISUALS below. Default to required=false / role="none".
@@ -884,7 +916,7 @@ export function lessonBriefToPlanRequest(brief: LessonBrief, moduleTitle: string
   if (brief.rationale) parts.push(brief.rationale.endsWith(".") ? brief.rationale : `${brief.rationale}.`);
   if (brief.skillsIntroduced.length) parts.push(`It introduces: ${brief.skillsIntroduced.join(", ")}.`);
   if (brief.skillsPracticed.length) parts.push(`It reinforces: ${brief.skillsPracticed.join(", ")}.`);
-  parts.push(`Aim for ${brief.minSlides}–${brief.maxSlides} slides, ~${brief.estimatedMinutes} min.`);
+  parts.push(`Size it by depth — roughly ${brief.minSlides}–${brief.maxSlides} slides (~${brief.estimatedMinutes} min), more or fewer as the content genuinely needs.`);
   if (brief.recommendQuiz) parts.push("Include a low-stakes knowledge check (quizPlan).");
   if (brief.recommendHomework) parts.push("Include a practice exercise (homeworkPlan).");
   if (brief.dependencyNotes) parts.push(brief.dependencyNotes);

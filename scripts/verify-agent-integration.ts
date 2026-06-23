@@ -325,9 +325,13 @@ async function main() {
   check("PLAN emits a lesson plan_outline with the 3 planned slides", !!lessonPlan && lessonPlan.kind === "lesson" && lessonPlan.outline.slides.length === 3);
   check("a micro lesson plan does NOT trigger the depth re-ask (one PLAN call)", pauseMock.getCalls().length === 1, `${pauseMock.getCalls().length}`);
   check("PLAN pauses — no change_set yet", !evPlan.some((e) => e.type === "change_set"));
-  check("PLAN call used effort:high + responseFormat (per-call)", pauseMock.getCalls()[0]?.effort === "high" && !!pauseMock.getCalls()[0]?.responseFormat);
+  check("PLAN call used effort:MEDIUM + responseFormat (medium curbs the reasoning runaway)", pauseMock.getCalls()[0]?.effort === "medium" && !!pauseMock.getCalls()[0]?.responseFormat, pauseMock.getCalls()[0]?.effort);
   check("PLAN call used the cheap default model gpt-5.4-mini (per-call)", pauseMock.getCalls()[0]?.model === "gpt-5.4-mini", pauseMock.getCalls()[0]?.model);
   const planCall = pauseMock.getCalls()[0];
+  // Transport hardening: the plan STREAMS (keeps the proxy socket active so it isn't
+  // dropped mid-reasoning), retries ≤1 (no 5× dead-socket retry), and has a BOUNDED
+  // output budget (16k, not 32k) so reasoning can't balloon unchecked.
+  check("PLAN call STREAMS + low retries + bounded output (16k)", planCall?.stream === true && planCall?.maxRetries === 1 && planCall?.maxOutputTokens === 16000, `stream=${planCall?.stream} retries=${planCall?.maxRetries} maxOut=${planCall?.maxOutputTokens}`);
   check("B: PLAN system is static (no COURSE CONTEXT leak into the cached prefix)", !(planCall?.system ?? "").includes("COURSE CONTEXT"));
   check("B: PLAN context rides in a leading developer input message", (planCall?.input ?? []).some((i) => "role" in i && i.role === "developer" && i.content.includes("COURSE CONTEXT")));
 
@@ -348,6 +352,16 @@ async function main() {
   const csApprove = evApprove.filter((e) => e.type === "change_set");
   check("the pipeline produces exactly ONE change-set", csApprove.length === 1, `got ${csApprove.length}`);
   check("GENERATE used effort:high + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "high" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
+  // FIX 1 — SCOPED input: the GENERATE turn is built from the plan + state ONLY, NOT
+  // the conversation transcript. So the first turn carries NO user/history message and
+  // the full plan rides in a leading developer message (it can never be lost/diluted).
+  const genInput0 = resumeMock.getCalls()[0]?.input ?? [];
+  check(
+    "GENERATE input is SCOPED — no conversation history; the full plan rides in a developer message",
+    !genInput0.some((i) => "role" in i && i.role === "user") &&
+      genInput0.some((i) => "role" in i && i.role === "developer" && i.content.includes("APPROVED LESSON CONTRACT")),
+    `len=${genInput0.length} roles=${genInput0.map((i) => ("role" in i ? i.role : i.type)).join(",")}`
+  );
   const pLessonDoc = await loadCourseDoc(supabase, courseId);
   const pDeck = pLessonDoc?.modules.find((m) => m.id === pModuleId)?.lessons[0].blocks.find((b) => b.type === "slide_deck");
   check("generated deck persisted with the 3 planned structured slides", !!pDeck && pDeck.type === "slide_deck" && pDeck.slides.length === 3 && pDeck.slides.every((s) => !!s.template), `${pDeck && pDeck.type === "slide_deck" ? pDeck.slides.length : "none"}`);
@@ -680,7 +694,7 @@ async function main() {
   check("module request → a COMPACT module SKELETON plan at LOW effort", mModuleMock.getCalls()[0]?.effort === "low" && !!modulePlan && modulePlan.kind === "module", mModuleMock.getCalls()[0]?.effort);
   check("the skeleton carries 2 lesson briefs (title + objective + slide range)", !!modulePlan && modulePlan.kind === "module" && modulePlan.skeleton.lessons.length === 2 && modulePlan.skeleton.lessons.every((l) => !!l.title && l.minSlides >= 3));
   check("the skeleton has NO per-slide content (lesson briefs only)", !!modulePlan && modulePlan.kind === "module" && modulePlan.skeleton.lessons.every((l) => !("slides" in l)));
-  check("module skeleton plan was NON-streaming (reliability over token streaming)", mModuleMock.getCalls()[0]?.stream === false);
+  check("module skeleton plan STREAMS (keeps the proxy socket active through reasoning)", mModuleMock.getCalls()[0]?.stream === true, `stream=${mModuleMock.getCalls()[0]?.stream}`);
   check("module skeleton plan pauses — no change_set yet", !evMod.some((e) => e.type === "change_set"));
 
   // Approve → per lesson: RICH plan → generate → validate. One change-set.
@@ -697,7 +711,7 @@ async function main() {
   });
   const modPhases = evModGen.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
   check("module approve runs RICH-plan→generate→validate PER LESSON", JSON.stringify(modPhases) === JSON.stringify(["plan", "generate", "validate", "plan", "generate", "validate"]), JSON.stringify(modPhases));
-  check("the rich per-lesson plan ran at HIGH effort (full lesson contract)", mGenMock.getCalls()[0]?.effort === "high" && !!mGenMock.getCalls()[0]?.responseFormat);
+  check("the rich per-lesson plan ran at MEDIUM effort + bounded 16k output (the runaway fix)", mGenMock.getCalls()[0]?.effort === "medium" && mGenMock.getCalls()[0]?.maxOutputTokens === 16000 && !!mGenMock.getCalls()[0]?.responseFormat, `${mGenMock.getCalls()[0]?.effort}/${mGenMock.getCalls()[0]?.maxOutputTokens}`);
   check("module build is ONE change-set across both lessons", evModGen.filter((e) => e.type === "change_set").length === 1);
   const genCall = mGenMock.getCalls().find((c) => (c.tools?.length ?? 0) > 0);
   const genToolNames = new Set((genCall?.tools ?? []).map((t) => t.name));
@@ -724,6 +738,40 @@ async function main() {
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");
   const modDeckCounts = newMod?.lessons.map((l) => { const d = l.blocks.find((b) => b.type === "slide_deck"); return d && d.type === "slide_deck" ? d.slides.length : -1; });
   check("module + 2 lessons created, each with a 3-slide deck", !!newMod && newMod.lessons.length === 2 && (modDeckCounts ?? []).every((n) => n === 3), `lessons=${newMod?.lessons.length} deckCounts=${JSON.stringify(modDeckCounts)}`);
+
+  // 11h-a2. RESUMABLE MODULE LOOP — a single lesson's TRANSPORT death does NOT kill
+  //   the module: its rich plan is retried ONCE (backoff) then the lesson is skipped +
+  //   surfaced, while the OTHER lesson builds and PERSISTS, and the module is reported
+  //   incomplete (never "complete"). This is the mid-module-death resilience fix.
+  const SKELETON2 = {
+    moduleTitle: "Resumable search", moduleObjective: "Find things, resiliently.", summary: "x", audienceLevel: "beginners", prerequisites: [],
+    lessons: [brief("Alpha lesson", "First lesson."), brief("Beta lesson", "Second lesson.")],
+    assessmentGoal: null, pacingNotes: null,
+  };
+  const resMock = createMockModelClient([
+    { text: JSON.stringify(LESSON_PLAN) },                                                       // L1 (Alpha) rich plan OK
+    { text: "A.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] }, // L1 generate → planMet
+    { error: { message: "terminated", kind: "transport" } },                                     // L2 (Beta) rich plan — transport death
+    { error: { message: "terminated", kind: "transport" } },                                     // L2 retry — also dies → skip
+  ], { finalText: "" });
+  const evRes: AgentEvent[] = [];
+  await resumeGeneratePlan({
+    supabase, model: resMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
+    plan: { kind: "module", skeleton: SKELETON2 }, decision: "approve", emit: (e) => evRes.push(e),
+  });
+  check("a dying lesson's rich plan is RETRIED once (4 calls: L1 plan+gen, L2 plan+retry)", resMock.getCalls().length === 4, `${resMock.getCalls().length}`);
+  const resCheckpoint = evRes.find((e) => e.type === "checkpoint");
+  check("the module is reported INCOMPLETE, naming the skipped lesson", !!resCheckpoint && resCheckpoint.type === "checkpoint" && /Beta lesson/.test(resCheckpoint.reason), resCheckpoint && resCheckpoint.type === "checkpoint" ? resCheckpoint.reason : "no checkpoint");
+  const resFinal = evRes.find((e) => e.type === "assistant_message");
+  check("the run never claims the partial module is complete (says '1 of 2')", !!resFinal && resFinal.type === "assistant_message" && /1 of 2/.test(resFinal.content), resFinal && resFinal.type === "assistant_message" ? resFinal.content : "");
+  const resDoc = await loadCourseDoc(supabase, courseId);
+  const resModule = resDoc?.modules.find((m) => m.title === "Resumable search");
+  const alpha = resModule?.lessons.find((l) => l.title === "Alpha lesson");
+  const beta = resModule?.lessons.find((l) => l.title === "Beta lesson");
+  const alphaDeck = alpha?.blocks.find((b) => b.type === "slide_deck");
+  check("the surviving lesson FLUSHED + persisted its 3-slide deck (work not lost)", !!alphaDeck && alphaDeck.type === "slide_deck" && alphaDeck.slides.length === 3, `${alphaDeck && alphaDeck.type === "slide_deck" ? alphaDeck.slides.length : "none"}`);
+  check("the skipped lesson exists but has no deck (left for a continue)", !!beta && !beta.blocks.some((b) => b.type === "slide_deck"));
+  check("module build is still ONE change-set (the partial work)", evRes.filter((e) => e.type === "change_set").length === 1);
 
   // 11h-b. SKELETON TIMEOUT → ULTRA-LEAN FALLBACK. The first call times out (a
   //        transport error, NOT a schema problem); the system retries with the

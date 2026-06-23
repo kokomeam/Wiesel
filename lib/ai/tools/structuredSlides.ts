@@ -130,6 +130,20 @@ const addStructuredSlidesBatch = defineTool({
     const clampedSlides: { index: number; slideSpecId?: string; shortened: string[] }[] = [];
     const failed: { index: number; slideSpecId?: string; errors: string }[] = [];
 
+    // DETERMINISTIC spec-id stamping (FIX 1.3): if the deck is the plan's deck, every
+    // authored slide is stamped with a plan spec id — the model's, when it's a valid
+    // unclaimed plan spec; otherwise the NEXT unclaimed plan spec in plan order. This
+    // makes "generated N / covered 0 / extra N" impossible when slides correspond to
+    // specs. No plan context (edit path) ⇒ the model's id is honored unchanged.
+    const planSpecIds = ctx.planSpecIds ?? [];
+    const planSet = new Set(planSpecIds);
+    const claimed = new Set<string>();
+    const existingDeck = findBlock(ctx.doc, deckId)?.block;
+    if (existingDeck && existingDeck.type === "slide_deck") {
+      for (const s of existingDeck.slides) if (s.ai?.specId) claimed.add(s.ai.specId);
+    }
+    const nextUnclaimed = (): string | undefined => planSpecIds.find((id) => !claimed.has(id));
+
     rawSlides.forEach((entry, i) => {
       const e = (entry ?? {}) as { slideSpecId?: string | null; template?: unknown; notes?: string | null };
       // CLAMP-not-reject: over-length slots are auto-shortened + the slide saved; a
@@ -144,10 +158,18 @@ const addStructuredSlidesBatch = defineTool({
       const slide = createStructuredSlide(res.template.layoutId, themeId);
       slide.template = res.template;
       if (typeof e.notes === "string" && e.notes.trim()) slide.speakerNotes = e.notes.trim();
-      if (typeof e.slideSpecId === "string" && e.slideSpecId.trim()) slide.ai.specId = e.slideSpecId.trim();
+      const provided = typeof e.slideSpecId === "string" ? e.slideSpecId.trim() : "";
+      let specId: string;
+      if (planSpecIds.length === 0) specId = provided; // edit path — honor as-is
+      else if (provided && planSet.has(provided) && !claimed.has(provided)) specId = provided;
+      else specId = nextUnclaimed() ?? ""; // missing / not-a-spec / duplicate → next unclaimed
+      if (specId) {
+        slide.ai.specId = specId;
+        claimed.add(specId);
+      }
       patches.push({ action: "ADD_SLIDE", blockId: deckId, slide });
-      slidesAdded.push({ slideId: slide.id, specId: e.slideSpecId ?? undefined, index: i });
-      if (res.clamped) clampedSlides.push({ index: i, slideSpecId: e.slideSpecId ?? undefined, shortened: res.clampedPaths });
+      slidesAdded.push({ slideId: slide.id, specId: specId || undefined, index: i });
+      if (res.clamped) clampedSlides.push({ index: i, slideSpecId: specId || undefined, shortened: res.clampedPaths });
     });
 
     // Only materialize a fresh deck if at least one slide actually lands in it.
@@ -366,14 +388,19 @@ function buildBestEffortDiagramContent(f: DiagramFields): DiagramContent | null 
 }
 
 /** A GRACEFUL degrade from a visual request to a real-text PROSE slide — used when
- *  the model supplied no usable diagram data (and no explicit templateId). It keeps
- *  the model's real title / caption / takeaways; it NEVER invents a placeholder
- *  diagram. (No retry — the slide is authored, coverage holds.) */
+ *  the model supplied no usable diagram data (and no explicit templateId). The body
+ *  is REAL teaching content the model wrote (the caption = "what to notice", or a
+ *  takeaway) — NEVER the `pedagogicalPurpose` / `altText`, which are author-facing
+ *  directives describing the visual, not the lesson (rendering those was the "Key
+ *  idea: Show a concrete …" leak). When there's no real content, the body is left
+ *  EMPTY so the slide fails to build (it's reported back) rather than rendering a
+ *  directive as if it were teaching. NEVER invents a placeholder diagram. */
 function proseDegradeTemplate(f: DiagramFields): SlideTemplate {
-  const body = f.caption || f.pedagogicalPurpose || f.altText || f.title || "See the notes for this point.";
-  const points = (f.takeaways ?? []).map((x) => x.trim()).filter(Boolean).slice(0, 5).map(rt);
+  const takeaways = (f.takeaways ?? []).map((x) => x.trim()).filter(Boolean);
+  const body = (f.caption ?? "").trim() || takeaways[0] || "";
+  const points = takeaways.filter((t) => t !== body).slice(0, 5).map(rt);
   const content: ProseContent = {
-    title: rt(f.title || "Key idea"),
+    title: rt(f.title.trim() || "Key idea"),
     body: rt(body),
     ...(points.length ? { points } : {}),
   };

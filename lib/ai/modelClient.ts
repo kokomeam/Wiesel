@@ -86,8 +86,13 @@ export interface ModelTurnParams {
   signal?: AbortSignal;
   maxOutputTokens?: number;
   /** Per-call request timeout (ms), overriding the provider/client default. The
-   *  heavy PLAN call gives itself more headroom than a quick tool turn. */
+   *  heavy PLAN call gives itself more headroom than a quick tool turn. Enforced
+   *  as a HARD deadline (an AbortController wired to the fetch), so the call can
+   *  never exceed it — including across the SDK's internal retries. */
   timeoutMs?: number;
+  /** Per-call max retries, overriding the client default. PLAN calls set this low
+   *  (1) so a dead proxy socket isn't retried 5× into a multi-minute hang. */
+  maxRetries?: number;
   /** Stream the response token-by-token (default true). Structured PLAN calls set
    *  this false — they don't need token streaming, just the final JSON, and a
    *  non-streamed request is simpler/cleaner for a one-shot plan. */

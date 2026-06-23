@@ -87,23 +87,83 @@ export function resolveProxyUrl(): string {
  * ("Connection error … incompatible with the fetch implementation"), so we pass
  * undici's own `fetch` alongside the dispatcher (per the SDK's own guidance).
  *
+ * The ProxyAgent gets explicit SOCKET timeouts (`connectTimeout` / `headersTimeout`
+ * / `bodyTimeout`) so a stuck tunnel or a silently-dropped response can't sit open
+ * for minutes — the real-world failure that made a 180s "timeout" actually run
+ * 11–18 min. These are a backstop UNDER the per-call AbortController deadline (the
+ * precise enforcement); set generously so a legitimately long reasoning call isn't
+ * cut, but finite so a dead socket dies.
+ *
  * Loaded via `createRequire` with a NON-LITERAL specifier so the Next bundler
  * never tries to resolve `undici` at build time — it's a devDependency, only
  * needed where a proxy env is set (local dev behind Clash); production never
  * reaches this (no proxy env) and never needs the package.
  */
-function makeProxyTransport(proxyUrl: string): { fetch: unknown; dispatcher: unknown } | null {
+function makeProxyTransport(
+  proxyUrl: string,
+  timeouts: { connectMs: number; socketCeilingMs: number }
+): { fetch: unknown; dispatcher: unknown } | null {
   try {
     const req = createRequire(import.meta.url);
     const specifier = "undici"; // variable defeats bundler static analysis
     const { fetch, ProxyAgent } = req(specifier) as {
       fetch: unknown;
-      ProxyAgent: new (u: string) => unknown;
+      ProxyAgent: new (opts: unknown) => unknown;
     };
-    return { fetch, dispatcher: new ProxyAgent(proxyUrl) };
+    const dispatcher = new ProxyAgent({
+      uri: proxyUrl,
+      connect: { timeout: timeouts.connectMs },
+      headersTimeout: timeouts.socketCeilingMs,
+      bodyTimeout: timeouts.socketCeilingMs,
+    });
+    return { fetch, dispatcher };
   } catch {
     return null;
   }
+}
+
+/**
+ * A HARD per-call deadline: an AbortController that fires after `ms`, also forwarding
+ * an upstream abort (the user's Stop). Returns the signal to hand the SDK plus a
+ * `dispose` to clear the timer and a `timedOut()` flag so the caller can classify a
+ * deadline-abort as `transport_timeout` (vs a user Stop).
+ *
+ * This is the actual fix for "configured timeoutMs 180000 ran for 1,093,703 ms":
+ * the SDK's own `timeout` option was silently ignored by the proxied undici fetch,
+ * and on a dead socket the SDK retried it 5×. Wiring our own controller to the fetch
+ * `signal` guarantees the request — and every internal retry under it — is aborted
+ * at the deadline. PURE + exported so it's unit-testable without a network.
+ */
+export function withTimeoutSignal(
+  parentSignal: AbortSignal | undefined,
+  ms: number | undefined
+): { signal: AbortSignal | undefined; dispose: () => void; timedOut: () => boolean } {
+  // No finite deadline + no parent ⇒ nothing to wire (preserve the prior behavior).
+  if ((!ms || ms <= 0) && !parentSignal) return { signal: undefined, dispose: () => {}, timedOut: () => false };
+  const controller = new AbortController();
+  let didTimeout = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (ms && ms > 0) {
+    timer = setTimeout(() => {
+      didTimeout = true;
+      controller.abort(new Error(`Request exceeded its ${ms}ms deadline`));
+    }, ms);
+    // Don't keep the process alive just for this timer.
+    (timer as { unref?: () => void }).unref?.();
+  }
+  const onParentAbort = () => controller.abort((parentSignal as { reason?: unknown })?.reason);
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort((parentSignal as { reason?: unknown }).reason);
+    else parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    },
+    timedOut: () => didTimeout,
+  };
 }
 
 /**
@@ -192,6 +252,12 @@ export function createOpenAIModelClient(): ModelClient {
 
   const maxRetries = Number(process.env.OPENAI_MAX_RETRIES) || DEFAULT_MAX_RETRIES;
   const timeout = Number(process.env.OPENAI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  // Socket-level backstop for the proxied transport (under the per-call deadline):
+  // the connect timeout cuts a stuck tunnel; the headers/body ceiling cuts a dead
+  // response. Set above the largest per-call deadline (the plan's 180s) so a real
+  // long call isn't preempted, finite so a dead socket can't hang for minutes.
+  const undiciConnectMs = Number(process.env.OPENAI_UNDICI_CONNECT_TIMEOUT_MS) || 30_000;
+  const undiciSocketCeilingMs = Number(process.env.OPENAI_UNDICI_TIMEOUT_MS) || 210_000;
 
   // Route through a proxy ONLY when one is configured. Scoped to THIS client via
   // its own undici fetch + dispatcher, so Supabase and every other fetch in the
@@ -201,7 +267,7 @@ export function createOpenAIModelClient(): ModelClient {
   let proxied = false;
   const clientOpts: ConstructorParameters<typeof OpenAI>[0] = { apiKey, maxRetries, timeout };
   if (proxyUrl) {
-    const transport = makeProxyTransport(proxyUrl);
+    const transport = makeProxyTransport(proxyUrl, { connectMs: undiciConnectMs, socketCeilingMs: undiciSocketCeilingMs });
     if (transport) {
       // Pass undici's fetch + dispatcher TOGETHER, scoped to this client only — the
       // global dispatcher (Supabase + every other fetch) is untouched and stays direct.
@@ -261,7 +327,19 @@ export function createOpenAIModelClient(): ModelClient {
         strict: true,
       }));
 
-      const requestTimeout = params.timeoutMs ? { timeout: params.timeoutMs } : {};
+      // HARD per-call deadline. The SDK `timeout` option alone is silently ignored
+      // by the proxied undici fetch (calls ran 11–18 min on a configured 180s),
+      // so we wire our own AbortController to the fetch `signal` — it aborts the
+      // request AND every internal SDK retry under it at the deadline. Keyed on the
+      // explicit per-call timeoutMs (the plan calls); other calls keep the upstream
+      // signal + undici's socket ceiling as the backstop. maxRetries is per-call so
+      // a dead plan socket isn't retried 5×.
+      const deadline = withTimeoutSignal(params.signal, params.timeoutMs);
+      const requestOpts = {
+        signal: deadline.signal,
+        ...(params.timeoutMs ? { timeout: params.timeoutMs } : {}),
+        ...(params.maxRetries != null ? { maxRetries: params.maxRetries } : {}),
+      };
       const body = {
         model,
         instructions: params.system,
@@ -294,7 +372,7 @@ export function createOpenAIModelClient(): ModelClient {
           try {
             created = await client.responses.create(
               { ...body, store: true, background: true, stream: false },
-              { signal: params.signal, ...requestTimeout }
+              requestOpts
             );
           } catch (createErr) {
             // The CREATE itself failed (couldn't even start the job) — log it
@@ -321,9 +399,9 @@ export function createOpenAIModelClient(): ModelClient {
               console.log(JSON.stringify({ tag: "openai_background", phase: "poll", outcome: "poll_timeout", responseId: resp.id, lastStatus: resp.status, waitedMs: Date.now() - start }));
               return { text: "", toolCalls: [], finishReason: "error", errorKind: "transport_timeout" };
             }
-            await sleep(pollInterval, params.signal);
+            await sleep(pollInterval, deadline.signal);
             try {
-              resp = await client.responses.retrieve(resp.id);
+              resp = await client.responses.retrieve(resp.id, undefined, { signal: deadline.signal });
             } catch (pollErr) {
               const { kind, message } = classifyError(pollErr);
               console.log(JSON.stringify({ tag: "openai_background", phase: "poll", outcome: "poll_failed", responseId: created.id, errorKind: kind, message }));
@@ -350,7 +428,7 @@ export function createOpenAIModelClient(): ModelClient {
         if (params.stream === false) {
           const final = await client.responses.create(
             { ...body, store: false, stream: false },
-            { signal: params.signal, ...requestTimeout }
+            requestOpts
           );
           return resultFromResponse(final, "");
         }
@@ -358,7 +436,7 @@ export function createOpenAIModelClient(): ModelClient {
         // STREAMING (default): emit deltas + tool-call starts as they arrive.
         const stream = client.responses.stream(
           { ...body, store: false },
-          { signal: params.signal, ...requestTimeout }
+          requestOpts
         );
         let streamedText = "";
         for await (const event of stream) {
@@ -378,12 +456,19 @@ export function createOpenAIModelClient(): ModelClient {
         return resultFromResponse(await stream.finalResponse(), streamedText);
       } catch (error) {
         // Categorize: transport_timeout vs model_error vs transport — so the agent
-        // logs/messages a timeout differently from an invalid-schema 400. Logged
-        // server-side; a clean, categorized line goes to the user.
-        const { kind, message, status } = classifyError(error);
-        console.log(JSON.stringify({ tag: "openai_error", errorKind: kind, status, message }));
+        // logs/messages a timeout differently from an invalid-schema 400. If OUR
+        // deadline fired, it's unambiguously a transport timeout (the abort beat the
+        // SDK's own classification). Logged server-side; a clean line goes to the user.
+        const classified = classifyError(error);
+        const kind: ModelErrorKind = deadline.timedOut() ? "transport_timeout" : classified.kind;
+        const message = deadline.timedOut()
+          ? `Request exceeded its ${params.timeoutMs}ms deadline.`
+          : classified.message;
+        console.log(JSON.stringify({ tag: "openai_error", errorKind: kind, status: classified.status, message, deadlineHit: deadline.timedOut() }));
         onEvent({ type: "error", message, kind });
         return { text: "", toolCalls: [], finishReason: "error", errorKind: kind };
+      } finally {
+        deadline.dispose();
       }
     },
 

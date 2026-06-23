@@ -126,7 +126,11 @@ async function main() {
   const kpIdx = slideProps.indexOf("keyPoints");
   const layoutIdx = slideProps.indexOf("layout");
   check("content-first: keyPoints precedes layout in the slide schema", kpIdx >= 0 && layoutIdx >= 0 && kpIdx < layoutIdx, `keyPoints@${kpIdx} layout@${layoutIdx}`);
-  check("the slide schema exposes a continuationOf split field", slideProps.includes("continuationOf"));
+  // The split is now a DETERMINISTIC rule (code), NOT a model decision — so the heavy
+  // split + requiredElements fields are GONE from the strict output schema (fewer
+  // constrained fields per slide = far less plan reasoning; the runaway fix).
+  check("split is deterministic: continuationOf is NOT a model schema field", !slideProps.includes("continuationOf"), slideProps.join(","));
+  check("schema trimmed: requiredElements is NOT a model schema field", !slideProps.includes("requiredElements"), slideProps.join(","));
 
   const cf = (title: string, layout: string, pts: string[], continuationOf: string | null = null) => ({
     segmentId: "seg1", title, teachingGoal: "g", role: "concept_intro", kind: "core", layout, depth: "definition",
@@ -162,6 +166,20 @@ async function main() {
   }).outline!;
   check("sub-topic split: two DISTINCT descriptive titles, neither '(cont.)'", sub.slides[0].title !== sub.slides[1].title && !sub.slides.some((s) => /\(cont\.?\)/i.test(s.title)), sub.slides.map((s) => s.title).join(" / "));
   check("sub-topic split: neither slide is a continuation", !sub.slides[0].continuationOf && !sub.slides[1].continuationOf && !isContinuationSlide(sub.slides[0]) && !isContinuationSlide(sub.slides[1]));
+
+  // (v) DETERMINISTIC overflow split — a slide the model crammed with > 6 points
+  //     is split in CODE (the model never marked continuationOf), parent + cont.,
+  //     no point dropped. This replaces the model's split reasoning.
+  const overflow = coerceOutline({
+    objective: "o", microLesson: true,
+    segments: [{ id: "seg1", name: "C", purpose: "concept_intro", targetSlideCount: 1 }],
+    slides: [cf("Big idea", "prose", ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"])],
+  }).outline!;
+  check("deterministic split: an 8-point slide (no model continuationOf) splits into 2", overflow.slides.length === 2, `${overflow.slides.length}`);
+  check("deterministic split: parent keeps the first 6 points", overflow.slides[0].keyPoints.length === 6 && !overflow.slides[0].continuationOf, `${overflow.slides[0].keyPoints.length}`);
+  check("deterministic split: continuation marked '(cont.)' carries the overflow", isContinuationSlide(overflow.slides[1]) && overflow.slides[1].keyPoints.length === 2, overflow.slides[1].keyPoints.join(","));
+  check("deterministic split: NO point dropped (6 + 2 = 8)", overflow.slides.flatMap((s) => s.keyPoints).length === 8, String(overflow.slides.flatMap((s) => s.keyPoints).length));
+  check("deterministic split: ids stay contiguous s1..sN after the split", overflow.slides.every((s, i) => s.id === `s${i + 1}`), overflow.slides.map((s) => s.id).join(","));
 
   // (iv) Deck-level layout VARIETY is preserved (the model varies; coerce keeps it).
   const variety = coerceOutline({

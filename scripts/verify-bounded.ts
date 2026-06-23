@@ -20,10 +20,12 @@
 
 import {
   buildBoundedAgentInput,
+  buildScopedAgentInput,
   compactToolResult,
   defaultHistoryPolicy,
   editHistoryPolicy,
 } from "@/lib/ai/historyPolicy";
+import { withTimeoutSignal } from "@/lib/ai/providers/openai";
 import { buildGenerationState, computePlanCoverage, serializeGenerationState } from "@/lib/ai/generationState";
 import { coerceOutline } from "@/lib/ai/outline";
 import type { ModelInputItem } from "@/lib/ai/modelClient";
@@ -249,6 +251,90 @@ async function main() {
   const c4 = clampStructuredTemplate(manyPoints);
   const c4points = (c4.template?.content as { points?: unknown[] } | undefined)?.points ?? [];
   check("an over-count item array is sliced to the cap (≤5), still saved", !!c4.template && c4points.length === 5, `${c4points.length}`);
+
+  // ── 7. SCOPED GENERATE/REPAIR input — plan-first, NO conversation history ──
+  console.log("\n# buildScopedAgentInput — plan + state + this run's I/O ONLY");
+  const scopedBuild = (n: number) =>
+    buildScopedAgentInput({
+      contextMessage: "PLAN: build s1,s2,s3 (full per-slide brief here)",
+      generationStateSummary: "STATE: s1 built; s2,s3 remaining",
+      eventGroups: Array.from({ length: n }, (_, i) => turnGroup(i + 1)),
+      maxToolResultChars: 4000,
+    });
+  const sc = scopedBuild(3);
+  check("scoped: the full PLAN (context) is the FIRST message", contentOf(sc.input[0])?.startsWith("PLAN:") === true);
+  check("scoped: the generation-state is the SECOND message", contentOf(sc.input[1]) === "STATE: s1 built; s2,s3 remaining");
+  // By construction buildScopedAgentInput takes NO history param — assert nothing
+  // resembling a conversation message slipped in (only plan, state, this-run I/O).
+  const scLeak = sc.input.slice(2).some(
+    (it) => "content" in it && /build the lesson|older run summary|current instruction/.test(it.content)
+  );
+  check("scoped: NO conversation-history messages can appear", !scLeak);
+  check("scoped: this run's tool I/O follows (the turn groups)", sc.input.some((it) => "type" in it && it.type === "function_call_output"));
+  // A scoped input grows ONLY with this run's own turns, never with the conversation.
+  const sc1 = scopedBuild(1);
+  check("scoped: size tracks this run's turns, not any transcript", scopedBuild(3).stats.messages > sc1.stats.messages);
+  // A bulky get_deck READ is still trimmed (its content lives in the state summary).
+  const bulkyRead = buildScopedAgentInput({
+    contextMessage: "PLAN",
+    eventGroups: [[
+      { type: "function_call", callId: "d1", name: "get_deck", arguments: "{}" },
+      { type: "function_call_output", callId: "d1", output: JSON.stringify([{ slideId: "s_a", layout: "prose", slots: [{ role: "body", text: "z".repeat(6000) }] }]) },
+    ]],
+    maxToolResultChars: 4000,
+  });
+  const trimmed = bulkyRead.input.find((it) => "type" in it && it.type === "function_call_output") as { output?: string } | undefined;
+  check("scoped: a bulky get_deck read is compacted (not replayed whole)", (trimmed?.output?.length ?? 1e9) < 6000 && trimmed!.output!.includes("compacted"));
+
+  // ── 8. DETERMINISTIC specId stamping (planSpecIds in the tool ctx) ──────────
+  console.log("\n# add_structured_slides_batch — guaranteed specId stamping");
+  const stampDoc = freshDoc();
+  const stampDeck = createBlock("slide_deck") as SlideDeckBlock;
+  stampDeck.slides = []; // pre-created empty deck (the GENERATE target)
+  stampDoc.doc.modules[0].lessons[0].blocks.push(stampDeck);
+  const planCtx: ToolContext = { doc: stampDoc.doc, courseId: stampDoc.doc.id, lessonId: stampDoc.lessonId, planSpecIds: ["s1", "s2", "s3"] };
+  const vp = { layoutId: "prose", content: { title: { text: "A point" }, body: { text: "A real teaching sentence that says enough to matter." } } };
+  // The model OMITS every slideSpecId → they're auto-assigned in plan order.
+  const omit = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: stampDeck.id,
+    slides: [{ slideSpecId: null, template: vp, notes: null }, { slideSpecId: null, template: vp, notes: null }],
+  }), planCtx);
+  const omitAdded = (omit.data as { slidesAdded?: { specId?: string }[] }).slidesAdded ?? [];
+  check("specId auto-assign: omitted ids filled from plan order (s1, s2)", omitAdded[0]?.specId === "s1" && omitAdded[1]?.specId === "s2", omitAdded.map((s) => s.specId).join(","));
+  // Apply, then a SECOND batch: a WRONG id ("s9", not a plan spec) maps to the next
+  // unclaimed plan spec (s3), so coverage can never read covered:0/extra:N.
+  let stampApplied = stampDoc.doc;
+  for (const p of omit.patches ?? []) { const r = applyCoursePatch(stampApplied, p, NOW); if (r.ok) stampApplied = r.doc; }
+  const planCtx2: ToolContext = { doc: stampApplied, courseId: stampApplied.id, lessonId: stampDoc.lessonId, planSpecIds: ["s1", "s2", "s3"] };
+  const wrong = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: stampDeck.id,
+    slides: [{ slideSpecId: "s9", template: vp, notes: null }],
+  }), planCtx2);
+  const wrongAdded = (wrong.data as { slidesAdded?: { specId?: string }[] }).slidesAdded ?? [];
+  check("specId auto-assign: a non-plan id remaps to the next unclaimed spec (s3)", wrongAdded[0]?.specId === "s3", String(wrongAdded[0]?.specId));
+  // No plan ctx (edit path) → the model's id is honored verbatim, unchanged.
+  const editCtx: ToolContext = { doc: stampApplied, courseId: stampApplied.id, lessonId: stampDoc.lessonId };
+  const edited = await executeTool("add_structured_slides_batch", JSON.stringify({
+    deckBlockId: stampDeck.id,
+    slides: [{ slideSpecId: "custom-x", template: vp, notes: null }],
+  }), editCtx);
+  check("specId: edit path (no plan) honors the model's id unchanged", ((edited.data as { slidesAdded?: { specId?: string }[] }).slidesAdded ?? [])[0]?.specId === "custom-x");
+
+  // ── 9. HARD deadline signal (the transport-timeout enforcement) ─────────────
+  console.log("\n# withTimeoutSignal — a call can't exceed its deadline");
+  const dl = withTimeoutSignal(undefined, 30);
+  const firedAt = await new Promise<boolean>((resolve) => {
+    dl.signal!.addEventListener("abort", () => resolve(true), { once: true });
+    setTimeout(() => resolve(false), 400);
+  });
+  check("deadline fires + is flagged as a timeout", firedAt && dl.timedOut());
+  dl.dispose();
+  const parent = new AbortController();
+  const dl2 = withTimeoutSignal(parent.signal, 100000);
+  parent.abort();
+  check("a parent (user Stop) abort is forwarded — NOT flagged as a timeout", dl2.signal!.aborted && !dl2.timedOut());
+  dl2.dispose();
+  check("no deadline + no parent → no signal (prior behavior preserved)", withTimeoutSignal(undefined, undefined).signal === undefined);
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   process.exit(fail === 0 ? 0 : 1);

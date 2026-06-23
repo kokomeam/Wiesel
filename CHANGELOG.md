@@ -6,6 +6,51 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Content-agent reliability — scoped GENERATE input, plan-reasoning fix, hard transport deadline, resumable module loop, 2026-06-23
+
+A multi-front fix grounded in server logs (checkpoint `01b49cc`). Suites green
+(`verify:ai` · `verify:ai:int` · `verify:visuals`) + `tsc`/lint/`build`.
+
+- **FIX 1 — GENERATE/REPAIR input is now SCOPED, so the plan can't be lost.** The
+  driven authoring loop (`runConversationLoop`, `scopedInput`) no longer loads the
+  conversation transcript at all (it had grown to ~854 messages for a module build,
+  burying the plan and leaving the author working from a ~1.1K-char summary →
+  `covered:0`). Each turn is rebuilt FROM SCRATCH out of: the system prompt + the full
+  structured PLAN verbatim (in the developer context message) + the deterministic
+  GenerationState (built / remaining specs) + this run's own tool I/O. New
+  `buildScopedAgentInput` (`historyPolicy.ts`); there's nothing to compact, so the
+  plan is present, intact, every turn. New log `agent_input_scoped`.
+- **FIX 1.3 — slideSpecId stamping is GUARANTEED.** `add_structured_slides_batch`
+  receives the plan's ordered spec ids (`ToolContext.planSpecIds`) and stamps each new
+  slide with the model's id when it's a valid unclaimed plan spec, else the NEXT
+  unclaimed spec in plan order — so `generated N / covered 0 / extra N` is impossible
+  when slides correspond to specs. The edit path (no plan) is unchanged.
+- **FIX 2 — no author-directive ever renders as slide content.** The diagram→prose
+  degrade (`proseDegradeTemplate`) now builds the body ONLY from the model's real
+  caption / takeaways, NEVER the `pedagogicalPurpose` / `altText` (author directives —
+  the "Key idea: Show a concrete …" leak); a request with no real content fails to
+  build (reported back) instead of authoring a directive. A plan slide spec that comes
+  back "couldn't build (missing content)" twice is ABANDONED by the coverage driver
+  (surfaced in the checkpoint) instead of spinning to the turn cap.
+- **FIX 3 — a call can no longer exceed its timeout, and a lesson death can't kill a
+  module.** `withTimeoutSignal` (`providers/openai.ts`) wires a real AbortController to
+  the fetch (the SDK `timeout` was silently ignored by the proxied undici fetch — plan
+  calls ran 11–18 min on a configured 180s); the ProxyAgent gets `connect` /
+  `headersTimeout` / `bodyTimeout` ceilings; plan `maxRetries` drops to 1 (no 5× dead-
+  socket retry); plan calls STREAM (keep the socket active). The module loop retries a
+  lesson's rich plan ONCE with backoff on a transport death, else skips + surfaces it;
+  each completed lesson is flushed immediately, and a partial module is never reported
+  complete.
+- **Lesson-plan reasoning runaway — the STRUCTURAL fix (not a cap).** Diagnosed from
+  the logs: input was flat (~4.4K, cached), but output/reasoning ballooned 2.9K→23.5K /
+  0.5K→20.7K across a module's lessons (latency 21s→11.5min→dead). Cause = the per-call
+  reasoning burden, not accumulation. Fixes: lesson-plan effort **high→medium**; the
+  SPLIT decision is now a **deterministic code rule** (`splitOverflowingSpecs`) instead
+  of model reasoning, and `continuationOf` + `requiredElements` are **removed from the
+  strict output schema** (fewer constrained fields per slide = far less reasoning to
+  satisfy it); the numeric slide-count target is softened to depth-driven. The 16K
+  output budget + the 180s hard deadline are SAFEGUARDS, not the cure.
+
 ## Method 1 — content-first planning + split-at-plan-time, 2026-06-23
 
 The PLAN now finalizes a slide's CONTENT before its layout, and splits an

@@ -22,7 +22,7 @@ import { createChangeSet } from "./changeSet";
 import { diffBlocks, type BlockChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
 import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
-import { buildBoundedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
+import { buildBoundedAgentInput, buildScopedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
 import {
   loadHistory,
   saveAssistantMessage,
@@ -48,6 +48,11 @@ const MAX_TURNS = Number(process.env.AGENT_MAX_TURNS) || 16;
 // runaway, so this can be generous enough that an 8-lesson module doesn't starve
 // its later lessons. Env: AGENT_MAX_TOTAL_CALLS.
 const MAX_TOTAL_CALLS = Number(process.env.AGENT_MAX_TOTAL_CALLS) || 200;
+// How many times a single plan slide spec may come back from the batch tool as
+// "couldn't build (missing content)" before the coverage driver ABANDONS it (stops
+// re-sending it and surfaces it in the checkpoint) — so one unbuildable slide can't
+// spin the loop to its turn cap. Env: AGENT_MAX_SPEC_BUILD_ATTEMPTS.
+const MAX_SPEC_BUILD_ATTEMPTS = Number(process.env.AGENT_MAX_SPEC_BUILD_ATTEMPTS) || 2;
 
 /** A mutable per-run model-call budget, shared by every phase/lesson of one agent
  *  run (passed by reference through the loop contexts). */
@@ -136,6 +141,12 @@ export interface LoopOptions {
    *  the model to keep building (up to maxTurns), and a no-progress guard stops a
    *  stalled run. Requires `outline`. Off (legacy stop-when-model-stops) otherwise. */
   driveToCoverage?: boolean;
+  /** GENERATE/REPAIR: build the model input FROM SCRATCH each turn out of the
+   *  system + the full plan (in the context message) + the generation-state
+   *  summary + THIS run's tool I/O — and DON'T load the conversation transcript at
+   *  all. The plan can never be diluted/buried by cross-lesson history, and there's
+   *  nothing to compact. Requires `outline` (else there's no plan to scope to). */
+  scopedInput?: boolean;
 }
 
 /** Accumulated token usage across a phase's model turns (instrumentation). */
@@ -366,9 +377,20 @@ export async function runConversationLoop(
       ? AUTHORING_TOOL_NAMES
       : null;
   const tools = allowed ? getToolDefinitions().filter((t) => allowed.has(t.name)) : getToolDefinitions();
-  const history = await loadHistory(c.supabase, c.conversationId);
+  // SCOPED (GENERATE/REPAIR): never load the conversation transcript — the plan +
+  // generation-state are the entire working context, so the (possibly 800+-message)
+  // history can't dilute the plan, and the load is skipped outright.
+  const scoped = !!options.scopedInput && !!options.outline;
+  const history = scoped ? [] : await loadHistory(c.supabase, c.conversationId);
   const policy = options.historyPolicy ?? defaultHistoryPolicy();
   const maxTurns = options.maxTurns ?? MAX_TURNS;
+  // The plan's ordered spec ids — threaded into the tool ctx so batch authoring can
+  // DETERMINISTICALLY stamp each slide with its spec id (guaranteeing coverage even
+  // if the model omits/mis-types slideSpecId). Empty when there's no plan.
+  const planSpecIds = options.outline?.slides.map((s) => s.id) ?? [];
+  // Generous cap on the scoped generation-state summary (the plan rides in the
+  // context message; this carries the built/remaining list).
+  const scopedStateMaxChars = policy.mode === "bounded" ? policy.maxStateSummaryChars : 12000;
 
   // This run's turn-by-turn accumulation (one group per model turn = its
   // assistant text + function_call + function_call_output items). The model input
@@ -390,6 +412,9 @@ export async function runConversationLoop(
   const driveOutline = options.driveToCoverage ? options.outline : undefined;
   let prevCovered = driveOutline ? coverageProgress(doc, c.lessonId, driveOutline).covered : 0;
   let noProgressTurns = 0;
+  // Per-spec unbuildable-attempt tally + the abandoned set (FIX 2 attempt cap).
+  const specBuildFailures = new Map<string, number>();
+  const abandonedSpecs = new Set<string>();
   // A driven GENERATE/REPAIR loop runs INSIDE the validate/repair pipeline, which
   // owns the ONE authoritative end-of-run checkpoint — so the loop only RECORDS
   // that it stopped short (sets `checkpointed`) without emitting a duplicate. The
@@ -402,11 +427,29 @@ export async function runConversationLoop(
   for (let turn = 0; turn < maxTurns; turn++) {
     if (c.signal?.aborted) break;
 
-    // Build this turn's model input. Bounded = stable context + a compact
-    // generation-state summary + the last K tool groups (older tool I/O dropped,
-    // represented by the summary). Full = the legacy whole-transcript replay.
+    // Build this turn's model input. Scoped (GENERATE/REPAIR) = system + the full
+    // plan (context message) + generation-state + THIS run's tool I/O, no history.
+    // Bounded = stable context + a compact generation-state summary + the last K
+    // tool groups. Full = the legacy whole-transcript replay.
     let input: ModelInputItem[];
-    if (policy.mode === "bounded") {
+    if (scoped) {
+      const stateSummary = serializeGenerationState(
+        buildGenerationState(doc, c.lessonId, {
+          phase: options.callLabel ?? "loop",
+          outline: options.outline,
+          recentChanges: recentChanges.slice(-6),
+        }),
+        scopedStateMaxChars
+      );
+      const built = buildScopedAgentInput({
+        contextMessage,
+        generationStateSummary: stateSummary,
+        eventGroups,
+        maxToolResultChars: policy.mode === "bounded" ? policy.maxToolResultChars : 4000,
+      });
+      input = built.input;
+      console.log(JSON.stringify({ tag: "agent_input_scoped", phase: options.callLabel ?? "loop", turn, ...built.stats }));
+    } else if (policy.mode === "bounded") {
       const stateSummary =
         policy.includeGenerationState
           ? serializeGenerationState(
@@ -502,9 +545,27 @@ export async function runConversationLoop(
       let blockType: string | undefined;
 
       try {
-        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals };
+        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, planSpecIds };
         const outcome = await executeTool(call.name, call.arguments, ctx);
         summary = outcome.summary;
+
+        // FIX 2 — per-spec attempt cap: the batch tool reports slides it genuinely
+        // couldn't build (missing content). Count those per spec; after
+        // MAX_SPEC_BUILD_ATTEMPTS, ABANDON the spec so the coverage driver stops
+        // re-sending it to the turn cap (it's surfaced in the checkpoint instead).
+        if (outcome.data && typeof outcome.data === "object") {
+          const failed = (outcome.data as { failed?: { slideSpecId?: string }[] }).failed;
+          if (Array.isArray(failed)) {
+            for (const f of failed) {
+              const sid = f?.slideSpecId;
+              if (typeof sid === "string" && sid.trim()) {
+                const n = (specBuildFailures.get(sid) ?? 0) + 1;
+                specBuildFailures.set(sid, n);
+                if (n >= MAX_SPEC_BUILD_ATTEMPTS) abandonedSpecs.add(sid);
+              }
+            }
+          }
+        }
 
         // DESTRUCTIVE → do NOT apply; pause and ask the user. The placeholder
         // output keeps the conversation valid; resume rewrites it.
@@ -602,23 +663,33 @@ export async function runConversationLoop(
     // can't burn the budget spinning.
     if (driveOutline) {
       const prog = coverageProgress(doc, c.lessonId, driveOutline);
+      // Specs abandoned after MAX_SPEC_BUILD_ATTEMPTS don't count toward "still
+      // owed" — the driver stops chasing them (they're surfaced in the checkpoint).
+      const effectiveRemaining = prog.remaining.filter((id) => !abandonedSpecs.has(id));
       if (prog.covered > prevCovered) {
         prevCovered = prog.covered;
         noProgressTurns = 0;
       } else {
         noProgressTurns += 1;
       }
-      const planMet = prog.remaining.length === 0 && prog.missingBlocks.length === 0;
-      if (planMet) break; // contract satisfied — done even if the model wanted to keep talking
+      const planMet = effectiveRemaining.length === 0 && prog.missingBlocks.length === 0;
+      if (planMet) {
+        // If everything still-buildable is built but some specs were abandoned as
+        // unbuildable, stop SHORT (checkpoint) — never present an unmet plan as done.
+        if (abandonedSpecs.size > 0) {
+          stopShort(`Couldn't build ${abandonedSpecs.size} planned slide(s) after ${MAX_SPEC_BUILD_ATTEMPTS} attempts (${[...abandonedSpecs].join(", ")}). Ask me to continue and I'll try them again.`, prog.covered);
+        }
+        break; // contract satisfied (or all remaining abandoned) — done
+      }
 
       if (noProgressTurns >= AGENT_NO_PROGRESS_LIMIT) {
         stopShort("Generation stalled before the plan was complete (no new slides over several steps). Ask me to continue and I'll finish what's left.", prog.covered);
         break;
       }
-      // The model stopped early but specs remain — inject a concrete nudge so the
-      // NEXT turn resumes building exactly what's still owed.
+      // The model stopped early but BUILDABLE specs remain — inject a concrete nudge
+      // so the NEXT turn resumes building exactly what's still owed (minus abandoned).
       if (noToolCalls) {
-        eventGroups.push([{ role: "user", content: buildContinuationNudge(prog, driveOutline, options.deckBlockId) }]);
+        eventGroups.push([{ role: "user", content: buildContinuationNudge({ ...prog, remaining: effectiveRemaining }, driveOutline, options.deckBlockId) }]);
       }
     }
 
