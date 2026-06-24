@@ -6,6 +6,41 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## The "missing content" rejection loop — DECISIVE fix (agent-null coercion), 2026-06-24
+
+Proven from `slide_reject` logs (lesson b240a404): the slides were NOT missing
+content — they were fully authored and rejected on rich-text **envelope
+technicalities**. The agent emits `null` for an absent optional field (`runs: null`
+for "no inline formatting", `marks: null`, `icon: null`, `detail: null`,
+`example: null`, …) but the schema wanted `[]` / `{}` / absent. 7 of 8 slides per
+lesson bounced this way and re-looped. Suites green (`verify:ai` · `verify:ai:int`
+· `verify:visuals`) + tsc/lint/build.
+
+- **`normalizeAgentNulls` (`lib/course/slide/clampStructured.ts`)** — a pure,
+  recursive, LOSSLESS coercion run at the structured-slide tool boundary
+  (`bestEffortTemplate`, so batch / set / add all get it): `runs: null → []`,
+  `marks: null → {}`, and any OTHER null key → deleted (the agent's "absent"). `null`
+  carries no content, so this changes encoding, never text. A genuinely-missing
+  REQUIRED field still surfaces as a real error (an empty slide is never saved blank).
+- **Schema tolerance (belt-and-suspenders, `structuredLayouts.ts`)** — the AI-input
+  `rich()` slot's `runs` and a run's `marks` now `.nullish().transform(→ undefined)`,
+  so a null can never hard-reject a slide even if the coercion is bypassed.
+- **Cause 2 (diagram, secondary)** — `readDiagramFields` now reads a rich-text
+  ENVELOPE (`{ text }`) as well as a plain string for title/caption/takeaways, so a
+  diagram whose explanatory prose rides in `caption` isn't read as empty (which left
+  `body` blank → a false `content.body.text: Too small` → the prose degrade now fills
+  body from the caption sibling; no re-send loop).
+- **Prompt nudge** — the GENERATE teaching bar now states: send `runs: []` (not null)
+  when there's no formatting, `marks: {}` inside a run, and fill every required text
+  field of the chosen layout.
+- Safety nets kept: the per-spec re-send cap (`MAX_SPEC_BUILD_ATTEMPTS`) + the
+  `slide_reject` / `authoring_turn` instrumentation (behind `AI_DEBUG_AGENT`).
+- Tests: `verify-richtext-coercion.ts` reconstructs the ACTUAL log payloads (s1
+  section_break, s2 comparison_columns with deep null runs/icon/detail, the diagram
+  envelope) and asserts they build with text preserved byte-for-byte; the full
+  8-slide log batch now builds `generated == planned (8/8)`; a genuinely-empty slide
+  is still rejected.
+
 ## Content-agent reliability — scoped GENERATE input, plan-reasoning fix, hard transport deadline, resumable module loop, 2026-06-23
 
 A multi-front fix grounded in server logs (checkpoint `01b49cc`). Suites green

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "verify:ai": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-outline.ts && tsx scripts/verify-bounded.ts && tsx scripts/verify-validation.ts",
+    "verify:ai": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-outline.ts && tsx scripts/verify-bounded.ts && tsx scripts/verify-validation.ts && tsx scripts/verify-richtext-coercion.ts",
     "verify:bounded": "tsx scripts/verify-bounded.ts",
     "verify:validation": "tsx scripts/verify-validation.ts",
     "verify:ai:int": "tsx scripts/verify-agent-integration.ts",

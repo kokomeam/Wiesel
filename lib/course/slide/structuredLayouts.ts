@@ -107,18 +107,24 @@ const aiMarkBool = z.boolean().nullish().transform((v) => v ?? undefined);
 const aiMarkColor = z.string().nullish().transform((v) => v ?? undefined);
 const AiTextRunSchema = z.object({
   text: z.string(),
+  // The agent uses `marks: null` to mean "no inline formatting". Accept that null
+  // (not just absent) and normalize it to absent — so a fully-authored run is never
+  // hard-rejected on `marks: expected object, received null`.
   marks: z
     .object({ bold: aiMarkBool, italic: aiMarkBool, underline: aiMarkBool, color: aiMarkColor })
-    .optional(),
+    .nullish()
+    .transform((v) => v ?? undefined),
 });
 
 /** A strict rich-text slot: caps the PLAIN text and documents the limit for the
- *  model. Optional `runs` carry emphasis; the renderer reads `.text` for layout. */
+ *  model. Optional `runs` carry emphasis; the renderer reads `.text` for layout.
+ *  `runs` accepts NULL (the agent's "no formatting") + absent, normalized to absent
+ *  — a null `runs` must never reject a slide whose `text` is fully present. */
 function rich(max: number, hint: string) {
   return z
     .object({
       text: z.string().min(1).max(max, `Keep this ≤ ${max} characters (≈ tight). Shorten it.`),
-      runs: z.array(AiTextRunSchema).optional(),
+      runs: z.array(AiTextRunSchema).nullish().transform((v) => v ?? undefined),
     })
     .describe(hint);
 }

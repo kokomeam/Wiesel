@@ -19,7 +19,7 @@ import { createStructuredSlide } from "@/lib/course/factories";
 import type { CoursePatch } from "@/lib/course/patches";
 import { findBlock, findLesson, findSlide } from "@/lib/course/queries";
 import { FontFamilyIdSchema, FontScaleSchema } from "@/lib/course/schemas";
-import { clampStructuredTemplate, type StructuredClampResult } from "@/lib/course/slide/clampStructured";
+import { clampStructuredTemplate, normalizeAgentNulls, type StructuredClampResult } from "@/lib/course/slide/clampStructured";
 import { STICKER_IDS } from "@/lib/course/slide/stickers";
 import { StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
 import type { ElementStyle, IllustrationContent, ProseContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
@@ -361,8 +361,17 @@ interface DiagramFields {
 function readDiagramFields(raw: unknown): DiagramFields {
   const o = (raw ?? {}) as Record<string, unknown>;
   const spec = (o.spec && typeof o.spec === "object" ? (o.spec as Record<string, unknown>) : o);
-  const s = (v: unknown) => (typeof v === "string" ? v : "");
-  const sOrNull = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  // CAUSE 2: the agent often sends a diagram's title/caption/takeaways as rich-text
+  // ENVELOPES ({ text, runs }) — like every other slot — not plain strings. Read the
+  // inner `.text` so the content isn't lost (which left `body` empty → a false
+  // "content.body.text: Too small" rejection / a blank prose degrade).
+  const asText = (v: unknown): string => {
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object" && typeof (v as { text?: unknown }).text === "string") return (v as { text: string }).text;
+    return "";
+  };
+  const s = (v: unknown) => asText(v);
+  const sOrNull = (v: unknown) => { const t = asText(v).trim(); return t ? t : null; };
   const role = (typeof spec.role === "string" && (VISUAL_ROLES as readonly string[]).includes(spec.role) ? spec.role : "concept_diagram") as (typeof VISUAL_ROLES)[number];
   let diagram: DiagramSpec | null = null;
   if (o.diagram && typeof o.diagram === "object") {
@@ -372,7 +381,7 @@ function readDiagramFields(raw: unknown): DiagramFields {
   return {
     title: s(o.title),
     caption: sOrNull(o.caption),
-    takeaways: Array.isArray(o.takeaways) ? (o.takeaways.filter((t) => typeof t === "string") as string[]) : null,
+    takeaways: Array.isArray(o.takeaways) ? o.takeaways.map(asText).filter((t) => t.trim().length > 0) : null,
     role,
     pedagogicalPurpose: s(spec.pedagogicalPurpose),
     altText: s(spec.altText),
@@ -455,14 +464,20 @@ function bestEffortVisualTemplate(f: DiagramFields): StructuredClampResult {
 /** Clamp a structured template to its schema, BUT route a `diagram` layout through
  *  the best-effort visual builder first (so a semantically-off diagram is repaired in
  *  code — or degraded to prose when its data is unusable — never bounced by the strict
- *  superRefine and never rendered as placeholder demo data). */
+ *  superRefine and never rendered as placeholder demo data).
+ *
+ *  FIRST normalizes the rich-text envelope nulls the agent emits for "no formatting"
+ *  (`runs: null → []`, `marks: null → {}`, nested deep) so a fully-authored slide is
+ *  never rejected on that technicality. This is the decisive "missing content" fix;
+ *  it runs for the batch / set / add structured-slide tools (all route through here). */
 function bestEffortTemplate(raw: unknown): StructuredClampResult {
-  const o = (raw ?? {}) as { layoutId?: unknown; content?: unknown };
+  const normalized = normalizeAgentNulls(raw);
+  const o = (normalized ?? {}) as { layoutId?: unknown; content?: unknown };
   if (o.layoutId === "diagram") {
     const content = (o.content ?? {}) as Record<string, unknown>;
     return bestEffortVisualTemplate(readDiagramFields(content));
   }
-  return clampStructuredTemplate(raw);
+  return clampStructuredTemplate(normalized);
 }
 
 const diagramParams = {

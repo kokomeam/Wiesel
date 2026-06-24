@@ -111,6 +111,50 @@ export function clampToSchema<T>(schema: z.ZodType<T>, value: unknown): ClampRes
 }
 
 /**
+ * Coerce the NULLS the agent uniformly emits for an ABSENT optional field into the
+ * shapes the schema expects — recursively, anywhere they occur (nested arbitrarily
+ * deep, every layout):
+ *   - `runs:  null` → []   (the empty rich-text run list)
+ *   - `marks: null` → {}   (the empty mark set inside a run)
+ *   - any OTHER key whose value is null → DELETE it (the agent's "this is absent":
+ *     `icon: null`, `detail: null`, `example: null`, `subtitle: null`, …)
+ * LOSSLESS: `null` carries no content here — it always means "empty/absent" — so this
+ * changes ENCODING, never text. It is the decisive fix for the "missing content" loop:
+ * fully-authored slides were rejected only on `runs: expected array, received null`
+ * (and `icon`/`detail`/`example: received null`). A genuinely-missing REQUIRED field
+ * (e.g. `body: null`) still surfaces as a real error after the delete — an empty slide
+ * is never silently saved. Walks a deep copy (never mutates the caller's object). PURE.
+ */
+export function normalizeAgentNulls<T>(value: T): T {
+  let v: unknown;
+  try {
+    v = structuredClone(value);
+  } catch {
+    v = value;
+  }
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    const o = node as Record<string, unknown>;
+    for (const key of Object.keys(o)) {
+      const val = o[key];
+      if (val === null) {
+        if (key === "runs") o[key] = [];
+        else if (key === "marks") o[key] = {};
+        else delete o[key]; // the agent's "absent" — let the schema enforce required-ness
+      } else {
+        walk(val);
+      }
+    }
+  };
+  walk(v);
+  return v as T;
+}
+
+/**
  * Drop `runs` from any rich-text slot whose `runs` no longer concatenate to its
  * (possibly truncated) `.text`, preserving the invariant `concat(runs) === text`
  * that lint/AI rely on. Mutates in place; returns the same node.
