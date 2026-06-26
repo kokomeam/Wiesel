@@ -33,9 +33,9 @@ import { toStrictJsonSchema } from "@/lib/ai/schema";
 import { coerceOutline, slideRequiresVisual, type LessonOutline } from "@/lib/ai/outline";
 import { hasModelRepairableFailure, validateLessonGeneration } from "@/lib/ai/validation";
 import { routeVisual } from "@/lib/ai/visuals/router";
-import { imagePromptFromSpec } from "@/lib/ai/visuals/imagePrompt";
-import { executeTool, getToolDefinitions } from "@/lib/ai/tools";
-import type { VisualSpec } from "@/lib/ai/visuals/types";
+import { buildImagePrompt, imageIntentHash } from "@/lib/ai/visuals/imageIntent";
+import { AUTHORABLE_DIAGRAM_KINDS } from "@/lib/course/diagram/repair";
+import { executeTool, getToolDefinitions, type VisualGenContext } from "@/lib/ai/tools";
 
 let pass = 0,
   fail = 0;
@@ -70,15 +70,20 @@ function deckDoc(): { doc: CourseDocument; deckId: string; lessonId: string } {
 }
 
 async function main() {
-  console.log("\n# 1. Catalog templates are correct by construction");
-  check(`catalog has ${DIAGRAM_TEMPLATES.length} templates`, DIAGRAM_TEMPLATES.length >= 15);
+  console.log("\n# 1. Catalog templates are correct by construction (authorable kinds only)");
+  check(`catalog has ${DIAGRAM_TEMPLATES.length} authorable templates`, DIAGRAM_TEMPLATES.length >= 4);
   for (const t of DIAGRAM_TEMPLATES) {
     const errs = validateDiagram(t.seed());
     check(`${t.id}: seed passes validateDiagram`, errs.length === 0, errs.join(" | "));
+    check(`${t.id}: kind is authorable`, AUTHORABLE_DIAGRAM_KINDS.has(t.kind), t.kind);
   }
-  // Every diagram KIND is covered by at least one template.
-  for (const kind of DIAGRAM_KINDS) {
+  // Every AUTHORABLE diagram KIND is covered by at least one template.
+  for (const kind of AUTHORABLE_DIAGRAM_KINDS) {
     check(`a template renders kind "${kind}"`, DIAGRAM_TEMPLATES.some((t) => t.kind === kind));
+  }
+  // RETIRED kinds expose NO templates on the AI surface.
+  for (const kind of DIAGRAM_KINDS.filter((k) => !AUTHORABLE_DIAGRAM_KINDS.has(k))) {
+    check(`retired kind "${kind}" has no authorable template`, !DIAGRAM_TEMPLATES.some((t) => t.kind === kind));
   }
   check("supply_demand_equilibrium requiredElements mention equilibrium",
     templateRequiredElements(findDiagramTemplate("supply_demand_equilibrium")!).some((e) => /equilibrium/i.test(e)));
@@ -103,13 +108,18 @@ async function main() {
   check("a correct supply/demand graph is valid",
     validateDiagram({ kind: "supply_demand", supply: { leftY: 0.2, rightY: 0.85 }, demand: { leftY: 0.85, rightY: 0.2 } }).length === 0);
 
-  console.log("\n# 3. The strict AI schema accepts good diagrams and bounces bad ones");
-  const goodSpec = findDiagramTemplate("dijkstra_graph")!.seed();
-  check("strict schema accepts a valid weighted graph", DiagramSpecInputSchema.safeParse(goodSpec).success);
+  console.log("\n# 3. The strict AI schema accepts the 2 kept kinds + bounces bad / retired ones");
+  const goodSpec = findDiagramTemplate("regression_line")!.seed();
+  check("strict schema accepts a valid coordinate_plot", DiagramSpecInputSchema.safeParse(goodSpec).success);
   const badDemand = { kind: "supply_demand", supply: { leftY: 0.2, rightY: 0.85 }, demand: { leftY: 0.2, rightY: 0.85 } };
   const parsed = DiagramSpecInputSchema.safeParse(badDemand);
   check("strict schema REJECTS demand sloping up (superRefine)", !parsed.success);
   check("rejection mentions the demand curve", !parsed.success && JSON.stringify(parsed.error.issues).includes("demand"));
+  // A RETIRED kind can no longer be authored — the strict input union doesn't include it.
+  check("strict schema REJECTS a retired kind (bar_chart)",
+    !DiagramSpecInputSchema.safeParse({ kind: "bar_chart", bars: [{ label: "A", value: 1 }] }).success);
+  check("strict schema REJECTS a retired kind (graph_diagram)",
+    !DiagramSpecInputSchema.safeParse({ kind: "graph_diagram", nodes: [{ id: "A" }], edges: [] }).success);
   // Full diagram content (title + spec + diagram).
   const goodContent = {
     title: { text: "Market equilibrium" },
@@ -159,6 +169,18 @@ async function main() {
     }
     check(`${kind}: renders an <svg>`, markup.includes("<svg") && markup.length > 100, markup.slice(0, 80));
   }
+  // BACK-COMPAT: a RETIRED kind already saved on a slide still renders (storage +
+  // renderers were kept) even though the AI can no longer author it.
+  {
+    const legacy: DiagramSpec = { kind: "bar_chart", bars: [{ label: "A", value: 3 }, { label: "B", value: 5 }] };
+    let markup = "";
+    try {
+      markup = renderToStaticMarkup(createElement(DiagramView, { diagram: legacy, width: 900, height: 480, palette, uid: "t" }));
+    } catch (e) {
+      markup = `ERR ${e}`;
+    }
+    check("retired kind (bar_chart) still RENDERS for back-compat", markup.includes("<svg") && markup.length > 100, markup.slice(0, 80));
+  }
 
   console.log("\n# 6. Structured visualIntent parses into the plan");
   const planned = coerceOutline({
@@ -175,24 +197,29 @@ async function main() {
     slides[1]?.visualIntent?.required === false && slides[1]?.visualIntent?.expectedVisualType === "a rough sketch of the idea" && !slideRequiresVisual(slides[1]));
   check("null visualIntent → no intent", slides[2]?.visualIntent === undefined);
 
-  console.log("\n# 7. The router prefers programmatic, by priority");
+  console.log("\n# 7. The router keeps the 2 kept kinds programmatic; reroutes the rest to images");
   const r1 = routeVisual({ role: "graph", topicText: "supply and demand equilibrium", mustBeAccurate: true });
   check("supply/demand topic → programmatic template", r1.source === "programmatic" && r1.templateId === "supply_demand_equilibrium" && r1.canRender);
   const r2 = routeVisual({ role: "tree_or_graph", topicText: "no keywords here", mustBeAccurate: false });
-  check("a graph role with no template → programmatic by kind", r2.source === "programmatic" && r2.diagramKind === "graph_diagram");
+  check("a retired-kind role (tree_or_graph) → ai_generated image (rerouted)", r2.source === "ai_generated" && r2.canRender);
   const r3 = routeVisual({ role: "concept_diagram", topicText: "abstract metaphor", mustBeAccurate: true });
   check("accuracy-critical, no programmatic fit → manual (never an AI image)", r3.source === "upload" && !r3.canRender);
   const r4 = routeVisual({ role: "concept_diagram", topicText: "a historical scene of the signing", mustBeAccurate: false });
   check("a non-accuracy concept with no template + image-gen ON → ai_generated", r4.source === "ai_generated" && r4.canRender);
-  // image-prompt builder produces a strict prompt (used only on the enabled path)
-  const vspec: VisualSpec = {
-    id: "v", courseId: "c", lessonId: "l", deckBlockId: "d", slideId: "s", slideSpecId: "s1",
-    type: "ai_generated_diagram", visualRole: "concept_diagram", title: "T",
-    pedagogicalPurpose: "P", requiredElements: ["a box", "an arrow"], placement: "center", altText: "alt",
-    validation: { required: true, mustPassBeforeInsert: true }, ai: { purpose: "P", editable: true, allowedActions: [], semanticTags: [] },
-  };
-  check("imagePromptFromSpec lists required elements + bans decoration",
-    /a box/.test(imagePromptFromSpec(vspec)) && /no decorative/i.test(imagePromptFromSpec(vspec)));
+  const r5 = routeVisual({ role: "graph", topicText: "a generic plot of two variables", mustBeAccurate: false });
+  check("a graph role still maps to a programmatic coordinate_plot", r5.source === "programmatic" && r5.diagramKind === "coordinate_plot");
+
+  // The LIVE image-prompt builder: a reference prompt quotes required labels + the
+  // textbook preamble; a supporting prompt is looser. The intent hash is stable.
+  const refPrompt = buildImagePrompt({ visualWeight: "reference", prompt: "a labeled neuron", subject: "a neuron", requiredLabels: ["axon", "dendrite"], axes: undefined, annotations: ["the synapse"] });
+  check("buildImagePrompt(reference) quotes every required label", /"axon"/.test(refPrompt) && /"dendrite"/.test(refPrompt));
+  check("buildImagePrompt(reference) carries the textbook preamble + forbids extra text", /textbook/i.test(refPrompt) && /no other text|no text beyond/i.test(refPrompt));
+  const supPrompt = buildImagePrompt({ visualWeight: "supporting", prompt: "students collaborating", subject: "collaboration" });
+  check("buildImagePrompt(supporting) is conceptual + textbook (no quoted-label block)", /conceptual figure/i.test(supPrompt) && !/Required labels/.test(supPrompt));
+  const h1 = imageIntentHash({ visualWeight: "reference", prompt: "p", requiredLabels: ["a"] });
+  const h2 = imageIntentHash({ visualWeight: "reference", prompt: "p", requiredLabels: ["a"] });
+  const h3 = imageIntentHash({ visualWeight: "reference", prompt: "p", requiredLabels: ["b"] });
+  check("imageIntentHash is stable for the same intent, differs on change", h1 === h2 && h1 !== h3);
 
   console.log("\n# 8. add_diagram authors a real diagram slide");
   {
@@ -341,37 +368,79 @@ async function main() {
     check("repairDiagram drops the 'weighted' claim rather than invent weights", gw.kind === "graph_diagram" && gw.weighted === false && validateDiagram(gw).length === 0);
   }
 
-  console.log("\n# 9. add_image authors a STORED illustration slide (+ guards)");
+  console.log("\n# 9. add_image ENQUEUES a pending image slide (off the critical path)");
+  const visuals: VisualGenContext = { maxPerLesson: 5 };
+
+  // (a) supporting → a PENDING image_supporting slide (imageUrl "" + pendingGen).
   {
     const { doc, deckId, lessonId } = deckDoc();
-    // A fake visual capability (the real one generates bytes + uploads to Supabase).
-    const visuals = {
-      maxPerLesson: 5,
-      async generateIllustration() {
-        return { url: "https://x.test/storage/v1/object/public/course-assets/u/img.png", storagePath: "u/img.png", width: 1536, height: 1024 };
-      },
-    };
-    const out = await executeTool(
-      "add_image",
-      JSON.stringify({ deckBlockId: deckId, slideSpecId: "s1", prompt: "a branching tree of nodes", alt: "An illustration of a branching tree of nodes.", title: null, caption: "Notice the branching." }),
-      { doc, courseId: doc.id, lessonId, visuals }
-    );
-    check("add_image returns an ADD_SLIDE patch", (out.patches?.length ?? 0) >= 1 && out.patches!.some((p) => p.action === "ADD_SLIDE"));
-    let working = doc;
-    for (const p of out.patches ?? []) { const res = applyCoursePatch(working, p, NOW); if (res.ok) working = res.doc; }
+    const out = await executeTool("add_image", JSON.stringify({
+      deckBlockId: deckId, slideSpecId: "s1", visualWeight: "supporting",
+      prompt: "students collaborating around a table", alt: "Students collaborating.",
+      eyebrow: "Lesson 1", title: "Why context matters", imageSpec: null,
+      annotations: null, cards: null, lead: "Context shapes meaning.", bullets: ["It guides interpretation.", "It prevents errors."], caption: "Notice the shared focus.",
+    }), { doc, courseId: doc.id, lessonId, visuals });
+    check("add_image returns immediately (enqueue, source=pending)", (out.data as { source?: string })?.source === "pending");
+    let working = doc; for (const p of out.patches ?? []) { const r = applyCoursePatch(working, p, NOW); if (r.ok) working = r.doc; }
     const slide = (working.modules[0].lessons[0].blocks[0] as SlideDeckBlock).slides.at(-1);
-    check("the new slide is an illustration with the STORED course-assets URL", slide?.template?.layoutId === "illustration" && slide.template.content.imageUrl.includes("course-assets") && slide.template.content.source === "ai_generated");
-    check("the illustration kept its alt text + plan spec stamp", slide?.template?.layoutId === "illustration" && slide.template.content.alt.length > 0 && slide.ai.specId === "s1");
-    check("the illustration slide passes the permissive SlideSchema", !!slide && SlideSchema.safeParse(slide).success);
+    const c = slide?.template?.layoutId === "image_supporting" ? slide.template.content : null;
+    check("supporting → image_supporting, PENDING (imageUrl empty)", !!c && c.imageUrl === "" && c.pendingGen?.status === "pending");
+    check("pendingGen carries the supporting weight + prompt + alt", c?.pendingGen?.visualWeight === "supporting" && !!c?.pendingGen?.prompt && !!c?.pendingGen?.alt);
+    check("supporting slide kept bullets + spec stamp + intentHash", (c?.bullets?.length ?? 0) === 2 && slide?.ai.specId === "s1" && !!c?.intentHash);
+    check("pending image slide passes permissive SlideSchema", !!slide && SlideSchema.safeParse(slide).success);
   }
-  // add_image WITHOUT an image capability → a clear ToolError (degrade to diagram/prose).
+  // (b) reference → a PENDING image_reference; pendingGen carries the required labels.
   {
     const { doc, deckId, lessonId } = deckDoc();
-    let threw = false;
-    try {
-      await executeTool("add_image", JSON.stringify({ deckBlockId: deckId, slideSpecId: null, prompt: "x", alt: "alt text", title: null, caption: null }), { doc, courseId: doc.id, lessonId });
-    } catch { threw = true; }
-    check("add_image without an image capability → ToolError", threw);
+    const out = await executeTool("add_image", JSON.stringify({
+      deckBlockId: deckId, slideSpecId: "s2", visualWeight: "reference",
+      prompt: "a labeled diagram of a neuron", alt: "A labeled neuron.",
+      eyebrow: "Concept overview", title: "Anatomy of a neuron",
+      imageSpec: { subject: "a neuron", requiredLabels: ["axon", "dendrite", "soma"], axisX: null, axisY: null, annotations: ["the synaptic gap"] },
+      annotations: [{ label: "Axon", description: "Carries the signal away." }, { label: "Dendrite", description: "Receives signals." }],
+      cards: [{ title: "Input", description: "Dendrites gather signals." }, { title: "Process", description: "The soma integrates them." }],
+      lead: null, bullets: null, caption: null,
+    }), { doc, courseId: doc.id, lessonId, visuals });
+    let working = doc; for (const p of out.patches ?? []) { const r = applyCoursePatch(working, p, NOW); if (r.ok) working = r.doc; }
+    const slide = (working.modules[0].lessons[0].blocks[0] as SlideDeckBlock).slides.at(-1);
+    const c = slide?.template?.layoutId === "image_reference" ? slide.template.content : null;
+    check("reference → image_reference, PENDING w/ annotations + cards", !!c && c.imageUrl === "" && (c.annotations?.length ?? 0) === 2 && (c.cards?.length ?? 0) === 2);
+    check("pendingGen carries the reference weight + required labels", c?.pendingGen?.visualWeight === "reference" && !!c?.pendingGen?.requiredLabels?.includes("axon"));
+    // The full gpt-image prompt is built at GENERATION time from pendingGen — verify the builder quotes labels.
+    check("buildImagePrompt(pendingGen) quotes the required labels", c?.pendingGen ? /"axon"/.test(buildImagePrompt({ visualWeight: "reference", prompt: c.pendingGen.prompt, subject: c.pendingGen.subject, requiredLabels: c.pendingGen.requiredLabels })) : false);
+  }
+  // (c) FREEZE — same spec + intent while PENDING is a no-op (no second pending slide).
+  {
+    const { doc, deckId, lessonId } = deckDoc();
+    const args = { deckBlockId: deckId, slideSpecId: "s1", visualWeight: "supporting", prompt: "a fixed scene", alt: "alt text here", eyebrow: null, title: "T", imageSpec: null, annotations: null, cards: null, lead: "lead sentence", bullets: null, caption: null };
+    const out1 = await executeTool("add_image", JSON.stringify(args), { doc, courseId: doc.id, lessonId, visuals });
+    let working = doc; for (const p of out1.patches ?? []) { const r = applyCoursePatch(working, p, NOW); if (r.ok) working = r.doc; }
+    const before = (working.modules[0].lessons[0].blocks[0] as SlideDeckBlock).slides.length;
+    const out2 = await executeTool("add_image", JSON.stringify(args), { doc: working, courseId: doc.id, lessonId, visuals });
+    check("freeze: re-enqueue of the same pending intent is a no-op (no patch)", (out2.patches?.length ?? 0) === 0 && (out2.data as { source?: string })?.source === "pending");
+    // Simulate the endpoint FILLING the slide, then re-enqueue with the same intent → reuse (no new pending).
+    const deck = working.modules[0].lessons[0].blocks[0] as SlideDeckBlock;
+    const filled = deck.slides.find((s) => s.ai.specId === "s1");
+    if (filled && filled.template?.layoutId === "image_supporting") {
+      filled.template.content.imageUrl = "https://x.test/storage/v1/object/public/course-assets/u/done.png";
+      delete filled.template.content.pendingGen;
+    }
+    const out3 = await executeTool("add_image", JSON.stringify(args), { doc: working, courseId: doc.id, lessonId, visuals });
+    check("freeze: same intent after fill → REUSE the stored image (source=reused)", (out3.data as { source?: string })?.source === "reused");
+    check("freeze: deck did not grow a duplicate", before === (working.modules[0].lessons[0].blocks[0] as SlideDeckBlock).slides.length);
+  }
+  // (d) image-gen UNAVAILABLE (no ctx.visuals) → prose-degrade immediately (no throw, coverage holds).
+  {
+    const { doc, deckId, lessonId } = deckDoc();
+    const out = await executeTool("add_image", JSON.stringify({
+      deckBlockId: deckId, slideSpecId: "s1", visualWeight: "supporting",
+      prompt: "x", alt: "alt text", eyebrow: null, title: "Photosynthesis", imageSpec: null,
+      annotations: null, cards: null, lead: "Plants convert light to energy.", bullets: ["Chlorophyll absorbs light."], caption: null,
+    }), { doc, courseId: doc.id, lessonId });
+    const p = (out.patches ?? []).find((x) => x.action === "ADD_SLIDE");
+    const sl = p && p.action === "ADD_SLIDE" ? p.slide : null;
+    check("no image capability → degrades to a PROSE slide (no throw)", sl?.template?.layoutId === "prose" && /photosynthesis/i.test(sl.template.content.title.text), sl?.template?.layoutId);
+    check("the degraded prose keeps the spec stamp (coverage holds)", sl?.ai?.specId === "s1");
   }
 
   console.log("\n# 10. The lesson validator enforces REQUIRED visuals");
@@ -382,11 +451,12 @@ async function main() {
     microLesson: false,
     teachingArc: { hook: "", coreConcepts: [], workedExamples: [], commonMisconceptions: [], recapGoal: "" },
     segments: [],
+    speakerNotesGoal: "",
     slides: [
       {
         id: "s1", segmentId: "seg", title: "Equilibrium", teachingGoal: "See where curves cross",
         role: "visual_model", kind: "core", layout: "diagram", depth: "mechanism", keyPoints: [], notes: "",
-        speakerNotesGoal: "", visualIntent: { required: true, role: "graph", mustBeAccurate: true, priority: "required" },
+        visualIntent: { required: true, role: "graph", mustBeAccurate: true, priority: "required" },
       },
     ],
   };
@@ -419,18 +489,35 @@ async function main() {
   console.log("\n# 10. diagramRequiredElements describe the visual");
   check("array diagram requiredElements mention cells", diagramRequiredElements({ kind: "array_diagram", values: ["1"], sorted: true }).some((e) => /cell/i.test(e)));
 
-  console.log("\n# 11. A diagram persists through the Supabase doc↔rows map (no migration)");
+  console.log("\n# 11. A diagram persists through the Supabase doc↔rows map (back-compat, no migration)");
   {
     const { doc } = deckDoc();
     const deck = doc.modules[0].lessons[0].blocks[0] as SlideDeckBlock;
     const slide = createStructuredSlide("diagram", "editorial-warm");
+    // A RETIRED-kind (graph_diagram) diagram already on a slide must still round-trip
+    // through storage (the storage schema keeps all kinds) — inlined since the catalog
+    // no longer exposes the template.
     slide.template = {
       layoutId: "diagram",
       content: {
         title: { text: "Shortest path" },
         caption: { text: "S→A→B→T costs 6." },
         spec: { role: "tree_or_graph", pedagogicalPurpose: "Show Dijkstra.", altText: "A weighted directed graph.", source: "programmatic", mustBeAccurate: true, requiredElements: ["nodes", "edges", "edge weights"] },
-        diagram: findDiagramTemplate("dijkstra_graph")!.seed(),
+        diagram: {
+          kind: "graph_diagram",
+          directed: true,
+          weighted: true,
+          nodes: [{ id: "S" }, { id: "A" }, { id: "B" }, { id: "C" }, { id: "T" }],
+          edges: [
+            { from: "S", to: "A", weight: 2 },
+            { from: "S", to: "B", weight: 5 },
+            { from: "A", to: "B", weight: 1 },
+            { from: "A", to: "C", weight: 4 },
+            { from: "B", to: "T", weight: 3 },
+            { from: "C", to: "T", weight: 1 },
+          ],
+          highlightPath: ["S", "A", "B", "T"],
+        },
       },
     };
     deck.slides = [slide];

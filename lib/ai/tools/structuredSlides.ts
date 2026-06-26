@@ -13,17 +13,19 @@ import { addBlockPatch, addStickerPatch, setSlideTemplatePatch, updateElementPat
 import { DIAGRAM_TEMPLATE_IDS, findDiagramTemplate } from "@/lib/course/diagram/catalog";
 import { DiagramSpecInputSchema, DiagramSpecStorageSchema } from "@/lib/course/diagram/schemas";
 import { coerceDiagramBestEffort } from "@/lib/course/diagram/repair";
-import { DIAGRAM_KINDS, VISUAL_ROLES, type DiagramContent, type DiagramSpec, type VisualSpec } from "@/lib/course/diagram/types";
+import { VISUAL_ROLES, type DiagramContent, type DiagramSpec, type VisualSpec } from "@/lib/course/diagram/types";
 import { diagramRequiredElements, diagramSummary } from "@/lib/course/diagram/validate";
 import { createStructuredSlide } from "@/lib/course/factories";
 import type { CoursePatch } from "@/lib/course/patches";
 import { findBlock, findLesson, findSlide } from "@/lib/course/queries";
 import { FontFamilyIdSchema, FontScaleSchema } from "@/lib/course/schemas";
-import { clampStructuredTemplate, normalizeAgentNulls, type StructuredClampResult } from "@/lib/course/slide/clampStructured";
+import { clampStructuredTemplate, clampToSchema, normalizeAgentNulls, type StructuredClampResult } from "@/lib/course/slide/clampStructured";
 import { STICKER_IDS } from "@/lib/course/slide/stickers";
-import { StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
-import type { ElementStyle, IllustrationContent, ProseContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
-import { defineTool, ToolError, type Tool, type ToolContext } from "./types";
+import { findStructuredLayout, StructuredTemplateInputSchema } from "@/lib/course/slide/structuredLayouts";
+import type { ElementStyle, ImagePendingGen, ImageReferenceContent, ImageSupportingContent, ProseContent, RichText, SlideDeckBlock, SlideTemplate, SlideThemeId } from "@/lib/course/types";
+import { VISUAL_WEIGHTS, type VisualWeight } from "../visuals/config";
+import { imageIntentHash, type ImagePromptSpec } from "../visuals/imageIntent";
+import { defineTool, ToolError, type Tool, type ToolContext, type ToolOutcome } from "./types";
 import { debugAgent, previewJson } from "../debugLog";
 
 const StickerIdEnum = z.enum(STICKER_IDS as [string, ...string[]]);
@@ -331,12 +333,10 @@ const DiagramRoleEnum = z.enum(VISUAL_ROLES);
 const DiagramTemplateEnum = z.enum(DIAGRAM_TEMPLATE_IDS as [string, ...string[]]);
 
 /** Accuracy-critical kinds: a wrong shape/label here actively MISLEADS, so these
- *  are flagged for hard validation. */
+ *  are flagged for hard validation. The only authorable diagram kinds (supply_demand,
+ *  coordinate_plot) are BOTH accuracy-critical — that's why they stay programmatic. */
 function accuracyCriticalKind(d: DiagramSpec): boolean {
-  if (d.kind === "supply_demand") return true;
-  if (d.kind === "graph_diagram") return true;
-  if (d.kind === "array_diagram") return !!d.sorted; // binary search
-  return false;
+  return d.kind === "supply_demand" || d.kind === "coordinate_plot";
 }
 
 const rt = (s: string): RichText => ({ text: s.trim() });
@@ -484,16 +484,16 @@ const diagramParams = {
   title: z.string().describe("Slide title."),
   caption: z.string().nullable().describe("The teaching takeaway under the visual — what the learner should NOTICE. 1–2 sentences."),
   takeaways: z.array(z.string()).nullable().describe("Optional 0–4 key points shown beside the diagram."),
-  role: DiagramRoleEnum.describe("The pedagogical job this visual does (graph / concept_diagram / tree_or_graph / flowchart / data_chart / …)."),
+  role: DiagramRoleEnum.describe("The pedagogical job this visual does (graph / data_chart / spatial_example / concept_diagram)."),
   pedagogicalPurpose: z.string().describe("WHY this visual earns its place — the teaching it enables."),
   altText: z.string().describe("Accessible description of the visual (required)."),
   reason: z.string().nullable().describe("Human-facing justification: 'added because …'."),
   templateId: DiagramTemplateEnum.nullable().describe(`Catalog template to seed an ACCURATE diagram from (recommended for canonical visuals): ${DIAGRAM_TEMPLATE_IDS.join(", ")}.`),
-  diagram: DiagramSpecInputSchema.nullable().describe(`A custom diagram (overrides templateId). Pick a kind: ${DIAGRAM_KINDS.join(", ")}.`),
+  diagram: DiagramSpecInputSchema.nullable().describe("A custom diagram (overrides templateId). Pick a kind: supply_demand or coordinate_plot."),
 } as const;
 
 const DIAGRAM_TOOL_HINT =
-  "Add a programmatic teaching VISUAL — a diagram/graph the renderer draws as crisp, ACCURATE SVG (supply & demand, a plot, a bar chart, an array with pointers, a tree, a node-link graph, a flowchart, a number line, a Venn). Use it ONLY when a diagram materially improves teaching (a topic conventionally taught with a graph; a structure/process/relationship; a worked example that benefits from visual tracing) — never as decoration. Supply REAL, subject-specific data in a custom `diagram` (your actual numbers/nodes/edges); a templateId is only for the canonical STRUCTURAL diagrams (supply & demand, binary search, a tree/graph shape). The diagram is accepted BEST-EFFORT — a slightly-off shape is repaired automatically, never bounced — but it is NEVER rendered with placeholder/demo data: if its data is unusable it degrades to a prose slide. So give it real data, or teach the point in prose. Give alt text + a pedagogical purpose.";
+  "Add a programmatic teaching VISUAL the renderer draws as crisp, ACCURATE SVG — ONLY supply & demand (incl. price ceiling/floor) or a coordinate/function/distribution/regression PLOT. EVERY OTHER visual (a labeled diagram, a tree/graph/flow, a bar chart, a scene, an analogy) is a GENERATED image — use add_image for those, NOT this tool. Use this only when the slide genuinely needs one of those two accurate graphs. Supply REAL, subject-specific data in a custom `diagram` (your actual numbers/points), or a templateId for the canonical supply & demand / plot shapes. The diagram is accepted BEST-EFFORT — a slightly-off shape is repaired automatically, never bounced — but it is NEVER rendered with placeholder/demo data: if its data is unusable it degrades to a prose slide. So give it real data, or teach the point another way. Give alt text + a pedagogical purpose.";
 
 const addDiagram = defineTool({
   name: "add_diagram",
@@ -555,63 +555,326 @@ const setDiagram = defineTool({
   },
 });
 
-/** Count the illustration slides already in a lesson's decks (the per-lesson cap). */
-function illustrationCount(ctx: ToolContext): number {
+/** All IMAGE layout ids (the per-lesson cap covers them all). */
+const IMAGE_LAYOUT_IDS = new Set(["illustration", "image_reference", "image_supporting"]);
+
+/** Count the IMAGE slides already in a lesson's decks (the per-lesson cap). */
+function imageSlideCount(ctx: ToolContext): number {
   const lesson = findLesson(ctx.doc, ctx.lessonId)?.lesson;
   if (!lesson) return 0;
   let n = 0;
   for (const b of lesson.blocks) {
     if (b.type !== "slide_deck") continue;
-    for (const s of b.slides) if (s.template?.layoutId === "illustration") n += 1;
+    for (const s of b.slides) if (s.template && IMAGE_LAYOUT_IDS.has(s.template.layoutId)) n += 1;
   }
   return n;
+}
+
+/* The add_image arg shapes (typed once; the schema mirrors them). */
+interface ImageSpecArg {
+  subject?: string | null;
+  requiredLabels?: string[] | null;
+  axisX?: string | null;
+  axisY?: string | null;
+  annotations?: string[] | null;
+}
+interface AddImageArgs {
+  deckBlockId: string | null;
+  slideSpecId: string | null;
+  visualWeight: VisualWeight | null;
+  prompt: string;
+  alt: string;
+  eyebrow: string | null;
+  title: string | null;
+  imageSpec: ImageSpecArg | null;
+  annotations: { label: string; description: string }[] | null;
+  cards: { title: string; description: string }[] | null;
+  lead: string | null;
+  bullets: string[] | null;
+  caption: string | null;
+}
+
+const clean = (s: string | null | undefined): string => (typeof s === "string" ? s.trim() : "");
+
+/** The visual-intent → gpt-image-1 prompt spec (drives buildImagePrompt + the hash). */
+function promptSpecFromArgs(weight: VisualWeight, args: AddImageArgs): ImagePromptSpec {
+  const spec = args.imageSpec ?? undefined;
+  return {
+    visualWeight: weight,
+    prompt: clean(args.prompt),
+    subject: clean(spec?.subject) || undefined,
+    requiredLabels: (spec?.requiredLabels ?? []).map(clean).filter(Boolean),
+    axes: spec?.axisX || spec?.axisY ? { x: clean(spec?.axisX) || undefined, y: clean(spec?.axisY) || undefined } : undefined,
+    annotations: (spec?.annotations ?? []).map(clean).filter(Boolean),
+  };
+}
+
+/** Build the typed image-layout content from args + the asset, then CLAMP it to the
+ *  layout's strict schema (over-long slots shortened, never bounced). `asset.url` is
+ *  "" for a PENDING slide (a generation endpoint fills it later); `pendingGen`, when
+ *  present, is stored so that endpoint knows how to generate. */
+function buildImageLayoutContent(
+  weight: VisualWeight,
+  args: AddImageArgs,
+  asset: { url: string; storagePath?: string },
+  intentHash: string,
+  pendingGen?: ImagePendingGen
+): { layoutId: "image_reference" | "image_supporting"; content: ImageReferenceContent | ImageSupportingContent } | null {
+  const alt = clean(args.alt);
+  const eyebrow = clean(args.eyebrow);
+  const title = clean(args.title) || "Overview";
+  if (weight === "reference") {
+    const content: ImageReferenceContent = {
+      imageUrl: asset.url,
+      alt,
+      ...(eyebrow ? { eyebrow: rt(eyebrow) } : {}),
+      title: rt(title),
+      annotations: (args.annotations ?? [])
+        .filter((a) => a && clean(a.label) && clean(a.description))
+        .slice(0, 4)
+        .map((a) => ({ label: rt(a.label), description: rt(a.description) })),
+      cards: (args.cards ?? [])
+        .filter((c) => c && clean(c.title) && clean(c.description))
+        .slice(0, 3)
+        .map((c) => ({ title: rt(c.title), description: rt(c.description) })),
+      source: "ai_generated",
+      ...(asset.storagePath ? { storagePath: asset.storagePath } : {}),
+      intentHash,
+      ...(pendingGen ? { pendingGen } : {}),
+    };
+    const clamp = clampToSchema(findStructuredLayout("image_reference")!.schema, content);
+    return clamp.value ? { layoutId: "image_reference", content: clamp.value as ImageReferenceContent } : null;
+  }
+  const content: ImageSupportingContent = {
+    imageUrl: asset.url,
+    alt,
+    ...(eyebrow ? { eyebrow: rt(eyebrow) } : {}),
+    title: rt(title),
+    ...(clean(args.lead) ? { lead: rt(args.lead!) } : {}),
+    bullets: (args.bullets ?? []).map(clean).filter(Boolean).slice(0, 4).map(rt),
+    ...(clean(args.caption) ? { caption: rt(args.caption!) } : {}),
+    source: "ai_generated",
+    ...(asset.storagePath ? { storagePath: asset.storagePath } : {}),
+    intentHash,
+    ...(pendingGen ? { pendingGen } : {}),
+  };
+  const clamp = clampToSchema(findStructuredLayout("image_supporting")!.schema, content);
+  return clamp.value ? { layoutId: "image_supporting", content: clamp.value as ImageSupportingContent } : null;
+}
+
+/** The pendingGen marker stored on an enqueued image slide — exactly what the
+ *  generation endpoint needs to build the prompt + verify (no model call to re-derive). */
+function pendingGenFromSpec(spec: ImagePromptSpec, alt: string): ImagePendingGen {
+  return {
+    status: "pending",
+    visualWeight: spec.visualWeight,
+    prompt: spec.prompt,
+    ...(spec.subject ? { subject: spec.subject } : {}),
+    ...(spec.requiredLabels && spec.requiredLabels.length ? { requiredLabels: spec.requiredLabels } : {}),
+    ...(spec.axes ? { axes: spec.axes } : {}),
+    ...(spec.annotations && spec.annotations.length ? { annotations: spec.annotations } : {}),
+    alt,
+  };
+}
+
+/** Graceful degrade when image generation/verification fails: a real-text PROSE
+ *  slide built from the model's title + lead/caption + bullets/annotations. */
+function imageProseDegrade(args: AddImageArgs): SlideTemplate {
+  const body = clean(args.lead) || clean(args.caption) || clean(args.prompt) || "This concept is taught in the surrounding slides.";
+  const points: RichText[] = [];
+  for (const b of args.bullets ?? []) if (clean(b)) points.push(rt(b));
+  for (const a of args.annotations ?? []) {
+    if (clean(a?.label)) points.push(rt(clean(a.description) ? `${clean(a.label)}: ${clean(a.description)}` : clean(a.label)));
+  }
+  const content: ProseContent = {
+    title: rt(clean(args.title) || "Key idea"),
+    body: rt(body),
+    ...(points.length ? { points: points.slice(0, 5) } : {}),
+  };
+  return { layoutId: "prose", content };
+}
+
+/** Find an existing image slide for a plan spec in a deck (for the freeze check). */
+function existingImageSlide(ctx: ToolContext, deckId: string, specId: string) {
+  const block = findBlock(ctx.doc, deckId)?.block;
+  if (!block || block.type !== "slide_deck") return undefined;
+  return block.slides.find(
+    (s) => s.ai?.specId === specId && s.template && IMAGE_LAYOUT_IDS.has(s.template.layoutId)
+  );
 }
 
 const addImage = defineTool({
   name: "add_image",
   description:
-    "Add an educational ILLUSTRATION slide — an AI-generated image for a concept a picture conveys better than text when NO diagram type fits (a historical scene, a biological structure, a real-world analogy, an evocative concept image). The image is generated from your prompt and STORED automatically; you supply required alt text. Do NOT use this for anything accuracy-critical (a graph, chart, or labeled figure) — those MUST be a programmatic diagram (add_diagram). Keep prompts concrete and free of embedded text/labels (image models render text poorly).",
+    "Add a GENERATED educational IMAGE slide — for a visual a picture conveys best (a labeled diagram, a structure, a process, a tree/graph/flow concept, a historical scene, a real-world analogy). The image is generated as a clean academic TEXTBOOK figure and STORED automatically; you supply required alt text + the slide's TEXT content. Pick visualWeight: 'reference' (the image IS the subject → a hero figure with annotations + concept cards; ALSO fill imageSpec so the figure is accurate) or 'supporting' (the image aids the text → lead + bullets + caption). Do NOT use this for the two accuracy-critical diagram kinds (supply & demand, a coordinate/function plot) — those MUST be add_diagram.",
   params: z.object({
     deckBlockId: z.string().nullable(),
     slideSpecId: z.string().nullable(),
-    prompt: z.string().describe("A concrete description of the illustration: the subject, the composition, the setting — NO embedded words/labels/captions in the image itself."),
-    alt: z.string().describe("Required alt text describing the image for accessibility (and AI grounding)."),
-    title: z.string().nullable().describe("Optional slide title above the image."),
-    caption: z.string().nullable().describe("Optional caption under the image — what the learner should notice."),
+    visualWeight: z.enum(VISUAL_WEIGHTS).nullable().describe("'reference' (image is the subject → image_reference) or 'supporting' (aids the text → image_supporting). Defaults to supporting."),
+    prompt: z.string().describe("A concrete description of the figure to draw (the subject + composition). For a reference figure ALSO fill imageSpec; do NOT bake captions into the image beyond the listed labels."),
+    alt: z.string().describe("Required alt text describing the image (accessibility + AI grounding)."),
+    eyebrow: z.string().nullable().describe("Short kicker above the title, e.g. 'Concept overview' / 'Lesson 1'."),
+    title: z.string().nullable().describe("Slide title."),
+    imageSpec: z
+      .object({
+        subject: z.string().nullable(),
+        requiredLabels: z.array(z.string()).nullable().describe("Labels the image MUST render EXACTLY (verbatim)."),
+        axisX: z.string().nullable(),
+        axisY: z.string().nullable(),
+        annotations: z.array(z.string()).nullable().describe("Elements to depict / point out."),
+      })
+      .nullable()
+      .describe("REFERENCE images: the structured figure spec for an accurate textbook figure."),
+    annotations: z
+      .array(z.object({ label: z.string(), description: z.string() }))
+      .nullable()
+      .describe("REFERENCE slide text: 0–4 annotation points (bold label + one-line description) referencing the image."),
+    cards: z
+      .array(z.object({ title: z.string(), description: z.string() }))
+      .nullable()
+      .describe("REFERENCE slide text: 0–3 numbered concept cards (title + 2-line description)."),
+    lead: z.string().nullable().describe("SUPPORTING slide text: one lead sentence."),
+    bullets: z.array(z.string()).nullable().describe("SUPPORTING slide text: 0–4 bullets."),
+    caption: z.string().nullable().describe("SUPPORTING slide text: optional caption under the image."),
   }),
-  async execute(args, ctx) {
+  // ENQUEUE-ONLY: this tool does NOT call the image model (that's off the agent's
+  // critical path now). It stages a PENDING image slide (imageUrl:"" + a pendingGen
+  // spec); a generation endpoint produces the bytes later and fills imageUrl in.
+  execute(rawArgs, ctx) {
+    const args = rawArgs as AddImageArgs;
     if (!ctx.visuals) {
-      throw new ToolError("Image generation is unavailable right now — teach this with a programmatic diagram (add_diagram) or in prose instead.");
+      // Image generation isn't configured at all — degrade to prose immediately
+      // rather than stage a slide that will never fill.
+      return stageImageProse(ctx, args);
     }
-    if (!args.alt.trim()) throw new ToolError("add_image requires alt text.");
-    if (illustrationCount(ctx) >= ctx.visuals.maxPerLesson) {
-      throw new ToolError(`This lesson already has the maximum ${ctx.visuals.maxPerLesson} illustration(s) — use a diagram or prose for any further visuals.`);
-    }
-
-    const result = await ctx.visuals.generateIllustration({ prompt: args.prompt.trim(), alt: args.alt.trim() });
-    if (!result) {
-      throw new ToolError("Image generation didn't return an image — try a programmatic diagram (add_diagram) or teach this in prose.");
+    if (!clean(args.alt)) throw new ToolError("add_image requires alt text.");
+    if (imageSlideCount(ctx) >= ctx.visuals.maxPerLesson) {
+      throw new ToolError(`This lesson already has the maximum ${ctx.visuals.maxPerLesson} image(s) — use a diagram or prose for any further visuals.`);
     }
 
+    const weight: VisualWeight = args.visualWeight ?? "supporting";
+    const promptSpec = promptSpecFromArgs(weight, args);
+    const intentHash = imageIntentHash(promptSpec);
+    const specId = clean(args.slideSpecId) || undefined;
     const { deckId, lessonId, themeId, createPatch } = resolveDeck(ctx, args.deckBlockId);
-    const content: IllustrationContent = {
-      imageUrl: result.url,
-      alt: args.alt.trim(),
-      title: args.title?.trim() ? rt(args.title) : undefined,
-      caption: args.caption?.trim() ? rt(args.caption) : undefined,
-      source: "ai_generated",
-      storagePath: result.storagePath,
-    };
-    const slide = createStructuredSlide("illustration", themeId);
-    slide.template = { layoutId: "illustration", content };
-    if (args.slideSpecId && args.slideSpecId.trim()) slide.ai.specId = args.slideSpecId.trim();
+
+    // FREEZE: if this plan spec already has an image slide from the SAME intent, reuse
+    // it — a finished image reuses its stored URL (no regen); a still-pending one is
+    // left as-is (don't re-enqueue / change a different picture).
+    if (specId) {
+      const prior = existingImageSlide(ctx, deckId, specId);
+      const t = prior?.template;
+      if (t && (t.layoutId === "image_reference" || t.layoutId === "image_supporting") && t.content.intentHash === intentHash) {
+        if (t.content.imageUrl) {
+          const built = buildImageLayoutContent(weight, args, { url: t.content.imageUrl, storagePath: t.content.storagePath }, intentHash);
+          if (built && prior) {
+            return {
+              summary: `Reused the existing ${built.layoutId} image (unchanged intent)`,
+              patches: [setSlideTemplatePatch(deckId, prior.id, { layoutId: built.layoutId, content: built.content } as SlideTemplate)],
+              data: { slideId: prior.id, blockId: deckId, lessonId, blockType: "slide_deck", layoutId: built.layoutId, source: "reused" },
+            };
+          }
+        }
+        // Still pending with the same intent → nothing to do.
+        return { summary: "Image already queued for this slide", patches: [], data: { slideId: prior?.id, blockId: deckId, lessonId, blockType: "slide_deck", source: "pending" } };
+      }
+    }
+
+    // Stage a PENDING image slide (imageUrl ""), carrying the generation spec.
+    const pendingGen = pendingGenFromSpec(promptSpec, clean(args.alt));
+    const built = buildImageLayoutContent(weight, args, { url: "" }, intentHash, pendingGen);
+    const template: SlideTemplate = built ? ({ layoutId: built.layoutId, content: built.content } as SlideTemplate) : imageProseDegrade(args);
+
+    const slide = createStructuredSlide(template.layoutId, themeId);
+    slide.template = template;
+    if (specId) slide.ai.specId = specId;
     const patches: CoursePatch[] = [];
     if (createPatch) patches.push(createPatch);
     patches.push({ action: "ADD_SLIDE", blockId: deckId, slide });
     return {
-      summary: "Generated an illustration",
+      summary: built ? `Queued a ${built.layoutId} image (generates in the background)` : "Image unavailable — taught this point in prose instead",
       patches,
-      data: { slideId: slide.id, blockId: deckId, lessonId, blockType: "slide_deck", source: "ai_generated" },
+      data: { slideId: slide.id, blockId: deckId, lessonId, blockType: "slide_deck", layoutId: template.layoutId, source: built ? "pending" : "prose_degrade" },
+    };
+  },
+});
+
+/** Helper: stage a prose-degrade slide for an image request (image-gen unavailable). */
+function stageImageProse(ctx: ToolContext, args: AddImageArgs): ToolOutcome {
+  const { deckId, lessonId, themeId, createPatch } = resolveDeck(ctx, args.deckBlockId);
+  const template = imageProseDegrade(args);
+  const slide = createStructuredSlide(template.layoutId, themeId);
+  slide.template = template;
+  const specId = clean(args.slideSpecId) || undefined;
+  if (specId) slide.ai.specId = specId;
+  const patches: CoursePatch[] = [];
+  if (createPatch) patches.push(createPatch);
+  patches.push({ action: "ADD_SLIDE", blockId: deckId, slide });
+  return {
+    summary: "Image generation unavailable — taught this point in prose instead",
+    patches,
+    data: { slideId: slide.id, blockId: deckId, lessonId, blockType: "slide_deck", layoutId: template.layoutId, source: "prose_degrade" },
+  };
+}
+
+const setImageText = defineTool({
+  name: "set_image_text",
+  description:
+    "Edit the TEXT of an existing generated-image slide (its eyebrow/title/annotations/cards or lead/bullets/caption) WITHOUT regenerating the image — the picture, its storage, and its frozen intent are preserved. Use this for wording tweaks on an image slide; regenerate (add_image) only when the visual itself should change.",
+  lenientArgs: true,
+  params: z.object({
+    blockId: z.string(),
+    slideId: z.string(),
+    eyebrow: z.string().nullable(),
+    title: z.string().nullable(),
+    annotations: z.array(z.object({ label: z.string(), description: z.string() })).nullable(),
+    cards: z.array(z.object({ title: z.string(), description: z.string() })).nullable(),
+    lead: z.string().nullable(),
+    bullets: z.array(z.string()).nullable(),
+    caption: z.string().nullable(),
+  }),
+  execute(rawArgs, ctx) {
+    const o = (rawArgs ?? {}) as Record<string, unknown>;
+    const blockId = typeof o.blockId === "string" ? o.blockId : "";
+    const slideId = typeof o.slideId === "string" ? o.slideId : "";
+    const hit = findSlide(ctx.doc, blockId, slideId);
+    if (!hit) throw new ToolError(`Slide ${slideId} not found in deck ${blockId}.`);
+    const t = hit.slide.template;
+    if (!t || (t.layoutId !== "image_reference" && t.layoutId !== "image_supporting")) {
+      throw new ToolError("set_image_text only edits an image_reference / image_supporting slide. Use set_structured_slide for other layouts.");
+    }
+    const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    // Merge text over the EXISTING content — imageUrl / storagePath / intentHash kept.
+    const base = t.content;
+    let next: ImageReferenceContent | ImageSupportingContent;
+    if (t.layoutId === "image_reference") {
+      const ann = Array.isArray(o.annotations) ? (o.annotations as { label: string; description: string }[]) : null;
+      const cards = Array.isArray(o.cards) ? (o.cards as { title: string; description: string }[]) : null;
+      next = {
+        ...base,
+        ...(str(o.eyebrow) ? { eyebrow: rt(str(o.eyebrow)) } : {}),
+        ...(str(o.title) ? { title: rt(str(o.title)) } : {}),
+        ...(ann ? { annotations: ann.filter((a) => str(a?.label) && str(a?.description)).slice(0, 4).map((a) => ({ label: rt(a.label), description: rt(a.description) })) } : {}),
+        ...(cards ? { cards: cards.filter((c) => str(c?.title) && str(c?.description)).slice(0, 3).map((c) => ({ title: rt(c.title), description: rt(c.description) })) } : {}),
+      };
+    } else {
+      const bullets = Array.isArray(o.bullets) ? (o.bullets as string[]) : null;
+      next = {
+        ...base,
+        ...(str(o.eyebrow) ? { eyebrow: rt(str(o.eyebrow)) } : {}),
+        ...(str(o.title) ? { title: rt(str(o.title)) } : {}),
+        ...(str(o.lead) ? { lead: rt(str(o.lead)) } : {}),
+        ...(bullets ? { bullets: bullets.map(str).filter(Boolean).slice(0, 4).map(rt) } : {}),
+        ...(str(o.caption) ? { caption: rt(str(o.caption)) } : {}),
+      };
+    }
+    const clamp = clampToSchema(findStructuredLayout(t.layoutId)!.schema, next);
+    if (!clamp.value) throw new ToolError("Couldn't apply that text edit (missing required content).");
+    const template = { layoutId: t.layoutId, content: clamp.value } as SlideTemplate;
+    return {
+      summary: `Updated the ${t.layoutId} slide text`,
+      patches: [setSlideTemplatePatch(blockId, slideId, template)],
+      data: { slideId, blockId, lessonId: hit.lesson.id, blockType: "slide_deck" },
     };
   },
 });
@@ -625,4 +888,5 @@ export const structuredSlideTools: Tool[] = [
   addDiagram,
   setDiagram,
   addImage,
+  setImageText,
 ];

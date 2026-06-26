@@ -23,7 +23,9 @@ import { addBlockPatch } from "@/lib/course/commands";
 import { createLesson, createModule } from "@/lib/course/factories";
 import { applyCoursePatch, type CoursePatch } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
-import type { CourseDocument, SlideDeckBlock } from "@/lib/course/types";
+import type { CourseDocument, LessonBlock, SlideDeckBlock } from "@/lib/course/types";
+import { AUX_SYSTEM_PROMPT, auxContentResponseFormat, auxRequest, parseAuxContent } from "./auxContent";
+import { buildHomeworkBlock, buildQuizBlock } from "./tools/blockBuilders";
 import {
   logModelCall,
   loopContext,
@@ -70,6 +72,7 @@ import {
   outlinePromptFragment,
   outlineResponseFormat,
   planLayoutCatalogText,
+  renderVisualDirective,
   slideRequiresVisual,
   PLAN_SYSTEM_PROMPT,
   validateModuleFallback,
@@ -249,6 +252,19 @@ async function runStructuredPlan<T>(
   let res = await c.model.runTurn({ system, input: [ctx, { role: "user", content: userMessage }], ...turn }, onPlanEvent);
   logModelCall(opts.planType, opts.model, 0, res.usage);
   usage = addUsage(usage, res.usage);
+  // CACHING visibility: the stable system prefix (prompt + catalog + course context)
+  // should hit the prompt cache on lessons 2..N of a module — confirm cachedTokens>0.
+  console.log(
+    JSON.stringify({
+      tag: "agent_plan_usage",
+      planType: opts.planType,
+      inputTokens: res.usage?.inputTokens ?? 0,
+      cachedTokens: res.usage?.cachedTokens ?? 0,
+      outputTokens: res.usage?.outputTokens ?? 0,
+      reasoningTokens: res.usage?.reasoningTokens ?? 0,
+      lessonId: c.lessonId,
+    })
+  );
 
   // Parse ONLY when the call actually returned. A transport error → empty text;
   // running validate on "" yields a misleading "not valid JSON" — so skip it.
@@ -454,6 +470,9 @@ async function generateLesson(
     deferFinalize: true,
     generateTools: true,
     driveToCoverage: true,
+    // ITEM 4: chase SLIDE coverage only — quiz/homework are authored concurrently
+    // by authorAuxBlocks, so the slide loop must not nudge for them.
+    coverageSlidesOnly: true,
     // SCOPED: build the input from system + the full plan + generation-state + this
     // run's tool I/O — never the conversation transcript (so the plan can't be lost).
     scopedInput: true,
@@ -468,13 +487,59 @@ async function generateLesson(
   return { ...r, deckBlockId: firstDeckId(r.doc, lessonId) ?? deckBlockId, deckPreCreated };
 }
 
+/** ITEM 4 — author the lesson's quiz/homework as ONE structured call, run
+ *  CONCURRENTLY with slide authoring (they depend only on the PLAN, not the slide
+ *  narrative). Returns the built blocks; BEST-EFFORT — empty on any failure, in which
+ *  case validate/repair authors them as the safety net. Does NOT touch the DB. */
+async function authorAuxBlocks(c: LoopContext, outline: LessonOutline): Promise<LessonBlock[]> {
+  if (!outline.quizPlan && !outline.homeworkPlan) return [];
+  try {
+    if (c.callBudget) c.callBudget.remaining -= 1;
+    const t = Date.now();
+    const res = await c.model.runTurn(
+      {
+        system: AUX_SYSTEM_PROMPT,
+        input: [{ role: "user", content: auxRequest(outline) }],
+        tools: [],
+        responseFormat: auxContentResponseFormat(),
+        stream: false,
+        effort: AI_PHASE_MODELS.repair.effort,
+        model: AI_PHASE_MODELS.repair.model,
+        maxOutputTokens: 6000,
+        signal: c.signal,
+      },
+      () => {}
+    );
+    if (res.finishReason === "error") return [];
+    const parsed = parseAuxContent(res.text);
+    if (!parsed) return [];
+    const blocks: LessonBlock[] = [];
+    if (parsed.quiz && outline.quizPlan && parsed.quiz.questions.length) {
+      blocks.push(buildQuizBlock({ title: parsed.quiz.title, questions: parsed.quiz.questions }));
+    }
+    if (parsed.homework && outline.homeworkPlan && parsed.homework.exercises.length) {
+      blocks.push(
+        buildHomeworkBlock({
+          title: parsed.homework.title,
+          instructions: parsed.homework.instructions,
+          deliverableType: parsed.homework.deliverableType,
+          exercises: parsed.homework.exercises,
+          rubric: parsed.homework.rubric,
+        })
+      );
+    }
+    console.log(JSON.stringify({ tag: "agent_aux_parallel", lessonId: c.lessonId, quiz: blocks.some((b) => b.type === "quiz"), homework: blocks.some((b) => b.type === "homework"), latencyMs: Date.now() - t }));
+    return blocks;
+  } catch {
+    return [];
+  }
+}
+
 /** A focused brief for ONE missing slide spec the repair pass must build. */
 function renderSpecBrief(s: PlannedSlide): string {
   const cover = s.keyPoints.length ? ` cover: ${s.keyPoints.map((p) => `• ${p}`).join("  ")}` : "";
   const exact = s.notes ? ` exact: ${s.notes}` : "";
-  const visual = slideRequiresVisual(s)
-    ? ` VISUAL REQUIRED: add a ${s.visualIntent?.expectedVisualType ?? s.visualIntent?.role} with add_diagram${s.visualIntent?.mustBeAccurate ? " (use a templateId so it's accurate)" : ""}.`
-    : "";
+  const visual = slideRequiresVisual(s) ? ` VISUAL REQUIRED: ${renderVisualDirective(s)}.` : "";
   return `  - [${s.id} · ${s.role} · layout=${s.layout}] ${s.title} — ${s.teachingGoal}.${cover}${exact}${visual}`;
 }
 
@@ -709,10 +774,30 @@ async function runLessonPipeline(c: LoopContext, startDoc: CourseDocument, outli
   };
 
   try {
-    const gen = await generateLesson(c, c.lessonId, startDoc, outline);
+    // ITEM 4: author slides and quiz/homework CONCURRENTLY — the slide loop drives to
+    // SLIDE coverage only (coverageSlidesOnly), while a single structured aux call
+    // writes the quiz/homework off the critical path. The aux call touches no DB; its
+    // blocks are merged into the slide loop's final doc below.
+    const [gen, auxBlocks] = await Promise.all([
+      generateLesson(c, c.lessonId, startDoc, outline),
+      authorAuxBlocks(c, outline),
+    ]);
     doc = gen.doc;
     mutated = gen.docMutated || gen.deckPreCreated;
     lastMsgId = gen.lastAssistantMessageId;
+    // Merge the concurrently-authored quiz/homework (skip a type already present — the
+    // slide loop or a prior run could have added one). validate/repair is the safety
+    // net if the aux call produced nothing for a planned block.
+    for (const block of auxBlocks) {
+      const lesson = findLesson(doc, c.lessonId)?.lesson;
+      if (lesson && !lesson.blocks.some((b) => b.type === block.type)) {
+        const r = applyCoursePatch(doc, { action: "ADD_BLOCK", lessonId: c.lessonId, block }, nowIso());
+        if (r.ok) {
+          doc = r.doc;
+          mutated = true;
+        }
+      }
+    }
     // Persist generation immediately so the DB has the deck before validate/repair
     // (so an abort/crash mid-repair still leaves the generated slides).
     if (mutated) await reconcileDoc(c, doc);
@@ -849,12 +934,18 @@ async function runRichLessonPlan(
   detail: string
 ): Promise<{ outline: LessonOutline | null; errorType: PlanErrorType }> {
   const lc: LoopContext = { ...c, lessonId };
+  // CACHING: the system stays STATIC (role + catalogs only — byte-identical across
+  // every call, the cacheable prefix); course+lesson context rides in the developer
+  // message, course-level FIRST (stable) then the lesson (variable) so the prefix is
+  // maximally shared across a module's lessons.
   const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
   const context = courseContextLines(doc, lessonId).join("\n");
   const r = await runStructuredPlan<LessonOutline>(lc, system, context, outlineResponseFormat(), validateOutline, lessonBriefToPlanRequest(brief, moduleTitle), {
     planType: "lesson_rich",
-    model: AI_PHASE_MODELS.plan.model,
-    effort: AI_PHASE_MODELS.plan.effort,
+    // Module-path lesson plan: LOW effort (it does NOT re-ask on thin — see below —
+    // so the thin-plan risk that keeps the standalone plan at medium is absent here).
+    model: AI_PHASE_MODELS.moduleLessonPlan.model,
+    effort: AI_PHASE_MODELS.moduleLessonPlan.effort,
     maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
     detail,
     // No depth-floor re-ask — the brief's slide range already sets the size, and a
@@ -1042,7 +1133,7 @@ export async function runGenerateLessonTurn(
     return;
   }
   const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n"); // static → cacheable
-  const context = courseContextLines(doc, c.lessonId).join("\n"); // variable → input
+  const context = courseContextLines(doc, c.lessonId).join("\n"); // course-first, lesson last
   // The depth floor: a normal (non-micro) lesson that came back too thin gets ONE
   // re-ask to deepen it — the PLAN-time half of the 3-slide fix.
   const { outline, errorType, providerError } = await runStructuredPlan(c, system, context, outlineResponseFormat(), validateOutline, p.userMessage, {

@@ -37,7 +37,6 @@ import type { LessonOutline } from "./outline";
 import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
 import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext, type VisualGenContext } from "./tools";
 import { AI_VISUALS } from "./visuals/config";
-import { storeGeneratedImage } from "./visuals/storeImage";
 
 type DB = SupabaseClient<Database>;
 // Per-turn step cap (one model call + its tool batch = one step). Env-overridable;
@@ -142,6 +141,10 @@ export interface LoopOptions {
    *  the model to keep building (up to maxTurns), and a no-progress guard stops a
    *  stalled run. Requires `outline`. Off (legacy stop-when-model-stops) otherwise. */
   driveToCoverage?: boolean;
+  /** GENERATE: track SLIDE coverage only — ignore missing quiz/homework blocks (they
+   *  are authored CONCURRENTLY by the aux call, ITEM 4), so the slide loop never
+   *  chases them. validate/repair is the safety net if the aux call produced none. */
+  coverageSlidesOnly?: boolean;
   /** GENERATE/REPAIR: build the model input FROM SCRATCH each turn out of the
    *  system + the full plan (in the context message) + the generation-state
    *  summary + THIS run's tool I/O — and DON'T load the conversation transcript at
@@ -198,12 +201,14 @@ interface CoverageProgress {
   missingBlocks: string[];
 }
 
-function coverageProgress(doc: CourseDocument, lessonId: string, outline: LessonOutline): CoverageProgress {
+function coverageProgress(doc: CourseDocument, lessonId: string, outline: LessonOutline, slidesOnly = false): CoverageProgress {
   const p = buildGenerationState(doc, lessonId, { phase: "drive", outline }).planProgress;
   return {
     covered: p?.slideSpecsCompleted.length ?? 0,
     remaining: p?.slideSpecsRemaining ?? [],
-    missingBlocks: p?.requiredBlocksMissing ?? [],
+    // ITEM 4: when slides-only, quiz/homework are authored concurrently → don't let
+    // the slide loop chase them.
+    missingBlocks: slidesOnly ? [] : p?.requiredBlocksMissing ?? [],
   };
 }
 
@@ -415,7 +420,8 @@ export async function runConversationLoop(
   // Coverage driver state (GENERATE/REPAIR). `prevCovered` seeds from the doc the
   // loop STARTS with, so a repair pass measures NET new coverage, not absolute.
   const driveOutline = options.driveToCoverage ? options.outline : undefined;
-  let prevCovered = driveOutline ? coverageProgress(doc, c.lessonId, driveOutline).covered : 0;
+  const coverageSlidesOnly = options.coverageSlidesOnly === true;
+  let prevCovered = driveOutline ? coverageProgress(doc, c.lessonId, driveOutline, coverageSlidesOnly).covered : 0;
   let noProgressTurns = 0;
   // Per-spec unbuildable-attempt tally + the abandoned set (FIX 2 attempt cap).
   const specBuildFailures = new Map<string, number>();
@@ -680,7 +686,7 @@ export async function runConversationLoop(
     // no-progress guard stops a stalled run (e.g. repeated schema failures) so it
     // can't burn the budget spinning.
     if (driveOutline) {
-      const prog = coverageProgress(doc, c.lessonId, driveOutline);
+      const prog = coverageProgress(doc, c.lessonId, driveOutline, coverageSlidesOnly);
       // Specs abandoned after MAX_SPEC_BUILD_ATTEMPTS don't count toward "still
       // owed" — the driver stops chasing them (they're surfaced in the checkpoint).
       const effectiveRemaining = prog.remaining.filter((id) => !abandonedSpecs.has(id));
@@ -744,26 +750,15 @@ export interface LoopContextSource {
   callBudget?: CallBudget;
 }
 
-/** Build the illustration capability for `add_image` — present only when image
- *  generation is enabled AND the model client can produce images. It wraps the
- *  model's `generateImage` (gpt-image-1, through the same proxy) and stores the
- *  bytes to Supabase, returning a public URL. The educational-style + no-text
- *  suffix steers the model away from garbled embedded labels. */
+/** The image-generation availability gate for `add_image` (ENQUEUE-only now). */
 function makeVisualGenContext(p: LoopContextSource): VisualGenContext | undefined {
+  // add_image is ENQUEUE-only now (it stages a PENDING image slide; the bytes are
+  // produced off the critical path by the /api/ai/visual/generate endpoint), so this
+  // is just the availability + per-lesson-cap gate. Present only when image-gen is on
+  // AND the model client can make images; absent ⇒ add_image degrades to prose.
   if (!AI_VISUALS.enabled || !AI_VISUALS.imageGeneration) return undefined;
-  const generate = p.model.generateImage?.bind(p.model);
-  if (!generate) return undefined;
-  return {
-    maxPerLesson: AI_VISUALS.maxPerLesson,
-    async generateIllustration({ prompt }) {
-      const styled =
-        `${prompt}\n\nStyle: clean, modern flat educational illustration; a single clear subject; soft neutral palette; ` +
-        `no embedded text, words, letters, numbers, labels, captions, logos, or watermark.`;
-      const img = await generate({ prompt: styled, aspectRatio: "4:3", signal: p.signal });
-      if (!img) return null;
-      return storeGeneratedImage(p.supabase, { ownerId: p.ownerId, courseId: p.courseId, image: img });
-    },
-  };
+  if (!p.model.generateImage) return undefined;
+  return { maxPerLesson: AI_VISUALS.maxPerLesson };
 }
 
 export function loopContext(p: LoopContextSource): LoopContext {

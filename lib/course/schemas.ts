@@ -283,6 +283,17 @@ const ComparisonFooterStorageSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("summary"), text: RichTextSchema }),
   z.object({ kind: z.literal("similarities"), points: z.array(RichTextSchema) }),
 ]);
+/** Permissive storage for the pending-image-generation marker on an image slide. */
+const PendingGenStorageSchema = z.object({
+  status: z.enum(["pending", "failed"]),
+  visualWeight: z.enum(["reference", "supporting"]),
+  prompt: z.string(),
+  subject: z.string().optional(),
+  requiredLabels: z.array(z.string()).optional(),
+  axes: z.object({ x: z.string().optional(), y: z.string().optional() }).optional(),
+  annotations: z.array(z.string()).optional(),
+  alt: z.string(),
+});
 
 export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
   z.object({
@@ -421,6 +432,37 @@ export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
       points: z.array(RichTextSchema).optional(),
       source: z.enum(["ai_generated", "upload"]).optional(),
       storagePath: z.string().optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("image_reference"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      annotations: z.array(z.object({ label: RichTextSchema, description: RichTextSchema })).optional(),
+      cards: z.array(z.object({ title: RichTextSchema, description: RichTextSchema })).optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
+      intentHash: z.string().optional(),
+      pendingGen: PendingGenStorageSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("image_supporting"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      lead: RichTextSchema.optional(),
+      bullets: z.array(RichTextSchema).optional(),
+      caption: RichTextSchema.optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
+      intentHash: z.string().optional(),
+      pendingGen: PendingGenStorageSchema.optional(),
     }),
   }),
 ]) satisfies z.ZodType<SlideTemplate>;

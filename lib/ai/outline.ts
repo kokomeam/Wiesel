@@ -19,7 +19,8 @@
 
 import { z } from "zod";
 import { VISUAL_ROLES, type VisualPlacement, type VisualPriority, type VisualRole } from "@/lib/course/diagram/types";
-import { STRUCTURED_LAYOUT_IDS, structuredLayoutCatalog } from "@/lib/course/slide/structuredLayouts";
+import { PLANNABLE_LAYOUT_IDS, layoutPointCapacity, structuredLayoutCatalog } from "@/lib/course/slide/structuredLayouts";
+import { VISUAL_WEIGHTS, type VisualWeight } from "@/lib/ai/visuals/config";
 import { toStrictJsonSchema } from "./schema";
 import { AI_LESSON_FLOORS } from "./modelConfig";
 import type { JsonSchema } from "./modelClient";
@@ -29,9 +30,10 @@ export const VISUAL_INTENT_ROLES = ["none", ...VISUAL_ROLES] as const;
 const VISUAL_PLACEMENTS = ["left", "right", "center", "full_width", "background", "inline"] as const;
 const VISUAL_PRIORITIES = ["required", "recommended", "optional"] as const;
 
-/** Allowed outline layouts = ALL structured layouts (incl. `prose`, the
- *  deliberate plain teaching slide). No bare "text" fallback. */
-export const OUTLINE_LAYOUTS = [...STRUCTURED_LAYOUT_IDS] as [string, ...string[]];
+/** Allowed outline layouts = every PLANNABLE structured layout (incl. `prose` +
+ *  the two image_* layouts; EXCLUDES the retired `illustration`). No bare "text"
+ *  fallback. */
+export const OUTLINE_LAYOUTS = [...PLANNABLE_LAYOUT_IDS] as [string, ...string[]];
 
 export const OUTLINE_DEPTHS = ["motivation", "definition", "mechanism", "example", "analysis"] as const;
 
@@ -91,89 +93,107 @@ export const MAX_MODULE_LESSONS = 20;
  * Counts/lengths are stripped by toStrictJsonSchema (strict mode), so floors/
  * ceilings live in `.describe()` + the prompt and are clamped in coerce. */
 
+// Descriptions are TERSE on purpose: the global teaching principles (slide counts,
+// content-first, opening/closing, the VISUALS rules, layout variety) live ONCE in
+// PLAN_SYSTEM_PROMPT, not restated per field. A field keeps a description only when
+// it DISAMBIGUATES something the model would otherwise get wrong (an id binding, the
+// 2-only accuracy rule, the visualWeight→layout mapping). Verbose/hedgy descriptions
+// inflate reasoning, not just input.
 const TeachingArcSchema = z.object({
-  hook: z.string().describe("The opening that motivates the lesson — why a learner should care."),
-  coreConcepts: z.array(z.string()).describe("The 1–4 load-bearing ideas the lesson teaches."),
-  workedExamples: z.array(z.string()).describe("The concrete example(s) the lesson works through."),
-  commonMisconceptions: z.array(z.string()).describe("Mistakes/misconceptions to pre-empt."),
-  recapGoal: z.string().describe("What the closing recap must consolidate."),
+  hook: z.string().describe("What motivates the lesson."),
+  coreConcepts: z.array(z.string()).describe("The 1–4 load-bearing ideas."),
+  workedExamples: z.array(z.string()).describe("The concrete example(s) worked through."),
+  commonMisconceptions: z.array(z.string()).describe("Misconceptions to pre-empt."),
+  recapGoal: z.string().describe("What the recap consolidates."),
 });
 
-/** Structured visual intent (spec §2): whether THIS slide needs a visual, what
- *  kind, why, where, and how precise it must be. Most slides need none. */
+/** Structured visual intent: whether THIS slide needs a visual, what kind, and how
+ *  precise. Most slides need none. */
+const VisualImageSpecSchema = z.object({
+  subject: z.string().describe("What the image depicts (one line)."),
+  requiredLabels: z.array(z.string()).describe("Labels the image must render EXACTLY (verbatim); [] if none."),
+  axes: z.object({ x: z.string().nullable(), y: z.string().nullable() }).nullable().describe("Axis labels if a chart/graph (else null)."),
+  annotations: z.array(z.string()).nullable().describe("Elements to depict (else null)."),
+});
+
 const VisualIntentSchema = z.object({
-  required: z.boolean().describe("True when the slide genuinely needs its visual to teach (the structure/process it is about). Use priority='recommended' generously for visuals that clearly help but aren't essential."),
-  role: z.enum(VISUAL_INTENT_ROLES).describe("The kind of visual the slide needs, or 'none' if it genuinely needs none."),
-  reason: z.string().nullable().describe("Why a visual helps here — the teaching it enables (or null)."),
-  expectedVisualType: z.string().nullable().describe("The concrete visual, e.g. 'supply & demand equilibrium graph', 'binary-search array', 'a historical scene of the signing' (or null)."),
-  placement: z.enum(VISUAL_PLACEMENTS).nullable().describe("Where it sits on the slide (or null = let the layout decide)."),
-  priority: z.enum(VISUAL_PRIORITIES).nullable().describe("'required' (the slide needs it), 'recommended' (clearly helps — use generously), or 'optional'."),
-  mustBeAccurate: z.boolean().nullable().describe("True when label/number/shape accuracy is correctness-critical (a graph, a search interval, a weighted graph) — forces a programmatic diagram over an illustration."),
+  required: z.boolean().describe("True when the slide needs its visual to teach."),
+  role: z.enum(VISUAL_INTENT_ROLES).describe("Kind of visual, or 'none'."),
+  reason: z.string().nullable().describe("Why it helps (or null)."),
+  expectedVisualType: z.string().nullable().describe("The concrete visual, e.g. 'supply & demand graph', 'labeled neuron' (or null)."),
+  placement: z.enum(VISUAL_PLACEMENTS).nullable(),
+  priority: z.enum(VISUAL_PRIORITIES).nullable(),
+  mustBeAccurate: z.boolean().nullable().describe("True ONLY for the two programmatic diagram kinds (supply & demand, a coordinate/function/distribution plot) — forces a diagram over an image."),
+  visualWeight: z.enum(VISUAL_WEIGHTS).nullable().describe("Generated image: 'reference' = image IS the subject → image_reference; 'supporting' = aids understanding → image_supporting. Null for a diagram / no visual."),
+  imageSpec: VisualImageSpecSchema.nullable().describe("For a reference image: the exact subject + labels + axes to render. Null otherwise."),
 });
 
-// CONTENT-FIRST ORDER (Method 1): the model finalizes the slide's POINTS first,
-// then picks the `layout` that fits THOSE points. The field order mirrors that —
-// keyPoints precede layout. The SPLIT decision is NOT the model's job: it just
-// lists each slide's points, and a deterministic rule (splitOverflowingSpecs)
-// splits any slide whose points overflow one card. That keeps this schema lean
-// (fewer constrained fields per slide = far less reasoning the model has to burn
-// satisfying it — the lesson-plan reasoning-runaway fix).
+// CONTENT-FIRST ORDER (Method 1): keyPoints precede layout — finalize WHAT the slide
+// says, then pick the layout that fits. splitOverflowingSpecs (code, not the model)
+// splits an overloaded slide. Keeping this schema lean = far less reasoning to satisfy.
 const SlideSpecSchema = z.object({
-  segmentId: z.string().describe("The id of the segment this slide belongs to (must match a segment.id)."),
-  title: z.string().describe("The slide's working title."),
-  teachingGoal: z.string().describe("The single thing a learner should understand after this slide."),
-  role: z.enum(SLIDE_ROLES).describe("The pedagogical role this slide plays (hook / concept_intro / definition / worked_example / code_walkthrough / visual_model / comparison / common_mistake / edge_case / conceptual_check / mini_practice / recap / transition)."),
-  kind: z.enum(SLIDE_KINDS).describe("'core' = essential to the objective; 'enrichment' = a worked example / check / edge case / practice that deepens it."),
+  segmentId: z.string().describe("Must match a segment.id."),
+  title: z.string().describe("Working title."),
+  teachingGoal: z.string().describe("The one thing the learner should understand after this slide."),
+  role: z.enum(SLIDE_ROLES).describe("The slide's pedagogical role."),
+  kind: z.enum(SLIDE_KINDS).describe("'core' = essential; 'enrichment' = deepens it (worked example / check / edge case / practice)."),
   keyPoints: z
     .array(z.string())
-    .describe("FINALIZE THIS FIRST — the slide's actual content: the real points / claims / worked-example steps / definition it will make, each a full clause (NOT a title). Aim 2–5; if a slide has a lot, that's fine (the card grows, and the system splits a genuinely overloaded one for you) — just put one idea's points on one slide."),
-  layout: z.enum(OUTLINE_LAYOUTS).describe("Chosen AFTER the points, to FIT them: the structured layout whose shape holds this slide's keyPoints well (e.g. a definition → key_concept; 2–3 compared options → comparison_columns; a sequence → process_steps; key numbers → metrics_overview; a plain explanation → prose). Vary the layout across the deck — don't default every slide to the same one."),
-  depth: z.enum(OUTLINE_DEPTHS).describe("Where this slide sits in the learning arc."),
-  notes: z.string().describe("Load-bearing specifics to get exactly right (a runtime O(log n), a quantity, a formula, exact conditions, term(s) to define)."),
-  visualIntent: VisualIntentSchema.nullable().describe("Whether this slide needs a visual, and what kind — see the VISUALS rules. Default to required=false / role='none' when no visual materially helps."),
-  speakerNotesGoal: z.string().describe("What the speaker notes for this slide should cover (the spoken explanation behind the slide)."),
+    .describe("FINALIZE FIRST — the slide's real content: the actual points / claims / steps / definition, each a full clause (not a title). One idea per slide (an overloaded one is split for you)."),
+  layout: z.enum(OUTLINE_LAYOUTS).describe("Chosen AFTER the points, to FIT them; the layout whose shape holds this slide's keyPoints. Vary layouts across the deck."),
+  depth: z.enum(OUTLINE_DEPTHS).describe("Where it sits in the arc."),
+  notes: z.string().nullable().describe("Load-bearing specifics to get exactly right (a runtime, quantity, formula, exact conditions), or null when the slide has none."),
+  visualIntent: VisualIntentSchema.nullable().describe("Whether the slide needs a visual — see VISUALS. Default required=false / role='none'."),
 });
 
 const SegmentSchema = z.object({
-  id: z.string().describe("A short stable id for this segment (e.g. 'hook', 'concept', 'practice'). Slides reference it via segmentId."),
-  name: z.string().describe("A human label for the segment."),
-  purpose: z.enum(SEGMENT_PURPOSES).describe("The pedagogical role of this segment."),
-  targetSlideCount: z.number().int().describe("How many slides this segment should contain (1–3 ideal)."),
+  id: z.string().describe("Stable id; slides reference it via segmentId."),
+  name: z.string().describe("Human label."),
+  purpose: z.enum(SEGMENT_PURPOSES).describe("The segment's pedagogical role."),
+  targetSlideCount: z.number().int().describe("Slides in this segment (1–3)."),
 });
 
 const QuizPlanSchema = z.object({
-  questionCount: z.number().int().describe("How many knowledge-check questions (typically 3–5)."),
+  questionCount: z.number().int().describe("How many questions (3–5)."),
   targetSkills: z
     .array(z.object({ skill: z.string(), difficulty: z.enum(DIFFICULTIES) }))
-    .describe("The skills each question checks, with difficulty."),
+    .describe("Skill + difficulty each question checks."),
 });
 
 const HomeworkPlanSchema = z.object({
-  exerciseCount: z.number().int().describe("How many practice exercises."),
-  targetSkills: z.array(z.string()).describe("The skills the homework practices."),
+  exerciseCount: z.number().int().describe("How many exercises."),
+  targetSkills: z.array(z.string()).describe("Skills practiced."),
   difficulty: z.enum(DIFFICULTIES).describe("Overall difficulty."),
 });
 
 /** The PLAN structured-output schema (what the model returns). */
 export const LessonOutlineSchema = z.object({
-  objective: z.string().describe("The lesson's single learning objective."),
-  targetStudent: z.string().describe("Who this lesson is for + what they already know."),
-  estimatedMinutes: z.number().int().describe("Rough minutes to complete the lesson."),
-  microLesson: z
-    .boolean()
-    .describe(
-      "TRUE only if the user EXPLICITLY asked for a short / micro / quick lesson (3–4 slides). Otherwise FALSE — a normal instructional lesson plans 6+ slides (technical lessons 7+)."
-    ),
+  objective: z.string().describe("The single learning objective."),
+  targetStudent: z.string().describe("Who it's for + what they already know."),
+  estimatedMinutes: z.number().int().describe("Rough completion minutes."),
+  microLesson: z.boolean().describe("TRUE only if the user explicitly asked for a short/micro lesson; else FALSE."),
   teachingArc: TeachingArcSchema,
-  segments: z.array(SegmentSchema).describe("Ordered pedagogical segments (2–6); each groups 1–3 slides."),
-  slides: z.array(SlideSpecSchema).describe("Ordered slide specs; each tagged with its segmentId. A normal lesson has 6–10, technical 7–12, complex 9–14. Only 3–4 if microLesson is true."),
-  quizPlan: QuizPlanSchema.nullable().describe("A knowledge-check plan if the lesson should have one (else null)."),
-  homeworkPlan: HomeworkPlanSchema.nullable().describe("A homework plan if applicable (else null)."),
+  segments: z.array(SegmentSchema).describe("Ordered pedagogical segments."),
+  slides: z.array(SlideSpecSchema).describe("Ordered slide specs, each tagged with its segmentId."),
+  // LESSON-LEVEL default (was per-slide): the narration approach GENERATE applies to
+  // every slide's speaker notes, so the model doesn't repeat a goal on each slide.
+  speakerNotesGoal: z.string().describe("The overall approach for the deck's speaker notes (GENERATE writes each slide's notes from this + the slide)."),
+  quizPlan: QuizPlanSchema.nullable().describe("A knowledge-check plan, or null."),
+  homeworkPlan: HomeworkPlanSchema.nullable().describe("A homework plan, or null."),
 });
 
 /* ──────────────────────────── Internal (coerced) types ─────────────────────
  * GENERATE / GenerationState / coverage consume THIS shape: slides carry an
  * assigned `id`, segments carry derived `slideSpecIds`. */
+
+/** The structured reference-image spec (what the image must depict + render) — the
+ *  prompt builder turns this into an accurate textbook prompt. Reference visuals only. */
+export interface PlannedImageSpec {
+  subject: string;
+  requiredLabels: string[];
+  axes?: { x?: string; y?: string };
+  annotations?: string[];
+}
 
 /** The planner's per-slide visual decision (the contract GENERATE + validation
  *  read). `role: "none"` / `required: false` ⇒ no visual. */
@@ -185,6 +205,10 @@ export interface PlannedVisualIntent {
   placement?: VisualPlacement;
   priority?: VisualPriority;
   mustBeAccurate?: boolean;
+  /** Generated-image weight → layout + gen size + prompt detail (see VISUAL_WEIGHT). */
+  visualWeight?: VisualWeight;
+  /** Structured spec for a reference image (drives the textbook prompt). */
+  imageSpec?: PlannedImageSpec;
 }
 
 export interface PlannedSlide {
@@ -204,7 +228,6 @@ export interface PlannedSlide {
   continuationOf?: string;
   visualIntent?: PlannedVisualIntent;
   requiredElements?: (typeof REQUIRED_ELEMENTS)[number][];
-  speakerNotesGoal: string;
 }
 
 /** True when a planned slide REQUIRES a visual (a hard contract item). */
@@ -230,6 +253,8 @@ export interface LessonOutline {
   teachingArc: z.infer<typeof TeachingArcSchema>;
   segments: PlannedSegment[];
   slides: PlannedSlide[];
+  /** Lesson-level narration approach GENERATE applies to every slide's notes. */
+  speakerNotesGoal: string;
   quizPlan?: z.infer<typeof QuizPlanSchema>;
   homeworkPlan?: z.infer<typeof HomeworkPlanSchema>;
 }
@@ -248,7 +273,7 @@ const RelaxedSlideSchema = z.object({
   depth: z.enum(OUTLINE_DEPTHS).optional().default("definition"),
   keyPoints: z.array(z.string()).optional().default([]),
   continuationOf: z.string().nullish(),
-  notes: z.string().optional().default(""),
+  notes: z.string().nullish(),
   // Tolerant: accept the structured object, a legacy free-text string, or null.
   visualIntent: z
     .union([
@@ -260,12 +285,20 @@ const RelaxedSlideSchema = z.object({
         placement: z.enum(VISUAL_PLACEMENTS).nullish(),
         priority: z.enum(VISUAL_PRIORITIES).nullish(),
         mustBeAccurate: z.boolean().nullish(),
+        visualWeight: z.enum(VISUAL_WEIGHTS).nullish(),
+        imageSpec: z
+          .object({
+            subject: z.string().nullish(),
+            requiredLabels: z.array(z.string()).nullish(),
+            axes: z.object({ x: z.string().nullish(), y: z.string().nullish() }).nullish(),
+            annotations: z.array(z.string()).nullish(),
+          })
+          .nullish(),
       }),
       z.string(),
     ])
     .nullish(),
   requiredElements: z.array(z.enum(REQUIRED_ELEMENTS)).nullish(),
-  speakerNotesGoal: z.string().optional().default(""),
 });
 const RelaxedSegmentSchema = z.object({
   id: z.string(),
@@ -282,6 +315,7 @@ const RelaxedLessonOutlineSchema = z.object({
   teachingArc: TeachingArcSchema.partial().optional(),
   segments: z.array(RelaxedSegmentSchema).optional().default([]),
   slides: z.array(RelaxedSlideSchema),
+  speakerNotesGoal: z.string().optional().default(""),
   quizPlan: QuizPlanSchema.nullish(),
   homeworkPlan: HomeworkPlanSchema.nullish(),
 });
@@ -344,6 +378,13 @@ function coerceVisualIntent(v: unknown): PlannedVisualIntent | undefined {
   if (!priority) priority = required ? "required" : role !== "none" ? "recommended" : undefined;
   // No visual intended at all → undefined (keeps the contract clean).
   if (!required && role === "none" && priority !== "required" && priority !== "recommended") return undefined;
+  const mustBeAccurate = o.mustBeAccurate === true ? true : undefined;
+  const imageSpec = coerceImageSpec(o.imageSpec);
+  // visualWeight applies to GENERATED IMAGES only (never an accuracy-critical diagram).
+  // Default-derive when the model omitted it: a structured imageSpec ⇒ reference,
+  // else supporting (a programmatic diagram leaves it undefined).
+  let visualWeight = (typeof o.visualWeight === "string" && (VISUAL_WEIGHTS as readonly string[]).includes(o.visualWeight) ? o.visualWeight : undefined) as VisualWeight | undefined;
+  if (!mustBeAccurate && !visualWeight) visualWeight = imageSpec ? "reference" : "supporting";
   return {
     required: required || priority === "required",
     role,
@@ -351,7 +392,32 @@ function coerceVisualIntent(v: unknown): PlannedVisualIntent | undefined {
     expectedVisualType: typeof o.expectedVisualType === "string" && o.expectedVisualType.trim() ? o.expectedVisualType.trim() : undefined,
     placement: (typeof o.placement === "string" && (VISUAL_PLACEMENTS as readonly string[]).includes(o.placement) ? o.placement : undefined) as VisualPlacement | undefined,
     priority,
-    mustBeAccurate: o.mustBeAccurate === true ? true : undefined,
+    mustBeAccurate,
+    visualWeight,
+    imageSpec,
+  };
+}
+
+/** Normalize a parsed imageSpec into PlannedImageSpec, or undefined when empty. */
+function coerceImageSpec(v: unknown): PlannedImageSpec | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  const subject = typeof o.subject === "string" ? o.subject.trim() : "";
+  const requiredLabels = Array.isArray(o.requiredLabels)
+    ? o.requiredLabels.filter((s): s is string => typeof s === "string" && s.trim().length > 0).map((s) => s.trim())
+    : [];
+  if (!subject && requiredLabels.length === 0) return undefined;
+  const axesRaw = o.axes && typeof o.axes === "object" ? (o.axes as Record<string, unknown>) : undefined;
+  const ax = typeof axesRaw?.x === "string" && axesRaw.x.trim() ? axesRaw.x.trim() : undefined;
+  const ay = typeof axesRaw?.y === "string" && axesRaw.y.trim() ? axesRaw.y.trim() : undefined;
+  const annotations = Array.isArray(o.annotations)
+    ? o.annotations.filter((s): s is string => typeof s === "string" && s.trim().length > 0).map((s) => s.trim())
+    : undefined;
+  return {
+    subject,
+    requiredLabels,
+    ...(ax || ay ? { axes: { ...(ax ? { x: ax } : {}), ...(ay ? { y: ay } : {}) } } : {}),
+    ...(annotations && annotations.length ? { annotations } : {}),
   };
 }
 
@@ -397,7 +463,6 @@ function withArcSpecs(slides: PlannedSlide[], objective: string, arc: { coreConc
       notes: "",
       visualIntent: undefined,
       requiredElements: undefined,
-      speakerNotesGoal: "Open the lesson: name the topic and the payoff for the learner.",
     });
   }
   if (needRecap) {
@@ -414,7 +479,6 @@ function withArcSpecs(slides: PlannedSlide[], objective: string, arc: { coreConc
       notes: "",
       visualIntent: undefined,
       requiredElements: undefined,
-      speakerNotesGoal: "Summarize the main points and point to what comes next.",
     });
   }
   return out;
@@ -457,31 +521,29 @@ function normalizeContinuations(slides: PlannedSlide[]): PlannedSlide[] {
   });
 }
 
-/** Max key points a single card holds before a DETERMINISTIC split kicks in. The
- *  model no longer decides splits (that was a heavy per-slide reasoning task — a
- *  top driver of the lesson-plan reasoning runaway); it just lists points, and a
- *  slide that genuinely overflows is split in code. Env: AI_MAX_POINTS_PER_SLIDE. */
-const MAX_POINTS_PER_SLIDE = Math.max(3, Number(process.env.AI_MAX_POINTS_PER_SLIDE) || 6);
-
 /**
- * Deterministic Method-1 split: a slide the model crammed with more than
- * MAX_POINTS_PER_SLIDE points is split into a parent (first chunk) + continuation
- * slide(s) (the rest), with `continuationOf` set in CODE — so `normalizeContinuations`
- * then stamps the "(cont.)" title. No point is ever dropped. Returns the SAME ref
- * when nothing overflows (the common case → caller keeps original ids, idempotent on
- * resume). PURE.
+ * Deterministic Method-1 split: a slide the model crammed with more points than
+ * its CHOSEN LAYOUT holds (`layoutPointCapacity(layout)` — e.g. 4 for
+ * image_supporting, 7 for image_reference, the global default otherwise) is split
+ * into a parent (first chunk) + continuation slide(s) (the rest), with
+ * `continuationOf` set in CODE — so `normalizeContinuations` then stamps the
+ * "(cont.)" title. No point is ever dropped. Returns the SAME ref when nothing
+ * overflows (the common case → caller keeps original ids, idempotent on resume).
+ * The model no longer decides splits (that was a heavy per-slide reasoning task —
+ * a top driver of the lesson-plan reasoning runaway). PURE.
  */
 function splitOverflowingSpecs(slides: PlannedSlide[]): PlannedSlide[] {
-  if (!slides.some((s) => !s.continuationOf && s.keyPoints.length > MAX_POINTS_PER_SLIDE)) return slides;
+  if (!slides.some((s) => !s.continuationOf && s.keyPoints.length > layoutPointCapacity(s.layout))) return slides;
   const out: PlannedSlide[] = [];
   for (const s of slides) {
-    if (s.continuationOf || s.keyPoints.length <= MAX_POINTS_PER_SLIDE) {
+    const cap = layoutPointCapacity(s.layout);
+    if (s.continuationOf || s.keyPoints.length <= cap) {
       out.push(s);
       continue;
     }
     const chunks: string[][] = [];
-    for (let i = 0; i < s.keyPoints.length; i += MAX_POINTS_PER_SLIDE) {
-      chunks.push(s.keyPoints.slice(i, i + MAX_POINTS_PER_SLIDE));
+    for (let i = 0; i < s.keyPoints.length; i += cap) {
+      chunks.push(s.keyPoints.slice(i, i + cap));
     }
     out.push({ ...s, keyPoints: chunks[0] });
     for (let c = 1; c < chunks.length; c++) {
@@ -514,11 +576,10 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     layout: s.layout,
     depth: s.depth,
     keyPoints: s.keyPoints,
-    notes: s.notes,
+    notes: s.notes ?? "",
     continuationOf: s.continuationOf?.trim() || undefined,
     visualIntent: coerceVisualIntent(s.visualIntent),
     requiredElements: s.requiredElements ?? undefined,
-    speakerNotesGoal: s.speakerNotesGoal,
   }));
   // Method 1: DETERMINISTIC split of any overflowing slide (code, not model reasoning),
   // then normalize CONTINUATION splits — stamp "(cont.)" into the title and strip any
@@ -550,6 +611,7 @@ export function coerceOutline(value: unknown): { outline?: LessonOutline; errors
     teachingArc: { ...EMPTY_ARC, ...(d.teachingArc ?? {}) },
     segments,
     slides,
+    speakerNotesGoal: d.speakerNotesGoal,
     quizPlan: d.quizPlan ?? undefined,
     homeworkPlan: d.homeworkPlan ?? undefined,
   };
@@ -590,6 +652,26 @@ export function ensureLessonArc(outline: LessonOutline): LessonOutline {
 
 /** Render an approved outline into the GENERATE/CRITIQUE prompt — arc + segments
  *  with their slides (by spec id) + the quiz/homework plans. */
+/**
+ * The canonical per-slide VISUAL DIRECTIVE — the ONE place the add_diagram-vs-add_image
+ * routing is encoded. Shared by the GENERATE plan fragment (`outlinePromptFragment`) and
+ * the REPAIR brief (`renderSpecBrief`, phases.ts) so they can never drift. Returns "" when
+ * the slide needs no visual; callers add their own surrounding framing.
+ */
+export function renderVisualDirective(s: PlannedSlide): string {
+  const vi = s.visualIntent;
+  if (!vi || (vi.role === "none" && !vi.required)) return "";
+  if (vi.mustBeAccurate || s.layout === "diagram") {
+    return "add_diagram (ONLY supply & demand or a coordinate/function/distribution plot — accurate by construction)";
+  }
+  const weight = vi.visualWeight ?? "supporting";
+  const layout = weight === "reference" ? "image_reference" : "image_supporting";
+  const spec = vi.imageSpec
+    ? ` [subject: ${vi.imageSpec.subject}${vi.imageSpec.requiredLabels.length ? `; render labels EXACTLY: ${vi.imageSpec.requiredLabels.map((l) => `"${l}"`).join(", ")}` : ""}${vi.imageSpec.axes ? `; axes x="${vi.imageSpec.axes.x ?? "—"}" y="${vi.imageSpec.axes.y ?? "—"}"` : ""}${vi.imageSpec.annotations?.length ? `; show: ${vi.imageSpec.annotations.join(", ")}` : ""}]`
+    : "";
+  return `add_image (visualWeight=${weight} → ${layout})${spec}`;
+}
+
 export function outlinePromptFragment(outline: LessonOutline): string {
   const slideById = new Map(outline.slides.map((s) => [s.id, s]));
   const renderSlide = (s: PlannedSlide): string => {
@@ -600,13 +682,14 @@ export function outlinePromptFragment(outline: LessonOutline): string {
     const cover = s.keyPoints.length ? `\n     cover: ${s.keyPoints.map((p) => `• ${p}`).join("  ")}` : "";
     const exact = s.notes ? `\n     exact: ${s.notes}` : "";
     const vi = s.visualIntent;
-    const visual =
-      vi && (vi.role !== "none" || vi.required)
-        ? `\n     visual (${vi.priority ?? (vi.required ? "required" : "recommended")}${vi.mustBeAccurate ? ", accuracy-critical" : ""}): ${vi.expectedVisualType ?? vi.role}${vi.reason ? ` — ${vi.reason}` : ""} → author it with add_diagram`
-        : "";
+    let visual = "";
+    if (vi && (vi.role !== "none" || vi.required)) {
+      const pr = vi.priority ?? (vi.required ? "required" : "recommended");
+      const head = `\n     visual (${pr}${vi.mustBeAccurate ? ", accuracy-critical" : ""}): ${vi.expectedVisualType ?? vi.role}${vi.reason ? ` — ${vi.reason}` : ""}`;
+      visual = `${head} → author with ${renderVisualDirective(s)}.`;
+    }
     const req = s.requiredElements?.length ? `\n     must include: ${s.requiredElements.join(", ")}` : "";
-    const notes = s.speakerNotesGoal ? `\n     speaker notes: ${s.speakerNotesGoal}` : "";
-    return `${pre}${cont}${cover}${exact}${visual}${req}${notes}`;
+    return `${pre}${cont}${cover}${exact}${visual}${req}`;
   };
 
   const segBlocks = outline.segments.length
@@ -633,7 +716,7 @@ export function outlinePromptFragment(outline: LessonOutline): string {
     `For: ${outline.targetStudent}.${outline.microLesson ? " (micro-lesson — short by request.)" : ""}`,
     arcLine,
     `THE CONTRACT IS BINDING: you MUST build ALL ${outline.slides.length} planned slides (spec ids: ${specIds})${outline.quizPlan ? " + the planned knowledge check" : ""}${outline.homeworkPlan ? " + the planned practice" : ""}. Do not stop early.`,
-    `Author ONE SEGMENT per turn (in order) with add_structured_slides_batch, EXPANDING each slide's "cover" brief into real teaching content and writing its speaker notes. Stamp each slide with its exact slideSpecId so coverage can be measured; keep the planned order, layout, and depth. If a batch call fails, retry the SAME specs — never skip them.`,
+    `Author ALL ${outline.slides.length} planned slides in ONE add_structured_slides_batch call (NOT one segment per turn), and add every planned add_image / add_diagram in the SAME turn. EXPAND each slide's "cover" brief into real teaching content. For EVERY slide also write speaker notes following this lesson's narration approach: ${outline.speakerNotesGoal || "explain the slide's point as you would aloud"}. Stamp each slide with its exact slideSpecId so coverage can be measured; keep the planned order, layout, and depth. If a batch call fails, retry the SAME specs — never skip them.`,
     segBlocks,
     quiz + hw,
   ].join("\n");
@@ -648,6 +731,7 @@ First decide the lesson-level frame:
 - estimatedMinutes: a realistic completion time.
 - microLesson: TRUE only if the user EXPLICITLY asked for a short / micro / quick lesson. Otherwise FALSE.
 - teachingArc: the hook (why care), the core concepts, the worked example(s), the common misconceptions to pre-empt, and what the recap consolidates.
+- speakerNotesGoal: the overall NARRATION APPROACH for the deck's speaker notes — set ONCE for the whole lesson (the writer applies it to every slide), e.g. "explain each idea conversationally with a concrete aside, in plain language." Do NOT write per-slide notes here.
 
 HOW MANY SLIDES — let the CONTENT decide, not a target number. Plan exactly as many slides as the lesson's depth needs (one idea per slide, a worked example for each core concept, a check, a recap). Typical decks land around 6–10 slides for a normal lesson and 7–12 for a technical one, more for a complex lesson with lots of practice; a micro lesson (only when microLesson is true) is 3–4. Treat those as the usual SHAPE, not a quota: never pad to reach a number, and never cut real teaching to stay under one. A normal topic almost always has genuine depth — a motivating example, a worked example, a common mistake/misconception, a check-for-understanding, an edge case, a recap — so include each where it actually teaches.
 
@@ -670,18 +754,20 @@ Then write the ordered SLIDES — CONTENT FIRST, layout SECOND. For each slide, 
 - notes: the exact load-bearing specifics (a runtime like O(log n), a quantity, a formula, a rule's exact conditions, term(s) to define).
 - visualIntent: whether this slide needs a VISUAL, and what — see VISUALS below. Default to required=false / role="none".
 - requiredElements: elements the slide MUST contain, or null.
-- speakerNotesGoal: what the spoken explanation behind the slide should cover.
+(Speaker notes are NOT planned per slide — the lesson-level speakerNotesGoal above governs them; the writer derives each slide's notes from it.)
 
 Finally, plan assessment where it fits: quizPlan (3–5 checks with target skills + difficulty) and/or homeworkPlan, or null.
 
-VISUALS — a visual is a TEACHING OBJECT, not decoration. Plan a visual wherever a learner would understand the idea better by SEEING it — a structure, a process, a relationship, a comparison, a timeline, a spatial or quantitative idea, or a worked example traced step by step — not only for the few topics conventionally drawn with a graph. A typical full lesson carries 2–4 visuals; a lesson with none is usually under-using them. Two kinds of visual exist:
-- ACCURATE programmatic diagrams (the "diagram" layout / add_diagram) — economics graphs (supply & demand, price ceiling/floor), function/distribution/regression plots, bar charts, arrays with pointers (two-pointers / sliding window / binary search), trees (BST, traversal, recursion, hierarchy), node-link graphs (BFS/DFS, weighted/Dijkstra), flowcharts, number lines, and 2-set Venn diagrams. These are correct by construction.
-- ILLUSTRATIVE images (an AI-generated educational illustration) — for a concept that benefits from a picture but ISN'T one of the diagram types above (e.g. a historical scene, a biology structure, a real-world analogy, an evocative concept image). The generator renders these from the slide's visualIntent.
+VISUALS — a visual is a TEACHING OBJECT, not decoration. Plan a visual wherever a learner would understand the idea better by SEEING it — a labeled structure, a process, a relationship, a comparison, a timeline, a spatial or quantitative idea, or a worked example traced step by step. A typical full lesson carries 2–4 visuals; a lesson with none is usually under-using them. Two kinds of visual exist:
+- ACCURATE programmatic diagrams (layout="diagram" / add_diagram) — ONLY TWO kinds: supply & demand (incl. price ceiling/floor) and a coordinate/function/distribution/regression PLOT. These need exact axis values, so they're drawn programmatically (correct by construction). Mark them mustBeAccurate=true.
+- GENERATED images (add_image) — for EVERYTHING ELSE a picture helps with: a labeled diagram (a neuron, the water cycle, a system/architecture), a tree/graph/flow concept, a historical scene, a biological/physical structure, a process, a real-world analogy, an evocative concept image. These are rendered as clean, academic TEXTBOOK figures (standard-for-the-concept — not decorative art). Pick a visualWeight:
+  · visualWeight="reference" — the IMAGE IS THE SUBJECT: a large labeled figure the learner studies, with annotation points + numbered concept cards (→ image_reference). ALSO fill imageSpec { subject, requiredLabels (rendered EXACTLY, verbatim), axes (if a chart/graph), annotations } so the figure is accurate.
+  · visualWeight="supporting" — the image just AIDS the teaching beside the text and fine detail doesn't matter (→ image_supporting). A short conceptual description is enough; imageSpec not needed.
 How to mark it:
-- mustBeAccurate=true ⇒ the visual carries exact labels/numbers/shape (a graph, a search interval, a weighted graph): it MUST be a programmatic diagram. Set required=true and prefer layout="diagram".
-- required=true (without mustBeAccurate) ⇒ the slide genuinely needs its visual to teach (a process the slide is ABOUT, a structure being explained). Set expectedVisualType + a one-line reason.
-- priority="recommended" ⇒ a visual that clearly helps but the slide still teaches without it — use this GENEROUSLY (the generator will add it when it can). priority="optional" ⇒ a nice-to-have. role="none" / required=false ⇒ a visual would only decorate (a pure definition, a short recap) — those slides need none.
-- Always give expectedVisualType (the concrete picture) + a one-line reason when any visual is set. Do NOT plan a visual that merely repeats the title, crowds the slide, or that a table/code/text conveys more precisely. Never fabricate chart data — a metrics_overview / data_chart needs real numbers or it's omitted.
+- mustBeAccurate=true ⇒ ONLY for the two programmatic diagram kinds (supply & demand, a coordinate/function plot). Set required=true and layout="diagram". NEVER set mustBeAccurate for a generated image.
+- For a generated image: set required/priority + role + expectedVisualType + a one-line reason + visualWeight (+ imageSpec for reference). Use layout="image_reference" or "image_supporting" to match the weight.
+- priority="recommended" ⇒ clearly helps but the slide still teaches without it — use this GENEROUSLY. priority="optional" ⇒ a nice-to-have. role="none" / required=false ⇒ a visual would only decorate (a pure definition, a short recap) — those slides need none.
+- Always give expectedVisualType (the concrete picture) + a one-line reason when any visual is set. Do NOT plan a visual that merely repeats the title, crowds the slide, or that a table/code/text conveys more precisely. Never fabricate plot data — a coordinate_plot needs real numbers or it's omitted.
 
 Rules:
 - Front-load foundations: vocabulary is defined before it is used; basics before advanced.

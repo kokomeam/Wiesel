@@ -16,8 +16,17 @@
  * Pure: no Zod, no model, no React.
  */
 
-import type { DiagramSpec } from "./types";
+import type { DiagramKind, DiagramSpec } from "./types";
 import { validateDiagram } from "./validate";
+
+/** The ONLY diagram kinds the AI may author (2026-06-25). The other 7 kinds were
+ *  retired to generated images; their renderers/storage stay for back-compat, but
+ *  this guard degrades any attempt to author one on the lenient add_diagram path
+ *  (so it becomes a prose/image slide, never a rigid removed-kind diagram). */
+export const AUTHORABLE_DIAGRAM_KINDS: ReadonlySet<DiagramKind> = new Set<DiagramKind>([
+  "supply_demand",
+  "coordinate_plot",
+]);
 
 const clamp01 = (v: number): number => (typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.5);
 const isNumericLike = (s: string): boolean => s.trim() !== "" && isFinite(Number(s.trim()));
@@ -122,6 +131,9 @@ export function repairDiagram(input: DiagramSpec): DiagramSpec {
  */
 export function coerceDiagramBestEffort(diagram: DiagramSpec | null): DiagramSpec | null {
   if (!diagram) return null;
+  // Retired kinds are no longer authorable — degrade (caller falls back to a
+  // generated image / prose) rather than render a rigid removed-kind diagram.
+  if (!AUTHORABLE_DIAGRAM_KINDS.has(diagram.kind)) return null;
   const repaired = repairDiagram(diagram);
   return validateDiagram(repaired).length === 0 ? repaired : null;
 }

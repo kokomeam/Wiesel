@@ -12,6 +12,7 @@
 import type {
   GeneratedImage,
   ImageGenParams,
+  ImageInspectParams,
   ModelClient,
   ModelErrorKind,
   ModelStreamEvent,
@@ -39,8 +40,17 @@ export interface MockOptions {
   model?: string;
   /** Text returned once the script is exhausted (the final, no-tool turn). */
   finalText?: string;
+  /** Structured responses routed by responseFormat NAME (e.g. "aux_content"). When a
+   *  turn carries a matching responseFormat the mock returns this WITHOUT consuming the
+   *  sequential script — so a CONCURRENT structured call (the parallel quiz/homework
+   *  aux call) stays deterministic alongside the slide loop. Value may be an object
+   *  (stringified) or a raw JSON string. */
+  structured?: Record<string, unknown>;
   /** Make generateImage return null (simulate an unavailable / failed image model). */
   failImages?: boolean;
+  /** Make inspectImage FAIL verification (verdict: not all labels present) — lets a
+   *  test exercise the regenerate-once → prose-degrade path. Default: pass. */
+  failImageVerify?: boolean;
 }
 
 /** A mock client that also records every call's params — lets tests assert the
@@ -49,6 +59,8 @@ export interface MockModelClient extends ModelClient {
   getCalls(): ModelTurnParams[];
   /** Every image prompt the agent asked for (lets tests assert visual wiring). */
   getImageCalls(): ImageGenParams[];
+  /** Every image-inspection the agent asked for (verification wiring). */
+  getInspectCalls(): ImageInspectParams[];
 }
 
 let callSeq = 0;
@@ -66,21 +78,45 @@ export function createMockModelClient(
   const model = opts.model ?? "mock-model";
   const calls: ModelTurnParams[] = [];
   const imageCalls: ImageGenParams[] = [];
+  const inspectCalls: ImageInspectParams[] = [];
 
   return {
     model,
     getCalls: () => calls,
     getImageCalls: () => imageCalls,
+    getInspectCalls: () => inspectCalls,
     async generateImage(params: ImageGenParams): Promise<GeneratedImage | null> {
       imageCalls.push(params);
       if (opts.failImages) return null;
-      return { base64: MOCK_PNG_BASE64, mimeType: "image/png", width: 1536, height: 1024 };
+      // Echo the requested size so the store/dims path reflects visualWeight.
+      const [w, h] = (params.size ?? "1536x1024").split("x").map((n) => Number(n));
+      return { base64: MOCK_PNG_BASE64, mimeType: "image/png", width: w || 1536, height: h || 1024 };
+    },
+    async inspectImage(params: ImageInspectParams): Promise<{ text: string } | null> {
+      inspectCalls.push(params);
+      // Deterministic verdict: pass unless the test asked for a failure.
+      const verdict = opts.failImageVerify
+        ? { ok: false, missing: ["(mock) one or more required labels"], note: "mock verification failure" }
+        : { ok: true, missing: [], note: "mock verification pass" };
+      return { text: JSON.stringify(verdict) };
     },
     async runTurn(
       params: ModelTurnParams,
       onEvent: (event: ModelStreamEvent) => void
     ): Promise<ModelTurnResult> {
       calls.push(params);
+
+      // Route a CONFIGURED structured response by responseFormat name WITHOUT consuming
+      // the sequential script — keeps a concurrent structured call (parallel aux) from
+      // racing the slide loop's turn index. Unconfigured formats fall through to the script.
+      const fmt = params.responseFormat?.name;
+      if (fmt && opts.structured && fmt in opts.structured) {
+        const v = opts.structured[fmt];
+        const text = typeof v === "string" ? v : JSON.stringify(v);
+        for (const chunk of chunkWords(text)) onEvent({ type: "text_delta", delta: chunk });
+        return { text, toolCalls: [], finishReason: "stop" };
+      }
+
       const turn = script[turnIndex++];
 
       // Simulate a transport failure (timeout / connection drop): empty output,

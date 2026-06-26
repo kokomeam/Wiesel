@@ -123,11 +123,39 @@ export interface GeneratedImage {
   height?: number;
 }
 
+/** A GPT Image generation size (the provider's supported set). */
+export type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
+/** Image background: a transparent PNG composites onto the slide; opaque = white. */
+export type ImageBackground = "transparent" | "opaque" | "auto";
+/** Render quality — `low` for fast supporting images, `high` for reference figures. */
+export type ImageQuality = "low" | "medium" | "high" | "auto";
+
 /** Options for one image generation (kept tiny + provider-neutral). */
 export interface ImageGenParams {
   prompt: string;
-  /** e.g. "4:3" / "1:1" — the provider maps it to its nearest supported size. */
+  /** Exact output size (preferred — pinned by visualWeight). When omitted the
+   *  provider falls back to mapping `aspectRatio` to its nearest supported size. */
+  size?: ImageSize;
+  /** Transparent vs white/opaque background. */
+  background?: ImageBackground;
+  /** Render quality (per visualWeight: supporting=low, reference=high). */
+  quality?: ImageQuality;
+  /** Reference images only: use the model's slower "thinking" mode for exact
+   *  labels/layout. Off for instant supporting images. */
+  thinking?: boolean;
+  /** Coarse fallback when `size` is omitted, e.g. "4:3" / "1:1". */
   aspectRatio?: string;
+  signal?: AbortSignal;
+}
+
+/** One vision inspection of a generated image (used to verify reference images).
+ *  Provider-neutral; the caller passes raw bytes + a text instruction (and an
+ *  optional strict JSON schema) and reads the model's text/JSON verdict back. */
+export interface ImageInspectParams {
+  base64: string;
+  mimeType: string;
+  instruction: string;
+  responseFormat?: { name: string; schema: JsonSchema };
   signal?: AbortSignal;
 }
 
@@ -156,4 +184,11 @@ export interface ModelClient {
    * caller stores them), or null when the model produced nothing.
    */
   generateImage?(params: ImageGenParams): Promise<GeneratedImage | null>;
+  /**
+   * Inspect a generated image with a vision model (verify a reference image's
+   * required labels / axes / curve count). OPTIONAL — present on the OpenAI client
+   * (a cheap vision model) and the mock; absent ⇒ verification is skipped. Returns
+   * the model's text/JSON verdict, or null on failure.
+   */
+  inspectImage?(params: ImageInspectParams): Promise<{ text: string } | null>;
 }

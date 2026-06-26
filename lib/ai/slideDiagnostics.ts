@@ -100,6 +100,8 @@ export function density(len: number): "low" | "medium" | "high" {
 const VISUAL_STRUCTURED_LAYOUTS: ReadonlySet<string> = new Set([
   "diagram",
   "illustration",
+  "image_reference",
+  "image_supporting",
   "process_steps",
   "comparison_columns",
   "comparison_matrix",

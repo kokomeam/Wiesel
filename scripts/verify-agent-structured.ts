@@ -67,17 +67,22 @@ async function main() {
     check(`tool '${t}' is registered`, names.has(t));
   }
   const structJson = JSON.stringify(defs.find((d) => d.name === "add_structured_slide")!.parameters);
-  // `illustration` is authored by the add_image tool (it generates + stores the
-  // image), NOT hand-authored, so it's intentionally absent from this union.
-  const authorable = STRUCTURED_LAYOUT_IDS.filter((id) => id !== "illustration");
+  // The image layouts (`illustration` legacy + `image_reference` / `image_supporting`)
+  // are authored by the add_image tool (it generates + stores the image), NOT
+  // hand-authored, so they're intentionally absent from this union.
+  const imageOnly = new Set(["illustration", "image_reference", "image_supporting"]);
+  const authorable = STRUCTURED_LAYOUT_IDS.filter((id) => !imageOnly.has(id));
   const missingLayout = authorable.filter((id) => !structJson.includes(id));
   check(
     `structured schema is a union over all ${authorable.length} hand-authored layout ids`,
     structJson.includes("anyOf") && missingLayout.length === 0,
     missingLayout.join(", ")
   );
-  check("illustration is NOT hand-authorable (add_image-only)", !structJson.includes("\"illustration\""));
+  for (const id of imageOnly) {
+    check(`${id} is NOT hand-authorable (add_image-only)`, !structJson.includes(`"${id}"`));
+  }
   check("add_image tool is registered", names.has("add_image"));
+  check("set_image_text tool is registered", names.has("set_image_text"));
 
   const base = ctxDoc();
   const ctx = { doc: base.doc, courseId: "c", lessonId: base.lessonId };

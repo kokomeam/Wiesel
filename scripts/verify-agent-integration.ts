@@ -20,10 +20,15 @@ import { runAgentTurn, resumeAgentTurn, runConversationLoop, loopContext } from 
 import { runContentAgentTurn, runGenerateLessonTurn, resumeGeneratePlan } from "@/lib/ai/phases";
 import { getOrCreateConversation } from "@/lib/ai/conversations";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
-import { loadCourseDoc } from "@/lib/ai/serverPersistence";
+import { loadCourseDoc, reconcileCourseDoc } from "@/lib/ai/serverPersistence";
 import { getPendingBlocks, acceptChangeSet, rejectChangeSet } from "@/lib/ai/changeSet";
+import { generateAndStoreImage } from "@/lib/ai/visuals/generateAndStore";
+import { buildImagePrompt } from "@/lib/ai/visuals/imageIntent";
+import { VISUAL_WEIGHT } from "@/lib/ai/visuals/config";
 import type { AgentEvent } from "@/lib/ai/events";
 import { findBlock, findLesson } from "@/lib/course/queries";
+import { setSlideTemplatePatch } from "@/lib/course/commands";
+import { applyCoursePatch } from "@/lib/course/patches";
 import { createBlock } from "@/lib/course/factories";
 
 let pass = 0, fail = 0;
@@ -351,7 +356,7 @@ async function main() {
   check("a clean deck passes validation (validation ok, no repair)", !!valEvt && valEvt.type === "validation" && valEvt.ok && !valEvt.repaired);
   const csApprove = evApprove.filter((e) => e.type === "change_set");
   check("the pipeline produces exactly ONE change-set", csApprove.length === 1, `got ${csApprove.length}`);
-  check("GENERATE used effort:high + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "high" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
+  check("GENERATE used effort:medium + the cheap default model (per-call)", resumeMock.getCalls()[0]?.effort === "medium" && resumeMock.getCalls()[0]?.model === "gpt-5.4-mini", `${resumeMock.getCalls()[0]?.effort}/${resumeMock.getCalls()[0]?.model}`);
   // FIX 1 — SCOPED input: the GENERATE turn is built from the plan + state ONLY, NOT
   // the conversation transcript. So the first turn carries NO user/history message and
   // the full plan rides in a leading developer message (it can never be lost/diluted).
@@ -655,13 +660,22 @@ async function main() {
   check("the saved diagram was repaired to a VALID supply/demand (demand slopes down)", !!dgSpec && dgSpec.kind === "supply_demand" && dgSpec.demand.rightY < dgSpec.demand.leftY && dgSpec.supply.rightY > dgSpec.supply.leftY, JSON.stringify(dgSpec));
 
   // 11g-4. AI IMAGE GENERATION (end to end) — the model calls add_image for a
-  //        concept slide; the bytes are generated (mock PNG) and STORED to the live
-  //        course-assets bucket, and the slide lands as an `illustration` with a
-  //        real public URL (no blob), required alt text, and its plan spec stamp.
+  //        concept slide; the bytes are generated (mock PNG) at the visualWeight's
+  //        size and STORED to the live course-assets bucket, and the slide lands as
+  //        an `image_supporting` with a real public URL (no blob), required alt
+  //        text, and its plan spec stamp. (The legacy `illustration` layout is
+  //        retired from authoring — add_image emits the two new image layouts.)
   const imgLessonId = crypto.randomUUID();
   await supabase.from("lessons").insert({ id: imgLessonId, module_id: pModuleId, course_id: courseId, title: "Image lesson", objective: "x", order: 7 });
   const imgConvo = await getOrCreateConversation(supabase, courseId, imgLessonId);
-  const addImageCall = (specId: string, prompt: string, alt: string) => ({ name: "add_image", arguments: { deckBlockId: null, slideSpecId: specId, prompt, alt, title: null, caption: "What to notice." } });
+  const addImageCall = (specId: string, prompt: string, alt: string) => ({
+    name: "add_image",
+    arguments: {
+      deckBlockId: null, slideSpecId: specId, visualWeight: "supporting", prompt, alt,
+      eyebrow: null, title: "A tree structure", imageSpec: null, annotations: null, cards: null,
+      lead: "Trees organize data hierarchically.", bullets: ["Each node has children."], caption: "What to notice.",
+    },
+  });
   const imgMock = createMockModelClient([
     { text: JSON.stringify(LESSON_PLAN) },
     { text: "With a visual.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion")]), addImageCall("s3", "A branching tree of nodes", "An illustration of a branching tree of connected nodes.")] },
@@ -671,14 +685,77 @@ async function main() {
     supabase, model: imgMock, courseId, lessonId: imgLessonId, ownerId: userId, conversationId: imgConvo,
     userMessage: "Generate the lesson", autoApprove: true, emit: (e) => evImg.push(e),
   });
-  check("add_image asked the image model once, with a no-embedded-text prompt", imgMock.getImageCalls().length === 1 && /no embedded text/i.test(imgMock.getImageCalls()[0]?.prompt ?? ""), `${imgMock.getImageCalls().length}`);
+  // ENQUEUE-ONLY: the run does NOT call the image model — it stages a PENDING slide.
+  check("add_image did NOT call the image model during the run (off the critical path)", imgMock.getImageCalls().length === 0, `${imgMock.getImageCalls().length}`);
   const imgDoc = await loadCourseDoc(supabase, courseId);
   const imgDeck = imgDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === imgLessonId)?.blocks.find((b) => b.type === "slide_deck");
-  const illus = imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.find((s) => s.template?.layoutId === "illustration") : undefined;
-  check("the deck has all 3 planned slides incl. the generated illustration", !!imgDeck && imgDeck.type === "slide_deck" && imgDeck.slides.length === 3 && !!illus, `${imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.length : "none"}`);
-  const illusContent = illus?.template?.layoutId === "illustration" ? illus.template.content : null;
-  check("the illustration carries a STORED public course-assets URL (not a blob/data URL)", !!illusContent && /\/storage\/v1\/object\/public\/course-assets\//.test(illusContent.imageUrl) && illusContent.source === "ai_generated", illusContent?.imageUrl?.slice(0, 64));
-  check("the illustration kept required alt text + its plan spec stamp", !!illusContent && illusContent.alt.length > 0 && illus?.ai?.specId === "s3");
+  const imgDeckId = imgDeck?.id;
+  const pendingSlide = imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.find((s) => s.template?.layoutId === "image_supporting") : undefined;
+  const pc = pendingSlide?.template?.layoutId === "image_supporting" ? pendingSlide.template.content : null;
+  check("the deck has all 3 planned slides incl. a PENDING image (imageUrl empty)", !!imgDeck && imgDeck.type === "slide_deck" && imgDeck.slides.length === 3 && !!pc && pc.imageUrl === "" && pc.pendingGen?.status === "pending", `${imgDeck && imgDeck.type === "slide_deck" ? imgDeck.slides.length : "none"}`);
+  check("pending image kept alt + spec stamp + pendingGen carries the prompt/weight", !!pc && pc.alt.length > 0 && pendingSlide?.ai?.specId === "s3" && pc.pendingGen?.visualWeight === "supporting" && !!pc.pendingGen?.prompt);
+
+  // The generation ENDPOINT's core (generate → store → fill) — exercised directly with
+  // the mock image model + the live course-assets bucket.
+  if (pc?.pendingGen && pendingSlide && imgDeckId) {
+    const pg = pc.pendingGen;
+    const cfg = VISUAL_WEIGHT[pg.visualWeight];
+    const stored = await generateAndStoreImage({
+      model: imgMock, supabase, ownerId: userId, courseId,
+      prompt: buildImagePrompt({ visualWeight: pg.visualWeight, prompt: pg.prompt, subject: pg.subject, requiredLabels: pg.requiredLabels, axes: pg.axes, annotations: pg.annotations }),
+      size: cfg.size, background: cfg.background, quality: cfg.quality, thinking: cfg.thinking,
+    });
+    check("the endpoint generated + STORED the image (public course-assets URL)", !!stored && /\/storage\/v1\/object\/public\/course-assets\//.test(stored.url), stored?.url?.slice(0, 64));
+    check("generation called the image model once at 1024×1024 / quality low (supporting)", imgMock.getImageCalls().length === 1 && imgMock.getImageCalls()[0]?.size === "1024x1024" && imgMock.getImageCalls()[0]?.quality === "low");
+    if (stored) {
+      const filled = { ...pc, imageUrl: stored.url, storagePath: stored.storagePath };
+      delete (filled as { pendingGen?: unknown }).pendingGen;
+      const fresh = await loadCourseDoc(supabase, courseId);
+      if (fresh) {
+        const applied = applyCoursePatch(fresh, setSlideTemplatePatch(imgDeckId, pendingSlide.id, { layoutId: "image_supporting", content: filled }), new Date().toISOString());
+        if (applied.ok) await reconcileCourseDoc(supabase, applied.doc, userId);
+      }
+    }
+    const filledDoc = await loadCourseDoc(supabase, courseId);
+    const fDeck = filledDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === imgLessonId)?.blocks.find((b) => b.type === "slide_deck");
+    const fSlide = fDeck && fDeck.type === "slide_deck" ? fDeck.slides.find((s) => s.id === pendingSlide.id) : undefined;
+    const fc = fSlide?.template?.layoutId === "image_supporting" ? fSlide.template.content : null;
+    check("after the endpoint fill: slide has the stored URL + pendingGen cleared", !!fc && /course-assets/.test(fc.imageUrl) && !fc.pendingGen, fc?.imageUrl?.slice(0, 48));
+  }
+
+  // 11g-5. PARALLEL QUIZ/HOMEWORK (ITEM 4) — a planned quiz is authored by the
+  //   CONCURRENT aux call (routed by responseFormat name), NOT by the slide loop:
+  //   the slide loop chases SLIDE coverage only, and the quiz block is merged in.
+  {
+    const auxLessonId = crypto.randomUUID();
+    await supabase.from("lessons").insert({ id: auxLessonId, module_id: pModuleId, course_id: courseId, title: "Quiz lesson", objective: "x", order: 8 });
+    const auxConvo = await getOrCreateConversation(supabase, courseId, auxLessonId);
+    const PLAN_WITH_QUIZ = { ...LESSON_PLAN, quizPlan: { questionCount: 2, targetSkills: [{ skill: "trees", difficulty: "easy" }] }, homeworkPlan: null };
+    const auxContent = {
+      quiz: { title: "Tree check", questions: [
+        { kind: "multiple_choice", prompt: "What is a leaf?", explanation: "A node with no children.", choices: ["a node with children", "a node with no children"], correctIndex: 1 },
+        { kind: "true_false", prompt: "A tree has cycles.", explanation: "Trees are acyclic.", correctAnswer: false },
+      ] },
+      homework: null,
+    };
+    const auxMock = createMockModelClient(
+      [
+        { text: JSON.stringify(PLAN_WITH_QUIZ) },
+        { text: "Slides only.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
+      ],
+      { finalText: "Done.", structured: { aux_content: auxContent } }
+    );
+    await runGenerateLessonTurn({
+      supabase, model: auxMock, courseId, lessonId: auxLessonId, ownerId: userId, conversationId: auxConvo,
+      userMessage: "Generate the lesson", autoApprove: true, emit: () => {},
+    });
+    // The quiz came from the concurrent aux structured call (coverage was slides-only).
+    const auxDoc = await loadCourseDoc(supabase, courseId);
+    const auxLesson = auxDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === auxLessonId);
+    const quizBlock = auxLesson?.blocks.find((b) => b.type === "quiz");
+    check("parallel aux: the planned quiz block was authored (concurrent, off the slide loop)", !!quizBlock && quizBlock.type === "quiz" && quizBlock.questions.length === 2, `${auxLesson?.blocks.map((b) => b.type).join(",")}`);
+    check("parallel aux: the deck still built its 3 slides alongside the quiz", auxLesson?.blocks.some((b) => b.type === "slide_deck" && b.slides.length === 3) ?? false);
+  }
 
   // 11h. MODULE BUILD — the FIRST call is a COMPACT SKELETON (low effort, lean),
   //      NOT a slide-by-slide plan. Approve → each lesson gets a LAZY rich plan →
@@ -711,7 +788,9 @@ async function main() {
   });
   const modPhases = evModGen.filter((e) => e.type === "phase").map((e) => (e.type === "phase" ? e.phase : ""));
   check("module approve runs RICH-plan→generate→validate PER LESSON", JSON.stringify(modPhases) === JSON.stringify(["plan", "generate", "validate", "plan", "generate", "validate"]), JSON.stringify(modPhases));
-  check("the rich per-lesson plan ran at MEDIUM effort + bounded 16k output (the runaway fix)", mGenMock.getCalls()[0]?.effort === "medium" && mGenMock.getCalls()[0]?.maxOutputTokens === 16000 && !!mGenMock.getCalls()[0]?.responseFormat, `${mGenMock.getCalls()[0]?.effort}/${mGenMock.getCalls()[0]?.maxOutputTokens}`);
+  // The MODULE-PATH rich per-lesson plan runs at LOW effort (it does NOT re-ask on
+  // thin, so the medium-effort guard is unnecessary there — the cost cut for module builds).
+  check("the rich per-lesson plan ran at LOW effort + bounded 16k output (module-path cost cut)", mGenMock.getCalls()[0]?.effort === "low" && mGenMock.getCalls()[0]?.maxOutputTokens === 16000 && !!mGenMock.getCalls()[0]?.responseFormat, `${mGenMock.getCalls()[0]?.effort}/${mGenMock.getCalls()[0]?.maxOutputTokens}`);
   check("module build is ONE change-set across both lessons", evModGen.filter((e) => e.type === "change_set").length === 1);
   const genCall = mGenMock.getCalls().find((c) => (c.tools?.length ?? 0) > 0);
   const genToolNames = new Set((genCall?.tools ?? []).map((t) => t.name));
@@ -733,7 +812,7 @@ async function main() {
   // And, across the WHOLE run, those reads were never actually invoked (≤1 — here 0).
   const courseReadCalls = evModGen.filter((e) => e.type === "tool_result" && ["get_course_context", "list_modules", "list_lessons"].includes(e.tool)).length;
   check("Read course context / List modules / List lessons run ≤ once per generate (here 0)", courseReadCalls <= 1, `${courseReadCalls}`);
-  check("module generate ran at effort:high, layered", genCall?.effort === "high" && (genCall?.system ?? "").includes("TEACHING BAR"));
+  check("module generate ran at effort:medium, layered", genCall?.effort === "medium" && (genCall?.system ?? "").includes("TEACHING BAR"));
   const modDoc = await loadCourseDoc(supabase, courseId);
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");
   const modDeckCounts = newMod?.lessons.map((l) => { const d = l.blocks.find((b) => b.type === "slide_deck"); return d && d.type === "slide_deck" ? d.slides.length : -1; });

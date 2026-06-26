@@ -67,6 +67,15 @@ export const AI_PHASE_MODELS = {
     model: process.env.AI_PLAN_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_PLAN_EFFORT", "medium"),
   } satisfies PhaseModel,
+  /** The MODULE-PATH per-lesson rich plan (runRichLessonPlan). It does NOT re-ask
+   *  on a thin plan (the brief's slide range already sizes it), so the thin-plan
+   *  risk that kept the standalone `plan` at medium is absent here — it defaults to
+   *  LOW to cut the reasoning that dominated per-lesson wall-clock. The standalone
+   *  single-lesson plan (which CAN re-ask) stays `plan`/medium. Env: AI_MODULE_LESSON_PLAN_EFFORT. */
+  moduleLessonPlan: {
+    model: process.env.AI_MODULE_LESSON_PLAN_MODEL ?? DEFAULT_MODEL,
+    effort: effort("AI_MODULE_LESSON_PLAN_EFFORT", "low"),
+  } satisfies PhaseModel,
   /** The MODULE plan is the heaviest single call (a whole multi-lesson outline in
    *  one structured response) — high/medium routinely blew past the request
    *  timeout during the model's long silent reasoning phase. It now defaults to
@@ -77,12 +86,13 @@ export const AI_PHASE_MODELS = {
     model: process.env.AI_MODULE_PLAN_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_MODULE_PLAN_EFFORT", "low"),
   } satisfies PhaseModel,
-  /** GENERATE — the CREATIVE initial slide authoring — is the phase worth the most
-   *  horsepower, so it defaults to HIGH effort (the coverage-driven loop keeps turns
-   *  bounded). Env: AI_GENERATE_EFFORT. */
+  /** GENERATE — the initial slide authoring. Defaults to MEDIUM effort: the plan is
+   *  already a binding contract (content + layout per slide), so generation is closer
+   *  to a structured fill than open-ended creativity — medium covers it well and cuts
+   *  cost/latency; the coverage-driven loop keeps turns bounded. Env: AI_GENERATE_EFFORT. */
   generate: {
     model: process.env.AI_GENERATE_MODEL ?? DEFAULT_MODEL,
-    effort: effort("AI_GENERATE_EFFORT", "high"),
+    effort: effort("AI_GENERATE_EFFORT", "medium"),
   } satisfies PhaseModel,
   /** REPAIR is a MECHANICAL fill — it's handed the plan + the exact missing slide
    *  briefs and just builds them, so it runs at MEDIUM effort (cheaper than the

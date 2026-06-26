@@ -197,6 +197,46 @@ and put reusable primitives in `components/ui/`.
 
 ## AI Content Agent (OpenAI) — `lib/ai/*` (2026-06-15)
 
+> **Prompt single-source-of-truth (2026-06-25):** diagram-vs-image routing is stated
+> ONCE — `VISUAL_ROUTING_RULE` (`context.ts`, referenced by `ROLE_AND_RULES` +
+> `GENERATE_TEACHING_BAR`) for the prose, and `renderVisualDirective(slide)`
+> (`outline.ts`, exported) for the per-slide directive (used by BOTH
+> `outlinePromptFragment` AND `phases.ts:renderSpecBrief`). This killed the stale
+> 7-cut-kind `add_diagram` lists + the "no AI-generated images" contradiction that
+> a prior visual change had left in the GENERATE/edit/repair prompts. Also: the
+> GENERATE one-batch instruction now agrees across `GENERATE_TEACHING_BAR` +
+> `outlinePromptFragment` (was "one segment per turn" vs "one batch" — a speed
+> contradiction); and `SlideSpecSchema.notes` is nullable (coerce `null→""`).
+> When changing visual routing, edit those TWO symbols — nothing else re-proses it.
+>
+> **Perf + correctness pass (2026-06-25):** (0) image model pinned to the dated
+> snapshot `gpt-image-2-2026-04-21` (`DEFAULT_IMAGE_MODEL` + `.env.local`). (1)
+> Lesson-plan cost cut: `LessonOutlineSchema` descriptions trimmed (global
+> principles live once in `PLAN_SYSTEM_PROMPT`, not per field) — strict-JSON schema
+> **9514→7430 chars**; per-slide `speakerNotesGoal` moved to a single **lesson-level**
+> field (GENERATE derives per-slide notes); the **module-path** per-lesson plan
+> (`runRichLessonPlan`) now runs **LOW** effort via `AI_PHASE_MODELS.moduleLessonPlan`
+> (it doesn't re-ask on thin, so the medium guard is unneeded there) while the
+> standalone single-lesson plan stays MEDIUM. (2) Plan calls log `agent_plan_usage`
+> with `cachedTokens`; the plan request was confirmed already correctly ordered
+> (static system prefix → course-then-lesson context) — `cachedTokens:0` is TTL
+> eviction across the slow pipeline, mitigated by these speedups, NOT an ordering bug.
+> (3) **Images off the critical path:** `add_image` is now **ENQUEUE-only** — it stages
+> a PENDING image slide (`imageUrl:""` + a `pendingGen` spec on the content) and
+> returns immediately; a new Node endpoint **`app/api/ai/visual/generate/route.ts`**
+> (reusing `lib/ai/visuals/generateAndStore.ts` = the shared gen→verify→regen→store
+> flow) produces the bytes on demand, driven by the client hook
+> **`lib/editor/useVisualJobs.ts`** (idle-only, sequential, re-syncs via `liveSync`).
+> `VISUAL_WEIGHT` now also pins `quality` (supporting `low` / reference `high`) +
+> `thinking` (reference only; the gpt-image-2 `thinking` param is gated behind
+> `AI_IMAGE_THINKING_ENABLED` pending field confirmation); `openai_image`/`_inspect`
+> log `latencyMs`. (4) **Quiz/homework off the per-lesson hot path:** authored by a
+> single CONCURRENT structured call (`authorAuxBlocks` + `lib/ai/auxContent.ts`,
+> routed in the mock by `responseFormat` name so the deterministic test stays
+> stable), merged before the one reconcile/stage; the slide loop drives
+> **`coverageSlidesOnly`**. Verify: `verify:ai`/`verify:visuals`/`verify:slides`/
+> `verify:ai:int` all green.
+
 The first real AI: a Cursor-style chat docked beside the lesson editor. Built
 **provider-agnostic** — the agent loop, tools, streaming, and change-tracking
 never import a provider SDK.
@@ -209,8 +249,9 @@ never import a provider SDK.
   tests / the no-key path (records each call's params via `getCalls()`).
   **MODEL + `reasoning.effort` are PER CALL** (2026-06-17): `ModelTurnParams.model`
   + `.effort` override the env default. Central config = `lib/ai/modelConfig.ts`:
-  every phase defaults to `gpt-5.4-mini` — PLAN high · **GENERATE/REPAIR high**
-  (2026-06-22 — the hardest phase, was medium; `AI_GENERATE_MAX_OUTPUT_TOKENS` 24k) ·
+  every phase defaults to `gpt-5.4-mini` — PLAN high · **GENERATE medium**
+  (2026-06-26 — was high; the plan is a binding contract so generation is a structured
+  fill, not open-ended creativity; `AI_GENERATE_MAX_OUTPUT_TOKENS` 24k) · REPAIR medium ·
   EDIT medium · LIGHT REVIEW medium (off by default) · CRITIQUE off by default (legacy) ·
   classifier **low** (NOT `minimal` — gpt-5.4-mini rejects it: accepts
   none/low/medium/high/xhigh); each env-overridable (`AI_PLAN_MODEL`/`AI_PLAN_EFFORT`/
@@ -487,6 +528,58 @@ never import a provider SDK.
   longer contain scores/passing/time/attempts/difficulty/points/due-dates (the
   fields, patches, and UI were removed 2026-06-15).
 
+## Visual pipeline — image-first overhaul (2026-06-25)
+
+> **Supersedes the diagram-centric notes below where they conflict.** Most visuals
+> are now **GPT Image generated images** (default model **`gpt-image-2`**, the latest;
+> `OPENAI_IMAGE_MODEL` overrides) rendered as clean academic **textbook
+> figures**; only **`supply_demand` + `coordinate_plot`** stay programmatic (they
+> need exact axis values). The other 7 diagram kinds (bar_chart, array_diagram,
+> tree_diagram, graph_diagram, flowchart, number_line, venn) were **retired from the
+> AI surface** (AI-surface-only — storage schema + renderers + validate/repair/
+> geometry KEPT so any already-saved diagram still loads/renders/reverts; the model
+> just can't author them). Enforced by: the strict `DiagramSpecInputSchema` union =
+> 2 kinds; `catalog.ts` filtered by kind (`AUTHORABLE_DIAGRAM_KINDS` in `repair.ts`);
+> `coerceDiagramBestEffort` returns null for a retired kind → prose/image degrade;
+> `router.ts` `ROLE_TO_KIND` keeps only `coordinate_plot` roles (the rest route to
+> images); `accuracyCriticalKind` = the 2 kinds.
+>
+> - **Two new image layouts** (mirror the `illustration` precedent — authored ONLY by
+>   `add_image`, an `imageUrl` only the tool supplies, so NOT in
+>   `StructuredTemplateInputSchema`): **`image_reference`** (hero; image IS the
+>   subject — eyebrow+title, 0–4 annotations, 0–3 numbered concept cards; 3:2
+>   1536×1024) and **`image_supporting`** (image aids the text — eyebrow+title+lead,
+>   0–4 bullets, optional caption; 1:1 1024×1024). Both: fixed-AR box + `object-fit:
+>   cover` so the image can't bleed. Renderers in `components/editor/slide/structured/
+>   {ImageReferenceLayout,ImageSupportingLayout}.tsx`; registered in
+>   `STRUCTURED_LAYOUTS` (+ new `capacity` metadata), storage `SlideTemplateSchema`,
+>   the `SlideTemplate` union, and `StructuredSlide` dispatch.
+> - **Legacy `illustration` retired from the AI side** (`PLANNABLE_LAYOUT_IDS` +
+>   `structuredLayoutCatalog()` exclude it; `add_image` never emits it). Kept only for
+>   back-compat rendering of existing slides.
+> - **`visualWeight: 'reference' | 'supporting'`** on the plan's `visualIntent` (plus a
+>   structured **`imageSpec`** {subject, requiredLabels, axes, annotations} for
+>   reference). Pinned in ONE place — **`VISUAL_WEIGHT`** in `lib/ai/visuals/config.ts`
+>   (→ layoutId + gen `size` + `background` opaque/transparent + `promptMode`).
+>   `ImageGenParams` gained `size`/`background`; `openai.ts` passes them to the GPT Image model.
+> - **Content-first split is capacity-aware:** `StructuredLayoutDef.capacity.maxPoints`
+>   + `layoutPointCapacity()` drive `splitOverflowingSpecs` (image_reference 7,
+>   image_supporting 4) — an over-full image slide spills to a `(cont.)` slide.
+> - **Prompt builder** = `lib/ai/visuals/imageIntent.ts` (PURE): a shared TEXTBOOK
+>   style preamble + per-`promptMode` spec (reference = quoted required labels/axes;
+>   supporting = looser-but-academic). `buildImagePrompt` + `imageIntentHash`.
+> - **Reference verification** (reference only, `AI_IMAGE_VERIFY_ENABLED` default on):
+>   new `ModelClient.inspectImage` (vision; `AI_VISION_MODEL` ?? gpt-5.4-mini, mock has
+>   a deterministic verdict) checks the required labels appear → regenerate ONCE →
+>   else `add_image` **prose-degrades** (coverage holds, no loop). Lives in
+>   `makeVisualGenContext` (`agentLoop.ts`).
+> - **Freeze-on-accept:** the image content carries `intentHash`; `add_image` reuses
+>   the stored asset when an existing slide for the spec has the same hash (no regen),
+>   and **`set_image_text`** edits an image slide's text WITHOUT regenerating.
+> - Tests: `npm run verify:visuals` (94) + the image path in `verify:ai:int` (122) +
+>   `verify:slides`. **Remaining manual step (deferred):** the Playwright pixel-overflow
+>   pass for the two new layouts (`/zz-layout-preview`) — not yet run.
+
 ## Visual pipeline — programmatic diagrams (2026-06-20, see CHANGELOG.md)
 
 A teaching visual is a **teaching object, not decoration**. The LIVE path renders
@@ -538,7 +631,7 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
 - **AI IMAGE GENERATION — LIVE (2026-06-22).** For a concept no programmatic
   diagram fits (a historical scene, a biological structure, an analogy) the
   **`add_image`** tool generates an educational illustration via
-  `ModelClient.generateImage` (gpt-image-1, `OPENAI_IMAGE_MODEL`, through the SAME
+  `ModelClient.generateImage` (gpt-image-2 default, `OPENAI_IMAGE_MODEL`, through the SAME
   proxied OpenAI client — base64 out), **stores the bytes to the Supabase
   `course-assets` bucket** under `{ownerId}/ai-visuals/{courseId}/…`
   (`storeImage.ts`; public URL on the slide, NEVER a blob/data URL), and lands it

@@ -18,6 +18,8 @@ import { ComparisonMatrixLayout } from "./ComparisonMatrixLayout";
 import { ConceptExampleLayout } from "./ConceptExampleLayout";
 import { DiagramLayout } from "./DiagramLayout";
 import { IllustrationLayout } from "./IllustrationLayout";
+import { ImageReferenceLayout } from "./ImageReferenceLayout";
+import { ImageSupportingLayout } from "./ImageSupportingLayout";
 import { KeyConceptLayout } from "./KeyConceptLayout";
 import { MetricsLayout } from "./MetricsLayout";
 import { OutlineListLayout } from "./OutlineListLayout";
@@ -106,6 +108,8 @@ export function StructuredSlide({
       {template.layoutId === "comparison_matrix" && <ComparisonMatrixLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "diagram" && <DiagramLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "illustration" && <IllustrationLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "image_reference" && <ImageReferenceLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "image_supporting" && <ImageSupportingLayout content={template.content} ctx={ctx} />}
     </div>
   );
 }

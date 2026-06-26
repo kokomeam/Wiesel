@@ -67,7 +67,7 @@ function deckDoc(): { doc: CourseDocument; deck: SlideDeckBlock } {
 }
 
 function main() {
-  check("there are 12 structured layouts", STRUCTURED_LAYOUTS.length === 12, `${STRUCTURED_LAYOUTS.length}`);
+  check("there are 14 structured layouts", STRUCTURED_LAYOUTS.length === 14, `${STRUCTURED_LAYOUTS.length}`);
 
   // ── 1. Every layout's seed passes its OWN strict schema.
   for (const l of STRUCTURED_LAYOUTS) {

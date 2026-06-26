@@ -14,6 +14,7 @@
  */
 
 import { diagramRequiredElements } from "./validate";
+import { AUTHORABLE_DIAGRAM_KINDS } from "./repair";
 import type { DiagramKind, DiagramSpec } from "./types";
 
 export type DiagramDomain = "economics" | "cs" | "math" | "business" | "general";
@@ -31,7 +32,7 @@ export interface DiagramTemplateDef {
   seed: () => DiagramSpec;
 }
 
-export const DIAGRAM_TEMPLATES: DiagramTemplateDef[] = [
+const ALL_DIAGRAM_TEMPLATES: DiagramTemplateDef[] = [
   /* ───────────────────────────── Economics ───────────────────────────── */
   {
     id: "supply_demand_equilibrium",
@@ -447,6 +448,13 @@ export const DIAGRAM_TEMPLATES: DiagramTemplateDef[] = [
     }),
   },
 ];
+
+/** AI-authorable templates = only those whose kind is still authorable (supply_demand
+ *  / coordinate_plot). The rest stay defined (correct back-compat seeds) but are OFF
+ *  the AI surface (catalog text, the templateId enum, and the router all read this). */
+export const DIAGRAM_TEMPLATES: DiagramTemplateDef[] = ALL_DIAGRAM_TEMPLATES.filter((t) =>
+  AUTHORABLE_DIAGRAM_KINDS.has(t.kind)
+);
 
 export const DIAGRAM_TEMPLATE_IDS = DIAGRAM_TEMPLATES.map((t) => t.id);
 

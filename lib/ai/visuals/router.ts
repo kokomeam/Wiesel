@@ -18,19 +18,13 @@ import type { DiagramKind, VisualRole } from "@/lib/course/diagram/types";
 import { AI_VISUALS } from "./config";
 import type { VisualSourceType } from "./types";
 
-/** Roles that map to a canonical diagram kind even without an exact template. */
+/** Roles that map to a canonical diagram kind even without an exact template. Only
+ *  the two ACCURATE-by-construction kinds remain authorable (2026-06-25); every other
+ *  role (chart / flowchart / timeline / tree_or_graph / process / concept_map /
+ *  system_map / …) now has NO programmatic kind → it routes to a generated image. */
 const ROLE_TO_KIND: Partial<Record<VisualRole, DiagramKind>> = {
   graph: "coordinate_plot",
-  chart: "bar_chart",
-  data_chart: "bar_chart",
-  flowchart: "flowchart",
-  timeline: "number_line",
-  tree_or_graph: "graph_diagram",
-  process: "flowchart",
-  concept_map: "graph_diagram",
-  system_map: "graph_diagram",
   spatial_example: "coordinate_plot",
-  // worked_example / code_trace / concept_diagram / comparison → no single kind.
 };
 
 export interface RouteInput {

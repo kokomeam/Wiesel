@@ -20,6 +20,14 @@ import { outlinePromptFragment, type LessonOutline } from "./outline";
 import { summarizeBlock } from "./tools/read";
 import { slideLayoutCatalog } from "./tools/slideContent";
 
+/** SINGLE SOURCE OF TRUTH for diagram-vs-image routing — referenced by both
+ *  ROLE_AND_RULES and GENERATE_TEACHING_BAR (and mirrored by renderVisualDirective in
+ *  outline.ts) so the rule is stated ONCE. The PLAN side (PLAN_SYSTEM_PROMPT) states the
+ *  same routing in its own VISUALS section. */
+export const VISUAL_ROUTING_RULE = `- ACCURACY-CRITICAL diagrams — ONLY supply & demand (incl. price ceiling/floor) and a coordinate/function/distribution/regression PLOT — use add_diagram. The renderer draws accurate SVG from your typed data (a supply curve literally slopes up), so they're correct by construction; prefer a templateId for the canonical shapes.
+- EVERYTHING ELSE a picture helps teach (a labeled structure, a tree/graph/flow concept, a process, a historical scene, an analogy) — use add_image: a clean academic textbook figure (not decorative art), by visualWeight (reference → image_reference, supporting → image_supporting).
+- Never use add_image for the two diagram kinds; never use add_diagram for anything else — it degrades to prose.`;
+
 const ROLE_AND_RULES = `You are the CourseGen Content Agent — an expert instructional designer working INSIDE a course editor, beside the creator.
 
 You do real work by calling tools that mutate the course, then you discuss what you changed. Optimize for CORRECTNESS and QUALITY, not speed. Prefer to read context first (get_course_context / get_lesson) so your output aligns with what the course teaches and does not duplicate existing blocks.
@@ -51,8 +59,8 @@ DESIGNED LAYOUTS & PRIMITIVES (use the richer vocabulary)
 - Match the layout to the content; fill EVERY slot; keep copy tight (lengths are enforced — an over-long heading/body will be returned to you to shorten). Reach for a sticker (the icon slot on a card, or add_sticker on a freeform slide) ONLY when it clarifies — skip it otherwise. Stickers are referenced by id from the catalog; never invent ids or draw shapes.
 - Size text with the SEMANTIC scale via set_text_style (display/title/heading/body/caption), never raw pixels; choose the "display" font family for key-concept or section titles.
 
-PROGRAMMATIC VISUALS (diagrams as teaching objects)
-- When a slide explains something a DIAGRAM teaches better — a graph (supply & demand, a distribution, a regression), a chart, an array with pointers (two-pointers / sliding window / binary search), a tree (BST, traversal, recursion, hierarchy), a node-link graph (BFS/DFS, weighted/Dijkstra), a flowchart, a number line, or a 2-set Venn — add it with add_diagram. The renderer draws ACCURATE SVG from your typed data (a supply curve literally slopes up; a weighted graph weights every edge), so these are precise, accessible, and editable — never decoration. Prefer a templateId for canonical diagrams so the geometry is correct by construction.`;
+VISUALS (diagrams vs generated images — two routes, never crossed)
+${VISUAL_ROUTING_RULE}`;
 
 /** The GENERATE phase's teaching bar + layout decision guide, layered on top of
  *  the catalog when authoring an approved lesson outline. */
@@ -65,7 +73,7 @@ THE PLAN IS A CONTRACT — COVER IT COMPLETELY:
 - Do NOT stop early because the topic "seems simple" or "feels done". A planned full lesson must produce its full slide count; a 3-slide deck for an 8-slide plan is a FAILURE.
 - If add_structured_slides_batch reports a slide it COULDN'T build (genuinely missing content), re-send ONLY that slide with the content filled in — never skip a planned spec. Over-long copy is NOT an error (it auto-fits) — don't re-send for length.
 
-AUTHOR ALL THE SLIDES IN ONE BATCH. Build EVERY planned text slide in a SINGLE add_structured_slides_batch call — pass them all at once (NOT one slide, and NOT one segment, per turn). Add any programmatic graph/diagram with add_diagram in the same turn. Render each slide with the layout the plan assigned (layout=<id>); you MAY upgrade to a better-fitting STRUCTURED layout, but you may NOT downgrade to a plain/prose or a bare list as a lazy default, and there is NO flat tip-box / plain-text deck tool here. "prose" is allowed ONLY when the plan chose it (or the content is genuinely just an explanation). Fill EVERY slot of the chosen layout.
+AUTHOR ALL THE SLIDES IN ONE BATCH. Build EVERY planned text slide in a SINGLE add_structured_slides_batch call — pass them all at once (NOT one slide, and NOT one segment, per turn). Add every planned add_image / add_diagram in the SAME turn. Render each slide with the layout the plan assigned (layout=<id>); you MAY upgrade to a better-fitting STRUCTURED layout, but you may NOT downgrade to a plain/prose or a bare list as a lazy default, and there is NO flat tip-box / plain-text deck tool here. "prose" is allowed ONLY when the plan chose it (or the content is genuinely just an explanation). Fill EVERY slot of the chosen layout.
 
 TEACH WITH REAL CONTENT (this is what's been missing):
 - Expand the plan's per-slide brief (the "cover" points) into actual teaching — full sentences, real steps, a concrete worked example. The brief is the floor of what to say, not the text to paste.
@@ -77,14 +85,13 @@ TEACH WITH REAL CONTENT (this is what's been missing):
 - Follow the approved outline: cover every planned concept; keep the planned order + depth + the layout each slide was assigned (the plan chose it to FIT that slide's points); vary layouts so the deck isn't five identical slides.
 - CONTINUATION slides: a slide the plan marked as a continuation keeps its parent's heading + "(cont.)" and adds a brief "continuing from {parent}" cue (an eyebrow/opening line), then authors ONLY its own listed points — it must NEVER repeat the parent slide's points.
 
-VISUALS ARE TEACHING OBJECTS — BUILD THE PLANNED ONES. Honor each slide's planned visualIntent, and build it (don't just leave the slide as prose):
-- A visual marked REQUIRED, or accuracy-critical, or a graph-conventional topic (supply & demand, binary search, a weighted graph, a distribution): add a programmatic diagram with add_diagram — it renders as ACCURATE SVG (a supply curve really slopes up; a Dijkstra graph really weights every edge). Use a templateId for canonical diagrams so they're correct by construction.
-- A visual marked RECOMMENDED that a programmatic diagram CAN draw (a structure, process, relationship, comparison, timeline, array/tree/graph): build it with add_diagram too — recommended is a build signal, not an afterthought.
-- A visual for a concept NO diagram fits (a historical scene, a biological structure, a real-world analogy, an evocative concept image): add an educational illustration with add_image — give it a precise prompt and required alt text; it's generated and stored automatically.
-- REAL DATA ONLY. A diagram MUST carry YOUR real, subject-specific data — a bar chart / plot needs your actual numbers, a graph your actual nodes/edges. Supply them in a custom diagram (a templateId is only for the canonical STRUCTURAL diagrams: supply & demand, binary search, a tree/graph shape). If you don't have real data for a diagram, DON'T fake one — teach the point in prose. A diagram is never rendered with placeholder/demo data (an unusable one degrades to a prose slide).
-Aim for a deck that USES its planned visuals (a typical full lesson lands 2–4). Do NOT add a visual that merely restates the title, decorates, crowds the slide, or that a table/code/text conveys more precisely. Never use add_image for anything accuracy-critical (a graph/chart/labeled diagram) — that MUST be a programmatic diagram. Every visual carries alt text + the reason it was added; never fabricate chart data.
+VISUALS ARE TEACHING OBJECTS — BUILD THE PLANNED ONES. Honor each slide's planned visualIntent and build it (don't just leave the slide as prose):
+${VISUAL_ROUTING_RULE}
+For an add_image reference visual, pass the imageSpec's required labels through your prompt EXACTLY; give every image a precise prompt + required alt text (it's a clean academic textbook figure, generated + stored automatically).
+- REAL DATA ONLY for a diagram — your actual numbers. If you don't have real data, DON'T fake a diagram — use a generated image or teach it in prose. A diagram is never rendered with placeholder/demo data (an unusable one degrades to prose).
+Aim for a deck that USES its planned visuals (a typical full lesson lands 2–4). Do NOT add a visual that merely restates the title, decorates, crowds the slide, or that a table/code/text conveys more precisely. Every visual carries alt text + the reason it was added.
 
-Rich text is structured data (runs + marks), never markdown. In a rich-text slot { text, runs }, when there's NO inline formatting send runs: [] (or omit it) — NEVER runs: null; inside a run with no marks send marks: {} — never null. Fill EVERY required text field of the chosen layout — never leave one empty by putting that prose in a sibling field (a diagram slide's explanation goes in its caption; a prose slide's in its body). Stickers by id, sparingly; never emit raw SVG. Still NO AI-generated/stock images and no fabricated chart data (metrics_overview / a data_chart = real data or omit) — but a PROGRAMMATIC diagram is the right way to draw the picture a concept needs.`;
+Rich text is structured data (runs + marks), never markdown. In a rich-text slot { text, runs }, when there's NO inline formatting send runs: [] (or omit it) — NEVER runs: null; inside a run with no marks send marks: {} — never null. Fill EVERY required text field of the chosen layout — never leave one empty by putting that prose in a sibling field (a diagram slide's explanation goes in its caption; a prose slide's in its body). Stickers by id, sparingly; never emit raw SVG. Real data only — a diagram or metrics_overview needs your actual numbers or it's omitted; never fabricate plot data.`;
 
 function slideCatalogText(): string {
   const lines = slideLayoutCatalog().map((l) => {
@@ -111,11 +118,12 @@ function structuredCatalogText(): string {
  * pass no opts → byte-identical to the prior behavior (no cache regression). */
 /** COURSE CONTEXT + CURRENT LESSON grounding lines (shared by the GENERATE/edit
  *  system prompt and the PLAN phase prompt). */
-export function courseContextLines(doc: CourseDocument, lessonId: string): string[] {
-  const hit = findLesson(doc, lessonId);
-  const lesson = hit?.lesson;
+/** The STABLE, course-level half of the context (identical for every lesson of a
+ *  course) — title/audience/level/outcomes/teachingStyle. Split out so the PLAN
+ *  call can put it in the cacheable system prefix while only the variable CURRENT
+ *  LESSON half rides in the trailing message (prompt-cache hit on lessons 2..N). */
+export function courseLevelContextLines(doc: CourseDocument): string[] {
   const plan = doc.plan;
-
   const lines: string[] = ["COURSE CONTEXT", `Title: ${doc.title}`];
   if (doc.description) lines.push(`Description: ${doc.description}`);
   if (doc.audience) lines.push(`Audience: ${doc.audience}`);
@@ -124,8 +132,13 @@ export function courseContextLines(doc: CourseDocument, lessonId: string): strin
   if (plan.outcomes.length) lines.push(`Learning outcomes: ${plan.outcomes.join("; ")}`);
   if (plan.prerequisites.length) lines.push(`Prerequisites: ${plan.prerequisites.join("; ")}`);
   if (plan.teachingStyle) lines.push(`Teaching style / tone: ${plan.teachingStyle}`);
+  return lines;
+}
 
-  lines.push("", "CURRENT LESSON");
+/** The VARIABLE, per-lesson half of the context (the CURRENT LESSON block). */
+export function lessonContextLines(doc: CourseDocument, lessonId: string): string[] {
+  const lesson = findLesson(doc, lessonId)?.lesson;
+  const lines: string[] = ["CURRENT LESSON"];
   if (lesson) {
     lines.push(`"${lesson.title}" (lessonId: ${lesson.id})`);
     if (lesson.objective) lines.push(`Objective: ${lesson.objective}`);
@@ -140,6 +153,10 @@ export function courseContextLines(doc: CourseDocument, lessonId: string): strin
     lines.push(`(lessonId: ${lessonId})`);
   }
   return lines;
+}
+
+export function courseContextLines(doc: CourseDocument, lessonId: string): string[] {
+  return [...courseLevelContextLines(doc), "", ...lessonContextLines(doc, lessonId)];
 }
 
 /** The STATIC system prefix — byte-identical across calls (role + the catalogs +

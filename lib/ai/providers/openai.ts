@@ -11,6 +11,7 @@
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import type {
+  ImageInspectParams,
   ModelClient,
   ModelErrorKind,
   ModelInputItem,
@@ -26,8 +27,12 @@ const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_EFFORT = "medium";
 const DEFAULT_MAX_OUTPUT_TOKENS = 16000;
 // The image model for educational illustrations (the non-diagram visual path).
-// gpt-image-1 returns base64; the caller stores it. OPENAI_IMAGE_MODEL overrides.
-const DEFAULT_IMAGE_MODEL = "gpt-image-1";
+// The GPT Image model returns base64; the caller stores it. Pinned to a DATED
+// snapshot (not the floating `gpt-image-2` alias) so prod output can't shift under
+// us; OPENAI_IMAGE_MODEL overrides (e.g. back to gpt-image-1 or a newer snapshot).
+const DEFAULT_IMAGE_MODEL = "gpt-image-2-2026-04-21";
+// Cheap vision model for reference-image verification. AI_VISION_MODEL overrides.
+const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 
 /** Map a coarse aspect ratio to gpt-image-1's nearest supported size. */
 function aspectToImageSize(aspect?: string): "1024x1024" | "1536x1024" | "1024x1536" {
@@ -473,23 +478,86 @@ export function createOpenAIModelClient(): ModelClient {
     },
 
     async generateImage(params) {
-      const size = aspectToImageSize(params.aspectRatio);
+      // Prefer the exact size (pinned by visualWeight); fall back to the coarse aspect.
+      const size = params.size ?? aspectToImageSize(params.aspectRatio);
+      const background = params.background ?? "auto";
+      const quality = params.quality;
+      // gpt-image-2 "thinking" mode: the exact param name is unconfirmed, so it is
+      // ONLY sent when explicitly enabled (AI_IMAGE_THINKING_ENABLED=true) — an
+      // unverified field must not 400 every reference image. Flip the env on once the
+      // docs confirm the field (and rename `thinking` here if needed).
+      const useThinking = params.thinking === true && process.env.AI_IMAGE_THINKING_ENABLED === "true";
+      // Cast to the NON-streaming params type (an extra `thinking` key rides through
+      // for gpt-image-2; the cast keeps the non-streaming overload → res.data typed).
+      const body = {
+        model: imageModel,
+        prompt: params.prompt,
+        size,
+        background,
+        n: 1,
+        ...(quality ? { quality } : {}),
+        ...(useThinking ? { thinking: true } : {}),
+      } as OpenAI.Images.ImageGenerateParamsNonStreaming;
+      const t0 = Date.now();
       try {
-        const res = await client.images.generate(
-          { model: imageModel, prompt: params.prompt, size, n: 1 },
-          { signal: params.signal }
-        );
+        const res = await client.images.generate(body, { signal: params.signal });
+        const latencyMs = Date.now() - t0;
         const b64 = res.data?.[0]?.b64_json;
         if (!b64) {
-          console.log(JSON.stringify({ tag: "openai_image", outcome: "empty", model: imageModel, size }));
+          console.log(JSON.stringify({ tag: "openai_image", outcome: "empty", model: imageModel, size, background, quality, latencyMs }));
           return null;
         }
         const { width, height } = imageSizeDims(size);
-        console.log(JSON.stringify({ tag: "openai_image", outcome: "ok", model: imageModel, size, bytes: b64.length }));
+        console.log(JSON.stringify({ tag: "openai_image", outcome: "ok", model: imageModel, size, background, quality, thinking: useThinking, bytes: b64.length, latencyMs }));
         return { base64: b64, mimeType: "image/png", width, height };
       } catch (error) {
+        const latencyMs = Date.now() - t0;
         const { kind, message, status } = classifyError(error);
-        console.log(JSON.stringify({ tag: "openai_image_error", errorKind: kind, status, message, model: imageModel }));
+        console.log(JSON.stringify({ tag: "openai_image_error", errorKind: kind, status, message, model: imageModel, latencyMs }));
+        return null;
+      }
+    },
+
+    async inspectImage(params: ImageInspectParams) {
+      const visionModel = process.env.AI_VISION_MODEL ?? DEFAULT_VISION_MODEL;
+      const dataUrl = `data:${params.mimeType};base64,${params.base64}`;
+      const t0 = Date.now();
+      try {
+        const res = await client.responses.create(
+          {
+            model: visionModel,
+            reasoning: { effort: "low" },
+            max_output_tokens: 600,
+            input: [
+              {
+                role: "user",
+                content: [
+                  { type: "input_text", text: params.instruction },
+                  { type: "input_image", image_url: dataUrl, detail: "low" },
+                ],
+              },
+            ],
+            ...(params.responseFormat
+              ? {
+                  text: {
+                    format: {
+                      type: "json_schema" as const,
+                      name: params.responseFormat.name,
+                      strict: true,
+                      schema: params.responseFormat.schema,
+                    },
+                  },
+                }
+              : {}),
+          },
+          { signal: params.signal }
+        );
+        const text = messageTextFromOutput(res.output) || res.output_text || "";
+        console.log(JSON.stringify({ tag: "openai_image_inspect", outcome: "ok", model: visionModel, chars: text.length, latencyMs: Date.now() - t0 }));
+        return { text };
+      } catch (error) {
+        const { kind, message, status } = classifyError(error);
+        console.log(JSON.stringify({ tag: "openai_image_inspect_error", errorKind: kind, status, message, model: visionModel, latencyMs: Date.now() - t0 }));
         return null;
       }
     },

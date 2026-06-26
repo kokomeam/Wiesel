@@ -466,6 +466,85 @@ export interface IllustrationContent {
   storagePath?: string;
 }
 
+/* ── Image LAYOUTS (the two purpose-built generated-image slides that replace the
+ *    full-bleed `illustration` for new authoring). Like `illustration`, the image
+ *    lives at a stored URL supplied by `add_image` (never hand-authored) and alt
+ *    text is REQUIRED; the AI fills the typed TEXT slots, the renderer owns all
+ *    arrangement (image box AR, numbering, dividers, footer). `intentHash` freezes
+ *    the asset: it's the hash of the visual intent the image was generated from, so
+ *    an unrelated text edit never silently regenerates a different picture. */
+
+/** A PENDING image-generation request stored on the slide while the image is being
+ *  produced off the agent's critical path. `add_image` enqueues this with
+ *  `imageUrl:""` (the renderer shows the placeholder); a generation endpoint reads it,
+ *  produces the image, sets `imageUrl`/`storagePath`, and clears `pendingGen`. Carries
+ *  exactly what the prompt builder + verification need (no model call to re-derive). */
+export interface ImagePendingGen {
+  status: "pending" | "failed";
+  visualWeight: "reference" | "supporting";
+  prompt: string;
+  subject?: string;
+  requiredLabels?: string[];
+  axes?: { x?: string; y?: string };
+  annotations?: string[];
+  alt: string;
+}
+
+/** One annotation in `image_reference`: a bold label + a one-line description that
+ *  points at a detail shown in the image. */
+export interface ImageAnnotation {
+  label: RichText;
+  description: RichText;
+}
+
+/** One numbered concept card in `image_reference`'s bottom row (renderer numbers
+ *  them 01/02/03). */
+export interface ImageConceptCard {
+  title: RichText;
+  description: RichText;
+}
+
+/** HERO image layout — the image IS the subject; annotations point at details in
+ *  it and numbered concept cards summarize the takeaways. Landscape 3:2 image. */
+export interface ImageReferenceContent {
+  /** Public URL of the stored image. Empty string = pending. */
+  imageUrl: string;
+  /** Required alt text (accessibility + AI grounding). */
+  alt: string;
+  eyebrow?: RichText;
+  title: RichText;
+  /** 0–4 annotation points referencing the image. */
+  annotations?: ImageAnnotation[];
+  /** 0–3 numbered concept cards (renderer owns the 01/02/03 numbering). */
+  cards?: ImageConceptCard[];
+  source?: "ai_generated" | "upload";
+  storagePath?: string;
+  /** Hash of the visual intent this image was generated from (freeze-on-accept). */
+  intentHash?: string;
+  /** Set while the image is being generated off the critical path (imageUrl ""). */
+  pendingGen?: ImagePendingGen;
+}
+
+/** SUPPORTING image layout — the image aids understanding; the teaching lives in
+ *  the left column (lead + bullets) and the image sits right. Square 1:1 image. */
+export interface ImageSupportingContent {
+  imageUrl: string;
+  alt: string;
+  eyebrow?: RichText;
+  title: RichText;
+  /** One lead sentence under the title. */
+  lead?: RichText;
+  /** 0–4 supporting bullets. */
+  bullets?: RichText[];
+  /** Optional caption under the image. */
+  caption?: RichText;
+  source?: "ai_generated" | "upload";
+  storagePath?: string;
+  intentHash?: string;
+  /** Set while the image is being generated off the critical path (imageUrl ""). */
+  pendingGen?: ImagePendingGen;
+}
+
 /** A renderer-owned structured slide: a typed content payload that a dedicated
  *  component draws (it owns arrangement / arrows / reflow). When set on a slide
  *  it is the source of truth and the freeform `elements` are ignored. */
@@ -483,8 +562,13 @@ export type SlideTemplate =
   /** A programmatic teaching VISUAL — a typed diagram the renderer draws as crisp
    *  SVG (accurate by construction, accessible, exportable). See lib/course/diagram. */
   | { layoutId: "diagram"; content: DiagramContent }
-  /** A generated / uploaded educational IMAGE (alt-text required). */
-  | { layoutId: "illustration"; content: IllustrationContent };
+  /** A generated / uploaded educational IMAGE (alt-text required). Legacy — kept
+   *  for back-compat rendering; new authoring uses image_reference/_supporting. */
+  | { layoutId: "illustration"; content: IllustrationContent }
+  /** HERO generated-image layout (image is the subject + annotations + cards). */
+  | { layoutId: "image_reference"; content: ImageReferenceContent }
+  /** SUPPORTING generated-image layout (lead + bullets + square image). */
+  | { layoutId: "image_supporting"; content: ImageSupportingContent };
 
 export type StructuredLayoutId = SlideTemplate["layoutId"];
 

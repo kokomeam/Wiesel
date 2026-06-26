@@ -13,18 +13,13 @@ import type { z } from "zod";
 import type { CoursePatch } from "@/lib/course/patches";
 import type { CourseDocument } from "@/lib/course/types";
 
-/** An injected, side-effectful capability for generating + storing an
- *  illustration (the ONLY impure tool path). Present only when image generation
- *  is configured (an image-capable model client + an authenticated Supabase
- *  client); absent ⇒ `add_image` reports generation is unavailable. */
+/** The image-generation CAPABILITY signal for `add_image`. Present only when image
+ *  generation is configured (an image-capable model client + image-gen enabled);
+ *  absent ⇒ `add_image` degrades to prose. `add_image` is ENQUEUE-only now (it stages
+ *  a pending image slide) — the bytes are produced off the critical path by the
+ *  generation endpoint — so this only carries the per-lesson cap, not a generate fn. */
 export interface VisualGenContext {
-  /** Generate an educational illustration and store it; returns a public URL +
-   *  storage path (+ pixel dims), or null when unavailable/failed. */
-  generateIllustration(input: {
-    prompt: string;
-    alt: string;
-  }): Promise<{ url: string; storagePath: string; width?: number; height?: number } | null>;
-  /** Max illustrations per lesson — the tool enforces it against the live deck. */
+  /** Max image slides per lesson — the tool enforces it against the live deck. */
   maxPerLesson: number;
 }
 

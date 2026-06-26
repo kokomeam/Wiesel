@@ -16,18 +16,11 @@
 
 import { z } from "zod";
 import type {
-  ArrayDiagram,
-  BarChartDiagram,
   CoordinatePlotDiagram,
   DiagramContent,
   DiagramSpec,
-  FlowchartDiagram,
-  GraphDiagram,
-  NumberLineDiagram,
   SupplyDemandDiagram,
-  TreeDiagram,
   TreeNode,
-  VennDiagram,
   VisualSpec,
 } from "./types";
 import { VISUAL_ROLES } from "./types";
@@ -109,153 +102,20 @@ const CoordinatePlotSchema = z.object({
     .describe("Shade the area under one series between two x-values (a region / integral)."),
 }) satisfies z.ZodType<CoordinatePlotDiagram>;
 
-const BarChartSchema = z.object({
-  kind: z.literal("bar_chart"),
-  xLabel: label(28, "Category-axis label.").optional(),
-  yLabel: label(28, "Value-axis label.").optional(),
-  bars: z
-    .array(z.object({ label: label(24, "Bar label."), value: z.number(), color: hex.optional() }))
-    .min(1)
-    .max(8)
-    .describe("1–8 bars."),
-  maxValue: z.number().optional().describe("Optional fixed axis maximum; omit to derive from the data."),
-}) satisfies z.ZodType<BarChartDiagram>;
+/* NOTE: the 7 other diagram kinds (bar_chart, array_diagram, tree_diagram,
+ * graph_diagram, flowchart, number_line, venn) were RETIRED from the AI-authoring
+ * surface (2026-06-25). They are no longer in the strict input union below, so the
+ * model can't author them — those visuals are now generated images (image_reference
+ * / image_supporting). The permissive STORAGE schema below KEEPS all 9 kinds so any
+ * already-saved diagram still loads/renders/reverts. The runtime allowlist guard in
+ * lib/course/diagram/repair.ts blocks a removed kind on the lenient add_diagram path. */
 
-const ArrayDiagramSchema = z.object({
-  kind: z.literal("array_diagram"),
-  values: z.array(label(8, "Cell value.")).min(1).max(16).describe("1–16 cell contents (numbers as strings are fine)."),
-  showIndices: z.boolean().optional().describe("Show 0-based indices under the cells (default true)."),
-  sorted: z.boolean().optional().describe("Mark the array as sorted. REQUIRED true for a binary-search diagram (it is then validated to be ascending)."),
-  pointers: z
-    .array(z.object({ index: z.number().int(), label: label(8, "Pointer label, e.g. 'lo'/'hi'/'mid'."), color: hex.optional() }))
-    .max(4)
-    .optional()
-    .describe("0–4 pointer arrows under cells."),
-  window: z
-    .object({ from: z.number().int(), to: z.number().int(), label: label(20, "Window label.").optional() })
-    .optional()
-    .describe("Inclusive cell range to highlight (sliding window / search interval)."),
-  marks: z
-    .array(z.object({ index: z.number().int(), kind: z.enum(["target", "found", "visited", "eliminated"]) }))
-    .max(16)
-    .optional(),
-}) satisfies z.ZodType<ArrayDiagram>;
-
-// The AI-input tree node is FIXED-DEPTH (root + up to 3 levels), built bottom-up
-// so it inlines into a JSON Schema with no recursive $ref (z.lazy can't be
-// inlined). Deeper trees are rejected by validation → repaired. Storage keeps the
-// truly-recursive z.lazy form below (storage is never JSON-Schema-converted). A
-// 4-level tree is up to 15 binary nodes — ample for a teaching diagram.
-const treeLeaf = z.object({
-  label: label(16, "Node label."),
-  highlight: z.boolean().optional().describe("Accent this node (a search path / chosen branch)."),
-});
-const treeLevel3 = treeLeaf.extend({ children: z.array(treeLeaf).max(6).optional().describe("Child nodes (≤6); omit for a leaf.") });
-const treeLevel2 = treeLeaf.extend({ children: z.array(treeLevel3).max(6).optional().describe("Child nodes (≤6); omit for a leaf.") });
-const TreeNodeInputSchema = treeLeaf.extend({ children: z.array(treeLevel2).max(6).optional().describe("Child nodes (≤6); omit for a leaf.") });
-const TreeDiagramSchema = z.object({
-  kind: z.literal("tree_diagram"),
-  root: TreeNodeInputSchema,
-  variant: z.enum(["binary", "nary"]).optional(),
-  highlightOrder: z.array(label(16, "A node label, in visit order.")).max(20).optional().describe("Node labels in traversal order → numbered badges."),
-}) satisfies z.ZodType<TreeDiagram>;
-
-const GraphDiagramSchema = z.object({
-  kind: z.literal("graph_diagram"),
-  directed: z.boolean().optional(),
-  weighted: z.boolean().optional().describe("If true, EVERY edge must carry a numeric weight (e.g. for Dijkstra)."),
-  nodes: z
-    .array(
-      z.object({
-        id: label(12, "Unique node id."),
-        label: label(16, "Node label; defaults to the id.").optional(),
-        x: z.number().min(0).max(1).optional().describe("Optional 0…1 position; omit to auto-place on a circle."),
-        y: z.number().min(0).max(1).optional(),
-      })
-    )
-    .min(1)
-    .max(12)
-    .describe("1–12 nodes."),
-  edges: z
-    .array(
-      z.object({
-        from: label(12, "Source node id."),
-        to: label(12, "Target node id."),
-        weight: z.number().optional().describe("Edge weight (required when weighted=true)."),
-        label: label(16, "Optional edge label.").optional(),
-        highlight: z.boolean().optional(),
-      })
-    )
-    .max(24)
-    .describe("Edges between node ids."),
-  highlightPath: z.array(label(12, "A node id along the path.")).max(12).optional(),
-}) satisfies z.ZodType<GraphDiagram>;
-
-const FlowchartSchema = z.object({
-  kind: z.literal("flowchart"),
-  nodes: z
-    .array(
-      z.object({
-        id: label(12, "Unique node id."),
-        label: label(48, "Node text."),
-        kind: z.enum(["start", "process", "decision", "io", "end"]),
-      })
-    )
-    .min(2)
-    .max(10)
-    .describe("2–10 flow nodes (start → … → end)."),
-  edges: z
-    .array(z.object({ from: label(12, "Source id."), to: label(12, "Target id."), label: label(16, "Branch label, e.g. 'Yes'/'No'.").optional() }))
-    .min(1)
-    .max(16)
-    .describe("Directed connectors."),
-}) satisfies z.ZodType<FlowchartDiagram>;
-
-const NumberLineSchema = z.object({
-  kind: z.literal("number_line"),
-  min: z.number(),
-  max: z.number(),
-  step: z.number().positive().optional().describe("Tick spacing; omit for an auto step."),
-  points: z.array(z.object({ value: z.number(), label: label(20, "Point label.").optional(), color: hex.optional() })).max(12).optional(),
-  intervals: z
-    .array(
-      z.object({
-        from: z.number(),
-        to: z.number(),
-        label: label(20, "Interval label.").optional(),
-        closedLeft: z.boolean().optional(),
-        closedRight: z.boolean().optional(),
-      })
-    )
-    .max(6)
-    .optional(),
-}) satisfies z.ZodType<NumberLineDiagram>;
-
-const VennSchema = z.object({
-  kind: z.literal("venn"),
-  aLabel: label(28, "Left set label."),
-  bLabel: label(28, "Right set label."),
-  aOnly: label(60, "What's only in the left set.").optional(),
-  bOnly: label(60, "What's only in the right set.").optional(),
-  both: label(60, "What's in the overlap.").optional(),
-}) satisfies z.ZodType<VennDiagram>;
-
-/** The strict diagram union, with the deterministic correctness gate attached:
- *  the `.superRefine` runs `validateDiagram`, so a wrong shape (demand sloping
- *  up, an unsorted "sorted" array, an unweighted weighted graph) is rejected
- *  with the same message the test suite asserts. */
+/** The strict diagram union (the two ACCURATE-by-construction kinds only), with the
+ *  deterministic correctness gate attached: the `.superRefine` runs `validateDiagram`,
+ *  so a wrong shape (demand sloping up, an out-of-range plot) is rejected with the
+ *  same message the test suite asserts. */
 export const DiagramSpecInputSchema = z
-  .discriminatedUnion("kind", [
-    SupplyDemandSchema,
-    CoordinatePlotSchema,
-    BarChartSchema,
-    ArrayDiagramSchema,
-    TreeDiagramSchema,
-    GraphDiagramSchema,
-    FlowchartSchema,
-    NumberLineSchema,
-    VennSchema,
-  ])
+  .discriminatedUnion("kind", [SupplyDemandSchema, CoordinatePlotSchema])
   .superRefine((spec, ctx) => {
     for (const message of validateDiagram(spec as DiagramSpec)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message });

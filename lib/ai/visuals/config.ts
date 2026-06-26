@@ -36,6 +36,44 @@ export const AI_VISUALS = {
   requireReason: boolEnv("AI_VISUAL_REQUIRE_REASON", true),
   /** Hard-validate accuracy-critical AI visuals (or warn + require human review). */
   accuracyCriticalValidate: boolEnv("AI_VISUAL_ACCURACY_CRITICAL_VALIDATE", true),
+  /** Vision-verify REFERENCE images (required labels / axes / curve count) after
+   *  generation; regenerate once on failure, then prose-degrade. Reference only —
+   *  supporting/conceptual images skip it (latency/cost). Env: AI_IMAGE_VERIFY_ENABLED. */
+  verifyReferenceImages: boolEnv("AI_IMAGE_VERIFY_ENABLED", true),
 } as const;
 
 export type AiVisualsConfig = typeof AI_VISUALS;
+
+/**
+ * The ONE source of truth for how a plan-time `visualWeight` maps to a layout, a
+ * gpt-image-1 generation size, and the prompt detail level. The planner emits
+ * `visualWeight`; `add_image` reads `layoutId` + `size` + `background`; the prompt
+ * builder reads `promptMode`. Reference diagrams render on WHITE (`opaque`);
+ * supporting/illustrative images on `transparent` so they composite onto the slide.
+ */
+export const VISUAL_WEIGHT = {
+  reference: {
+    layoutId: "image_reference",
+    size: "1536x1024",
+    aspect: "3:2",
+    background: "opaque",
+    promptMode: "structured",
+    quality: "high",
+    thinking: true,
+  },
+  supporting: {
+    layoutId: "image_supporting",
+    // gpt-image-2 does NOT support `background: transparent` (verified live: 400
+    // "Transparent background is not supported for this model"); the image_supporting
+    // layout boxes the image (object-fit: cover) so a white/opaque ground is correct.
+    size: "1024x1024",
+    aspect: "1:1",
+    background: "opaque",
+    promptMode: "conceptual",
+    quality: "low",
+    thinking: false,
+  },
+} as const;
+
+export type VisualWeight = keyof typeof VISUAL_WEIGHT;
+export const VISUAL_WEIGHTS = Object.keys(VISUAL_WEIGHT) as [VisualWeight, ...VisualWeight[]];

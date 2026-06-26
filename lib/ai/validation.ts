@@ -30,23 +30,15 @@ export type HardFailureCode =
   | "REQUIRED_BLOCK_MISSING"
   | "REQUIRED_VISUAL_MISSING";
 
-/** Visual roles a slide MUST satisfy with a drawn diagram/image (not just any
- *  visual layout) — these are inherently precise pictures. */
-const ACCURATE_VISUAL_ROLES: ReadonlySet<string> = new Set([
-  "graph",
-  "data_chart",
-  "chart",
-  "flowchart",
-  "timeline",
-  "tree_or_graph",
-  "spatial_example",
-]);
-
-/** Does a built slide satisfy a planned REQUIRED visual? Accuracy-critical
- *  intents demand a real `diagram`/image; others accept any visual layout. */
+/** Does a built slide satisfy a planned REQUIRED visual? Accuracy-critical intents
+ *  (mustBeAccurate — only the two programmatic diagram kinds set it) demand a real
+ *  `diagram`; every other visual intent is a GENERATED image and is satisfied by any
+ *  visual layout (incl. image_reference / image_supporting). The old role-based
+ *  heuristic is retired: roles like graph / tree_or_graph now produce images, so a
+ *  built image must not be flagged "missing" against them. */
 function visualSatisfied(slide: Slide, spec: PlannedSlide): boolean {
   const vi = spec.visualIntent;
-  const accurate = !!vi && (vi.mustBeAccurate === true || ACCURATE_VISUAL_ROLES.has(vi.role));
+  const accurate = !!vi && vi.mustBeAccurate === true;
   return accurate ? slideIsDiagram(slide) : slideIsVisual(slide);
 }
 

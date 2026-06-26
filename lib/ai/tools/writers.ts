@@ -97,7 +97,7 @@ const writeSlideDeck = defineTool({
 
 /* ───────────────────────────── write_quiz ─────────────────────────────── */
 
-const questionSchema = z.discriminatedUnion("kind", [
+export const questionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("multiple_choice"),
     prompt: z.string(),
