@@ -480,6 +480,143 @@ REVIEW) → STAGE**. Correctness is enforced by code, not by a model's opinion.
   `verify:ai:int` **67** vs live Supabase (+ clean-validate, missing-spec repair,
   placeholder removal, and light-review-trigger end-to-end). No DB migration.
 
+## Marketing studio — Email & sequences hub (Slice 5), 2026-06-22
+
+You can now SEE what will be emailed, when, and to whom — before it sends.
+
+- **Hub card → `/marketing/sequences`:** every sequence with its status, schedule
+  (each touch's delay / trigger), subjects, and per-touch **sent / queued** counts.
+- **`/marketing/sequences/[id]`:** each email **rendered exactly as it will send**
+  (`renderEmailHtml` — the same renderer the real Resend path uses), with its
+  preview text + send counts, plus a **recipients** table (who's enrolled and
+  which email they're up to). "Edit with AI" links to the agent.
+- **Persistence:** `loadSequencesOverview` (per-touch sent/queued from the outbox
+  + enrolled counts) and `loadSequenceRecipients` (enrollees + current position).
+- **Verified:** `verify:marketing:sequences` **10/10** (overview counts after
+  enroll+tick, recipient positions, email renders with a working unsubscribe).
+  `build` + `tsc` + `lint` clean. No migration/secret. Resend remains optional —
+  the page shows a "mock mode" banner until `RESEND_API_KEY` is set.
+
+## Marketing studio — account tier + course picker + overview (Slice 4), 2026-06-22
+
+A creator/account tier above course scope: one audience across all courses,
+overall analytics, and per-course campaigns side by side.
+
+- **Migration (applied):** `20260622000000_marketing_account_tier.sql` —
+  `audience_contact` (`(author_id,email)` unique; consent; global `unsubscribed_at`;
+  RLS `author_id = auth.uid()`) + nullable `contact_id` on `subscriber` &
+  `analytics_event` (+ indexes) + an idempotent backfill deriving contacts from
+  existing subscribers and linking them. Reversible down-migration documented.
+  Types regenerated; advisors clean.
+- **Contact linking:** `ingest.captureLead` upserts the account-level contact and
+  stamps `contact_id` on the per-course subscriber + events — so one person is a
+  single identity across every course (lead on A, enrolled on B).
+- **Global unsubscribe:** `globalUnsubscribe()` (shared by the unsubscribe route +
+  tests) flags the contact and suppresses EVERY linked per-course subscriber
+  (CAN-SPAM/GDPR-safe — the scheduler already skips `unsubscribed`). User-chosen
+  default.
+- **Account rollup:** `analytics.getAccountSummary(authorId)` — distinct audience
+  (contacts) + funnel summed across the creator's courses + per-course breakdown.
+- **UI:** `/marketing/overview` (total audience, account funnel, a card per course
+  → its hub, master mailing list); the per-course hub gained a **course picker**
+  + Overview link; `analytics`/`audience`/`agent` now accept `?course=` so the
+  selection persists.
+- **Verified:** new `verify:marketing:account` **10/10** (unified contact across
+  courses, account aggregation, global-unsubscribe cascade). Full suite green:
+  gate 37 · flow 18 · analytics 12 · email 34 · agent 18 · landing-edit 11 ·
+  account 10 · swap 7 = **147**; `build` + `tsc` + `lint` clean.
+
+## Marketing studio — observability + AI page editing (Slices 1–3), 2026-06-22
+
+Made the landing loop real & observable, the funnel legible, and the page
+editable by chat. (Diagnosis first found the recurring "ingest not configured"
+was an UNSAVED `.env.local` buffer + a second checkout/server on :3000 — the
+code was already correct; saving the key + restarting :3001 fixed it. Flow verify
+now 18/18 incl. ingest.)
+
+- **Slice 1 — observable landing loop:** `GET /api/marketing/health`
+  (`{adminConfigured,emailMode}`) + clearer ingest 503; **Accept/Reject now give
+  feedback** — actions return `{message, href, hrefLabel}`, the hub shows a toast
+  + an artifact link, the item leaves "staged"; **authed draft preview**
+  `/marketing/preview/[id]` renders the draft via the renderer in `preview` mode
+  (no beacon, disabled form) so you can see a page before publishing.
+- **Slice 2 — legible scheduling:** `/marketing/audience` shows each subscriber's
+  lifecycle stage + sequence position + next send; author-scoped **test controls**
+  (seed lead, advance scheduler ±days via a future `nowMs`) exercise the funnel on
+  the mock provider; plain-language flow doc in `docs/marketing-suite.md`.
+- **Slice 3 — conversational editing + typed design layer:** additive (jsonb, no
+  migration) `LandingTheme` tokens (colorTheme/typePairing/density/buttonStyle) +
+  per-section layout `variant` (hero centered|split|minimal, outcomes grid|list);
+  `components/marketing-pages/design.ts` resolves tokens → literal Tailwind
+  classes (renderer owns all layout — the agent never emits CSS). New reversible,
+  gated tools `set_page_design` / `set_section_variant` (+ `update_landing_section`
+  for copy); **split-view editor** `/marketing/landing/[id]` (agent chat + live
+  draft preview, page-scoped agent, `router.refresh()` per turn).
+- **Verified:** `verify:marketing:flow` 18 · `:email` 34 (+audience) · new
+  `:landing-edit` 11 (design tokens + variant + content edits stage & reject
+  byte-for-byte; agent path page-scoped) · gate 37 · agent 18 — all green;
+  `build` + `tsc` + `lint` clean.
+
+## Marketing Assistant — Phase 5: real integrations swap (Resend + cron), 2026-06-19
+
+The mock→real swap, behind one env var, zero contract changes.
+
+- **`ResendEmailProvider`** (`lib/marketing/services/resend.ts`) — the ONLY file importing the `resend` SDK. Implements the same `EmailProvider` contract as the mock: renders the `EmailBody` to HTML + text (the pure renderers), sets a `List-Unsubscribe` header, returns the provider message id (no simulated engagement — real opens/clicks will arrive via Resend webhooks). Env: `RESEND_API_KEY`, `RESEND_FROM`.
+- **Factory flip** (`services/factory.ts`): `createEmailProvider()` now returns Resend when `RESEND_API_KEY` is set, the mock otherwise — the single swap point. Tools, gate, agent, scheduler, and UI are untouched.
+- **Cron**: the tick route gained a GET handler (Vercel Cron uses GET; external cron can POST with `x-cron-secret`); `vercel.json` schedules `/api/marketing/scheduler/tick` every 5 min. Guarded by `CRON_SECRET`.
+- **Docs**: `docs/marketing-suite.md` (architecture, env, verify scripts, the swap); CLAUDE.md marketing section.
+- **Verified:** `npm run verify:marketing:swap` **7/7** — no key → mock selected; key set → Resend selected; both expose the identical `EmailProvider` contract (zero downstream change). `build` + `tsc` + `lint` clean. Added runtime dep: `resend` (15 runtime deps total).
+
+## Marketing Assistant — Phase 4: the Marketing Agent + Generate Kit + approval inbox, 2026-06-19
+
+The assistant — it observes, generates, and stops at the gate.
+
+- **Agent loop** (`lib/marketing/agent/loop.ts`) on the provider-agnostic `ModelClient` (same seam as the studio): **observe** (funnel + assets injected as a leading `developer` message — static system stays cacheable), **reason** (stream a turn with the marketing tool defs), **act** (every call through `executeMarketingTool` → the gate). Reversible auto-stages; reads execute; an irreversible call emits `approval_request` and **PAUSES** — the loop never sends/publishes on its own. Conversations reuse the shared `conversations`/`messages` tables (course-scoped, lesson_id NULL) with full history replay.
+- **SSE** (`lib/marketing/agent/events.ts` + `app/api/marketing/agent/route.ts`, Node): `observation` / `assistant_delta` / `tool_start` / `tool_result` (status read|staged|pending_approval) / `approval_request` / `done{paused}`. OpenAI key server-only; 503s to a clean error event when unconfigured.
+- **UI**: `components/marketing/agent/AgentPanel.tsx` (streaming chat with live tool cards + inline Approve/Deny) at `app/(app)/marketing/agent`. The hub gained a **unified approval inbox** — staged (Accept/Reject) + pending (Approve/Deny) from any surface (Generate Kit, cards, agent), labeled by action + flagged when the agent requested it — plus the **Generate Kit** batch button (`generateKitAction` runs the three reversible generators through the gate).
+- **Verified:** `npm run verify:marketing:agent` **18/18** against live Supabase via the mock model client — observe step, reversible auto-stage, read tool, **irreversible pause** (page stays draft, one model call, pending action recorded), approve→executes, governance in the prompt, observe-as-developer-message, history persisted. `build` + `tsc` + `lint` clean.
+
+## Marketing Assistant — Phase 3: email + subscriber state machine + scheduler (mock send), 2026-06-19
+
+The full email lifecycle, on OUR state machine — Resend (Phase 5) only ever moves bytes.
+
+- **Subscriber state machine** (`lib/marketing/stateMachine.ts`): a PURE reducer over the event stream (`form_submit→lead`, `email_sent→subscribed`, `open/click→engaged`, `enrollment→enrolled`, `unsubscribe/bounce→terminal`). Active statuses only advance; terminals stick. `applyEventToSubscriber` materializes it; `isSuppressed` gates sends.
+- **The engine** (`lib/marketing/scheduler.ts`): `enrollSubscriber/Segment` → `sequence_enrollment` + the first due `scheduled_send`; `runSchedulerTick` claims due sends, delivers via the provider, emits `email_sent` (+ deterministic mock `open/click`) into the single stream, advances each enrollment to the next touch (or completes it); `processEventTrigger` enrolls on a matching behavioral event; `sendBroadcast` is an inline one-off. **Idempotent** via the unique `(touch_id, subscriber_id)`; suppressed subscribers skip + their enrollment cancels.
+- **Content**: `lib/marketing/email/templates.ts` (deterministic 4-touch launch + 2-touch followup, grounded in the course) + `render.ts` (pure text/HTML; Phase 5 can swap React Email) — every email carries a one-click unsubscribe.
+- **Tools** (`lib/marketing/tools/email.ts`): reversible `generate_email_sequence` / `generate_followup` / `write_email_touch`; irreversible (gated) `activate_sequence` / `enroll_segment_in_sequence` / `send_broadcast` / `send_test_email`. Sequence sends are pre-authorized by the activate approval (the gate sits at activate/enroll/broadcast, not per-touch).
+- **Routes**: `app/api/marketing/scheduler/tick` (prod cron trigger; service-role + optional `CRON_SECRET`; runs the same `runSchedulerTick` the tests drive) and `app/api/marketing/unsubscribe` (one-click, service-role).
+- **Verified:** `npm run verify:marketing:email` **31/31** against live Supabase — pure state-machine transitions, generate→accept, write→reject (byte-for-byte), activate→approve→enroll→tick, clock-advance to the next touch, idempotent re-tick, unsubscribe suppression, event-triggered enrollment, and a gated broadcast. `build` + `tsc` + `lint` clean.
+
+## Marketing Assistant — Phase 2: analytics event stream + dashboard + observe, 2026-06-19
+
+The single event stream becomes legible — to the creator AND the agent.
+
+- **Aggregation (`lib/marketing/analytics.ts`).** `getAnalyticsSummary(courseId)` rolls the funnel (views → leads → email opens → clicks → enrollments) + rates + subscribers-by-status from `analytics_event` (cheap COUNT queries over the `(course_id,type)` / `(course_id,status)` indexes). Leads = distinct subscribers; enrollments = the materialized `enrolled` state. `queryAnalyticsEvents` returns a bounded, filtered slice.
+- **Observe tools (`lib/marketing/tools/analytics.ts`).** `get_analytics_summary`, `query_analytics_events`, `get_subscriber_segments` — reads, added to `MARKETING_READ_TOOLS` (so they're in the agent's observe surface AND the generate phase). The dashboard and the agent now read the *same* numbers.
+- **Dashboard (`app/(app)/marketing/analytics/page.tsx`).** A funnel view (renderer-owned bars), subscribers-by-status, and recent events — linked from the hub's now-live Analytics card.
+- **Verified:** `npm run verify:marketing:analytics` **12/12** against live Supabase (funnel counts, rates, status breakdown, and all three observe tools), `build` + `tsc` + `lint` clean.
+
+## Marketing Assistant — Phase 1: landing page generate → publish → lead capture, 2026-06-19
+
+The first user-facing slice: a creator generates a landing page from their syllabus, reviews it, publishes it (gated), and it captures leads at a public URL.
+
+- **Slot-schema + renderer (renderer owns layout).** `components/marketing-pages/*` renders the typed `LandingSection[]` in the warm-editorial identity (hero/outcomes/curriculum/instructor/social_proof/pricing_cta/lead_capture/faq). Public route **`app/p/[slug]/page.tsx`** server-renders a PUBLISHED page via RLS (drafts 404), with `generateMetadata`.
+- **Public lead-capture ingest.** `LeadCaptureForm` + `PageViewBeacon` (client) POST to **`app/api/marketing/ingest/route.ts`** (Node), which uses a **service-role admin client** (`lib/supabase/admin.ts`) to write `subscriber` + `analytics_event` rows on behalf of anonymous visitors — `lib/marketing/ingest.ts` validates the target page is published, idempotently upserts the subscriber (by `campaign_id,email`), and emits `form_submit` (+ `free_lesson_capture`) and `page_view` into the single event stream. Route 503s cleanly when the key isn't configured.
+- **Studio Marketing hub** (`app/(app)/marketing/`): replaced the mock placeholder with a real hub — generate a landing page, review the **staged** change (Accept/Reject), **Publish** (→ approval gate: Approve/Deny), View live / Unpublish. Server actions (`actions.ts`) route the SAME shared tool layer + gate as the agent will. Sequence/analytics/agent cards are honest "Phase N" placeholders.
+- **New env:** `SUPABASE_SERVICE_ROLE_KEY` (server-only) for the ingest write path.
+- **Verified:** `npm run build` (both `/p/[slug]` + `/api/marketing/ingest` registered), `tsc` + `lint` clean, `npm run verify:marketing:flow` **7/7** generate→accept→publish→approve→public-read against live Supabase (ingest's 6 lead-capture checks auto-run once the service-role key is in `.env.local`).
+
+## Marketing Assistant — Phase 0: the spine (schema · gate · tools · mocks), 2026-06-19
+
+First slice of the Marketing Assistant suite (PRD: `docs/prd/Marketing-Assistant-Creator-Studio-Web.html`). The architectural spine everything else hangs off — **one typed tool layer, one event stream, one governance gate** — built mock-first so the whole loop works before Resend/cron exist.
+
+- **DB (applied, user-approved):** migration `20260618000000_marketing_assistant.sql` — 9 author-scoped tables (`marketing_campaign`, `landing_page`, `email_sequence`, `email_touch`, `subscriber`, `sequence_enrollment`, `scheduled_send`, `analytics_event`, `marketing_action`), denormalized `course_id` + `private.is_course_author` RLS everywhere, jsonb payloads. Two deliberate departures: `landing_page` is **public-read when `published`** (the /p/[slug] route), and `subscriber`/`analytics_event` take author-only RLS with public writes reserved for a Phase-1 service-role ingest route. Types regenerated; advisors clean (no new RLS gaps).
+- **The governance gate (`lib/marketing/gate.ts`) — a first-class, reversibility-graded primitive.** Every mutating tool routes `runThroughGate`: **read** executes (no ledger); **reversible** executes + snapshots the target BEFORE + stages an `auto_approved` row (Reject-able, atomic byte-for-byte restore via the entity registry); **irreversible** does NOT execute — it runs the tool's side-effect-free preview, records a `pending` row, and waits for `approveMarketingAction` (runs the real effect) or reject (deny). The `marketing_action` table is the unified staging + approval + audit ledger.
+- **One shared tool layer (`lib/marketing/tools/*`).** `Tool<P>` + `reversibility`, behind ONE entrypoint `executeMarketingTool` (the same seam the batch button, cards, and agent will all call). Phase 0 tools: reads (`get_campaign_context`, `get_course_plan`, `list/get_landing_page`), reversible (`create_campaign`, `generate_landing_page`, `update_landing_section`), irreversible (`publish/unpublish_landing_page`). Zod params → strict JSON schema via the studio's `toStrictJsonSchema`. Tool sets `MARKETING_READ/GENERATE/ACTION_TOOLS`.
+- **Slot-schema + deterministic generator.** `lib/marketing/types.ts` + `schemas.ts` define the typed landing-section union (hero/outcomes/curriculum/instructor/social_proof/pricing_cta/lead_capture/faq) with `.max()` caps as the validate→repair guard; `generators.ts` fills them truthfully from the course plan (the mock-first content engine; Phase 1 adds an LLM variant behind the same signature).
+- **Mock→real seam.** `lib/marketing/services/*`: `EmailProvider` + `Clock` interfaces, a deterministic `MockEmailProvider` (records sends, returns reproducible simulated engagement), and an env-gated `createMarketingServices` factory (one Phase-5 branch flips to Resend; nothing else changes).
+- **Verified:** `npm run verify:marketing` — **37/37** against live Supabase (gate routing, reversible stage+reject-restore byte-for-byte, irreversible pend→approve / deny, published public-read RLS, author-scope RLS). `lint` + `tsc` clean.
+
 ## Per-phase model · prompt-cache fix · reject↔autosave race (A/B/C), 2026-06-17
 
 - **A — per-phase MODEL (not just effort):** `ModelTurnParams.model` + `LoopOptions.model` make the model a per-call parameter (provider falls back to `OPENAI_MODEL`/`DEFAULT_MODEL`). PLAN/CRITIQUE = `gpt-5.5`/high, **GENERATE = `gpt-5.4-mini`/medium** (the high-volume phase stays cheap), classifier = `gpt-5.4-mini`/minimal. `agent_phase` logs the per-call `{phase, model, effort}` (was logging the client default). Both strings confirmed valid live.

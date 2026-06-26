@@ -1,7 +1,7 @@
-# CLAUDE.md — CourseGen Pro (handoff)
+# CLAUDE.md — WiseSel (handoff)
 
 > **Obsidian scoping note:** This is a **personal project**, separate from the
-> internship. Its vault notes live under `Personal/Projects/CourseGen Pro/`
+> internship. Its vault notes live under `Personal/Projects/WiseSel/`
 > (`PRD.md` / `References/` / `Log.md`). NEVER write to `Work/`, `Work/Daily Logs/`,
 > or the weekly reports, and don't let this project appear in them. Treat any
 > auto-loaded `<obsidian-context>` (Ethereum / Speedrun / Oria intern work) as
@@ -9,7 +9,7 @@
 
 ## What this product is
 
-**CourseGen Pro** — an AI co-pilot for educators. Creators turn expertise into
+**WiseSel** — an AI co-pilot for educators. Creators turn expertise into
 engaging, monetizable courses (multi-agent studio: Curriculum Architect →
 Content Producer → "Magic Wand" iterative editor), then market them (AI landing
 pages / emails / social kits), analyze them (drop-off insights, feedback
@@ -79,7 +79,7 @@ and put reusable primitives in `components/ui/`.
   preserved** (RotatingText word-swap hero, BackgroundPaths lines, HeroPreview
   self-assembling demo, full section lineup) but **re-skinned to the warm
   orange identity** (components/marketing/* recolored violet→orange, serif
-  headings, mono eyebrows, typographic `CourseGen*` wordmark replacing the
+  headings, mono eyebrows, typographic `WiseSel*` wordmark replacing the
   Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
   collapse to the hamburger below `lg` (the mono links don't fit at md).
   `components/ui/background-paths.tsx` default tint is now `text-orange-400`.
@@ -647,6 +647,46 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
   path is tested with no key. Tests: `npm run verify:visuals` (84 checks) + the
   live image path in `npm run verify:ai:int`.
 
+## Marketing Assistant suite (`lib/marketing/*`) — 2026-06-19
+
+The second half of the product: turn a finished course into a go-to-market
+engine. Full engineering guide in `docs/marketing-suite.md`; PRD in
+`docs/prd/Marketing-Assistant-Creator-Studio-Web.html`; per-phase detail in
+CHANGELOG. Built on **three spines**: ONE typed tool layer
+(`lib/marketing/tools/*`, `executeMarketingTool` behind the Generate-Kit button,
+the hub cards, AND the agent), ONE event stream (`analytics_event`; subscriber
+status is a pure reducer over it — `lib/marketing/stateMachine.ts`), ONE
+**reversibility-graded governance gate** (`lib/marketing/gate.ts` +
+`marketing_action` ledger: read executes; reversible auto-stages Reject-able with
+a before-snapshot; irreversible records `pending` + waits for human approval).
+Mock-first: `lib/marketing/services/*` (EmailProvider/Clock interfaces + mock +
+env-gated factory; **Resend** swaps in via `RESEND_API_KEY`, zero contract
+changes). The Marketing Agent (`lib/marketing/agent/*`) reuses the studio's
+provider-agnostic `ModelClient`: observe (funnel injected as a developer msg) →
+act (every tool call through the gate) → **pauses** at any irreversible action.
+
+- **DB:** migration `20260618000000_marketing_assistant.sql` — 9 author-scoped
+  tables (`marketing_campaign`, `landing_page` [public-read when published],
+  `email_sequence`/`email_touch`, `subscriber`, `sequence_enrollment`,
+  `scheduled_send` [idempotent outbox], `analytics_event`, `marketing_action`),
+  RLS via `private.is_course_author(course_id)`. Public lead/analytics writes go
+  through a **service-role** ingest route (`app/api/marketing/ingest`,
+  `lib/supabase/admin.ts`), not anon RLS.
+- **Routes:** public `/p/[slug]` (landing pages, `components/marketing-pages/*`);
+  `app/api/marketing/{ingest,agent,scheduler/tick,unsubscribe}`. Creator UI:
+  `app/(app)/marketing/{page,actions,MarketingHub,analytics,agent}` +
+  `components/marketing/agent/AgentPanel`.
+- **Env (new):** `SUPABASE_SERVICE_ROLE_KEY` (ingest + scheduler; server-only),
+  `RESEND_API_KEY`/`RESEND_FROM` (real email), `CRON_SECRET`,
+  `NEXT_PUBLIC_SITE_URL`. All optional — absent → the engine runs mock/author-
+  scoped.
+- **Verify:** `verify:marketing` (gate 37), `:flow` (Phase 1 e2e 13 — ingest
+  needs the service key), `:analytics` (12), `:email` (31), `:agent` (18, mock
+  model), `:swap` (7). All self-provision a throwaway live-Supabase user.
+- **Status:** Phases 0/2/3/4/5 verified green. Phase 1's 6 anonymous-ingest
+  checks pass once `SUPABASE_SERVICE_ROLE_KEY` is in `.env.local` (everything
+  else stands without it).
+
 ## Where things live
 
 - `lib/course/` — the Studio's **structured course document model** (UI-free):
@@ -711,7 +751,7 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
 - Typography: Geist Sans UI, Geist Mono eyebrows/labels (uppercase tracked),
   **Fraunces** (`--font-display`, loaded globally in app/layout.tsx) for page
   titles & marketing headlines via `[font-family:var(--font-display)]
-  font-light`. Brand mark = typographic `CourseGen*` (orange asterisk) — no
+  font-light`. Brand mark = typographic `WiseSel*` (orange asterisk) — no
   sparkle-icon logos.
 - Buttons are **pills** (`rounded-full`; `components/ui/Button.tsx`: primary =
   brand-gradient). Cards: `rounded-2xl`, `border-stone-200/80`, warm whisper

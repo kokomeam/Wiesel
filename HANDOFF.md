@@ -1,4 +1,4 @@
-# CourseGen Pro — Handoff / Checkpoint
+# WiseSel — Handoff / Checkpoint
 
 > **Snapshot date:** 2026-06-16
 > A resume-from-here checkpoint. For the exhaustive front-end architecture, see
@@ -34,11 +34,11 @@
 > autosave (no race / "Failed to fetch") and autosave auto-retries transient
 > failures. Personal-project
 > status tracking also lives in the Obsidian vault at
-> `Personal/Projects/CourseGen Pro/` (`Supabase Backend.md`, `Log.md`, `PRD.md`).
+> `Personal/Projects/WiseSel/` (`Supabase Backend.md`, `Log.md`, `PRD.md`).
 
 ---
 
-## 1. What CourseGen Pro is (one paragraph)
+## 1. What WiseSel is (one paragraph)
 An AI co-pilot for educators: creators turn expertise into courses in a
 Google-Slides-like AI-native studio, then market / analyze / export / sell them;
 learners buy and study them. Audiences = creators + learners. Tiers = Hobbyist

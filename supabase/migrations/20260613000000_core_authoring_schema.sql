@@ -1,4 +1,4 @@
--- CourseGen Pro — core authoring schema (Phase 1)
+-- WiseSel — core authoring schema (Phase 1)
 -- profiles bridge to auth.users · courses → modules → lessons → blocks(jsonb)
 -- RLS-on everywhere, secure by default. Learner/marketplace tables deferred to Phase 2.
 

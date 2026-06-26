@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WiseSel",
+  title: "WiseSel — AI Course Studio",
   description:
-    "The course studio where educators build and learners finish.",
+    "The AI co-pilot for educators. Turn expertise into engaging, monetizable courses — from curriculum to marketing to analytics.",
 };
 
 export default function RootLayout({

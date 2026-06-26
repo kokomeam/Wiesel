@@ -1,5 +1,5 @@
 /**
- * CourseGen Pro — structured course document model.
+ * WiseSel — structured course document model.
  *
  * The entire course is one JSON-serializable document. Every node carries a
  * stable string `id`, an explicit integer `order`, and (for blocks) an `ai`

@@ -1,4 +1,4 @@
-# CourseGen Pro
+# WiseSel
 
 The AI co-pilot for educators — turn raw expertise into engaging, monetizable, pedagogically sound courses. This repo is the **front-end skeleton**: a clean, minimal, industry-grade SaaS shell with working navigation and temporary mock data, ready to wire to a backend.
 

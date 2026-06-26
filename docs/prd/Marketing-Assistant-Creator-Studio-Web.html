@@ -1,0 +1,946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Marketing Assistant — Creator Studio (Web) + Public Landing Pages</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&display=swap');
+
+  :root{
+    --brand-50:#fff7ed; --brand-100:#ffedd5; --brand-200:#fed7aa; --brand-300:#fdba74;
+    --brand-400:#fb923c; --brand-500:#f97316; --brand-600:#ea580c; --brand-700:#c2410c;
+    --brand-800:#9a3412; --brand-900:#7c2d12;
+    --paper:#faf7f1; --line:#ece7de; --card:#ffffff;
+    --ink:#1c1917; --ink-soft:#44403c; --muted:#78716c; --faint:#a8a29e;
+    --emerald:#059669; --emerald-bg:#ecfdf5; --emerald-line:#a7f3d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --amber-line:#fde68a;
+    --red:#dc2626; --red-bg:#fef2f2; --red-line:#fecaca;
+    --blue:#1d4ed8; --blue-bg:#eff6ff; --blue-line:#bfdbfe;
+    --violet:#6d28d9; --violet-bg:#f5f3ff; --violet-line:#ddd6fe;
+    --gradient:linear-gradient(135deg,#f59e0b 0%,#ea580c 100%);
+    --shadow:0 1px 2px rgba(68,48,28,.05);
+    --shadow-md:0 2px 12px rgba(68,48,28,.08);
+    --display:'Fraunces',Georgia,serif;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --mono:'Geist Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand-700);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- atmosphere ---------- */
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(900px 420px at 88% -8%, rgba(249,115,22,.10), transparent 60%),
+      radial-gradient(700px 380px at 8% 0%, rgba(245,158,11,.07), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1}
+
+  /* ---------- top bar ---------- */
+  header.top{
+    position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);
+    background:rgba(250,247,241,.82);border-bottom:1px solid var(--line);
+  }
+  .top-inner{max-width:1120px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .wordmark{font-family:var(--display);font-weight:500;font-size:19px;letter-spacing:-.01em}
+  .wordmark .star{color:var(--brand-600)}
+  .top .sep{width:1px;height:22px;background:var(--line)}
+  .top .doctitle{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .top .spacer{flex:1}
+  .pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .pill.draft{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+
+  /* ---------- hero ---------- */
+  .hero{max-width:1120px;margin:0 auto;padding:64px 28px 36px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand-700);margin:0 0 18px}
+  h1{font-family:var(--display);font-weight:300;font-size:clamp(34px,5vw,56px);line-height:1.04;letter-spacing:-.02em;margin:0 0 18px}
+  h1 .accent{font-weight:500;font-style:italic;color:var(--brand-700)}
+  .lede{font-size:18px;color:var(--ink-soft);max-width:820px;margin:0}
+  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  @media(max-width:760px){.meta-grid{grid-template-columns:repeat(2,1fr)}}
+  .meta-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow)}
+  .meta-card .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .meta-card .v{font-size:14px;color:var(--ink);font-weight:500}
+
+  /* ---------- toc ---------- */
+  .toc{max-width:1120px;margin:36px auto 0;padding:0 28px}
+  .toc-inner{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:10px;display:flex;flex-wrap:wrap;gap:6px;box-shadow:var(--shadow)}
+  .toc a{display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:12px;color:var(--ink-soft);font-weight:500;font-size:14px;flex:1;min-width:180px}
+  .toc a:hover{background:var(--brand-50);text-decoration:none;color:var(--brand-800)}
+  .toc a .num{font-family:var(--mono);font-size:11px;color:var(--brand-600);border:1px solid var(--brand-200);background:#fff;border-radius:7px;padding:2px 7px}
+
+  /* ---------- sections ---------- */
+  main{max-width:1120px;margin:0 auto;padding:20px 28px 90px}
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  section:first-child{border-top:none}
+  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700);margin:0 0 12px}
+  h2{font-family:var(--display);font-weight:300;font-size:clamp(26px,3.4vw,36px);letter-spacing:-.015em;margin:0 0 16px;line-height:1.12}
+  h3{font-family:var(--display);font-weight:500;font-size:21px;letter-spacing:-.01em;margin:34px 0 12px}
+  h4{font-family:var(--sans);font-weight:600;font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  p{margin:0 0 14px;color:var(--ink-soft)}
+  .lead-p{font-size:16.5px;color:var(--ink-soft);max-width:840px}
+  ul,ol{margin:0 0 14px;padding-left:20px;color:var(--ink-soft)}
+  li{margin:6px 0}
+  strong{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#f5f1ea;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--brand-800)}
+
+  .callout{border:1px solid var(--line);border-left:3px solid var(--brand-500);background:#fffdfa;border-radius:12px;padding:16px 18px;margin:18px 0}
+  .callout .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);margin-bottom:6px}
+  .callout.guard{border-left-color:var(--red);background:var(--red-bg)}
+  .callout.guard .lbl{color:#b91c1c}
+  .callout.ok{border-left-color:var(--emerald);background:var(--emerald-bg)}
+  .callout.ok .lbl{color:#047857}
+  .callout.dec{border-left-color:var(--blue);background:var(--blue-bg)}
+  .callout.dec .lbl{color:#1d4ed8}
+
+  /* cards / grids */
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:840px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+  .card h4{margin-top:0}
+  .kpi .big{font-family:var(--display);font-weight:500;font-size:30px;color:var(--brand-700);letter-spacing:-.02em}
+  .kpi .na{color:var(--faint);font-style:italic;font-family:var(--sans);font-size:22px}
+  .kk{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0 8px;border-radius:14px}
+  .tablewrap > table{margin:0}
+  table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0 8px;font-size:13.5px;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:#fbf8f3;font-weight:500}
+  tr:last-child td{border-bottom:none}
+  td code{font-size:12px}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.05em;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .tag.read{background:var(--blue-bg);border-color:var(--blue-line);color:#1d4ed8}
+  .tag.rev{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .tag.irrev{background:var(--red-bg);border-color:var(--red-line);color:#b91c1c}
+  .tag.struct{background:var(--violet-bg);border-color:var(--violet-line);color:#6d28d9}
+  .tag.no{background:var(--red-bg);border-color:var(--red-line);color:#b91c1c;text-decoration:line-through}
+
+  /* flow diagram */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:18px 0}
+  .node{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:118px;text-align:center;box-shadow:var(--shadow);flex:1}
+  .node .t{font-weight:600;font-size:13px}
+  .node .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .node.accent{border-color:var(--brand-300);background:var(--brand-50)}
+  .node.ok{border-color:var(--emerald-line);background:var(--emerald-bg)}
+  .node.warn{border-color:var(--amber-line);background:var(--amber-bg)}
+  .node.bad{border-color:var(--red-line);background:var(--red-bg)}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--brand-500);font-size:18px;padding:0 8px;flex:0 0 auto}
+  .loop-note{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--brand-700);text-align:center;margin-top:6px}
+
+  /* ---------- prototype "screens" ---------- */
+  .screens{display:grid;gap:22px}
+  .surface-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:30px 0 4px;display:flex;align-items:center;gap:10px}
+  .surface-label::after{content:"";height:1px;flex:1;background:var(--line)}
+  .surface-label .badge{border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--ink-soft);background:#fff}
+  .screen{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-md)}
+  .screen .chrome{display:flex;align-items:center;gap:7px;padding:9px 14px;border-bottom:1px solid var(--line);background:#fbf8f3}
+  .screen .chrome .dot{width:9px;height:9px;border-radius:50%;background:#e7e1d6}
+  .screen .chrome .ttl{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-left:8px;letter-spacing:.04em}
+  .screen .cap{padding:12px 16px;border-top:1px solid var(--line);background:#fdfbf7;font-size:12.5px;color:var(--muted)}
+  .screen .cap b{color:var(--ink-soft)}
+  .screen .body{padding:16px}
+
+  .mini-h{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+  .btn{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:999px;padding:5px 13px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);cursor:default}
+  .btn.accept{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .btn.reject{background:#fff;border-color:var(--line);color:var(--muted)}
+  .btn.grad{background:var(--gradient);color:#fff;border:none}
+  .btn.ghost{background:transparent}
+  .btn.warn{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+  .ln{height:6px;border-radius:3px;background:#efe9df;margin:5px 0}
+  .ln.w70{width:70%}.ln.w50{width:50%}.ln.w90{width:90%}.ln.w40{width:40%}.ln.w60{width:60%}.ln.w30{width:30%}
+
+  /* marketing hub */
+  .hubgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:840px){.hubgrid{grid-template-columns:1fr}}
+  .toolcard2{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+  .toolcard2 .ic{width:30px;height:30px;border-radius:9px;background:var(--brand-50);border:1px solid var(--brand-200);display:flex;align-items:center;justify-content:center;color:var(--brand-700);font-size:15px}
+  .toolcard2 .tt{font-weight:600;font-size:13.5px}
+  .toolcard2 .td{font-size:11.5px;color:var(--muted);flex:1}
+  .statusrow{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+  .dots{width:8px;height:8px;border-radius:50%}
+  .dots.green{background:var(--emerald)}.dots.amber{background:var(--amber)}.dots.grey{background:#cdc4b3}.dots.pulse{background:var(--brand-500)}
+
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:9px;margin:6px 0}
+  .frow{display:grid;grid-template-columns:150px 1fr 86px;align-items:center;gap:12px;font-size:12.5px}
+  .frow .fl{color:var(--ink-soft);font-weight:500}
+  .fbarwrap{background:#f3eee5;border-radius:8px;overflow:hidden;height:28px}
+  .fbar{height:28px;border-radius:8px;background:var(--gradient);display:flex;align-items:center;padding-left:11px;color:#fff;font-size:11px;font-weight:600}
+  .frow .fv{font-family:var(--mono);font-size:12px;color:var(--ink);text-align:right}
+  .frow .fv .pct{color:var(--muted);font-size:10.5px}
+
+  /* sequence timeline */
+  .seq{position:relative;margin:8px 0;padding-left:22px}
+  .seq::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:var(--brand-200)}
+  .touch{position:relative;margin-bottom:12px}
+  .touch::before{content:"";position:absolute;left:-19px;top:9px;width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid var(--brand-500)}
+  .touch.evt::before{background:var(--violet-bg);border-color:var(--violet)}
+  .tcard{border:1px solid var(--line);border-radius:11px;padding:10px 13px;background:#fff;box-shadow:var(--shadow)}
+  .tcard .tw{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .tcard .delay{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--brand-700);background:var(--brand-50);border:1px solid var(--brand-100);border-radius:6px;padding:2px 7px}
+  .tcard .delay.evt{color:#6d28d9;background:var(--violet-bg);border-color:var(--violet-line)}
+  .tcard .subj{font-weight:600;font-size:13px}
+  .tcard .prev{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .tcard .sendmock{margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:2px 7px}
+
+  /* landing page public mock */
+  .lp{background:#fff;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+  .lp .lphero{background:linear-gradient(135deg,#fff7ed,#fef3e2);padding:26px 22px;border-bottom:1px solid var(--line)}
+  .lp .lpeyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700)}
+  .lp .lph1{font-family:var(--display);font-weight:400;font-size:24px;letter-spacing:-.01em;margin:8px 0 6px;line-height:1.1}
+  .lp .lph1 em{font-style:italic;color:var(--brand-700)}
+  .lp .lpsub{font-size:12.5px;color:var(--ink-soft);max-width:440px}
+  .lp .lpsections{display:grid;grid-template-columns:1.3fr .9fr;gap:0}
+  @media(max-width:760px){.lp .lpsections{grid-template-columns:1fr}}
+  .lp .lpcol{padding:18px 22px}
+  .lp .lpcol.left{border-right:1px solid var(--line)}
+  @media(max-width:760px){.lp .lpcol.left{border-right:none;border-bottom:1px solid var(--line)}}
+  .lp .sech{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+  .chk{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--ink-soft);margin-bottom:7px}
+  .chk .c{color:var(--emerald);flex:0 0 auto}
+  .leadform{background:#fbf8f3;border:1px solid var(--line);border-radius:12px;padding:14px}
+  .leadform .lf-h{font-weight:600;font-size:13px;margin-bottom:4px}
+  .leadform .lf-s{font-size:11px;color:var(--muted);margin-bottom:10px}
+  .field{background:#fff;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:11.5px;color:var(--faint);margin-bottom:8px}
+  .consent{font-size:10px;color:var(--faint);margin-top:8px;line-height:1.4}
+
+  /* studio shell (landing editor) */
+  .studio{display:grid;grid-template-columns:160px 1fr 280px;min-height:420px;font-size:12px}
+  @media(max-width:840px){.studio{grid-template-columns:1fr}}
+  .col{padding:13px;overflow:hidden}
+  .col.outline{background:#fbf8f3;border-right:1px solid var(--line)}
+  .col.canvas{background:#f7f3ec;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+  .col.inspect{background:#fff;display:flex;flex-direction:column;gap:9px;min-width:0}
+  .o-item{padding:7px 9px;border-radius:8px;color:var(--ink-soft);margin-bottom:3px}
+  .o-item.active{background:#fff;border:1px solid var(--brand-200);color:var(--brand-800);font-weight:600}
+  .sectionblock{background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 13px;box-shadow:var(--shadow);position:relative}
+  .sectionblock .bh{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .sectionblock .btype{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .sectionblock .bt{font-weight:600;font-size:12.5px}
+  .sectionblock.pending{border-color:var(--amber-line);box-shadow:0 0 0 2px rgba(217,119,6,.22),var(--shadow)}
+  .pending-tab{position:absolute;top:-9px;left:12px;background:var(--amber-bg);border:1px solid var(--amber-line);color:#92400e;font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
+  .ar-row{display:flex;gap:6px;margin-top:9px}
+
+  /* agent chat */
+  .agent{display:flex;flex-direction:column;min-width:0}
+  .agent .ah{display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:10px}
+  .agent .ah .av{width:22px;height:22px;border-radius:7px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display);font-size:13px}
+  .agent .ah .nm{font-weight:600;font-size:12.5px}
+  .agent .ah .st{margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--emerald)}
+  .chatscroll{flex:1;overflow:hidden;display:flex;flex-direction:column;gap:9px}
+  .msg{border-radius:11px;padding:9px 11px;font-size:11.5px;line-height:1.5}
+  .msg.user{background:var(--brand-50);border:1px solid var(--brand-100);color:var(--brand-900);align-self:flex-end;max-width:90%}
+  .msg.ai{background:#fbf8f3;border:1px solid var(--line);color:var(--ink-soft)}
+  .toolcard{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;font-size:11px;display:flex;gap:8px;align-items:flex-start}
+  .toolcard .ic{width:16px;height:16px;border-radius:5px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px}
+  .toolcard.done .ic{background:var(--emerald-bg);color:#047857;border:1px solid var(--emerald-line)}
+  .toolcard.run .ic{background:var(--amber-bg);color:#92400e;border:1px solid var(--amber-line)}
+  .toolcard.gate .ic{background:var(--red-bg);color:#b91c1c;border:1px solid var(--red-line)}
+  .toolcard .tt{font-family:var(--mono);font-size:10px;color:var(--ink)}
+  .toolcard .ts{color:var(--muted);font-size:10.5px}
+  .composer{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:#fff;display:flex;align-items:center;gap:8px}
+  .composer .ph{color:var(--faint);font-size:11.5px;flex:1}
+  .composer .send{width:24px;height:24px;border-radius:8px;background:var(--gradient);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px}
+  .typing{display:inline-flex;gap:3px;align-items:center}
+  .typing i{width:5px;height:5px;border-radius:50%;background:var(--brand-400);display:inline-block}
+
+  /* approval modal */
+  .gatebox{border:1px solid var(--red-line);background:var(--red-bg);border-radius:12px;padding:13px 15px;margin-top:4px}
+  .gatebox .gh{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12.5px;color:#b91c1c;margin-bottom:7px}
+  .gatebox .gmeta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:9px 0}
+  .gatebox .gm{background:#fff;border:1px solid var(--red-line);border-radius:9px;padding:7px 10px;font-size:11px}
+  .gatebox .gm .k{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .gatebox .gm .v{font-weight:600;color:var(--ink);font-size:12px}
+  .gatebox .gact{display:flex;gap:8px;margin-top:6px}
+  .gatebox .gact .btn.deny{background:#fff;border-color:var(--red-line);color:#b91c1c}
+
+  .reviewbar{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:11px;font-size:11.5px;color:#92400e}
+  .reviewbar .cnt{font-weight:700}
+  .reviewbar .sp{flex:1}
+
+  .state-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:840px){.state-grid{grid-template-columns:1fr}}
+  .state{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow);min-height:150px;display:flex;flex-direction:column}
+  .state .st-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+  .state .st-body{flex:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px}
+  .state.err{border-color:var(--red-line);background:#fffafa}
+  .state.err .st-h{color:#b91c1c}
+  .state.info{border-color:var(--amber-line);background:var(--amber-bg)}
+  .state.info .st-h{color:#92400e}
+
+  /* acceptance stories */
+  .story{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:0;box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+  .story .sh{display:flex;align-items:center;gap:12px;padding:14px 18px;background:#fbf8f3;border-bottom:1px solid var(--line)}
+  .story .sn{font-family:var(--display);font-size:18px;color:var(--brand-600);font-weight:500}
+  .story .stt{font-weight:600;font-size:15px}
+  .story .sb{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:0}
+  @media(max-width:760px){.story .sb{grid-template-columns:1fr}}
+  .story .cell{padding:14px 18px;border-right:1px solid var(--line)}
+  .story .cell:last-child{border-right:none}
+  .story .cl{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .story .cell p{margin:0;font-size:13px}
+  .story .pass{color:#047857;font-weight:600}
+
+  footer{max-width:1120px;margin:0 auto;padding:30px 28px 70px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;font-family:var(--mono);letter-spacing:.04em}
+
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 0;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:4px;border:1px solid var(--line)}
+
+  /* mobile */
+  @media(max-width:560px){
+    body{font-size:14.5px}
+    .top .doctitle,.top .sep{display:none}
+    .top-inner{padding:12px 18px;gap:9px}
+    .hero{padding:44px 18px 26px}
+    .toc{padding:28px 18px 0}
+    main{padding:16px 18px 70px}
+    footer{padding:26px 18px 60px}
+    .toc a{min-width:140px}
+    .frow{grid-template-columns:96px 1fr 62px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="top-inner">
+    <span class="wordmark">WiseSel<span class="star">*</span></span>
+    <span class="sep"></span>
+    <span class="doctitle">PRD · Marketing Assistant</span>
+    <span class="spacer"></span>
+    <span class="pill draft">Draft for review</span>
+    <span class="pill">v1 · 2026-06-18</span>
+  </div>
+</header>
+
+<!-- ===================== HERO ===================== -->
+<div class="hero">
+  <p class="eyebrow">Product Requirements · Marketing Suite · Web</p>
+  <h1>The Marketing Assistant —<br/>turn a finished course into a <span class="accent">go-to-market engine</span>.</h1>
+  <p class="lede">A creator finishes a course and clicks <strong>“Generate Kit”</strong> — or just asks the agent. A landing page, a launch email sequence, and behavioral followups appear as reviewable drafts, grounded in the course’s own syllabus. Leads flow into a per-creator list; one event stream powers both the dashboard and the agent’s next move. Reversible work auto-stages and can be rejected; anything that reaches a real person waits for a human’s yes. One typed tool layer, one event stream, one governance gate.</p>
+
+  <div class="meta-grid">
+    <div class="meta-card"><div class="k">Surfaces</div><div class="v">Web · Creator Studio + Public landing pages</div></div>
+    <div class="meta-card"><div class="k">Audience</div><div class="v">Creators (primary) · Leads / learners</div></div>
+    <div class="meta-card"><div class="k">Scope</div><div class="v">Phase 3 · MVP — no social posting / no per-creator OAuth</div></div>
+    <div class="meta-card"><div class="k">Engine</div><div class="v">OpenAI Responses (server-only) · Resend send · our scheduler</div></div>
+  </div>
+</div>
+
+<!-- ===================== TOC ===================== -->
+<div class="toc">
+  <div class="toc-inner">
+    <a href="#purpose"><span class="num">1</span> Purpose &amp; Goals</a>
+    <a href="#competitive"><span class="num">2</span> Competitive Analysis</a>
+    <a href="#approach"><span class="num">3</span> Product Approach</a>
+    <a href="#functional"><span class="num">4</span> Functional Design</a>
+    <a href="#ux"><span class="num">5</span> User Experience (Acceptance)</a>
+  </div>
+</div>
+
+<main>
+
+<!-- ===================== 1. PURPOSE ===================== -->
+<section id="purpose">
+  <p class="sec-eyebrow">01 — Purpose &amp; Goals</p>
+  <h2>Close the loop: creators can build a course; they still can’t sell one.</h2>
+  <p class="lead-p">WiseSel’s studio turns expertise into a course. But a finished course earns nothing until someone finds it, trusts it, and buys it — and that is exactly where solo creators stall. The Marketing Assistant is the second half of the product: it generates the go-to-market assets <strong>from the course itself</strong>, captures leads, runs the email lifecycle on <strong>our own state machine</strong>, measures everything through <strong>one event stream</strong>, and lets an agent operate all of it behind a <strong>reversibility-graded approval gate</strong>. The same conviction as the Content Agent — ambitious in the AI, conservative in what reaches a real person.</p>
+
+  <h3>The problem</h3>
+  <ul>
+    <li><strong>Marketing is a different skill than teaching.</strong> Creators have a finished course and no landing page, no list, and no launch plan.</li>
+    <li><strong>The tooling is fragmented and disconnected.</strong> A page builder, an email tool, and an analytics tool — none of which know what the course actually teaches, so every asset is written from scratch.</li>
+    <li><strong>Generic “AI marketing” writes copy but doesn’t <em>act</em> or <em>learn</em>.</strong> It can’t publish a page, schedule a sequence, watch the funnel, and propose the next move — and a creator won’t let an autonomous tool email their list without a hand on the brake.</li>
+  </ul>
+
+  <h3>Goals</h3>
+  <div class="grid g3">
+    <div class="card"><h4>One engine, grounded in the course</h4><p>A landing page, launch sequence, and followups generated from the syllabus, outcomes, audience, and tone — not a blank template. The course is the source of truth.</p></div>
+    <div class="card"><h4>Trust by reversibility</h4><p>Every mutation routes one governance gate. Drafts auto-stage and can be rejected atomically; anything outward-facing (publish, send) waits for explicit human approval — whether the actor is the agent, a card, or a button.</p></div>
+    <div class="card"><h4>One architecture, three surfaces</h4><p>A single typed tool layer behind the “Generate Kit” button, the tool cards, and the agent chat. Built mock-first so the whole loop works before Resend exists, then real integrations swap in with zero contract changes.</p></div>
+  </div>
+
+  <h3>Non-goals (this milestone)</h3>
+  <ul>
+    <li><strong>No social posting</strong> and <strong>no per-creator email OAuth</strong> — sends go out on the platform’s own verified Resend domain; per-creator domains are a later seam.</li>
+    <li><strong>No paid-ads management, no Stripe/checkout changes, no marketplace changes.</strong> “Enrollment” is recorded as an event; payment lives elsewhere.</li>
+    <li><strong>No A/B testing, no segmentation builder beyond saved segments, no CRM/pipeline.</strong></li>
+    <li><strong>No image generation</strong> for pages — leave a clean seam (placeholder/library images only).</li>
+  </ul>
+
+  <h3>Success metrics</h3>
+  <p>The product has <strong>no production analytics yet</strong>, so current values are <code>N/A</code>. The Marketing Assistant <em>creates</em> the event stream that makes these measurable — these are the metrics to instrument with it.</p>
+  <div class="grid g4">
+    <div class="card kpi"><div class="kk">Visit → lead rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Form submits ÷ unique landing-page views. Primary page-quality signal.</p></div>
+    <div class="card kpi"><div class="kk">Lead → enrollment rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Enrollments ÷ leads captured. The business outcome of the whole engine.</p></div>
+    <div class="card kpi"><div class="kk">Email engagement</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Open &amp; click rate across sequence touches; the observe-step input.</p></div>
+    <div class="card kpi"><div class="kk">Asset acceptance rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of agent-generated assets accepted (not rejected). AI-quality signal.</p></div>
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card kpi"><div class="kk">Time-to-first-campaign</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Median minutes from “Generate Kit” to a published page + an active sequence.</p></div>
+    <div class="card kpi"><div class="kk">Agent action approval rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of gated (irreversible) agent actions a human approves — calibrates autonomy.</p></div>
+  </div>
+
+  <div class="callout guard"><div class="lbl">Hard non-negotiables (enforced by design)</div>
+  <ul style="margin-bottom:0">
+    <li>The OpenAI key, the Resend key, and every model/email call are <strong>server-side only</strong>; each provider SDK is imported in exactly one file.</li>
+    <li><strong>Every mutating tool call routes the governance gate</strong> — agent, tool card, or batch button alike. There is no second write path, and even the <em>mock</em> “send” passes the gate.</li>
+    <li><strong>Irreversible actions require explicit human approval</strong> (publish live, send to a list, activate a sequence, bulk-enroll). Reversible actions auto-stage and are rejectable with atomic before-snapshot rollback.</li>
+    <li><strong>One event stream</strong> (<code>analytics_event</code>) renders the dashboard <em>and</em> feeds the agent’s observe step; subscriber status is a reducer over it, never a parallel log.</li>
+    <li>All creator data is <strong>author-scoped by RLS</strong>. Public lead/analytics writes go through a controlled server ingest path, never anonymous table writes.</li>
+    <li>Every marketing email carries <strong>consent provenance and a working one-click unsubscribe</strong>; migrations &amp; RLS require human sign-off before they are applied.</li>
+  </ul></div>
+
+  <div class="callout dec"><div class="lbl">Decisions for sign-off (defaults chosen — flag any to change)</div>
+  <ul style="margin-bottom:0">
+    <li><strong>Public ingest path → service-role server route</strong> <span class="tag">default</span>. A server-only <code>SUPABASE_SERVICE_ROLE_KEY</code> ingest endpoint validates the target page is published, then writes leads/events — instead of opening anonymous <code>INSERT</code> RLS. Keeps validation, dedup, and bot-filtering in one place.</li>
+    <li><strong>One campaign per course for MVP</strong> <span class="tag">default</span>. The schema already allows many; the UI assumes one to keep the model simple.</li>
+    <li><strong><code>send_test_email</code> is gated like any send</strong> <span class="tag">default</span>. It only ever targets the creator’s own verified address, but it still routes the gate so “every send is gated” has no exceptions.</li>
+  </ul></div>
+</section>
+
+<!-- ===================== 2. COMPETITIVE ===================== -->
+<section id="competitive">
+  <p class="sec-eyebrow">02 — Competitive Analysis</p>
+  <h2>Borrow the creator-first list &amp; visual automations; reject the disconnected template builder.</h2>
+  <p class="lead-p">No competitor screenshots were supplied, so this is reasoned from well-known product patterns and <span style="font-style:italic">marked as inference</span>. We compare only decision-relevant dimensions: where assets come from, how the list &amp; lifecycle work, how automations are built, and what creates lock-in vs. friction.</p>
+
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:160px">Product</th><th>Core pattern (inferred)</th><th>What to borrow</th><th>What to avoid</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Kit (ConvertKit)</strong><br/><span class="tag">creator email</span></td>
+        <td>Creator-first list + tag-based subscribers; visual automations; simple hosted landing pages &amp; forms; broadcasts + sequences.</td>
+        <td>The <strong>subscriber-as-state + visual sequence</strong> model, one-click hosted forms, and a list that belongs to the creator. Our north star for the email half.</td>
+        <td>Assets are written from a blank editor — the tool has no idea what the course teaches. We generate <em>from the syllabus</em>.</td>
+      </tr>
+      <tr>
+        <td><strong>Kajabi</strong><br/><span class="tag">all-in-one</span></td>
+        <td>Course hosting + pages + email + pipelines in one suite; everything lives together.</td>
+        <td>The <strong>all-in-one context</strong>: course and marketing in one place, so a page can reference real lessons and an email can link a real free lesson.</td>
+        <td>Heavy, expensive, and a steep learning curve. We win with <strong>one click / one sentence</strong>, not a builder maze.</td>
+      </tr>
+      <tr>
+        <td><strong>Podia / Gumroad</strong><br/><span class="tag">storefront</span></td>
+        <td>Dead-simple storefront + checkout + light email; minimal setup.</td>
+        <td><strong>Radical simplicity</strong> and fast time-to-first-page; sensible defaults over endless options.</td>
+        <td>Thin lifecycle &amp; analytics; little automation; no agent. Simplicity at the cost of leverage.</td>
+      </tr>
+      <tr>
+        <td><strong>beehiiv / Mailchimp</strong><br/><span class="tag">email + automations</span></td>
+        <td>Mature automations, deliverability, and analytics; event/behavior triggers.</td>
+        <td><strong>Behavioral triggers + a real analytics funnel</strong> and deliverability hygiene (consent, unsubscribe, bounce handling).</td>
+        <td>General-purpose &amp; un-grounded; the creator does all the thinking. No course context, no autonomous assistant.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout"><div class="lbl">Net takeaways — where we win</div>
+  <p style="margin-bottom:0"><strong>1. Grounding is the moat.</strong> Every competitor starts from a blank canvas; we start from the finished course — the page, the emails, and the followups are written from real outcomes, modules, and tone. <strong>2. The agent + the gate is the differentiator.</strong> No creator tool runs an autonomous reason→act→observe loop with a reversibility-graded approval brake. <strong>3. Borrow the proven primitives</strong> — subscriber-as-state, visual sequences, behavioral triggers, deliverability hygiene. <strong>4. Reject the bloat</strong> — one click or one sentence beats a builder maze; sensible renderer-owned layouts beat a thousand template knobs.</p></div>
+</section>
+
+<!-- ===================== 3. APPROACH ===================== -->
+<section id="approach">
+  <p class="sec-eyebrow">03 — Product Approach</p>
+  <h2>One typed tool layer, one event stream, one reversibility-graded gate.</h2>
+
+  <h3>Approaches considered</h3>
+  <div class="grid g3">
+    <div class="card"><h4>A · Embed a third-party suite</h4><p>Wire up Kit / Mailchimp via API for email + pages.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Rejected:</strong> no course grounding, no agent, and the creator’s list + analytics live outside the product. Fragments the very data the agent needs to observe.</p></div>
+    <div class="card" style="border-color:var(--brand-300);box-shadow:0 0 0 2px var(--brand-100),var(--shadow)"><h4>B · Shared tool layer + gate + agent, mock-first ✓</h4><p>One typed tool contract behind every surface; a reversibility-graded gate on all mutations; a reason→act→observe agent; built against mock providers, real ones swap in by env.</p><p style="font-size:12.5px;color:var(--brand-800)"><strong>Recommended:</strong> grounded, trustworthy, autonomous-capable, and de-risked — the whole loop runs before any external integration exists.</p></div>
+    <div class="card"><h4>C · Standalone template gallery + manual editor</h4><p>A page/email builder with manual editing only.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Deferred:</strong> no leverage and no agent — and it’s simply the renderer that already sits <em>beneath</em> B. We build it as B’s substrate, not as the product.</p></div>
+  </div>
+
+  <h3>Core product logic — one agent turn (reason → act → observe)</h3>
+  <div class="flow">
+    <div class="node accent"><div class="t">Observe</div><div class="s">analytics summary + state injected</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">Reason</div><div class="s">model streams text + tool calls</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">Act → Gate</div><div class="s">every mutation graded</div></div>
+    <div class="arrow">→</div>
+    <div class="node ok"><div class="t">Auto-stage</div><div class="s">reversible · rejectable</div></div>
+    <div class="arrow" style="color:var(--muted)">/</div>
+    <div class="node bad"><div class="t">Pause for approval</div><div class="s">irreversible · awaits human</div></div>
+  </div>
+  <p class="loop-note">↺ the loop repeats — read/observe tools inform write tools — until the model returns a final message with no tool calls, or pauses at an irreversible action; approval resumes the loop where it stopped (capped, with a checkpoint for large jobs)</p>
+
+  <h3>The governance gate — reversibility decides everything</h3>
+  <p>The gate is a single function every mutating tool call passes through, regardless of origin. It reads the tool’s declared <strong>reversibility grade</strong> and routes accordingly. This is the unification of the studio’s Accept/Reject change-set <em>and</em> an approval requirement into one first-class primitive, recorded in the <code>marketing_action</code> ledger.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:120px">Tool call</th><th style="width:150px">Reversibility</th><th>Gate behavior</th><th style="width:180px">Ledger status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag read">read</span></td><td>n/a (no mutation)</td><td>Executes immediately; never staged.</td><td>not recorded</td></tr>
+      <tr><td><span class="tag rev">generate / edit draft</span></td><td><strong>Reversible</strong></td><td>Executes immediately, captures a <code>before_snapshot</code>, and stages the result as <strong>rejectable</strong>. Reject replays the snapshot atomically.</td><td><code>auto_approved → executed</code> (or <code>reverted</code>)</td></tr>
+      <tr><td><span class="tag irrev">publish / send / activate</span></td><td><strong>Irreversible</strong></td><td><strong>Does not execute.</strong> Logs a pending action, surfaces an approval request, and pauses the agent loop. Human <em>approve</em> executes it; <em>deny</em> discards it.</td><td><code>pending → approved/executed</code> (or <code>rejected</code>)</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Why one gate for all three surfaces:</strong> because the human clicking “Send” in a tool card routes the <em>same</em> <code>gate()</code> as the agent calling <code>send_broadcast</code>, the safety property holds no matter who acts. The autonomy boundary <em>is</em> the gate: the agent chains reversible steps freely, but must stop at every irreversible one.</p>
+
+  <h3>Subscriber state machine — driven by the event stream</h3>
+  <div class="flow">
+    <div class="node accent"><div class="t">lead</div><div class="s">captured via form</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">subscribed</div><div class="s">consent confirmed</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">engaged</div><div class="s">opened / clicked</div></div>
+    <div class="arrow">→</div>
+    <div class="node ok"><div class="t">enrolled</div><div class="s">bought / joined</div></div>
+  </div>
+  <div class="flow" style="margin-top:0">
+    <div class="node warn" style="max-width:240px;flex:0 1 auto"><div class="t">unsubscribed</div><div class="s">opt-out — terminal, suppresses all sends</div></div>
+    <div class="node bad" style="max-width:240px;flex:0 1 auto"><div class="t">bounced</div><div class="s">hard bounce — terminal, suppressed</div></div>
+  </div>
+  <p style="font-size:13px"><strong>Status is a reducer over <code>analytics_event</code>, not a column the app pokes.</strong> A <code>form_submit</code> creates a <code>lead</code>; a confirmed-consent event advances to <code>subscribed</code>; an <code>email_open</code>/<code>email_click</code> advances to <code>engaged</code>; an <code>enrollment</code> advances to <code>enrolled</code>; <code>email_unsubscribe</code>/<code>email_bounce</code> move to the terminal suppressed states. The same events that drive the dashboard drive the lifecycle and trigger event-based followups.</p>
+
+  <h3>Key business rules</h3>
+  <div class="tablewrap"><table>
+    <tbody>
+      <tr><td style="width:240px"><strong>Server-only provider access</strong></td><td>The agent loop, sends, and ingestion run in route handlers. The browser never sees the OpenAI key, the Resend key, or raw provider traffic.</td></tr>
+      <tr><td><strong>Every mutation routes the gate</strong></td><td>No tool writes outside <code>gate()</code>. Reversibility is a property of the tool contract, not a UI decision; even the mock send is gated.</td></tr>
+      <tr><td><strong>Our scheduler, not Resend’s</strong></td><td>Sequence/followup orchestration is our state machine on our outbox. Resend (or the mock) only moves bytes; it never owns sequence logic or timing.</td></tr>
+      <tr><td><strong>Idempotent sends</strong></td><td>A unique <code>(touch_id, subscriber_id)</code> on the outbox guarantees a subscriber is never sent the same touch twice, even if the scheduler ticks repeatedly.</td></tr>
+      <tr><td><strong>One event stream</strong></td><td>All measurement is <code>analytics_event</code> rows. The dashboard, the observe step, and the lifecycle reducer read the same table — no metric is computed two ways.</td></tr>
+      <tr><td><strong>Author scope by RLS</strong></td><td>Creators can only touch campaigns/pages/sequences/lists for courses they own — enforced by <code>private.is_course_author(course_id)</code>, not app code. Published pages are the only public-readable rows.</td></tr>
+      <tr><td><strong>Consent &amp; deliverability</strong></td><td>Every subscriber carries source + consent provenance; every email has a one-click unsubscribe; suppressed states never receive sends.</td></tr>
+      <tr><td><strong>Mock-first contracts</strong></td><td>Tools depend on provider <em>interfaces</em>, not SDKs. Mock and real implementations are interchangeable behind env-gated factories.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================== 4. FUNCTIONAL DESIGN ===================== -->
+<section id="functional">
+  <p class="sec-eyebrow">04 — Functional Design</p>
+  <h2>High-fidelity design &amp; engineering spec.</h2>
+  <p class="lead-p">The Marketing Assistant adds a <strong>Marketing</strong> area to the in-app shell (Creator surface) and a set of <strong>public landing-page routes</strong> (Lead surface). The two surfaces are grouped separately below. All in-screen copy is final. The creator surface reuses the studio’s warm-editorial system and its Accept/Reject staging treatment; the public surface is the renderer-owned page a visitor sees.</p>
+
+  <!-- ============ SURFACE: CREATOR ============ -->
+  <div class="surface-label"><span class="badge">Surface 1</span> Web · Creator Studio</div>
+
+  <!-- SCREEN 1: Marketing Hub -->
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing — Intro to Options Trading</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <div class="mini-h">Campaign</div>
+          <div style="font-family:var(--display);font-size:19px;font-weight:500">Intro to Options Trading — Launch</div>
+        </div>
+        <span class="statusrow" style="margin-left:6px"><span class="dots amber"></span> Draft</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="btn grad">✦ Generate Kit</span>
+      </div>
+      <div class="hubgrid">
+        <div class="toolcard2"><div class="ic">▦</div><div class="tt">Landing page</div><div class="td">A sales page generated from your syllabus. Publish to a public link.</div><div class="statusrow"><span class="dots grey"></span> Not created</div><span class="btn ghost" style="align-self:flex-start">Generate page</span></div>
+        <div class="toolcard2"><div class="ic">✉</div><div class="tt">Launch sequence</div><div class="td">A timed 4-email sequence that warms new leads to enroll.</div><div class="statusrow"><span class="dots grey"></span> Not created</div><span class="btn ghost" style="align-self:flex-start">Generate sequence</span></div>
+        <div class="toolcard2"><div class="ic">⟳</div><div class="tt">Behavioral followups</div><div class="td">Event-triggered nudges — viewed but didn’t enroll, opened but didn’t click.</div><div class="statusrow"><span class="dots grey"></span> Not created</div><span class="btn ghost" style="align-self:flex-start">Generate followups</span></div>
+        <div class="toolcard2"><div class="ic">◑</div><div class="tt">Audience &amp; segments</div><div class="td">Your mailing list and saved segments. Leads land here automatically.</div><div class="statusrow"><span class="dots grey"></span> 0 subscribers</div><span class="btn ghost" style="align-self:flex-start">View list</span></div>
+        <div class="toolcard2"><div class="ic">◴</div><div class="tt">Analytics</div><div class="td">Views, leads, opens, clicks, enrollments — one funnel.</div><div class="statusrow"><span class="dots grey"></span> Awaiting first event</div><span class="btn ghost" style="align-self:flex-start">Open dashboard</span></div>
+        <div class="toolcard2" style="border-color:var(--brand-200);background:var(--brand-50)"><div class="ic" style="background:#fff">✦</div><div class="tt">Marketing Agent</div><div class="td">Chat, or let it observe the funnel and propose the next move.</div><div class="statusrow"><span class="dots green"></span> Ready</div><span class="btn warn" style="align-self:flex-start">Open agent</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>The hub = the three surfaces over one tool layer.</b> <b>“Generate Kit”</b> runs the reversible generators back-to-back (page + sequence + followups) in one agent run; each <b>card</b> calls a single tool; the <b>Marketing Agent</b> lets the model choose. All three paths call the same <code>executeMarketingTool()</code> → <code>gate()</code>. Status dots: grey = not created, amber = draft, pulsing = generating, green = active.</div>
+  </div>
+
+  <!-- SCREEN 2: Landing page studio with staging -->
+  <div class="screen" style="margin-top:22px">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing/landing — editing draft</span></div>
+    <div class="studio">
+      <!-- sections outline -->
+      <div class="col outline">
+        <div class="mini-h">Sections</div>
+        <div class="o-item active">Hero</div>
+        <div class="o-item">Outcomes</div>
+        <div class="o-item">Curriculum</div>
+        <div class="o-item">Instructor</div>
+        <div class="o-item">Pricing &amp; CTA</div>
+        <div class="o-item">Lead capture</div>
+        <div class="o-item">FAQ</div>
+      </div>
+      <!-- canvas -->
+      <div class="col canvas">
+        <div class="mini-h">Page draft · /p/options-trading</div>
+        <div class="sectionblock pending">
+          <span class="pending-tab">Agent · pending</span>
+          <div class="bh"><span class="btype">Hero section</span><span class="bt">Headline + sub + CTA</span></div>
+          <div class="ln w90"></div><div class="ln w60"></div>
+          <div class="ar-row"><span class="btn accept">✓ Accept</span><span class="btn reject">Reject</span><span class="btn ghost">Edit slots</span></div>
+        </div>
+        <div class="sectionblock pending">
+          <span class="pending-tab">Agent · pending</span>
+          <div class="bh"><span class="btype">Outcomes section</span><span class="bt">4 learning outcomes</span></div>
+          <div class="ln w70"></div><div class="ln w50"></div>
+          <div class="ar-row"><span class="btn accept">✓ Accept</span><span class="btn reject">Reject</span><span class="btn ghost">Edit slots</span></div>
+        </div>
+        <div class="sectionblock">
+          <div class="bh"><span class="btype">Curriculum section</span><span class="bt">Pulled from modules</span></div>
+          <div class="ln w90"></div><div class="ln w40"></div>
+        </div>
+      </div>
+      <!-- inspector -->
+      <div class="col inspect">
+        <div class="mini-h">Hero · typed slots</div>
+        <div class="field" style="color:var(--ink-soft)"><b>eyebrow:</b> New cohort open</div>
+        <div class="field" style="color:var(--ink-soft)"><b>headline:</b> Trade options with confidence</div>
+        <div class="field" style="color:var(--ink-soft)"><b>subhead:</b> A beginner-friendly path from “what’s a call?” to your first spread.</div>
+        <div class="field" style="color:var(--ink-soft)"><b>ctaLabel:</b> Get the free first lesson</div>
+        <div style="font-size:10.5px;color:var(--faint);line-height:1.4">The renderer owns layout, spacing, and decoration. The agent (and you) fill only typed slots — length-capped at the schema, so nothing overflows the design.</div>
+        <div class="reviewbar" style="margin-top:auto"><span class="cnt">2</span> sections pending<span class="sp"></span><span class="btn accept" style="font-size:10px;padding:3px 9px">Accept all</span></div>
+        <span class="btn grad" style="justify-content:center">Publish page…</span>
+      </div>
+    </div>
+    <div class="cap"><b>Slot-schema + renderer, reused from the studio.</b> The page is an ordered list of typed sections (hero, outcomes, curriculum, instructor, pricing/CTA, lead-capture, FAQ). The AI fills slots; the renderer owns all layout/decoration. Generated sections stage with the amber pending ring + inline Accept / Reject (reversible). <b>“Publish page…”</b> is irreversible — it routes the gate for explicit approval (Screen 6).</div>
+  </div>
+
+  <!-- SCREEN 4: Email sequence builder -->
+  <div class="screen" style="margin-top:22px">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing/sequences — Launch sequence (draft)</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+        <div style="font-family:var(--display);font-size:16px;font-weight:500">Launch sequence</div>
+        <span class="tag rev">time-based</span>
+        <span class="statusrow"><span class="dots amber"></span> Draft · not activated</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="btn ghost">Send test…</span>
+        <span class="btn grad">Activate sequence…</span>
+      </div>
+      <div class="seq">
+        <div class="touch"><div class="tcard"><div class="tw"><span class="delay">on signup</span><span class="subj">Welcome — your free first lesson</span><span class="sendmock">mock send</span></div><div class="prev">Here’s the lesson you came for, plus what the full course covers…</div></div></div>
+        <div class="touch"><div class="tcard"><div class="tw"><span class="delay">+2 days</span><span class="subj">The #1 mistake new options traders make</span><span class="sendmock">mock send</span></div><div class="prev">A quick story about assignment risk — and how the course fixes it…</div></div></div>
+        <div class="touch"><div class="tcard"><div class="tw"><span class="delay">+4 days</span><span class="subj">What you’ll be able to do in 3 weeks</span><span class="sendmock">mock send</span></div><div class="prev">Outcomes, the syllabus at a glance, and a learner result…</div></div></div>
+        <div class="touch"><div class="tcard"><div class="tw"><span class="delay">+6 days</span><span class="subj">Enrollment closes Friday</span><span class="sendmock">mock send</span></div><div class="prev">Last call for this cohort — here’s everything included…</div></div></div>
+      </div>
+      <div style="margin-top:6px"><span class="mini-h">Behavioral followup (separate event-triggered sequence)</span></div>
+      <div class="seq">
+        <div class="touch evt"><div class="tcard"><div class="tw"><span class="delay evt">trigger · page_view, no enroll in 48h</span><span class="subj">Still thinking it over?</span><span class="sendmock">mock send</span></div><div class="prev">Answers to the three questions people ask before enrolling…</div></div></div>
+        <div class="touch evt"><div class="tcard"><div class="tw"><span class="delay evt">trigger · email_open, no click</span><span class="subj">One link, one free lesson</span><span class="sendmock">mock send</span></div><div class="prev">In case the last email got buried — the lesson is right here…</div></div></div>
+      </div>
+    </div>
+    <div class="cap"><b>Two kinds of orchestration, one engine.</b> The <b>time-based</b> sequence enrolls a subscriber on signup and schedules each touch by offset. The <b>event-triggered</b> followups start when a behavioral event lands in the stream. Both run on <em>our</em> outbox + scheduler — the <code>mock send</code> tag marks that Resend isn’t wired yet (the loop still works end-to-end). <b>“Activate sequence…”</b> is irreversible → gated.</div>
+  </div>
+
+  <!-- SCREEN 5: Analytics dashboard -->
+  <div class="screen" style="margin-top:22px">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing/analytics — one event stream</span></div>
+    <div class="body">
+      <div class="mini-h">Funnel · last 14 days <span style="color:var(--faint)">· illustrative prototype data</span></div>
+      <div class="funnel">
+        <div class="frow"><span class="fl">Page views</span><div class="fbarwrap"><div class="fbar" style="width:100%">page_view</div></div><span class="fv">1,240</span></div>
+        <div class="frow"><span class="fl">Leads (form submit)</span><div class="fbarwrap"><div class="fbar" style="width:24%">form_submit</div></div><span class="fv">298 <span class="pct">24%</span></span></div>
+        <div class="frow"><span class="fl">Email opens</span><div class="fbarwrap"><div class="fbar" style="width:15%">email_open</div></div><span class="fv">186 <span class="pct">62%</span></span></div>
+        <div class="frow"><span class="fl">Email clicks</span><div class="fbarwrap"><div class="fbar" style="width:7%">email_click</div></div><span class="fv">84 <span class="pct">45%</span></span></div>
+        <div class="frow"><span class="fl">Enrollments</span><div class="fbarwrap"><div class="fbar" style="width:3.5%">enrollment</div></div><span class="fv">41 <span class="pct">14%</span></span></div>
+      </div>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card" style="padding:14px"><div class="kk">Subscribers by status</div><div style="font-size:12px;color:var(--ink-soft);margin-top:8px;line-height:1.9">lead <b>112</b> · subscribed <b>145</b> · engaged <b>71</b> · enrolled <b>41</b> · unsub <b>9</b></div></div>
+        <div class="card" style="padding:14px"><div class="kk">Top events today</div><div style="font-size:12px;color:var(--ink-soft);margin-top:8px;line-height:1.9">page_view <b>·</b> form_submit <b>·</b> email_open <b>·</b> email_click</div></div>
+        <div class="card" style="padding:14px;border-color:var(--brand-200);background:var(--brand-50)"><div class="kk" style="color:var(--brand-700)">Agent observed</div><div style="font-size:12px;color:var(--brand-900);margin-top:8px">“Open rate is healthy (62%) but click-through is low. I can draft a followup with a single clear link — want me to?”</div></div>
+      </div>
+    </div>
+    <div class="cap"><b>The dashboard and the agent read the same table.</b> Every row is an <code>analytics_event</code>; the funnel is an aggregate query and the “Agent observed” card is the exact <code>get_analytics_summary</code> output fed into the loop’s observe step. There is no separate analytics pipeline. <i>(Numbers shown are illustrative prototype data, not live values — see §1 metrics, currently <code>N/A</code>.)</i></div>
+  </div>
+
+  <!-- SCREEN 6: Agent + gate -->
+  <div class="screen" style="margin-top:22px">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing — Marketing Agent + approval gate</span></div>
+    <div class="body" style="display:grid;grid-template-columns:1fr 320px;gap:0;padding:0">
+      <div style="padding:16px;border-right:1px solid var(--line)">
+        <div class="mini-h">Pending approvals · inbox</div>
+        <div class="gatebox">
+          <div class="gh">⚠ Approval required — irreversible action</div>
+          <div style="font-size:12px;color:#7f1d1d">The agent wants to send the launch sequence’s first touch to your list.</div>
+          <div class="gmeta">
+            <div class="gm"><div class="k">Action</div><div class="v">send_broadcast</div></div>
+            <div class="gm"><div class="k">Audience</div><div class="v">142 subscribers</div></div>
+            <div class="gm"><div class="k">Subject</div><div class="v">Welcome — your free first lesson</div></div>
+            <div class="gm"><div class="k">Reversible?</div><div class="v">No · cannot un-send</div></div>
+          </div>
+          <div class="gact"><span class="btn accept">Approve &amp; send</span><span class="btn deny">Deny</span><span class="btn ghost">Preview email</span></div>
+        </div>
+        <div style="margin-top:12px" class="mini-h">Recently auto-staged · reversible</div>
+        <div class="toolcard done" style="margin-bottom:7px"><span class="ic">✓</span><div><div class="tt">generate_landing_page</div><div class="ts">7 sections drafted — staged for review</div></div></div>
+        <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">generate_followup</div><div class="ts">2-touch behavioral followup — staged for review</div></div></div>
+      </div>
+      <div class="agent" style="padding:16px;background:#fff">
+        <div class="ah"><span class="av">*</span><span class="nm">Marketing Agent</span><span class="st">● Paused</span></div>
+        <div class="chatscroll">
+          <div class="msg user">Get my launch ready and start warming the list.</div>
+          <div class="msg ai">I’ll generate the page + sequence, then I’ll need your OK before anything goes out.</div>
+          <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">generate_landing_page</div><div class="ts">staged · reversible</div></div></div>
+          <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">generate_email_sequence</div><div class="ts">4 touches staged · reversible</div></div></div>
+          <div class="toolcard gate"><span class="ic">!</span><div><div class="tt">send_broadcast</div><div class="ts">paused — awaiting your approval</div></div></div>
+        </div>
+        <div class="composer"><span class="ph">Reply, or approve the send on the left…</span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>The gate, visible.</b> Reversible generations stream and auto-stage (rejectable). When the loop reaches an irreversible <code>send_broadcast</code>, it <b>pauses</b> and posts an approval request to the inbox; the agent status shows <b>Paused</b>. Approving executes the action and resumes the loop where it stopped; denying discards it. The very same inbox handles a human clicking “Send” from a card.</div>
+  </div>
+
+  <!-- States -->
+  <h3>States</h3>
+  <div class="state-grid">
+    <div class="state"><div class="st-h">Empty · no campaign</div><div class="st-body"><span class="av" style="width:30px;height:30px;border-radius:9px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display)">*</span><div>“Your course is ready to sell. Generate a landing page, a launch sequence, and followups in one click — or tell the agent what you want.”</div><span class="btn grad" style="font-size:10px">✦ Generate Kit</span></div></div>
+    <div class="state info"><div class="st-h">Mock mode · Resend not configured</div><div class="st-body"><div style="font-size:22px">✉</div><div>“Sends are simulated for now. Sequences run end-to-end and analytics populate; set <code style="font-size:10px">RESEND_API_KEY</code> to deliver real email.”</div></div></div>
+    <div class="state err"><div class="st-h">Error · AI not configured</div><div class="st-body"><div style="font-size:22px">⚠</div><div>“The AI service isn’t configured. Add <code style="font-size:10px">OPENAI_API_KEY</code> on the server to enable generation and the agent.”</div></div></div>
+  </div>
+
+  <!-- ============ SURFACE: PUBLIC ============ -->
+  <div class="surface-label"><span class="badge">Surface 2</span> Web · Public landing page (lead-facing)</div>
+
+  <!-- SCREEN 3: public landing page -->
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/p/options-trading — published, public</span></div>
+    <div class="body" style="padding:16px;background:#f7f3ec">
+      <div class="lp">
+        <div class="lphero">
+          <div class="lpeyebrow">New cohort open</div>
+          <div class="lph1">Trade options with <em>confidence</em></div>
+          <div class="lpsub">A beginner-friendly path from “what’s a call?” to your first spread — taught in plain language, no finance degree required.</div>
+          <div style="margin-top:12px"><span class="btn grad">Get the free first lesson</span></div>
+        </div>
+        <div class="lpsections">
+          <div class="lpcol left">
+            <div class="sech">What you’ll be able to do</div>
+            <div class="chk"><span class="c">✓</span> Read an options chain without freezing up</div>
+            <div class="chk"><span class="c">✓</span> Place your first call and put with a clear plan</div>
+            <div class="chk"><span class="c">✓</span> Draw payoff diagrams for any single-leg trade</div>
+            <div class="chk"><span class="c">✓</span> Size positions so one trade can’t blow up your account</div>
+            <div class="sech" style="margin-top:16px">Inside the course</div>
+            <div class="ln w90"></div><div class="ln w70"></div><div class="ln w50"></div>
+          </div>
+          <div class="lpcol">
+            <div class="leadform">
+              <div class="lf-h">Start free — get Lesson 1</div>
+              <div class="lf-s">Enter your email and we’ll send the first lesson instantly.</div>
+              <div class="field">Your name</div>
+              <div class="field">you@email.com</div>
+              <span class="btn grad" style="width:100%;justify-content:center">Send me Lesson 1</span>
+              <div class="consent">By submitting, you agree to receive course emails. Unsubscribe anytime — one click, in every email.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>The published page = the same renderer, public-read.</b> Served from <code>/p/[slug]</code> only when the page is <code>published</code> (RLS public-read). The <b>lead form</b> and the <b>free-lesson capture</b> POST to the service-role ingest route, which creates/links a <code>subscriber</code> and writes <code>form_submit</code> + <code>page_view</code> events. Consent text and one-click unsubscribe are mandatory, not optional.</div>
+  </div>
+
+  <!-- ===== SPEC SUBSECTIONS ===== -->
+
+  <h3>The shared tool layer (the contract behind all three surfaces)</h3>
+  <p>Tools follow the studio’s existing <code>Tool&lt;P&gt;</code> shape — <code>{ name, description, params (Zod), execute(args, ctx) → ToolOutcome }</code> — extended with a declared <code>reversibility</code> grade the gate reads. Params are Zod (single source of truth) → strict JSON Schema for the model, with <code>.max()</code> length caps acting as the validate→repair guard. The “Generate Kit” button, each card, and the agent all call <code>executeMarketingTool(name, args, ctx)</code> → <code>gate()</code> → the tool. No duplicated generation logic anywhere.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:40px">Kind</th><th style="width:215px">Tool</th><th>Purpose &amp; key params → return</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="7"><span class="tag read">read</span></td><td><code>get_campaign_context</code></td><td>Campaign + course summary + asset/status rollup. → context object.</td></tr>
+      <tr><td><code>get_course_plan</code></td><td>Syllabus, outcomes, audience, level, tone — the grounding for all copy. → plan.</td></tr>
+      <tr><td><code>list_landing_pages</code> / <code>get_landing_page</code></td><td>Enumerate / fetch a page and its typed sections.</td></tr>
+      <tr><td><code>list_email_sequences</code> / <code>get_email_sequence</code></td><td>Enumerate / fetch a sequence and its touches.</td></tr>
+      <tr><td><code>get_analytics_summary</code></td><td>Funnel aggregates (views→leads→opens→clicks→enrollments + rates). <strong>The observe-step input.</strong></td></tr>
+      <tr><td><code>query_analytics_events</code></td><td>Filtered slice of the event stream (by type / window / subscriber). → events[].</td></tr>
+      <tr><td><code>get_subscriber_segments</code></td><td>Counts by status &amp; saved segment (engaged, cold, enrolled). → segments[].</td></tr>
+
+      <tr><td rowspan="7"><span class="tag rev">reversible</span></td><td><code>create_campaign</code></td><td>Create the campaign container. → campaignId. Staged.</td></tr>
+      <tr><td><code>generate_landing_page</code></td><td>Fill the section slot-schema from the plan → a <code>landing_page</code> draft. Staged, rejectable.</td></tr>
+      <tr><td><code>update_landing_section</code></td><td>Rewrite one section’s typed slots. Staged, rejectable.</td></tr>
+      <tr><td><code>generate_email_sequence</code></td><td>Draft a time-based launch sequence (touches + delays). Staged.</td></tr>
+      <tr><td><code>generate_followup</code></td><td>Draft an event-triggered followup (trigger + touches). Staged.</td></tr>
+      <tr><td><code>write_email_touch</code></td><td>Fill one email’s subject / preview / body slots. Staged.</td></tr>
+      <tr><td><code>define_segment</code></td><td>Create a saved subscriber segment from a predicate. Staged.</td></tr>
+
+      <tr><td rowspan="6"><span class="tag irrev">irreversible</span></td><td><code>publish_landing_page</code></td><td>Make a page live on its public <code>/p/[slug]</code> route. <strong>Approval required.</strong></td></tr>
+      <tr><td><code>unpublish_landing_page</code></td><td>Take a live page down. Approval required (outward-facing).</td></tr>
+      <tr><td><code>activate_sequence</code></td><td>Flip a draft sequence live — enrollments begin scheduling sends. Approval required.</td></tr>
+      <tr><td><code>enroll_segment_in_sequence</code></td><td>Bulk-enroll a segment — triggers real outreach. Approval required.</td></tr>
+      <tr><td><code>send_broadcast</code></td><td>One-off send to a segment. Approval required.</td></tr>
+      <tr><td><code>send_test_email</code></td><td>Send to the creator’s own verified address. Gated (default decision · low-stakes but no exceptions).</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Tool sets, mirroring the studio:</strong> <code>MARKETING_READ_TOOLS</code> / <code>MARKETING_GENERATE_TOOLS</code> / <code>MARKETING_ACTION_TOOLS</code>. The agent’s available set is restricted per phase of a run, exactly like the Content Agent’s <code>AUTHORING</code> / <code>GENERATE</code> sets.</p>
+
+  <h3>Email = our state machine on a scheduler (Resend only moves bytes)</h3>
+  <p>Orchestration is ours, not the provider’s. A <code>sequence_enrollment</code> is the state-machine <em>instance</em> (one subscriber × one sequence); the scheduler materializes due touches into the <code>scheduled_send</code> outbox; the email provider (mock or Resend) is the last, dumbest step.</p>
+  <div class="flow">
+    <div class="node accent"><div class="t">Trigger</div><div class="s">signup offset · or behavioral event</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">enrollment</div><div class="s">position + next-due</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">scheduler tick</div><div class="s">claims due → outbox</div></div>
+    <div class="arrow">→</div>
+    <div class="node warn"><div class="t">gate</div><div class="s">send = irreversible</div></div>
+    <div class="arrow">→</div>
+    <div class="node ok"><div class="t">provider.send</div><div class="s">mock or Resend</div></div>
+    <div class="arrow">→</div>
+    <div class="node accent"><div class="t">events</div><div class="s">sent · open · click</div></div>
+  </div>
+  <p style="font-size:13px">A unique <code>(touch_id, subscriber_id)</code> on the outbox makes ticks idempotent; the loop closes when send-result events land back in <code>analytics_event</code>, advancing the subscriber’s state and possibly arming the next behavioral trigger. Time-based and event-triggered sequences share this exact path — only the <em>trigger</em> differs.</p>
+
+  <h3>The single analytics event stream &amp; taxonomy</h3>
+  <p>One append-only table, <code>analytics_event</code>, carries every measurable moment. Anonymous visitors get an <code>anonymous_id</code> (cookie) that is linked to a <code>subscriber_id</code> at the moment they convert, so pre-lead pageviews join the funnel retroactively. The dashboard aggregates it, the lifecycle reducer folds it into subscriber status, and <code>get_analytics_summary</code> serves it to the agent.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:170px">Event type</th><th>Emitted when</th><th>Key props</th><th>Drives</th></tr></thead>
+    <tbody>
+      <tr><td><code>page_view</code></td><td>A published page renders.</td><td>landing_page_id · anonymous_id · referrer</td><td>Top of funnel.</td></tr>
+      <tr><td><code>form_submit</code></td><td>Lead/free-lesson form submitted.</td><td>landing_page_id · subscriber_id · source</td><td>Creates a <code>lead</code>; links anon → subscriber.</td></tr>
+      <tr><td><code>email_sent</code></td><td>Provider accepts a send.</td><td>sequence_id · touch_id · subscriber_id</td><td>Send accounting; idempotency proof.</td></tr>
+      <tr><td><code>email_open</code> / <code>email_click</code></td><td>Open pixel / tracked link.</td><td>touch_id · subscriber_id · url</td><td>→ <code>engaged</code>; arms behavioral triggers.</td></tr>
+      <tr><td><code>email_bounce</code> / <code>email_unsubscribe</code></td><td>Hard bounce / opt-out.</td><td>subscriber_id · reason</td><td>→ terminal suppressed states.</td></tr>
+      <tr><td><code>enrollment</code></td><td>Lead enrolls in the course.</td><td>subscriber_id · course_id</td><td>→ <code>enrolled</code>; bottom of funnel.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Mock → real swap (build the loop before the integrations exist)</h3>
+  <p>Tools depend on provider <strong>interfaces</strong> in <code>ToolContext.services</code>, never on SDKs. Mock implementations make the whole engine run end-to-end; real ones swap in behind env-gated factories — exactly the studio’s <code>isOpenAIConfigured()</code> / mock-model-client pattern, where the OpenAI SDK lives in one file.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Interface</th><th>Mock implementation (first)</th><th>Real implementation (later, same contract)</th></tr></thead>
+    <tbody>
+      <tr><td><code>EmailProvider</code><br/><code>send / sendBatch / createBroadcast</code></td><td>Writes the <code>scheduled_send</code> → <code>sent</code> and emits synthetic <code>email_sent</code>/<code>open</code>/<code>click</code> events (deterministic by index — no <code>Math.random</code>), so analytics + observe populate. Records calls for tests.</td><td><code>ResendEmailProvider</code> — Resend + React Email templates. Selected when <code>RESEND_API_KEY</code> is set.</td></tr>
+      <tr><td><code>Scheduler</code><br/><code>enqueue / claimDue / cancel</code></td><td>The <code>scheduled_send</code> outbox + a manual <code>POST /api/marketing/scheduler/tick</code> you can call (or a dev interval).</td><td>pg_cron / hosted cron hitting the <em>same</em> tick route. No code change above the route.</td></tr>
+      <tr><td><code>ModelClient</code></td><td>Reuse the studio’s existing mock model client (deterministic, <code>getCalls()</code>) for headless loop tests.</td><td>The existing OpenAI Responses client — already in production for the Content Agent.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Swap guarantee:</strong> the gate, the agent loop, every tool, the schemas, and all UI are byte-identical between mock and real modes. Flipping a single env var changes <em>only</em> which factory return value is injected.</p>
+
+  <h3>Data model (new) &amp; access control</h3>
+  <p>Nine new tables, each carrying a denormalized <code>course_id</code> so RLS authorizes in one hop (matching the existing convention: <code>uuid</code> PKs, <code>moddatetime</code> triggers, jsonb payloads, <code>private.is_course_author(course_id)</code> policies). All creator data is author-scoped; <code>landing_page</code> is the only public-readable table, and only when <code>published</code>.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:185px">Table</th><th>Shape</th><th style="width:230px">Access (RLS)</th></tr></thead>
+    <tbody>
+      <tr><td><code>marketing_campaign</code></td><td>Container per course; <code>name</code>, <code>goal</code>, <code>status</code>, <code>config</code> jsonb.</td><td rowspan="6">Author full CRUD where they own the course. Not learner-visible. Migrations &amp; policies ship for <strong>human review</strong> and apply only after sign-off; types regenerated after.</td></tr>
+      <tr><td><code>landing_page</code></td><td><code>slug</code> (unique), <code>title</code>, <code>status</code>, <code>sections</code> jsonb (typed slots), <code>theme</code> jsonb, <code>published_at</code>.</td></tr>
+      <tr><td><code>email_sequence</code></td><td><code>kind</code> (time / event), <code>trigger</code> jsonb, <code>status</code>.</td></tr>
+      <tr><td><code>email_touch</code></td><td><code>position</code>, <code>delay_seconds</code> / <code>trigger_event</code>, <code>subject</code>, <code>preview_text</code>, <code>body</code> jsonb.</td></tr>
+      <tr><td><code>sequence_enrollment</code></td><td>subscriber × sequence; <code>status</code>, <code>current_position</code>, timestamps.</td></tr>
+      <tr><td><code>scheduled_send</code></td><td>Outbox; <code>scheduled_for</code>, <code>status</code>, <code>action_id</code>, <code>provider_message_id</code>; unique <code>(touch_id, subscriber_id)</code>.</td></tr>
+      <tr><td><code>subscriber</code></td><td>Per-creator list; <code>email</code>, <code>status</code> (state machine), <code>source</code>, consent, <code>attributes</code> jsonb. Unique <code>(campaign_id, email)</code>.</td><td>Author read/update/delete. <strong>Insert server-side only</strong> (service-role ingest); no anon write.</td></tr>
+      <tr><td><code>analytics_event</code></td><td>The single stream; <code>type</code>, <code>anonymous_id</code>, nullable <code>subscriber_id</code> / <code>landing_page_id</code>, <code>props</code> jsonb, <code>occurred_at</code>.</td><td>Author read. <strong>Insert server-side only</strong> (service-role ingest).</td></tr>
+      <tr><td><code>marketing_action</code></td><td>The gate ledger + audit + staging: <code>tool_name</code>, <code>reversibility</code>, <code>status</code>, <code>params</code> jsonb, <code>before_snapshot</code> jsonb, <code>target_ref</code>, <code>requested_by</code>.</td><td>Author full CRUD via course ownership.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Two deliberate RLS departures from the course tables</strong> (see §1 decisions): (1) <code>landing_page_select</code> = <code>is_course_author(course_id) OR status='published'</code> for the public route; (2) <code>subscriber</code> &amp; <code>analytics_event</code> get author-only read/update but <strong>no anon INSERT</strong> — public writes go through the service-role ingest route, which validates the target page is published before writing. The marketing agent chat reuses the existing <code>conversations</code>/<code>messages</code> tables (additive nullable <code>campaign_id</code>), not a new pair.</p>
+
+  <h3>Streaming event protocol (server → browser, SSE)</h3>
+  <p>One normalized protocol drives both the chat transcript and the staging/approval UI — the studio’s existing agent protocol, extended with two gate events.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:180px">Event</th><th>Payload</th><th>Drives</th></tr></thead>
+    <tbody>
+      <tr><td><code>assistant_delta</code></td><td>text fragment</td><td>Streaming chat message.</td></tr>
+      <tr><td><code>tool_start</code> / <code>tool_result</code></td><td>tool name · target ref · one-line summary</td><td>Running → done tool cards.</td></tr>
+      <tr><td><code>staged_action</code> <span class="tag rev" style="font-size:9px">new</span></td><td>action id · entity ref · before-snapshot ref</td><td>Auto-staged reversible change; binds Accept/Reject.</td></tr>
+      <tr><td><code>approval_request</code> <span class="tag irrev" style="font-size:9px">new</span></td><td>action id · tool · audience/impact · reversible=false</td><td>Approval inbox card; pauses the loop.</td></tr>
+      <tr><td><code>checkpoint</code></td><td>progress · resumable</td><td>“Continue?” prompt for large jobs.</td></tr>
+      <tr><td><code>done</code> / <code>error</code></td><td>final status / message</td><td>Settle the turn; surface failures &amp; mock-mode notices.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Anti-abuse, consent &amp; deliverability</h3>
+  <p>The product puts email in front of real people and publishes pages publicly — abuse-prone surfaces. Controls are backend-enforced, not UI-only:</p>
+  <ul>
+    <li><strong>Send safety = the gate.</strong> No list ever receives mail without an explicit human approval recorded in <code>marketing_action</code>; the agent cannot self-authorize a send.</li>
+    <li><strong>Idempotent outbox.</strong> Unique <code>(touch_id, subscriber_id)</code> + claimed-status transitions prevent double-sends under repeated scheduler ticks or retries.</li>
+    <li><strong>Consent &amp; unsubscribe.</strong> Every subscriber stores source + consent provenance; every email includes a working one-click unsubscribe; <code>unsubscribed</code>/<code>bounced</code> are terminal suppressed states no send can target.</li>
+    <li><strong>Ingest hardening.</strong> The service-role route validates the page is published, rate-limits by IP/anon-id, drops malformed payloads, and flags bot traffic; bot/suppressed events are <strong>excluded from funnel statistics</strong> so the dashboard and the agent reason on clean data.</li>
+    <li><strong>Server-only secrets.</strong> OpenAI + Resend + service-role keys never reach the browser; each SDK is imported in exactly one file.</li>
+  </ul>
+
+  <h3>Phased delivery &amp; acceptance (smallest shippable slice first)</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:54px">Phase</th><th style="width:215px">Ships</th><th>Acceptance (must pass)</th></tr></thead>
+    <tbody>
+      <tr><td><strong>0</strong><br/><span class="tag">spine</span></td><td>Migration (9 tables + RLS) + regenerated types; tool contracts + registry + <code>gate()</code> + <code>marketing_action</code>; mock <code>services</code> + factories; <code>executeMarketingTool</code>.</td><td>Headless verify drives mock tools through the gate against live Supabase: reversible auto-stages with a before-snapshot; irreversible pends; <strong>reject restores byte-for-byte</strong>. (Mirrors <code>verify:ai:int</code>.)</td></tr>
+      <tr><td><strong>1</strong><br/><span class="tag">landing</span></td><td>Section slot-schema + renderer; <code>generate_landing_page</code> / <code>update_landing_section</code>; public <code>/p/[slug]</code> route; <code>publish_landing_page</code> via gate; staging UI; lead form → ingest → subscriber + event.</td><td>Generate a page from a real course → accept sections → approve publish → page is live at its slug → submitting the form creates a <code>subscriber</code> and a <code>form_submit</code> event. <strong>First end-to-end value.</strong></td></tr>
+      <tr><td><strong>2</strong><br/><span class="tag">analytics</span></td><td>Ingest hardened (pageview beacon, anon-id, dedup); <code>get_analytics_summary</code> / <code>query_analytics_events</code>; creator dashboard (reuse chart components).</td><td>Visiting a published page records <code>page_view</code>; the dashboard funnel reflects real counts; <code>get_analytics_summary</code> returns them. The observe step is now real.</td></tr>
+      <tr><td><strong>3</strong><br/><span class="tag">email</span></td><td>Email/touch slot-schema + React Email; generators; subscriber reducer + <code>sequence_enrollment</code> + <code>scheduled_send</code>; tick route + mock provider; <code>activate_sequence</code> / <code>enroll_segment</code> / <code>send_broadcast</code> via gate; time + event triggers.</td><td>Enroll a segment → tick the scheduler → mock “sends” appear as <code>email_sent</code> + synthetic open/click events → subscriber status advances; a behavioral event arms an event-triggered followup. Full lifecycle on mock email.</td></tr>
+      <tr><td><strong>4</strong><br/><span class="tag">agent</span></td><td>Marketing agent loop (observe + gate pause/resume); SSE route + chat panel; “Generate Kit” batch; unified approval inbox.</td><td>“Generate Kit” produces page + sequence + followups as staged drafts in one run; the agent stops at an irreversible send and requests approval; approve resumes the loop and (mock) sends; reject discards. <strong>The assistant.</strong></td></tr>
+      <tr><td><strong>5</strong><br/><span class="tag">real</span></td><td><code>ResendEmailProvider</code> + React Email real send; real cron → tick; env-gated factories.</td><td>With <code>RESEND_API_KEY</code> set, a test send delivers a real email; unset, the system runs in mock mode. <strong>No tool/agent/UI code changes between modes.</strong></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================== 5. UX / ACCEPTANCE ===================== -->
+<section id="ux">
+  <p class="sec-eyebrow">05 — User Experience (Acceptance)</p>
+  <h2>Self-acceptance stories — the core flows that must pass.</h2>
+  <p class="lead-p">Each story is written from the actor’s perspective and tied to concrete on-screen actions. This is core-flow acceptance, not exhaustive QA. Creator stories run in the Marketing area; the lead story runs on the public page.</p>
+
+  <div class="story">
+    <div class="sh"><span class="sn">1</span><span class="stt">Generate the whole kit from the syllabus</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I finished my course; I want a complete launch I can review, not a blank marketing tab.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open <b>Marketing</b> → click <b>✦ Generate Kit</b> → watch the agent run.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">A landing page (7 typed sections), a 4-touch launch sequence, and a behavioral followup all appear as <b>staged drafts</b>, grounded in my outcomes &amp; tone. Nothing is published and nothing has been sent.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">2</span><span class="stt">Review and publish the landing page</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to read the page, tweak it, and put it live deliberately.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open the landing draft → <b>Accept</b> the staged sections (or edit slots) → click <b>Publish page…</b> → <b>Approve</b> in the gate.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The page goes live at <code>/p/[slug]</code> and is publicly reachable; the action is recorded in the gate ledger. Until I approve, the page is not live.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">3</span><span class="stt">A visitor becomes a lead</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>(Lead) I want the free first lesson; (Creator) I want that person on my list.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>On the public page, enter name + email → click <b>Send me Lesson 1</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The lead is added to the creator’s list as <code>lead</code>; <code>page_view</code> + <code>form_submit</code> events land in the stream; the creator sees the count rise on the dashboard. Consent + unsubscribe terms were shown.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">4</span><span class="stt">Approve a launch send — the gate in action</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to email my list, but I must be the one who says “go.”</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Ask the agent to “warm the list,” or click <b>Activate sequence…</b> → review the <b>approval request</b> → <b>Approve &amp; send</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">Only after approval does the (mock) send fire; <code>email_sent</code> + synthetic open/click events appear and the funnel updates. <b>Deny</b> leaves the list untouched. The agent paused until I decided.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">5</span><span class="stt">The agent observes the funnel and proposes the next move</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want the assistant to notice what’s working and suggest improvements, not just generate once.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open the <b>Marketing Agent</b> after sends have run → read its observation → accept a proposed followup.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The agent cites real funnel numbers (from <code>get_analytics_summary</code>), proposes a targeted followup, and — on my go-ahead — drafts it as a <b>staged, rejectable</b> change. It does not send it on its own.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">6</span><span class="stt">Reject a generated asset and get the prior state back</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>If I don’t like what the agent made, undoing it must be effortless and safe.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>On a staged section or sequence, click <b>Reject</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The asset reverts to exactly its before-state (or disappears if newly created), atomically, from the stored snapshot. The reversal persists across reload; nothing partial is left behind.</p></div>
+    </div>
+  </div>
+
+  <div class="callout ok"><div class="lbl">Definition of done — Marketing Assistant v1</div>
+  <p style="margin-bottom:0">A creator opens Marketing, clicks <b>Generate Kit</b>, and gets a grounded landing page + launch sequence + behavioral followups as <b>staged, rejectable drafts</b>; publishes the page (gated) to a live public route that captures leads into a per-creator list; watches a single event stream populate the dashboard and feed the agent’s observe step; and approves every outward-facing send through one governance gate — with all provider keys server-only, the whole loop running on mock providers, and real Resend + cron swapping in by a single env var with <b>no contract changes</b>.</p></div>
+</section>
+
+</main>
+
+<footer>
+  WiseSel* · Marketing Assistant PRD · Creator Studio (Web) + Public Landing Pages · Draft for review · 2026-06-18 — design tokens sourced from <code>app/globals.css</code> (warm-editorial: paper #faf7f1 · stone ink · amber→orange gradient · Fraunces display). Funnel/list numbers in §4 are illustrative prototype data; production metrics are <code>N/A</code> until instrumented.
+</footer>
+
+</div>
+</body>
+</html>
