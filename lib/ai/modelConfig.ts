@@ -101,6 +101,15 @@ export const AI_PHASE_MODELS = {
     model: process.env.AI_REPAIR_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_REPAIR_EFFORT", "medium"),
   } satisfies PhaseModel,
+  /** AUX (quiz + homework) is authored as ONE structured fill, CONCURRENTLY with the
+   *  slide loop (phases.ts authorAuxBlocks) and recovered by a deterministic RETRY —
+   *  never the model-repair loop (Decision B). It's a small, mechanical fill straight
+   *  from the approved plan's quizPlan/homeworkPlan, so it runs at LOW effort. The
+   *  retry reuses this same config. Env: AI_AUX_MODEL / AI_AUX_EFFORT. */
+  aux: {
+    model: process.env.AI_AUX_MODEL ?? DEFAULT_MODEL,
+    effort: effort("AI_AUX_EFFORT", "low"),
+  } satisfies PhaseModel,
   edit: {
     model: process.env.AI_EDIT_MODEL ?? DEFAULT_MODEL,
     effort: effort("AI_EDIT_EFFORT", "medium"),

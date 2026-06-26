@@ -58,7 +58,7 @@ export const VISUAL_WEIGHT = {
     aspect: "3:2",
     background: "opaque",
     promptMode: "structured",
-    quality: "high",
+    quality: "medium",
     thinking: true,
   },
   supporting: {

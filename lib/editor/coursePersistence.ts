@@ -38,6 +38,25 @@ export async function saveCourseDoc(
 }
 
 /**
+ * Immediately persist a structural delete (a module / lesson row; cascade removes
+ * its children). Used when a delete is confirmed DURING an agent run: autosave is
+ * paused then (`agentRunActive`), so without this the delete never reaches the DB
+ * and the next `liveSync` reload repaints the still-present row — the "deleted
+ * module reappears" bug. Direct + awaited; RLS scopes it to the signed-in author.
+ */
+export async function deleteModuleNow(courseId: string, moduleId: string): Promise<string | null> {
+  const supabase = createClient();
+  const { error } = await supabase.from("modules").delete().eq("id", moduleId).eq("course_id", courseId);
+  return error?.message ?? null;
+}
+
+export async function deleteLessonNow(courseId: string, lessonId: string): Promise<string | null> {
+  const supabase = createClient();
+  const { error } = await supabase.from("lessons").delete().eq("id", lessonId).eq("course_id", courseId);
+  return error?.message ?? null;
+}
+
+/**
  * Autosave hook: mounts in the studio shell, watches the document, and
  * debounce-saves changes. Coalesces edits made during an in-flight save so
  * the latest state always wins, and reports progress via the store's

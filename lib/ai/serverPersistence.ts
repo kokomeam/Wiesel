@@ -8,4 +8,9 @@
  * then this reconcile.
  */
 
-export { loadCourseDoc, reconcileCourseDoc } from "@/lib/course/persistenceSync";
+export {
+  loadCourseDoc,
+  reconcileCourseDoc,
+  reconcileCourseDocScoped,
+  type ReconcileScope,
+} from "@/lib/course/persistenceSync";

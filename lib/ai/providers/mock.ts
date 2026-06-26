@@ -9,6 +9,7 @@
  * streaming path is genuinely exercised.
  */
 
+import { AUX_RESPONSE_NAME } from "../auxContent";
 import type {
   GeneratedImage,
   ImageGenParams,
@@ -51,6 +52,10 @@ export interface MockOptions {
   /** Make inspectImage FAIL verification (verdict: not all labels present) — lets a
    *  test exercise the regenerate-once → prose-degrade path. Default: pass. */
   failImageVerify?: boolean;
+  /** Make the FIRST `aux_content` structured call fail (transport error), so a test can
+   *  drive the DETERMINISTIC aux RETRY (Decision B). The second aux call returns the
+   *  configured `structured.aux_content`. Default: every aux call succeeds. */
+  auxFailFirst?: boolean;
 }
 
 /** A mock client that also records every call's params — lets tests assert the
@@ -75,6 +80,7 @@ export function createMockModelClient(
   opts: MockOptions = {}
 ): MockModelClient {
   let turnIndex = 0;
+  let auxAttempts = 0;
   const model = opts.model ?? "mock-model";
   const calls: ModelTurnParams[] = [];
   const imageCalls: ImageGenParams[] = [];
@@ -111,6 +117,11 @@ export function createMockModelClient(
       // racing the slide loop's turn index. Unconfigured formats fall through to the script.
       const fmt = params.responseFormat?.name;
       if (fmt && opts.structured && fmt in opts.structured) {
+        // Decision B retry: fail the FIRST aux call so the deterministic retry fires.
+        if (fmt === AUX_RESPONSE_NAME && opts.auxFailFirst && auxAttempts++ === 0) {
+          onEvent({ type: "error", message: "mock aux transport failure", kind: "transport" });
+          return { text: "", toolCalls: [], finishReason: "error", errorKind: "transport" };
+        }
         const v = opts.structured[fmt];
         const text = typeof v === "string" ? v : JSON.stringify(v);
         for (const chunk of chunkWords(text)) onEvent({ type: "text_delta", delta: chunk });

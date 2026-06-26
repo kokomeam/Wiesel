@@ -171,9 +171,14 @@ function main() {
   const outlineQuiz = makeOutline(3, { quiz: true });
   const noQuiz = withDeck(deckWith(["s1", "s2", "s3"]));
   const quizReport = validateLessonGeneration(noQuiz.doc, noQuiz.lessonId, outlineQuiz, {});
-  check("a required-but-missing quiz fails (REQUIRED_BLOCK_MISSING)", !quizReport.ok && quizReport.requiredBlocksMissing.includes("quiz"));
+  // DECISION B: a missing quiz is NO LONGER a hard validation failure (REQUIRED_BLOCK_MISSING
+  // is never raised for aux). Aux is authored off the slide loop — a concurrent call + a
+  // deterministic retry — and a durable gap surfaces as `agent_aux_unrecovered`, never a
+  // model-repair pass. So a complete deck with no quiz VALIDATES, and requiredBlocksMissing
+  // stays empty.
+  check("a required-but-missing quiz NO LONGER fails validation (Decision B — aux is off-loop)", quizReport.ok && quizReport.requiredBlocksMissing.length === 0);
   const withQuiz = withDeck(deckWith(["s1", "s2", "s3"]), { quiz: true });
-  check("the same plan passes once a quiz block exists", validateLessonGeneration(withQuiz.doc, withQuiz.lessonId, outlineQuiz, {}).ok);
+  check("a complete deck still validates with a quiz block present", validateLessonGeneration(withQuiz.doc, withQuiz.lessonId, outlineQuiz, {}).ok);
 
   const budget = validateLessonGeneration(missing.doc, missing.lessonId, outline3, { checkpointed: true });
   check("budgetExhausted set when the run was checkpointed AND specs are missing", budget.budgetExhausted);

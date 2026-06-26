@@ -71,3 +71,55 @@ export function diffBlocks(
 export function changedBlockIds(changes: BlockChange[]): string[] {
   return changes.map((c) => c.blockId);
 }
+
+/**
+ * The subtree an agent run actually touched, derived by diffing the run-START
+ * baseline doc against the run's current doc. Both are the agent's OWN in-memory
+ * states, so a concurrent human delete never appears here — that's what makes
+ * "rows the agent touched" unambiguous (a module the agent created looks
+ * identical to one the user deleted when diffing against the DB, but not when
+ * diffing baseline → current). The scoped reconcile (`reconcileCourseDocScoped`)
+ * writes ONLY this subtree, so it can never re-insert / shield a module the
+ * agent never touched.
+ */
+export interface AgentTouchScope {
+  /** Modules the agent CREATED this run (present in current, absent in baseline). */
+  newModuleIds: string[];
+  /** Lessons the agent authored/edited (a block change) or newly added this run. */
+  touchedLessonIds: string[];
+  /** The subset of `touchedLessonIds` the agent CREATED this run (absent in
+   *  baseline). They must always be written — unlike a PRE-EXISTING touched lesson,
+   *  their absence from the DB means "not persisted yet", not "user deleted it",
+   *  so they are exempt from the reconcile's delete-wins prune. */
+  newLessonIds: string[];
+}
+
+export function agentTouchScope(
+  baseline: CourseDocument,
+  current: CourseDocument
+): AgentTouchScope {
+  const baselineModuleIds = new Set(baseline.modules.map((m) => m.id));
+  const baselineLessonIds = new Set(
+    baseline.modules.flatMap((m) => m.lessons.map((l) => l.id))
+  );
+
+  const newModuleIds = current.modules
+    .filter((m) => !baselineModuleIds.has(m.id))
+    .map((m) => m.id);
+
+  const touched = new Set<string>();
+  const newLessons = new Set<string>();
+  // Lessons with any block create / update / delete this run.
+  for (const change of diffBlocks(baseline, current)) touched.add(change.lessonId);
+  // Newly-added lessons (covers an empty new lesson that has no blocks yet).
+  for (const m of current.modules) {
+    for (const l of m.lessons) {
+      if (!baselineLessonIds.has(l.id)) {
+        touched.add(l.id);
+        newLessons.add(l.id);
+      }
+    }
+  }
+
+  return { newModuleIds, touchedLessonIds: [...touched], newLessonIds: [...newLessons] };
+}

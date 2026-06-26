@@ -138,9 +138,15 @@ export function validateLessonGeneration(
   }
   const duplicateSpecIds = [...specCounts.entries()].filter(([, n]) => n > 1).map(([id]) => id);
 
+  // DECISION B: quiz/homework no longer count toward REQUIRED_BLOCK_MISSING. Aux is
+  // authored OFF the slide loop by a CONCURRENT call + a DETERMINISTIC retry
+  // (phases.ts authorAuxBlocks / runLessonPipeline); a durable gap is surfaced by the
+  // `agent_aux_unrecovered` event, never a model-repair pass (whose write_quiz/
+  // write_homework tools were removed). So this stays EMPTY — validation/repair is now
+  // purely slide-focused. (REQUIRED_BLOCK_MISSING is exclusively an aux code; there is
+  // no slide variant, so no slide behavior changes.) `requiredBlocksMissing` is kept on
+  // the report (downstream readers expect the field) but is never populated.
   const requiredBlocksMissing: ("quiz" | "homework")[] = [];
-  if (outline.quizPlan && !blocks.some((b) => b.type === "quiz")) requiredBlocksMissing.push("quiz");
-  if (outline.homeworkPlan && !blocks.some((b) => b.type === "homework")) requiredBlocksMissing.push("homework");
 
   // Required visuals: a spec that REQUIRES a visual must have a built slide that
   // actually carries one. (A missing slide is already a MISSING_SLIDE_SPECS issue;

@@ -156,9 +156,14 @@ export function buildGenerationState(
     const segmentsIncomplete = opts.outline.segments
       .filter((seg) => seg.slideSpecIds.some((id) => slideSpecsRemaining.includes(id)))
       .map((seg) => seg.name || seg.id);
+    // DECISION B: the GENERATE/REPAIR loops are SLIDES-ONLY. Quiz/homework are authored
+    // off the loop (a concurrent call + a deterministic retry — phases.ts
+    // authorAuxBlocks), and write_quiz/write_homework were removed from the GENERATE
+    // toolset. So this state summary must NOT tell the model "a quiz block is still
+    // missing" — that would steer it toward a tool it no longer has (the exact
+    // Unknown-tool hazard Decision B removes). Kept EMPTY: aux is never the loop's job.
+    // (The authored quiz/homework still appear in `currentArtifacts` below for context.)
     const requiredBlocksMissing: string[] = [];
-    if (opts.outline.quizPlan && quizzes.length === 0) requiredBlocksMissing.push("quiz");
-    if (opts.outline.homeworkPlan && homework.length === 0) requiredBlocksMissing.push("homework");
 
     planProgress = {
       totalSlidesPlanned: planned.length,

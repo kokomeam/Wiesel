@@ -43,12 +43,27 @@ const GENERATE_EXCLUDED_READS: ReadonlySet<string> = new Set([
   "get_lesson",
 ]);
 
+/** Writer tools the GENERATE/REPAIR phases must NOT have:
+ *  - `write_slide_deck` — FRESH-deck only; structured slides go in via the granular
+ *    tools, so generation honors the plan's structured layout.
+ *  - `write_quiz` / `write_homework` — Decision B: quiz/homework are authored OFF the
+ *    slide loop by a CONCURRENT deterministic aux call (phases.ts `authorAuxBlocks`)
+ *    and recovered by a deterministic RETRY — never by a model-repair pass. Leaving
+ *    these here would re-arm the repair loop with tools the parallel path owns, so a
+ *    durable aux gap could hand the model a tool it shouldn't use. `write_lecture_text`
+ *    STAYS (still authored inline). */
+const GENERATE_EXCLUDED_WRITERS: ReadonlySet<string> = new Set([
+  "write_slide_deck",
+  "write_quiz",
+  "write_homework",
+]);
+
 /** The even-narrower set for the PLAN-driven GENERATE/REPAIR phases: STRUCTURED
- *  slide authoring + auxiliary blocks (quiz/homework/lecture), plus only the
- *  slide-inspection reads. EXCLUDES `write_slide_deck` and the FLAT slide ops so
- *  generation must honor the plan's structured layout, AND the course-level reads
- *  (context/modules/lessons already in context+state). (The edit path keeps the
- *  full `AUTHORING_TOOL_NAMES`.) */
+ *  slide authoring + lecture text, plus only the slide-inspection reads. EXCLUDES
+ *  `write_slide_deck`, the FLAT slide ops, the aux writers (see
+ *  `GENERATE_EXCLUDED_WRITERS`), AND the course-level reads (context/modules/lessons
+ *  already in context+state). (The edit path keeps the full `AUTHORING_TOOL_NAMES`,
+ *  which still includes write_quiz/write_homework — "add a quiz" in chat works.) */
 export const GENERATE_TOOL_NAMES: ReadonlySet<string> = new Set([
   ...readTools.filter((t) => !GENERATE_EXCLUDED_READS.has(t.name)).map((t) => t.name),
   // create_block is the ONLY structural tool allowed — it makes the empty
@@ -56,7 +71,7 @@ export const GENERATE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // risk was create_lesson/delete_*, which stay excluded).
   ...structuralTools.filter((t) => t.name === "create_block").map((t) => t.name),
   ...structuredSlideTools.map((t) => t.name),
-  ...writerTools.filter((t) => t.name !== "write_slide_deck").map((t) => t.name),
+  ...writerTools.filter((t) => !GENERATE_EXCLUDED_WRITERS.has(t.name)).map((t) => t.name),
 ]);
 
 const TOOL_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));

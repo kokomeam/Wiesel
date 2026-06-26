@@ -12,10 +12,29 @@ import { deleteLessonPatch, deleteModulePatch } from "@/lib/course/commands";
 import { moduleDisplayName, moduleNumber } from "@/lib/course/moduleLabel";
 import type { PatchResult } from "@/lib/course/patches";
 import { findLesson, findModule } from "@/lib/course/queries";
+import { useEditorStore } from "@/lib/course/store";
 import type { CourseDocument } from "@/lib/course/types";
+import { deleteLessonNow, deleteModuleNow } from "@/lib/editor/coursePersistence";
 import { confirm } from "@/lib/editor/confirmStore";
 
 type Apply = (patch: unknown, source: "human" | "ai") => PatchResult;
+
+/**
+ * During an agent run, autosave is paused and the live re-sync replaces the editor
+ * doc from the DB — so a deleted module/lesson that hasn't been persisted reappears.
+ * Persist the structural delete directly so the row is gone before the next sync.
+ * Best-effort: the in-memory delete already happened and autosave will reconcile it
+ * once the run ends; a failure here just risks a transient repaint, so we only log.
+ */
+async function persistStructuralDeleteDuringRun(
+  kind: "module" | "lesson",
+  courseId: string,
+  id: string
+): Promise<void> {
+  if (!useEditorStore.getState().agentRunActive) return;
+  const err = kind === "module" ? await deleteModuleNow(courseId, id) : await deleteLessonNow(courseId, id);
+  if (err) console.error(`Immediate ${kind} delete failed (will reconcile after the run):`, err);
+}
 
 export async function confirmDeleteModule(
   doc: CourseDocument,
@@ -40,7 +59,10 @@ export async function confirmDeleteModule(
       </>
     ),
   });
-  if (ok) apply(deleteModulePatch(moduleId), "human");
+  if (ok) {
+    apply(deleteModulePatch(moduleId), "human");
+    await persistStructuralDeleteDuringRun("module", doc.id, moduleId);
+  }
   return ok;
 }
 
@@ -66,6 +88,9 @@ export async function confirmDeleteLesson(
       </>
     ),
   });
-  if (ok) apply(deleteLessonPatch(lessonId), "human");
+  if (ok) {
+    apply(deleteLessonPatch(lessonId), "human");
+    await persistStructuralDeleteDuringRun("lesson", doc.id, lessonId);
+  }
   return ok;
 }

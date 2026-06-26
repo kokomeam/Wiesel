@@ -755,6 +755,51 @@ async function main() {
     const quizBlock = auxLesson?.blocks.find((b) => b.type === "quiz");
     check("parallel aux: the planned quiz block was authored (concurrent, off the slide loop)", !!quizBlock && quizBlock.type === "quiz" && quizBlock.questions.length === 2, `${auxLesson?.blocks.map((b) => b.type).join(",")}`);
     check("parallel aux: the deck still built its 3 slides alongside the quiz", auxLesson?.blocks.some((b) => b.type === "slide_deck" && b.slides.length === 3) ?? false);
+    // The aux call is its OWN structured call (routed by responseFormat name), at LOW
+    // effort (AI_PHASE_MODELS.aux) — not the slide loop, not the model-repair config.
+    const auxRfCalls = auxMock.getCalls().filter((cc) => cc.responseFormat?.name === "aux_content");
+    check("parallel aux: ran as ONE aux_content structured call at LOW effort", auxRfCalls.length === 1 && auxRfCalls[0]?.effort === "low", `${auxRfCalls.length}×, effort=${auxRfCalls[0]?.effort}`);
+    // The slide loop never authored the quiz inline (write_quiz is OFF its surface).
+    const auxGenCall = auxMock.getCalls().find((cc) => (cc.tools?.length ?? 0) > 0);
+    check("parallel aux: GENERATE surface excludes write_quiz/write_homework (aux is off-loop)", !new Set((auxGenCall?.tools ?? []).map((t) => t.name)).has("write_quiz") && !new Set((auxGenCall?.tools ?? []).map((t) => t.name)).has("write_homework"));
+  }
+
+  // 11g-6. DECISION B FALLBACK — when the CONCURRENT aux call FAILS, a DETERMINISTIC
+  //   retry (same structured builders, NOT a model write_quiz/repair) recovers the quiz.
+  {
+    const rLessonId = crypto.randomUUID();
+    await supabase.from("lessons").insert({ id: rLessonId, module_id: pModuleId, course_id: courseId, title: "Quiz retry lesson", objective: "x", order: 9 });
+    const rConvo = await getOrCreateConversation(supabase, courseId, rLessonId);
+    const PLAN_WITH_QUIZ = { ...LESSON_PLAN, quizPlan: { questionCount: 2, targetSkills: [{ skill: "trees", difficulty: "easy" }] }, homeworkPlan: null };
+    const auxContent = {
+      quiz: { title: "Tree check", questions: [
+        { kind: "multiple_choice", prompt: "What is a leaf?", explanation: "A node with no children.", choices: ["a node with children", "a node with no children"], correctIndex: 1 },
+        { kind: "true_false", prompt: "A tree has cycles.", explanation: "Trees are acyclic.", correctAnswer: false },
+      ] },
+      homework: null,
+    };
+    const retryMock = createMockModelClient(
+      [
+        { text: JSON.stringify(PLAN_WITH_QUIZ) },
+        { text: "Slides only.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] },
+      ],
+      // auxFailFirst: the first aux_content call errors → the deterministic retry fires.
+      { finalText: "Done.", structured: { aux_content: auxContent }, auxFailFirst: true }
+    );
+    await runGenerateLessonTurn({
+      supabase, model: retryMock, courseId, lessonId: rLessonId, ownerId: userId, conversationId: rConvo,
+      userMessage: "Generate the lesson", autoApprove: true, emit: () => {},
+    });
+    const rDoc = await loadCourseDoc(supabase, courseId);
+    const rLesson = rDoc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === rLessonId);
+    const rQuiz = rLesson?.blocks.find((b) => b.type === "quiz");
+    // Exactly TWO aux_content calls: the failed first + the successful retry.
+    const rAuxCalls = retryMock.getCalls().filter((cc) => cc.responseFormat?.name === "aux_content");
+    check("aux retry: a failed concurrent aux call triggers exactly ONE deterministic retry (2 aux_content calls)", rAuxCalls.length === 2, `${rAuxCalls.length}`);
+    check("aux retry: the retry recovered the quiz via the structured builders (NOT a model write_quiz)", !!rQuiz && rQuiz.type === "quiz" && rQuiz.questions.length === 2, `${rLesson?.blocks.map((b) => b.type).join(",")}`);
+    check("aux retry: the deck still built its 3 slides", rLesson?.blocks.some((b) => b.type === "slide_deck" && b.slides.length === 3) ?? false);
+    // No model-repair was needed — validation no longer treats a missing quiz as a failure.
+    check("aux retry: the retry ran NO model-repair pass (validation is slide-only for aux)", retryMock.getCalls().every((cc) => (cc.tools ?? []).every((t) => t.name !== "write_quiz" && t.name !== "write_homework")));
   }
 
   // 11h. MODULE BUILD — the FIRST call is a COMPACT SKELETON (low effort, lean),
@@ -799,7 +844,11 @@ async function main() {
     !genToolNames.has("write_slide_deck") && !genToolNames.has("update_slide") && !genToolNames.has("set_slide_layout") && !genToolNames.has("create_lesson") && !genToolNames.has("delete_lesson") && !genToolNames.has("delete_module"),
     [...genToolNames].join(",")
   );
-  check("GENERATE toolset includes structured authoring (+ create_block, write_quiz)", genToolNames.has("add_structured_slides_batch") && genToolNames.has("create_block") && genToolNames.has("write_quiz"));
+  check("GENERATE toolset includes structured authoring (+ create_block, write_lecture_text)", genToolNames.has("add_structured_slides_batch") && genToolNames.has("create_block") && genToolNames.has("write_lecture_text"));
+  // Decision B: aux is authored OFF the slide loop (concurrent call + deterministic
+  // retry), so write_quiz/write_homework are NOT on the GENERATE/REPAIR surface — only
+  // the edit path (AUTHORING_TOOL_NAMES) keeps them.
+  check("GENERATE toolset EXCLUDES the aux writers write_quiz/write_homework (Decision B)", !genToolNames.has("write_quiz") && !genToolNames.has("write_homework"), [...genToolNames].join(","));
   // CUT CALLS / REUSE DATA: the course/module/lesson context + the PLAN ride in the
   // context message + generation-state every turn, so GENERATE (and REPAIR) CANNOT
   // re-fetch them — the duplicate "Read course context / List modules / List lessons"
@@ -817,6 +866,60 @@ async function main() {
   const newMod = modDoc?.modules.find((m) => m.title === "Searching");
   const modDeckCounts = newMod?.lessons.map((l) => { const d = l.blocks.find((b) => b.type === "slide_deck"); return d && d.type === "slide_deck" ? d.slides.length : -1; });
   check("module + 2 lessons created, each with a 3-slide deck", !!newMod && newMod.lessons.length === 2 && (modDeckCounts ?? []).every((n) => n === 3), `lessons=${newMod?.lessons.length} deckCounts=${JSON.stringify(modDeckCounts)}`);
+
+  // 11h-aux. MODULE-PATH AUX (Decision B regression guard) — a module lesson whose RICH
+  //   plan carries a quizPlan must get its quiz authored by the SAME concurrent
+  //   deterministic aux author (authorAuxBlocks via authorAndMergeAux) as the
+  //   single-lesson path. Before the fix, runGenerateModule never called it, so module
+  //   lessons shipped with no quiz/homework at all. Routed by responseFormat name; never
+  //   model-authored.
+  {
+    const auxBrief = brief("Binary search check", "Halve a sorted range.", true);
+    const auxSkeleton = { ...SKELETON, moduleTitle: "Searching with a check", lessons: [auxBrief] };
+    const modAuxPlan = { kind: "module", skeleton: auxSkeleton };
+    const LESSON_PLAN_WITH_QUIZ = { ...LESSON_PLAN, quizPlan: { questionCount: 2, targetSkills: [{ skill: "binary search", difficulty: "easy" }] }, homeworkPlan: null };
+    const auxContent = {
+      quiz: { title: "Search check", questions: [
+        { kind: "multiple_choice", prompt: "Binary search needs?", explanation: "A sorted array.", choices: ["a sorted array", "any array"], correctIndex: 0 },
+        { kind: "true_false", prompt: "Linear search needs sorting.", explanation: "No — it scans in order.", correctAnswer: false },
+      ] },
+      homework: null,
+    };
+    const modAuxMock = createMockModelClient(
+      [
+        { text: JSON.stringify(LESSON_PLAN_WITH_QUIZ) },                                                                              // L1 RICH plan (lazy)
+        { text: "L1 slides.", toolCalls: [batchCall([slide("s1", "What a tree is"), slide("s2", "Insertion"), slide("s3", "Recap")])] }, // GENERATE
+      ],
+      { finalText: "", structured: { aux_content: auxContent } }
+    );
+    // Capture stdout to assert authorAuxBlocks actually fired on the MODULE path (its
+    // agent_aux line) — the regression was its SILENT absence there.
+    const origLog = console.log;
+    const captured: string[] = [];
+    console.log = ((...a: unknown[]) => { captured.push(a.map((x) => String(x)).join(" ")); origLog(...a); }) as typeof console.log;
+    try {
+      await resumeGeneratePlan({
+        supabase, model: modAuxMock, courseId, lessonId: pLessonId, ownerId: userId, conversationId: pConvo,
+        plan: modAuxPlan, decision: "approve", emit: () => {},
+      });
+    } finally {
+      console.log = origLog;
+    }
+    const auxModDoc = await loadCourseDoc(supabase, courseId);
+    const auxMod = auxModDoc?.modules.find((m) => m.title === "Searching with a check");
+    const auxModLesson = auxMod?.lessons[0];
+    const auxModQuiz = auxModLesson?.blocks.find((b) => b.type === "quiz");
+    check("module-path aux: the module lesson has a quiz block (Decision B fix)", !!auxModQuiz && auxModQuiz.type === "quiz" && auxModQuiz.questions.length === 2, `${auxModLesson?.blocks.map((b) => b.type).join(",")}`);
+    check("module-path aux: the lesson still built its 3-slide deck alongside the quiz", auxModLesson?.blocks.some((b) => b.type === "slide_deck" && b.slides.length === 3) ?? false);
+    // authorAuxBlocks fired exactly once with quiz:true — proof it ran on the module path.
+    const agentAuxLines = captured.filter((l) => l.includes('"tag":"agent_aux"') && l.includes('"quiz":true'));
+    check("module-path aux: exactly ONE agent_aux quiz:true line (authorAuxBlocks ran on the module path)", agentAuxLines.length === 1, `${agentAuxLines.length}`);
+    // The aux call was its OWN structured call, routed by responseFormat name (same seam as single-lesson).
+    const modAuxRf = modAuxMock.getCalls().filter((cc) => cc.responseFormat?.name === "aux_content");
+    check("module-path aux: routed by responseFormat name (1 aux_content call)", modAuxRf.length === 1, `${modAuxRf.length}`);
+    // Decision B: aux is deterministic — NEVER model-authored, on the module path either.
+    check("module-path aux: no model write_quiz/write_homework call (deterministic only)", modAuxMock.getCalls().every((cc) => (cc.tools ?? []).every((t) => t.name !== "write_quiz" && t.name !== "write_homework")));
+  }
 
   // 11h-a2. RESUMABLE MODULE LOOP — a single lesson's TRANSPORT death does NOT kill
   //   the module: its rich plan is retried ONCE (backoff) then the lesson is skipped +

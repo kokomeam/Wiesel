@@ -19,7 +19,7 @@ import { findLesson } from "@/lib/course/queries";
 import type { CourseDocument } from "@/lib/course/types";
 import { buildContextMessage, buildSystemPrompt } from "./context";
 import { createChangeSet } from "./changeSet";
-import { diffBlocks, type BlockChange } from "./changeSetDiff";
+import { agentTouchScope, diffBlocks, type BlockChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
 import { debugAgent } from "./debugLog";
 import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
@@ -34,7 +34,7 @@ import {
 import type { AgentEvent } from "./events";
 import type { ModelClient, ModelInputItem, ModelTurnResult, ReasoningEffort } from "./modelClient";
 import type { LessonOutline } from "./outline";
-import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
+import { loadCourseDoc, reconcileCourseDoc, reconcileCourseDocScoped } from "./serverPersistence";
 import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext, type VisualGenContext } from "./tools";
 import { AI_VISUALS } from "./visuals/config";
 
@@ -292,6 +292,11 @@ export interface LoopContext {
   conversationId: string;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
+  /** The doc as it existed at RUN START — set once (via `??=`) by the outermost
+   *  pipeline (runConversationLoop / runLessonPipeline / runGenerateModule). The
+   *  agent's reconcile diffs against this to write ONLY the subtree it touched, so
+   *  it can never re-insert / shield a module the user deleted mid-run. */
+  baselineDoc?: CourseDocument;
   /** The per-run model-call budget, shared across every phase/lesson of one run.
    *  Seeded by `loopContext()`; decremented per model call. */
   callBudget?: CallBudget;
@@ -306,7 +311,14 @@ export interface LoopContext {
  *  "Module 5 has no data" fix). Never aborts on `c.signal`: a flush MUST complete
  *  even when the run was just cancelled. */
 export async function reconcileDoc(c: LoopContext, doc: CourseDocument): Promise<void> {
-  const err = await reconcileCourseDoc(c.supabase, doc, c.ownerId);
+  // SCOPED reconcile: write only the subtree the agent touched this run (vs the
+  // run-start baseline) so a module the user deleted mid-run is never re-inserted
+  // or shielded from deletion. Fall back to the full reconcile only if the baseline
+  // wasn't set (shouldn't happen — every entrypoint sets it) so persistence is never
+  // silently skipped.
+  const err = c.baselineDoc
+    ? await reconcileCourseDocScoped(c.supabase, doc, c.ownerId, agentTouchScope(c.baselineDoc, doc))
+    : await reconcileCourseDoc(c.supabase, doc, c.ownerId);
   if (err && !c.signal?.aborted) c.emit({ type: "error", message: `Some changes may not have saved: ${err}` });
 }
 
@@ -367,6 +379,10 @@ export async function runConversationLoop(
   options: LoopOptions = {}
 ): Promise<LoopResult> {
   let doc = startDoc;
+  // Anchor the run-start baseline for scoped reconciles (no-op if an outer pipeline
+  // already set it — the OUTERMOST run start is the one we want; repair/generate
+  // sub-loops inherit it so they stay scoped to what THIS run touched).
+  c.baselineDoc ??= structuredClone(startDoc);
   // STATIC system (cacheable) + the VARIABLE course/lesson/outline as a leading
   // developer message — so the big static prefix + tools cache across calls.
   const system = options.systemOverride ?? buildSystemPrompt({ layered: options.layered });

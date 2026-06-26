@@ -487,15 +487,37 @@ async function generateLesson(
   return { ...r, deckBlockId: firstDeckId(r.doc, lessonId) ?? deckBlockId, deckPreCreated };
 }
 
-/** ITEM 4 — author the lesson's quiz/homework as ONE structured call, run
+/** DECISION B — author the lesson's quiz/homework as ONE structured call, run
  *  CONCURRENTLY with slide authoring (they depend only on the PLAN, not the slide
- *  narrative). Returns the built blocks; BEST-EFFORT — empty on any failure, in which
- *  case validate/repair authors them as the safety net. Does NOT touch the DB. */
-async function authorAuxBlocks(c: LoopContext, outline: LessonOutline): Promise<LessonBlock[]> {
+ *  narrative). Returns the built blocks; BEST-EFFORT — empty on any failure. The
+ *  caller retries this ONCE on a required-but-missing block (deterministic, same
+ *  structured builders); model-repair NEVER authors aux. Does NOT touch the DB. The
+ *  `attempt` ordinal (1 = concurrent, 2 = retry) rides in the instrumentation so a
+ *  reviewer can watch how often the retry fires + confirm the call stays off the
+ *  critical path. Pinned to AI_PHASE_MODELS.aux (low effort — a mechanical fill). */
+async function authorAuxBlocks(c: LoopContext, outline: LessonOutline, attempt = 1): Promise<LessonBlock[]> {
   if (!outline.quizPlan && !outline.homeworkPlan) return [];
+  const t = Date.now();
+  const logAux = (res: ModelTurnResult | null, blocks: LessonBlock[]) =>
+    console.log(
+      JSON.stringify({
+        tag: "agent_aux",
+        lessonId: c.lessonId,
+        attempt,
+        model: AI_PHASE_MODELS.aux.model,
+        effort: AI_PHASE_MODELS.aux.effort,
+        quiz: blocks.some((b) => b.type === "quiz"),
+        homework: blocks.some((b) => b.type === "homework"),
+        finishReason: res?.finishReason ?? "exception",
+        inputTokens: res?.usage?.inputTokens ?? 0,
+        outputTokens: res?.usage?.outputTokens ?? 0,
+        reasoningTokens: res?.usage?.reasoningTokens ?? 0,
+        cachedTokens: res?.usage?.cachedTokens ?? 0,
+        latencyMs: Date.now() - t,
+      })
+    );
   try {
     if (c.callBudget) c.callBudget.remaining -= 1;
-    const t = Date.now();
     const res = await c.model.runTurn(
       {
         system: AUX_SYSTEM_PROMPT,
@@ -503,16 +525,22 @@ async function authorAuxBlocks(c: LoopContext, outline: LessonOutline): Promise<
         tools: [],
         responseFormat: auxContentResponseFormat(),
         stream: false,
-        effort: AI_PHASE_MODELS.repair.effort,
-        model: AI_PHASE_MODELS.repair.model,
+        effort: AI_PHASE_MODELS.aux.effort,
+        model: AI_PHASE_MODELS.aux.model,
         maxOutputTokens: 6000,
         signal: c.signal,
       },
       () => {}
     );
-    if (res.finishReason === "error") return [];
+    if (res.finishReason === "error") {
+      logAux(res, []);
+      return [];
+    }
     const parsed = parseAuxContent(res.text);
-    if (!parsed) return [];
+    if (!parsed) {
+      logAux(res, []);
+      return [];
+    }
     const blocks: LessonBlock[] = [];
     if (parsed.quiz && outline.quizPlan && parsed.quiz.questions.length) {
       blocks.push(buildQuizBlock({ title: parsed.quiz.title, questions: parsed.quiz.questions }));
@@ -528,11 +556,77 @@ async function authorAuxBlocks(c: LoopContext, outline: LessonOutline): Promise<
         })
       );
     }
-    console.log(JSON.stringify({ tag: "agent_aux_parallel", lessonId: c.lessonId, quiz: blocks.some((b) => b.type === "quiz"), homework: blocks.some((b) => b.type === "homework"), latencyMs: Date.now() - t }));
+    logAux(res, blocks);
     return blocks;
   } catch {
+    logAux(null, []);
     return [];
   }
+}
+
+/** Dedup-by-type merge: add each aux block to `lessonId` only when no block of that
+ *  type already exists. PURE — returns a new doc (or the SAME reference if nothing
+ *  merged, so callers can detect a no-op by identity). Quiz/homework are independent
+ *  block types (own ids, no slide cross-refs), so grafting them never disturbs slides. */
+function mergeAuxBlocks(doc: CourseDocument, lessonId: string, blocks: LessonBlock[]): CourseDocument {
+  for (const block of blocks) {
+    const lesson = findLesson(doc, lessonId)?.lesson;
+    if (lesson && !lesson.blocks.some((b) => b.type === block.type)) {
+      const r = applyCoursePatch(doc, { action: "ADD_BLOCK", lessonId, block }, nowIso());
+      if (r.ok) doc = r.doc;
+    }
+  }
+  return doc;
+}
+
+/** The quiz/homework blocks currently on a lesson — used to graft concurrently-authored
+ *  aux from the (pre-generate) aux doc onto the generated doc. */
+function collectAuxBlocks(doc: CourseDocument, lessonId: string): LessonBlock[] {
+  return (findLesson(doc, lessonId)?.lesson?.blocks ?? []).filter(
+    (b) => b.type === "quiz" || b.type === "homework"
+  );
+}
+
+/** Which required aux blocks the plan asked for but the doc still lacks. */
+function auxStillMissing(doc: CourseDocument, lessonId: string, outline: LessonOutline): ("quiz" | "homework")[] {
+  const blocks = findLesson(doc, lessonId)?.lesson?.blocks ?? [];
+  const missing: ("quiz" | "homework")[] = [];
+  if (outline.quizPlan && !blocks.some((b) => b.type === "quiz")) missing.push("quiz");
+  if (outline.homeworkPlan && !blocks.some((b) => b.type === "homework")) missing.push("homework");
+  return missing;
+}
+
+/**
+ * DECISION B — the ONE aux author, shared by the single-lesson AND module paths. Authors
+ * the lesson's quiz/homework (concurrent producer; `authorAuxBlocks` reads only `outline`,
+ * never the slides), merges them into `doc` (dedup-by-type), and on a required-but-missing
+ * block retries the DETERMINISTIC author ONCE with a short backoff — never a model-repair
+ * pass. A still-unrecovered gap logs `agent_aux_unrecovered` (loud, greppable) and ships
+ * the slides anyway. Returns the doc with aux merged. Safe to run CONCURRENTLY with slide
+ * generation: the caller grafts the returned aux onto the generated doc (collectAuxBlocks +
+ * mergeAuxBlocks). The per-lesson context (`lc`) makes the `agent_aux` log carry the right
+ * lessonId on both paths.
+ */
+async function authorAndMergeAux(
+  c: LoopContext,
+  lessonId: string,
+  doc: CourseDocument,
+  outline: LessonOutline
+): Promise<CourseDocument> {
+  const lc: LoopContext = { ...c, lessonId };
+  doc = mergeAuxBlocks(doc, lessonId, await authorAuxBlocks(lc, outline));
+  let missing = auxStillMissing(doc, lessonId, outline);
+  if (missing.length && !c.signal?.aborted) {
+    await delay(AI_LESSON_RETRY_BACKOFF_MS, c.signal);
+    if (!c.signal?.aborted) {
+      doc = mergeAuxBlocks(doc, lessonId, await authorAuxBlocks(lc, outline, 2));
+      missing = auxStillMissing(doc, lessonId, outline);
+    }
+  }
+  if (missing.length) {
+    console.log(JSON.stringify({ tag: "agent_aux_unrecovered", lessonId, missing }));
+  }
+  return doc;
 }
 
 /** A focused brief for ONE missing slide spec the repair pass must build. */
@@ -564,14 +658,10 @@ function buildRepairInstruction(outline: LessonOutline, report: ValidationReport
       `DUPLICATE SLIDES: spec(s) ${report.duplicateSpecIds.join(", ")} appear on more than one slide. Keep the best one; repurpose the other to a missing spec.`
     );
   }
-  if (report.requiredBlocksMissing.includes("quiz") && outline.quizPlan) {
-    lines.push(
-      `MISSING KNOWLEDGE CHECK: create it with write_quiz — ${outline.quizPlan.questionCount} question(s) on ${outline.quizPlan.targetSkills.map((t) => t.skill).join(", ")}.`
-    );
-  }
-  if (report.requiredBlocksMissing.includes("homework") && outline.homeworkPlan) {
-    lines.push(`MISSING PRACTICE: create it with write_homework — ${outline.homeworkPlan.exerciseCount} exercise(s).`);
-  }
+  // DECISION B: repair NEVER authors quiz/homework — those tools left the GENERATE/REPAIR
+  // surface and aux is owned by the concurrent author + its deterministic retry
+  // (runLessonPipeline). validation no longer reports a missing quiz/homework as a
+  // repairable failure, so `report.requiredBlocksMissing` is always empty here.
   if (report.missingRequiredVisualSpecIds.length) {
     lines.push(
       "MISSING REQUIRED VISUALS — these slides exist but the plan REQUIRED a visual they lack. Add the diagram with set_diagram (to convert the existing slide) or add_diagram, preferring a templateId so accuracy-critical diagrams are correct by construction:"
@@ -752,6 +842,7 @@ async function runLintAndReview(c: LoopContext, doc: CourseDocument, lessonId: s
  */
 async function runLessonPipeline(c: LoopContext, startDoc: CourseDocument, outline: LessonOutline): Promise<void> {
   const baseline = structuredClone(startDoc);
+  c.baselineDoc ??= baseline; // run-start anchor for scoped reconciles
   let doc = startDoc;
   let mutated = false;
   let lastMsgId: string | null = null;
@@ -774,30 +865,24 @@ async function runLessonPipeline(c: LoopContext, startDoc: CourseDocument, outli
   };
 
   try {
-    // ITEM 4: author slides and quiz/homework CONCURRENTLY — the slide loop drives to
-    // SLIDE coverage only (coverageSlidesOnly), while a single structured aux call
-    // writes the quiz/homework off the critical path. The aux call touches no DB; its
-    // blocks are merged into the slide loop's final doc below.
-    const [gen, auxBlocks] = await Promise.all([
+    // DECISION B: author slides and quiz/homework CONCURRENTLY. The slide loop drives to
+    // SLIDE coverage only (coverageSlidesOnly); authorAndMergeAux (the ONE shared aux
+    // author, identical on the module path) reads only the outline, so it runs off the
+    // critical path against the pre-generate doc. We then graft its aux onto gen.doc with
+    // the SAME dedup-by-type merge (aux and slides are independent block types).
+    const [gen, auxDoc] = await Promise.all([
       generateLesson(c, c.lessonId, startDoc, outline),
-      authorAuxBlocks(c, outline),
+      authorAndMergeAux(c, c.lessonId, startDoc, outline),
     ]);
     doc = gen.doc;
     mutated = gen.docMutated || gen.deckPreCreated;
     lastMsgId = gen.lastAssistantMessageId;
-    // Merge the concurrently-authored quiz/homework (skip a type already present — the
-    // slide loop or a prior run could have added one). validate/repair is the safety
-    // net if the aux call produced nothing for a planned block.
-    for (const block of auxBlocks) {
-      const lesson = findLesson(doc, c.lessonId)?.lesson;
-      if (lesson && !lesson.blocks.some((b) => b.type === block.type)) {
-        const r = applyCoursePatch(doc, { action: "ADD_BLOCK", lessonId: c.lessonId, block }, nowIso());
-        if (r.ok) {
-          doc = r.doc;
-          mutated = true;
-        }
-      }
+    const withAux = mergeAuxBlocks(doc, c.lessonId, collectAuxBlocks(auxDoc, c.lessonId));
+    if (withAux !== doc) {
+      doc = withAux;
+      mutated = true;
     }
+
     // Persist generation immediately so the DB has the deck before validate/repair
     // (so an abort/crash mid-repair still leaves the generated slides).
     if (mutated) await reconcileDoc(c, doc);
@@ -1001,6 +1086,10 @@ async function runRichLessonPlanResilient(
  */
 async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, skeleton: ModuleSkeleton): Promise<void> {
   let doc = startDoc;
+  // Run-start anchor for scoped reconciles: BEFORE the new module is created, so the
+  // scaffold persist + every per-lesson reconcile scope to the new module's subtree
+  // only (never pre-existing modules the user might delete mid-build).
+  c.baselineDoc ??= structuredClone(startDoc);
 
   const mod = createModule(skeleton.moduleTitle, doc.modules.length);
   const addMod = applyCoursePatch(doc, { action: "ADD_MODULE", module: mod }, nowIso());
@@ -1072,9 +1161,18 @@ async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, skele
         continue;
       }
 
-      // 2. GENERATE → 3. VALIDATE/REPAIR.
-      const gen = await generateLesson(c, id, doc, outline, detail);
-      doc = gen.doc;
+      // 2. GENERATE + AUX (concurrent) → 3. VALIDATE/REPAIR. authorAndMergeAux is the
+      //    SAME shared aux author as the single-lesson path; it reads only the outline
+      //    (never the slides), so it runs CONCURRENTLY with generateLesson off this
+      //    lesson's critical path — no serialize point added to the loop (which is the
+      //    lesson-parallelism surface). We graft the concurrently-authored aux onto
+      //    gen.doc via the same dedup-by-type merge BEFORE validate/reconcile, so the
+      //    quiz/homework persists WITH this lesson (not into a later one).
+      const [gen, auxDoc] = await Promise.all([
+        generateLesson(c, id, doc, outline, detail),
+        authorAndMergeAux(c, id, doc, outline),
+      ]);
+      doc = mergeAuxBlocks(gen.doc, id, collectAuxBlocks(auxDoc, id));
       lastMsgId = gen.lastAssistantMessageId ?? lastMsgId;
 
       if (AI_VALIDATION.validateGeneration) {
