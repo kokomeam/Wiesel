@@ -111,7 +111,7 @@ export function HeroPreview() {
       className="relative mx-auto w-full max-w-md px-1 pb-24 pt-2 sm:pb-28 lg:max-w-none lg:pb-24"
       style={{ perspective: 1200 }}
       role="img"
-      aria-label="Preview of the CourseGen Pro course studio and learner dashboard"
+      aria-label="Preview of the WiseSel course studio and learner dashboard"
     >
       <motion.div
         style={{ rotateX: tiltOff ? 0 : rotateX, rotateY: tiltOff ? 0 : rotateY }}

@@ -19,7 +19,7 @@ const links = [
 export function Wordmark({ suffix }: { suffix?: string }) {
   return (
     <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-      CourseGen<span className="text-orange-500">*</span>
+      WiseSel<span className="text-orange-500">*</span>
       {suffix && (
         <span className="ml-2 font-mono text-[10px] font-normal uppercase tracking-[0.2em] text-stone-400">
           {suffix}
@@ -50,7 +50,7 @@ export function IntroNav() {
       )}
     >
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <Link href="/" aria-label="CourseGen home">
+        <Link href="/" aria-label="WiseSel home">
           <Wordmark />
         </Link>
 

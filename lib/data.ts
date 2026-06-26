@@ -1,5 +1,5 @@
 /**
- * Temporary in-memory data for the CourseGen Pro skeleton.
+ * Temporary in-memory data for the WiseSel skeleton.
  * Replace with Supabase / API queries when wiring the backend.
  */
 

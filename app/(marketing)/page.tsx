@@ -10,7 +10,7 @@ import { TopicMarquee } from "@/components/intro/TopicMarquee";
 import { TwoSides } from "@/components/intro/TwoSides";
 
 export const metadata: Metadata = {
-  title: "CourseGen — Both sides of the classroom",
+  title: "WiseSel — Both sides of the classroom",
   description:
     "The course studio built for both sides of the desk: educators craft courses like products, learners actually finish them. The educator deep-dive lives at /educators.",
 };

@@ -78,7 +78,7 @@ export function Hero() {
             variants={item}
             className="mt-5 max-w-md text-lg leading-relaxed text-stone-500"
           >
-            CourseGen Pro turns your expertise into polished, monetizable courses —
+            WiseSel turns your expertise into polished, monetizable courses —
             and gives learners a beautiful place to study them.
           </motion.p>
 

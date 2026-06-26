@@ -12,7 +12,7 @@ import { FinalCTA } from "@/components/marketing/FinalCTA";
 import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 
 export const metadata: Metadata = {
-  title: "CourseGen Pro for Educators — The AI Course Studio",
+  title: "WiseSel for Educators — The AI Course Studio",
   description:
     "The deep-dive tour for educators: turn expertise into engaging, monetizable courses — from curriculum to marketing to analytics.",
 };

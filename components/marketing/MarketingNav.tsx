@@ -29,7 +29,7 @@ export function MarketingNav() {
         {/* Brand */}
         <Link href="/" className="flex items-baseline gap-2">
           <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-            CourseGen<span className="text-orange-500">*</span>
+            WiseSel<span className="text-orange-500">*</span>
           </span>
           <span className="hidden font-mono text-[10px] uppercase tracking-[0.2em] text-stone-400 sm:inline">
             for educators

@@ -23,7 +23,7 @@ export function MarketingFooter() {
           <div className="col-span-2">
             <Link href="/" className="flex items-baseline gap-2">
               <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-                CourseGen<span className="text-orange-500">*</span>
+                WiseSel<span className="text-orange-500">*</span>
               </span>
               <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-stone-400">
                 for educators
@@ -56,7 +56,7 @@ export function MarketingFooter() {
 
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-stone-100 pt-8 sm:flex-row">
           <p className="text-xs text-stone-400">
-            © {year} CourseGen Pro. All rights reserved.
+            © {year} WiseSel. All rights reserved.
           </p>
           <div className="flex items-center gap-6 text-xs">
             {["Privacy", "Terms", "Status"].map((item) => (

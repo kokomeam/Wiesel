@@ -14,7 +14,7 @@ export function DualPath() {
           Choose your path
         </h2>
         <p className="mt-3 text-base text-stone-500">
-          Whether you build courses or take them, CourseGen Pro is made for you.
+          Whether you build courses or take them, WiseSel is made for you.
         </p>
       </Reveal>
 

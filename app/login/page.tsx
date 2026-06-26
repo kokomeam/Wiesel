@@ -67,7 +67,7 @@ function LoginForm() {
             *
           </span>
           <span className="text-[15px] font-semibold tracking-tight text-stone-900">
-            CourseGen<span className="text-brand-500">*</span>
+            WiseSel<span className="text-brand-500">*</span>
           </span>
         </Link>
 
@@ -137,7 +137,7 @@ function LoginForm() {
         </div>
 
         <p className="mt-5 text-center text-sm text-stone-500">
-          {signup ? "Already have an account?" : "New to CourseGen?"}{" "}
+          {signup ? "Already have an account?" : "New to WiseSel?"}{" "}
           <button
             type="button"
             onClick={() => {

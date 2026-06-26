@@ -1,5 +1,5 @@
 {
-  "name": "coursegen-pro",
+  "name": "wisesel",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -11,7 +11,16 @@
     "verify:bounded": "tsx scripts/verify-bounded.ts",
     "verify:ai:int": "tsx scripts/verify-agent-integration.ts",
     "verify:reject": "tsx scripts/verify-reject-revert.ts",
-    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts"
+    "verify:slides": "tsx scripts/verify-stickers.ts && tsx scripts/verify-font-tokens.ts && tsx scripts/verify-structured-layouts.ts && tsx scripts/verify-agent-structured.ts",
+    "verify:marketing": "tsx scripts/verify-marketing.ts",
+    "verify:marketing:flow": "tsx scripts/verify-marketing-flow.ts",
+    "verify:marketing:analytics": "tsx scripts/verify-marketing-analytics.ts",
+    "verify:marketing:email": "tsx scripts/verify-marketing-email.ts",
+    "verify:marketing:agent": "tsx scripts/verify-marketing-agent.ts",
+    "verify:marketing:swap": "tsx scripts/verify-marketing-swap.ts",
+    "verify:marketing:landing-edit": "tsx scripts/verify-marketing-landing-edit.ts",
+    "verify:marketing:account": "tsx scripts/verify-marketing-account.ts",
+    "verify:marketing:sequences": "tsx scripts/verify-marketing-sequences.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -25,6 +34,7 @@
     "openai": "^6.42.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "resend": "^6.14.0",
     "shiki": "^3.23.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"

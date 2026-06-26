@@ -78,7 +78,7 @@ export function Sidebar({
         </div>
         {!collapsed && (
           <span className="text-[15px] font-semibold tracking-tight text-stone-900">
-            CourseGen<span className="text-brand-500">*</span>
+            WiseSel<span className="text-brand-500">*</span>
           </span>
         )}
       </Link>
