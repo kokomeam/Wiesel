@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { CourseGallery } from "@/components/editor/CourseGallery";
 import { StudioLoader } from "@/components/editor/StudioLoader";
-import { getPendingBlocks } from "@/lib/ai/changeSet";
+import { getPendingBlocks, getPendingNodes } from "@/lib/ai/changeSet";
 import { courseDocFromRows } from "@/lib/course/persistence";
 import { createClient } from "@/lib/supabase/server";
 
@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 export default async function StudioPage({
   searchParams,
 }: {
-  searchParams: Promise<{ course?: string }>;
+  searchParams: Promise<{ course?: string; lesson?: string; block?: string }>;
 }) {
   const supabase = await createClient();
   const {
@@ -48,12 +48,31 @@ export default async function StudioPage({
     redirect("/studio"); // stale/forbidden ?course= — back to the gallery
   }
 
-  const [{ data: modules }, { data: lessons }, { data: blocks }, pendingBlocks] = await Promise.all([
+  const [
+    { data: modules, error: modErr },
+    { data: lessons, error: lessonErr },
+    { data: blocks, error: blockErr },
+    pendingBlocks,
+    pendingNodes,
+    openFindings,
+  ] = await Promise.all([
     supabase.from("modules").select("*").eq("course_id", courseId),
     supabase.from("lessons").select("*").eq("course_id", courseId),
     supabase.from("blocks").select("*").eq("course_id", courseId),
     getPendingBlocks(supabase, courseId),
+    getPendingNodes(supabase, courseId),
+    // Open threshold-filed findings → the header badge + the agent panel's
+    // "Review flagged issues" invite.
+    supabase
+      .from("agent_findings")
+      .select("id", { count: "exact", head: true })
+      .eq("course_id", courseId)
+      .eq("status", "open"),
   ]);
+  // A partial read failure must NOT hydrate a doc missing rows: the first autosave
+  // would then orphan-delete those "missing" blocks/lessons course-wide. Fall back
+  // to the gallery rather than build a lossy tree.
+  if (modErr || lessonErr || blockErr) redirect("/studio");
 
   const doc = courseDocFromRows(course, modules ?? [], lessons ?? [], blocks ?? []);
 
@@ -62,7 +81,11 @@ export default async function StudioPage({
       initialDoc={doc}
       courseId={courseId}
       ownerId={user.id}
-      pendingBlocks={pendingBlocks.map((p) => ({ blockId: p.blockId, changeSetId: p.changeSetId }))}
+      pendingBlocks={pendingBlocks.map((p) => ({ blockId: p.blockId, changeSetId: p.changeSetId, evidence: p.evidence ?? null }))}
+      pendingNodes={pendingNodes.map((p) => ({ nodeId: p.nodeId, nodeType: p.nodeType, changeSetId: p.changeSetId, op: p.op }))}
+      focusLessonId={sp.lesson ?? null}
+      focusBlockId={sp.block ?? null}
+      openFindingsCount={openFindings.count ?? 0}
     />
   );
 }

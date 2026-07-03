@@ -20,7 +20,8 @@ import { runAgentTurn, resumeAgentTurn, runConversationLoop, loopContext } from 
 import { runContentAgentTurn, runGenerateLessonTurn, resumeGeneratePlan } from "@/lib/ai/phases";
 import { getOrCreateConversation } from "@/lib/ai/conversations";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
-import { loadCourseDoc, reconcileCourseDoc } from "@/lib/ai/serverPersistence";
+import { loadCourseDoc, reconcileCourseDoc, reconcileCourseDocScoped } from "@/lib/ai/serverPersistence";
+import { agentTouchScope } from "@/lib/ai/changeSetDiff";
 import { getPendingBlocks, acceptChangeSet, rejectChangeSet } from "@/lib/ai/changeSet";
 import { generateAndStoreImage } from "@/lib/ai/visuals/generateAndStore";
 import { buildImagePrompt } from "@/lib/ai/visuals/imageIntent";
@@ -1070,6 +1071,40 @@ async function main() {
   const m1Doc = await loadCourseDoc(supabase, courseId);
   const m1Deck = m1Doc?.modules.find((m) => m.id === pModuleId)?.lessons.find((l) => l.id === m1LessonId)?.blocks.find((b) => b.type === "slide_deck");
   check("Method 1: all 3 split slides were built (parent + continuation counted)", !!m1Deck && m1Deck.type === "slide_deck" && m1Deck.slides.length === 3, `${m1Deck && m1Deck.type === "slide_deck" ? m1Deck.slides.length : "none"}`);
+
+  // 11n. RESURRECTION GUARD — a module deleted DURING a run must NOT reappear when the
+  //      agent's reconcile lands. The agent holds a run-start snapshot; it authors into
+  //      pLesson (touching ONLY that lesson); meanwhile the user deletes an UNRELATED
+  //      module. The SCOPED reconcile writes only the touched subtree (never an untouched
+  //      module), so the delete sticks — the old full reconcile would have resurrected it.
+  console.log("\n# Resurrection guard — unrelated module deleted mid-run");
+  const guardModuleId = crypto.randomUUID();
+  const guardLessonId = crypto.randomUUID();
+  await supabase.from("modules").insert({ id: guardModuleId, course_id: courseId, title: "Doomed module", order: 20 });
+  await supabase.from("lessons").insert({ id: guardLessonId, module_id: guardModuleId, course_id: courseId, title: "Doomed lesson", objective: "x", order: 0 });
+
+  const held = (await loadCourseDoc(supabase, courseId))!; // the agent's run-start snapshot (has BOTH modules)
+  check("guard setup: doomed module present at run start", held.modules.some((m) => m.id === guardModuleId));
+  // The agent authors a block into pLesson — touching ONLY pLesson.
+  const guardBlock = createBlock("lecture_text", 50);
+  const editRes = applyCoursePatch(held, { action: "ADD_BLOCK", lessonId: pLessonId, block: guardBlock }, new Date().toISOString());
+  const edited = editRes.ok ? editRes.doc : held;
+  const guardScope = agentTouchScope(held, edited);
+  check("guard: touch-scope excludes the doomed module", !guardScope.newModuleIds.includes(guardModuleId));
+
+  // The user DELETES the doomed module mid-run (direct row delete; cascades to its lesson).
+  await supabase.from("modules").delete().eq("id", guardModuleId).eq("course_id", courseId);
+  // The agent's scoped reconcile lands AFTER the delete, carrying its stale held doc.
+  const guardErr = await reconcileCourseDocScoped(supabase, edited, userId, guardScope);
+  check("guard: scoped reconcile ok", guardErr === null, guardErr ?? "");
+
+  const afterGuard = (await loadCourseDoc(supabase, courseId))!;
+  check("guard: deleted module did NOT reappear", !afterGuard.modules.some((m) => m.id === guardModuleId));
+  check("guard: deleted lesson did NOT reappear", !afterGuard.modules.some((m) => m.lessons.some((l) => l.id === guardLessonId)));
+  check(
+    "guard: the agent's own edit DID persist",
+    afterGuard.modules.some((m) => m.lessons.some((l) => l.id === pLessonId && l.blocks.some((b) => b.id === guardBlock.id))),
+  );
 
   // 12. cleanup
   await supabase.from("courses").delete().eq("id", courseId);

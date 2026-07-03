@@ -63,8 +63,15 @@ function dispatch(ev: AgentEvent): boolean {
       });
       return false;
     case "change_set":
-      s.registerChangeSet(ev.changeSetId, ev.count, ev.summary);
+      s.registerChangeSet(ev.changeSetId, ev.count, ev.summary, ev.structuralCount, ev.evidence);
       return true;
+    case "maintenance":
+      s.setMaintenance({
+        stage: ev.stage,
+        detail: ev.detail,
+        findings: ev.findings ?? useAgentStore.getState().maintenance?.findings ?? [],
+      });
+      return false;
     case "checkpoint":
       s.setCheckpoint(ev.reason);
       return false;

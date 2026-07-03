@@ -37,6 +37,7 @@ import {
   ShapeKindSchema,
   SlideBackgroundSchema,
   SlideElementSchema,
+  SlideListContentSchema,
   SlideSchema,
   SlideTemplateSchema,
   SlideThemeIdSchema,
@@ -44,16 +45,19 @@ import {
 } from "./schemas";
 import { findBlock, findLesson, findModule } from "./queries";
 import { degenerateGroupIds } from "./slide/groups";
+import { flattenToItems } from "./slide/list";
 import { clampFrame, SLIDE_H, SLIDE_W, topZ } from "./slide/geometry";
 import { applyLayoutToSlide, findLayout } from "./slide/layouts";
 import { simplifySlideDesign } from "./slide/simplify";
 import { findTheme, themeRef } from "./slide/themes";
 import type {
   CourseDocument,
+  ImportedDeckBlock,
   LessonBlock,
   Slide,
   SlideDeckBlock,
   SlideElement,
+  VideoLessonBlock,
 } from "./types";
 
 /* ───────────────────────────── Targets ────────────────────────────────── */
@@ -105,6 +109,7 @@ const ElementUpdatesSchema = z
     text: z.string(),
     runs: z.array(TextRunSchema),
     items: z.array(z.string()),
+    list: SlideListContentSchema,
     code: z.string(),
     language: z.string(),
     src: z.string(),
@@ -183,6 +188,91 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     action: z.literal("DELETE_BLOCK"),
     lessonId: z.string(),
     blockId: z.string(),
+  }),
+  z.object({
+    // Patch an imported-deck block's denormalized snapshot (status / pageCount /
+    // error / title …). Used as the worker's status flows back to the editor and
+    // by retry/replace; never touches storage (that's the deck_imports row).
+    action: z.literal("UPDATE_IMPORTED_DECK"),
+    blockId: z.string(),
+    patch: z.object({
+      title: z.string().optional(),
+      deckImportId: z.string().optional(),
+      sourceType: z.enum(["upload", "google_drive", "onedrive"]).optional(),
+      originalFileName: z.string().optional(),
+      originalMimeType: z.string().optional(),
+      originalFileSize: z.number().int().nonnegative().optional(),
+      status: z.enum(["uploaded", "processing", "ready", "failed"]).optional(),
+      pageCount: z.number().int().nonnegative().nullable().optional(),
+      error: z.string().nullable().optional(),
+      updatedAt: z.string().optional(),
+    }),
+  }),
+  z.object({
+    // Patch a video block: the denormalized asset snapshot (status flows back
+    // from Mux via polling/webhook), the recording config, the trim edit, the
+    // description, and the playback settings. Each field is optional so a caller
+    // updates exactly what changed. Never stores raw bytes (Mux hosts them).
+    action: z.literal("UPDATE_VIDEO_LESSON"),
+    blockId: z.string(),
+    patch: z.object({
+      description: z.string().nullable().optional(),
+      asset: z
+        .object({
+          provider: z.literal("mux").optional(),
+          status: z.enum(["empty", "uploading", "processing", "ready", "failed"]).optional(),
+          videoAssetId: z.string().nullable().optional(),
+          uploadId: z.string().nullable().optional(),
+          assetId: z.string().nullable().optional(),
+          playbackId: z.string().nullable().optional(),
+          durationSeconds: z.number().nonnegative().nullable().optional(),
+          aspectRatio: z.string().nullable().optional(),
+          thumbnailUrl: z.string().nullable().optional(),
+          createdAt: z.string().nullable().optional(),
+          updatedAt: z.string().nullable().optional(),
+          errorMessage: z.string().nullable().optional(),
+        })
+        .optional(),
+      recording: z
+        .object({
+          mode: z.enum(["screen_camera", "camera_only", "screen_only"]).nullable().optional(),
+          layout: z
+            .enum(["screen_with_camera_bubble", "camera_full", "screen_full"])
+            .nullable()
+            .optional(),
+          cameraBubblePosition: z
+            .enum(["bottom-right", "bottom-left", "top-right", "top-left"])
+            .nullable()
+            .optional(),
+          includeMic: z.boolean().nullable().optional(),
+        })
+        .optional(),
+      edit: z
+        .object({
+          trimStartSeconds: z.number().nonnegative().nullable().optional(),
+          trimEndSeconds: z.number().nonnegative().nullable().optional(),
+        })
+        .optional(),
+      settings: z
+        .object({
+          showControls: z.boolean().optional(),
+          allowDownload: z.boolean().optional(),
+          showTranscript: z.boolean().optional(),
+          showChapters: z.boolean().optional(),
+        })
+        .optional(),
+      captions: z
+        .object({
+          status: z.enum(["none", "generating", "ready", "failed"]).optional(),
+          trackId: z.string().nullable().optional(),
+          trackName: z.string().nullable().optional(),
+          languageCode: z.string().nullable().optional(),
+          source: z.enum(["generated", "uploaded"]).nullable().optional(),
+          error: z.string().nullable().optional(),
+          updatedAt: z.string().nullable().optional(),
+        })
+        .optional(),
+    }),
   }),
   z.object({
     action: z.literal("UPDATE_TEXT"),
@@ -324,6 +414,9 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
     ...slideTarget,
     layout: z.string(),
     elements: z.array(SlideElementSchema),
+    /** Ambient backdrop to keep behind the elements (materialize-on-eject keeps
+     *  the structured glow/dots). Omit to clear it. */
+    backdrop: z.literal("structured").optional(),
   }),
   z.object({
     // Make a slide a renderer-owned STRUCTURED slide (or replace its template).
@@ -567,11 +660,31 @@ function normalizeGroups(slide: Slide): void {
   }
 }
 
+/**
+ * Record a manual element edit so a future AI pass can patch CONTENT without
+ * resetting user-owned geometry/style (materialize-on-eject preservation).
+ *
+ * NOTE: `applyCoursePatch` is source-agnostic, so this currently marks ANY
+ * geometry/content patch — fine today because the AI authors structured
+ * templates and has no element-level geometry tools; when those land, thread
+ * the patch source through so only human edits set these flags. (Also: the
+ * auto-grow resize that follows a text edit sets `frame` — a conservative
+ * over-mark, never an under-mark.)
+ */
+function markUserModified(
+  el: SlideElement,
+  ...aspects: ("frame" | "style" | "content")[]
+): void {
+  const next = { ...el.userModified };
+  for (const a of aspects) next[a] = true;
+  el.userModified = next;
+}
+
 /** Content keys allowed per element type (style/locked/visible always ok). */
 const allowedContentKeys: Record<SlideElement["type"], string[]> = {
-  text: ["text", "runs"],
+  text: ["text", "runs", "list"],
   heading: ["text", "runs"],
-  bullet_list: ["items"],
+  bullet_list: ["items", "list"],
   code_block: ["code", "language"],
   image: ["src", "alt", "objectFit", "caption", "attribution"],
   shape: ["shape"],
@@ -708,6 +821,70 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       const [removed] = hit.lesson.blocks.splice(idx, 1);
       normalizeOrders(hit.lesson.blocks);
       return { ok: true, summary: `Deleted ${blockLabel(removed)}` };
+    }
+
+    case "UPDATE_IMPORTED_DECK": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit) return fail(`Block ${patch.blockId} not found`);
+      if (hit.block.type !== "imported_deck")
+        return fail(`Block ${patch.blockId} is not an imported deck`);
+      const idx = hit.lesson.blocks.findIndex((b) => b.id === patch.blockId);
+      const cur = hit.lesson.blocks[idx] as ImportedDeckBlock;
+      const p = patch.patch;
+      const merged: ImportedDeckBlock = { ...cur };
+      if (p.title !== undefined) merged.title = p.title;
+      if (p.deckImportId !== undefined) merged.deckImportId = p.deckImportId;
+      if (p.sourceType !== undefined) merged.sourceType = p.sourceType;
+      if (p.originalFileName !== undefined) merged.originalFileName = p.originalFileName;
+      if (p.originalMimeType !== undefined) merged.originalMimeType = p.originalMimeType;
+      if (p.originalFileSize !== undefined) merged.originalFileSize = p.originalFileSize;
+      if (p.status !== undefined) merged.status = p.status;
+      if (p.pageCount !== undefined) merged.pageCount = p.pageCount ?? undefined;
+      if (p.error !== undefined) merged.error = p.error ?? undefined;
+      if (p.updatedAt !== undefined) merged.updatedAt = p.updatedAt;
+      hit.lesson.blocks[idx] = merged;
+      return { ok: true, summary: `Updated imported deck ${blockLabel(merged)}` };
+    }
+
+    case "UPDATE_VIDEO_LESSON": {
+      const hit = findBlock(next, patch.blockId);
+      if (!hit) return fail(`Block ${patch.blockId} not found`);
+      if (hit.block.type !== "video")
+        return fail(`Block ${patch.blockId} is not a video lesson`);
+      const idx = hit.lesson.blocks.findIndex((b) => b.id === patch.blockId);
+      const cur = hit.lesson.blocks[idx] as VideoLessonBlock;
+      const p = patch.patch;
+      // Null clears an optional field; undefined leaves it untouched. Merge each
+      // sub-object shallowly so a partial asset update keeps the other ids.
+      const merged: VideoLessonBlock = {
+        ...cur,
+        asset: { ...cur.asset },
+        recording: { ...cur.recording },
+        edit: { ...cur.edit },
+        settings: { ...cur.settings },
+      };
+      if (p.description !== undefined) merged.description = p.description ?? undefined;
+      const assign = <T extends object>(target: T, src: Partial<Record<keyof T, unknown>> | undefined) => {
+        if (!src) return;
+        for (const [k, v] of Object.entries(src)) {
+          if (v === undefined) continue;
+          (target as Record<string, unknown>)[k] = v === null ? undefined : v;
+        }
+      };
+      assign(merged.asset, p.asset);
+      assign(merged.recording, p.recording);
+      assign(merged.edit, p.edit);
+      // settings are booleans — no nullable clearing, just overwrite present keys.
+      if (p.settings) merged.settings = { ...merged.settings, ...p.settings };
+      // captions is an optional sub-object: merge shallowly onto the existing one
+      // (or a fresh `none` base), null clearing an optional field like the others.
+      if (p.captions) {
+        const nextCaptions: VideoLessonBlock["captions"] = { status: "none", ...merged.captions };
+        assign(nextCaptions, p.captions);
+        merged.captions = nextCaptions;
+      }
+      hit.lesson.blocks[idx] = merged;
+      return { ok: true, summary: `Updated video lesson ${blockLabel(merged)}` };
     }
 
     case "UPDATE_TEXT":
@@ -905,6 +1082,8 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       hit.slide.layout = patch.layout;
       hit.slide.elements = patch.elements;
       delete hit.slide.template;
+      if (patch.backdrop) hit.slide.backdrop = patch.backdrop;
+      else delete hit.slide.backdrop;
       return { ok: true, summary: `Rewrote slide ${hit.slideIndex + 1} (${patch.layout})` };
     }
 
@@ -1014,9 +1193,31 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
           delete rich.runs;
         }
       }
+      // Rich-list invariant: `items` (plain fallback) === flatten(list). The rich
+      // `list` wins when supplied; a legacy plain-`items` rewrite resets it.
+      if (el.type === "bullet_list") {
+        const bl = el as Extract<SlideElement, { type: "bullet_list" }>;
+        if (content.list) bl.items = flattenToItems(content.list);
+        else if ("items" in content) delete bl.list;
+      }
+      // Lists inside a text box: `text` (plain fallback) === the list's lines.
+      // A plain text/runs rewrite (e.g. toggling the last marker off) clears it.
+      if (el.type === "text") {
+        const te = el as Extract<SlideElement, { type: "text" }>;
+        if (content.list) {
+          te.text = flattenToItems(content.list).join("\n");
+          delete te.runs;
+        } else if ("text" in content || "runs" in content) {
+          delete te.list;
+        }
+      }
       if (style) el.style = { ...el.style, ...style };
       if (locked !== undefined) el.locked = locked;
       if (visible !== undefined) el.visible = visible;
+      const aspects: ("style" | "content")[] = [];
+      if (Object.keys(content).length > 0) aspects.push("content");
+      if (style) aspects.push("style");
+      if (aspects.length) markUserModified(el, ...aspects);
       return { ok: true, summary: `Updated ${el.type.replace("_", " ")} element` };
     }
 
@@ -1055,6 +1256,7 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       const frame = clampFrame({ x: patch.x, y: patch.y, width: el.width, height: el.height });
       el.x = frame.x;
       el.y = frame.y;
+      markUserModified(el, "frame");
       return { ok: true, summary: `Moved ${el.type.replace("_", " ")} element` };
     }
 
@@ -1073,6 +1275,7 @@ function applyTo(next: CourseDocument, patch: CoursePatch): InnerResult {
       el.y = frame.y;
       el.width = frame.width;
       el.height = frame.height;
+      markUserModified(el, "frame");
       return { ok: true, summary: `Resized ${el.type.replace("_", " ")} element` };
     }
 

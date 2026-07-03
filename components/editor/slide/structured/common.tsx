@@ -12,6 +12,14 @@ import type { CSSProperties, ReactNode } from "react";
 import { updateTemplateContentPatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
 import type { RichText } from "@/lib/course/types";
+import {
+  BADGE,
+  CARD,
+  EYEBROW,
+  badgeBg,
+  badgeBorder,
+  withAlpha,
+} from "@/lib/course/slide/structured/styleConstants";
 import { StickerGlyph } from "../elements/StickerElement";
 
 export interface StructuredCtx {
@@ -24,14 +32,9 @@ export interface StructuredCtx {
   muted: string;
 }
 
-export function withAlpha(color: string, alpha: number): string {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color)?.[1];
-  if (!hex) return color;
-  const r = parseInt(hex.slice(0, 2), 16);
-  const g = parseInt(hex.slice(2, 4), 16);
-  const b = parseInt(hex.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
+/** Re-exported from the shared style constants so the many `./common` imports
+ *  keep working while the materializer + renderer share one definition. */
+export { withAlpha };
 
 /** A single editable text slot. `path` is relative to template.content (this
  *  appends "text"). Read-only in thumbnails; commit-on-blur otherwise. Pass
@@ -121,13 +124,13 @@ export function Badge({ text, accent }: { text: string; accent: string }) {
       className="inline-block font-mono uppercase"
       style={{
         color: accent,
-        background: withAlpha(accent, 0.1),
-        border: `1px solid ${withAlpha(accent, 0.25)}`,
-        borderRadius: 999,
+        background: badgeBg(accent),
+        border: `1px solid ${badgeBorder(accent)}`,
+        borderRadius: BADGE.radius,
         padding: "4px 12px",
-        fontSize: 12.5,
-        fontWeight: 600,
-        letterSpacing: "0.1em",
+        fontSize: BADGE.fontSize,
+        fontWeight: BADGE.weight,
+        letterSpacing: `${BADGE.letterSpacingEm}em`,
       }}
     >
       {text}
@@ -149,16 +152,16 @@ export function Eyebrow({
 }) {
   if (!ctx.interactive && !value?.text) return null;
   return (
-    <div className="flex items-center gap-3" style={{ marginBottom: 18 }}>
+    <div className="flex items-center gap-3" style={{ marginBottom: EYEBROW.marginBottom }}>
       <EditableText
         value={value}
         path={path}
         ctx={ctx}
         placeholder="Eyebrow"
         className="font-mono uppercase"
-        style={{ color: ctx.accent, fontSize: 14, fontWeight: 600, letterSpacing: "0.12em" }}
+        style={{ color: ctx.accent, fontSize: EYEBROW.fontSize, fontWeight: EYEBROW.weight, letterSpacing: `${EYEBROW.letterSpacingEm}em` }}
       />
-      {rule && <span aria-hidden style={{ width: 40, height: 2, background: ctx.accent, opacity: 0.6 }} />}
+      {rule && <span aria-hidden style={{ width: EYEBROW.ruleW, height: EYEBROW.ruleH, background: ctx.accent, opacity: EYEBROW.ruleOpacity }} />}
     </div>
   );
 }
@@ -188,10 +191,10 @@ export function Card({ children, style }: { children: ReactNode; style?: CSSProp
   return (
     <div
       style={{
-        background: "#ffffff",
-        border: "1px solid rgba(120,113,108,0.16)",
-        borderRadius: 20,
-        boxShadow: "0 1px 2px rgba(68,48,28,0.05)",
+        background: CARD.bg,
+        border: `${CARD.borderWidth}px solid ${CARD.border}`,
+        borderRadius: CARD.radius,
+        boxShadow: CARD.shadow,
         ...style,
       }}
     >

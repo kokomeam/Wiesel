@@ -114,8 +114,6 @@ export function validateLessonGeneration(
   outline: LessonOutline,
   opts: { checkpointed?: boolean } = {}
 ): ValidationReport {
-  const lesson = findLesson(doc, lessonId)?.lesson;
-  const blocks = lesson?.blocks ?? [];
   const decks = lessonDecks(doc, lessonId);
   const slides: Slide[] = decks.flatMap((d) => d.slides);
 

@@ -80,6 +80,11 @@ interface UIState {
   /** Active creation-flow step (Plan / Create / Publish). null = derive from
    *  the doc (empty course → Plan, otherwise Create). Not persisted. */
   activeStep: FlowPhase | null;
+  /** Transient toast message (e.g. "Slide is now freely editable"). Not
+   *  persisted. `flashId` bumps on every showFlash so the toast re-shows even
+   *  for the same text. */
+  flash: string | null;
+  flashId: number;
 
   togglePanel: (key: PanelKey) => void;
   setActiveStep: (step: FlowPhase) => void;
@@ -99,6 +104,7 @@ interface UIState {
   saveCustomLayout: (layout: SlideLayoutDef) => void;
   deleteCustomLayout: (id: string) => void;
   setSlideClipboard: (slide: Slide | null) => void;
+  showFlash: (message: string) => void;
 }
 
 const defaultPanels: PanelSnapshot = {
@@ -131,6 +137,8 @@ export const useUIStore = create<UIState>()(
       contextMenu: null,
       zoom: 1,
       activeStep: null,
+      flash: null,
+      flashId: 0,
 
       togglePanel: (key) =>
         set((s) => ({ collapsed: { ...s.collapsed, [key]: !s.collapsed[key] } })),
@@ -190,6 +198,8 @@ export const useUIStore = create<UIState>()(
         set((s) => ({ customLayouts: s.customLayouts.filter((l) => l.id !== id) })),
 
       setSlideClipboard: (slide) => set({ slideClipboard: slide }),
+
+      showFlash: (message) => set((s) => ({ flash: message, flashId: s.flashId + 1 })),
     }),
     {
       name: "cgp-editor-ui",

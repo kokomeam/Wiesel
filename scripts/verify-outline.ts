@@ -64,13 +64,14 @@ function auditStrict(node: unknown, path: string, errs: string[]) {
 async function main() {
   // ── 0. Routing: a module build that NAMES its lessons must hit the module
   //       pipeline (the old `!/lessons/` guard misrouted it to a single lesson);
-  //       "add a lesson to module X" stays a single lesson. Both short-circuit
-  //       (no model call) — assert the mock was never consulted.
+  //       "add a lesson to module X" now routes to the STRUCTURE agent (it CREATES
+  //       a lesson in that module, then builds its deck — it must NOT generate into
+  //       the docked lesson). Both short-circuit (no model call).
   const noModel = createMockModelClient([]);
   const route = (msg: string) => classifyIntent(noModel, { hasDeck: false }, msg);
   check("module build naming its lessons → generate_module", (await route("Please create module 4 on sorting; only do the first 2 lessons for now")) === "generate_module");
   check("module build (no lessons word) → generate_module", (await route("Add a search algorithms module covering linear and binary search")) === "generate_module");
-  check("add a lesson to a module → generate_lesson (not module)", (await route("Add a lesson to module 2 on recursion")) === "generate_lesson");
+  check("add a lesson to a module → structure (creates the lesson in that module)", (await route("Add a lesson to module 2 on recursion")) === "structure");
   check("build out this lesson → generate_lesson", (await route("Build out this lesson with a full slide deck")) === "generate_lesson");
   check("routing short-circuits used no model call", noModel.getCalls().length === 0, `${noModel.getCalls().length}`);
 

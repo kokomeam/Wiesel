@@ -127,6 +127,28 @@ export function courseDocFromRows(
 
 /* ─────────────────────────── document → rows ──────────────────────────── */
 
+/** Map ONE block to its `blocks` row insert: the id is stripped from the jsonb
+ *  payload, and type/title/order are mirrored to their columns. Shared by the
+ *  full `courseDocToRows` reconcile AND the narrow single-block writers (e.g.
+ *  `upsertBlock`, for the visual-generate endpoint), so both build identical rows. */
+export function blockToInsert(
+  block: LessonBlock,
+  lessonId: string,
+  courseId: string,
+  index = 0
+): BlockInsert {
+  const { id, ...payload } = block;
+  return {
+    id,
+    lesson_id: lessonId,
+    course_id: courseId,
+    type: block.type,
+    title: block.title ?? null,
+    order: block.order ?? index,
+    content: payload as unknown as Json,
+  };
+}
+
 export function courseDocToRows(doc: CourseDocument, ownerId: string): CourseRowSet {
   const modules: ModuleInsert[] = [];
   const lessons: LessonInsert[] = [];
@@ -151,16 +173,7 @@ export function courseDocToRows(doc: CourseDocument, ownerId: string): CourseRow
         estimated_minutes: l.estimatedMinutes ?? null,
       });
       l.blocks.forEach((b, bi) => {
-        const { id, ...payload } = b;
-        blocks.push({
-          id,
-          lesson_id: l.id,
-          course_id: doc.id,
-          type: b.type,
-          title: b.title ?? null,
-          order: b.order ?? bi,
-          content: payload as unknown as Json,
-        });
+        blocks.push(blockToInsert(b, l.id, doc.id, bi));
       });
     });
   });

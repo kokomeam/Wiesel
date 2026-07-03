@@ -346,7 +346,10 @@ export const slideThemes = [
 ];
 
 /* ------------------------------------------------------------------ */
-/*  Marketplace                                                        */
+/*  Marketplace (marketing showcase ONLY)                              */
+/*  The in-app /marketplace page reads REAL publications via the       */
+/*  marketplace_listings / my_learning RPCs (Milestone 2). These mocks */
+/*  remain solely for the public landing's MarketplacePeek section.    */
 /* ------------------------------------------------------------------ */
 
 export interface Listing {
@@ -436,11 +439,6 @@ export const marketplaceListings: Listing[] = [
     accent: "from-rose-500 to-pink-600",
   },
 ];
-
-export const marketplaceFilters = {
-  levels: ["All Levels", "Beginner", "Intermediate", "Advanced", "Silver", "Gold"],
-  subjects: ["All Subjects", "Algorithms", "Math", "Finance", "Graphs", "Interview"],
-};
 
 /* ------------------------------------------------------------------ */
 /*  Settings — subscription tiers                                      */

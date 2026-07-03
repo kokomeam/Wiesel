@@ -13,13 +13,13 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/database.types";
+import type { Database, Json } from "@/lib/database.types";
 import { applyCoursePatch, CoursePatchSchema } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
 import type { CourseDocument } from "@/lib/course/types";
 import { buildContextMessage, buildSystemPrompt } from "./context";
 import { createChangeSet } from "./changeSet";
-import { agentTouchScope, diffBlocks, type BlockChange } from "./changeSetDiff";
+import { agentTouchScope, diffBlocks, diffStructure, type BlockChange, type StructureChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
 import { debugAgent } from "./debugLog";
 import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
@@ -36,6 +36,7 @@ import type { ModelClient, ModelInputItem, ModelTurnResult, ReasoningEffort } fr
 import type { LessonOutline } from "./outline";
 import { loadCourseDoc, reconcileCourseDoc, reconcileCourseDocScoped } from "./serverPersistence";
 import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext, type VisualGenContext } from "./tools";
+import type { AnalyticsToolContext } from "./tools/types";
 import { AI_VISUALS } from "./visuals/config";
 
 type DB = SupabaseClient<Database>;
@@ -151,6 +152,14 @@ export interface LoopOptions {
    *  all. The plan can never be diluted/buried by cross-lesson history, and there's
    *  nothing to compact. Requires `outline` (else there's no plan to scope to). */
   scopedInput?: boolean;
+  /** SUBAGENTS (maintenance runs): an arbitrary tool allow-set. Takes precedence
+   *  over the generateTools/authoringOnly booleans. Never includes the
+   *  confirm-pausing destructive tools — an unattended run must not stall. */
+  allowedToolNames?: ReadonlySet<string>;
+  /** SUBAGENTS: default true. false = write NOTHING to the conversations/messages
+   *  tables (and load no history) — subagent replay lives in agent_runs.report,
+   *  and scheduled runs have no conversation at all. */
+  persist?: boolean;
 }
 
 /** Accumulated token usage across a phase's model turns (instrumentation). */
@@ -273,12 +282,18 @@ const TOOL_VERB: Record<string, string> = {
   write_lecture_text: "lecture",
 };
 
-function changeSummary(changes: BlockChange[]): string {
+function changeSummary(changes: BlockChange[], structure: StructureChange[] = []): string {
   const n = (op: string) => changes.filter((c) => c.op === op).length;
   const parts: string[] = [];
-  if (n("create")) parts.push(`${n("create")} added`);
+  if (structure.length) {
+    const sn = (op: string) => structure.filter((c) => c.op === op).length;
+    if (sn("create")) parts.push(`${sn("create")} created`);
+    if (sn("update")) parts.push(`${sn("update")} renamed/moved`);
+    if (sn("delete")) parts.push(`${sn("delete")} removed`);
+  }
+  if (n("create")) parts.push(`${n("create")} block(s) added`);
   if (n("update")) parts.push(`${n("update")} updated`);
-  if (n("delete")) parts.push(`${n("delete")} removed`);
+  if (n("delete")) parts.push(`${n("delete")} block(s) removed`);
   return parts.join(", ") || "no changes";
 }
 
@@ -303,6 +318,10 @@ export interface LoopContext {
   /** Image-generation capability (built by `loopContext` when configured) — passed
    *  into each tool's ctx so `add_image` can generate + store an illustration. */
   visuals?: VisualGenContext;
+  /** Analytics-read capability (maintenance runs only — built once at run start
+   *  from the rollups) — passed into each tool's ctx so the Analyst's read tools
+   *  are pure lookups. Absent everywhere else; the tools ToolError without it. */
+  analytics?: AnalyticsToolContext;
 }
 
 /** Persist the doc to the DB (full-snapshot reconcile). IDEMPOTENT + repeatable —
@@ -332,19 +351,80 @@ export async function stageChangeSet(
   baselineDoc: CourseDocument,
   lastAssistantMessageId: string | null
 ): Promise<boolean> {
-  const changes = diffBlocks(baselineDoc, doc);
-  if (changes.length === 0) return false;
-  const summary = changeSummary(changes);
+  return !!(await stageChanges(c, doc, baselineDoc, lastAssistantMessageId, false));
+}
+
+/** Stage BOTH the structural diff (module/lesson create/rename/move/delete) AND any
+ *  block diff (vs `baselineDoc`) as ONE reviewable change-set — so a structure turn
+ *  (and any content it generated in the same pass) is atomically reject-able. Used
+ *  by the Course Structure agent. */
+export async function stageStructureChangeSet(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null
+): Promise<boolean> {
+  return !!(await stageChanges(c, doc, baselineDoc, lastAssistantMessageId, true));
+}
+
+/** Maintenance runs: stage a per-finding change-set whose EVERY item carries the
+ *  finding's evidence (the review UI renders it as the evidence card). Optional
+ *  trailing param — every existing staging path is byte-identical. */
+export async function stageChangeSetWithEvidence(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null,
+  evidence: Json
+): Promise<{ changeSetId: string; count: number } | null> {
+  return stageChanges(c, doc, baselineDoc, lastAssistantMessageId, false, evidence);
+}
+
+/** Shared staging: diff blocks (always) + structure (when `withStructure`), build a
+ *  human summary, coalesce the change_sets.lesson_id FK to a real row, and emit the
+ *  change_set event with the structural count for the grouped review UI. */
+async function stageChanges(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null,
+  withStructure: boolean,
+  evidence?: Json
+): Promise<{ changeSetId: string; count: number } | null> {
+  let blocks = diffBlocks(baselineDoc, doc);
+  const structure: StructureChange[] = withStructure ? diffStructure(baselineDoc, doc) : [];
+  if (structure.length) {
+    // A structurally CREATED or DELETED lesson owns its blocks via its node snapshot,
+    // and a created/deleted MODULE owns ALL its lessons' blocks. Don't ALSO stage those
+    // blocks as items — that would double-count (and duplicate them on a delete-revert).
+    const ownedLessonIds = new Set<string>();
+    for (const s of structure) {
+      if (s.op === "update") continue;
+      if (s.nodeType === "lesson") ownedLessonIds.add(s.nodeId);
+      else if (s.nodeType === "module") {
+        const snap = s.op === "delete" ? s.before : s.after;
+        if (snap && snap.kind === "module") for (const l of snap.module.lessons) ownedLessonIds.add(l.id);
+      }
+    }
+    if (ownedLessonIds.size) blocks = blocks.filter((b) => !ownedLessonIds.has(b.lessonId));
+  }
+  if (blocks.length === 0 && structure.length === 0) return null;
+  const summary = changeSummary(blocks, structure);
+  // The change_sets.lesson_id FK requires an existing lesson row. Prefer the docked
+  // lesson, else any changed/created lesson that's persisted, else NULL.
+  const structuralLessonId = structure.find((s) => s.nodeType === "lesson" && s.op !== "delete")?.nodeId;
   const stagedLessonId = findLesson(doc, c.lessonId)
     ? c.lessonId
-    : (changes.find((ch) => ch.lessonId)?.lessonId ?? null);
+    : (blocks.find((ch) => ch.lessonId)?.lessonId ?? (structuralLessonId && findLesson(doc, structuralLessonId) ? structuralLessonId : null));
   const cs = await createChangeSet(
     c.supabase,
-    { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId, messageId: lastAssistantMessageId, summary },
-    changes
+    // Subagent/scheduled contexts carry a placeholder "" conversationId
+    // (persist:false) — coalesce to null for the uuid FK.
+    { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId || null, messageId: lastAssistantMessageId, summary, evidence },
+    { blocks, structure }
   );
-  if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary });
-  return !!cs;
+  if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary, structuralCount: structure.length, evidence: evidence ?? undefined });
+  return cs;
 }
 
 /** Reconcile the doc to the DB and stage the net diff as one change-set. Shared by
@@ -393,17 +473,22 @@ export async function runConversationLoop(
         deckBlockId: options.deckBlockId,
         extraInstruction: options.extraInstruction,
       });
-  const allowed = options.generateTools
-    ? GENERATE_TOOL_NAMES
-    : options.authoringOnly
-      ? AUTHORING_TOOL_NAMES
-      : null;
+  const allowed =
+    options.allowedToolNames ??
+    (options.generateTools
+      ? GENERATE_TOOL_NAMES
+      : options.authoringOnly
+        ? AUTHORING_TOOL_NAMES
+        : null);
   const tools = allowed ? getToolDefinitions().filter((t) => allowed.has(t.name)) : getToolDefinitions();
+  // persist:false (subagents) writes nothing to conversations/messages — replay
+  // lives in agent_runs.report — and never loads history either.
+  const persist = options.persist !== false;
   // SCOPED (GENERATE/REPAIR): never load the conversation transcript — the plan +
   // generation-state are the entire working context, so the (possibly 800+-message)
   // history can't dilute the plan, and the load is skipped outright.
   const scoped = !!options.scopedInput && !!options.outline;
-  const history = scoped ? [] : await loadHistory(c.supabase, c.conversationId);
+  const history = scoped || !persist ? [] : await loadHistory(c.supabase, c.conversationId);
   const policy = options.historyPolicy ?? defaultHistoryPolicy();
   const maxTurns = options.maxTurns ?? MAX_TURNS;
   // The plan's ordered spec ids — threaded into the tool ctx so batch authoring can
@@ -545,10 +630,12 @@ export async function runConversationLoop(
     usage.cachedTokens += result.usage?.cachedTokens ?? 0;
     toolCallCount += result.toolCalls.length;
 
-    lastAssistantMessageId = await saveAssistantMessage(c.supabase, c.conversationId, c.courseId, {
-      text: result.text,
-      toolCalls: result.toolCalls,
-    });
+    if (persist) {
+      lastAssistantMessageId = await saveAssistantMessage(c.supabase, c.conversationId, c.courseId, {
+        text: result.text,
+        toolCalls: result.toolCalls,
+      });
+    }
     // This turn's items (assistant text + calls + outputs) accumulate here, then
     // get appended to eventGroups so the NEXT turn's bounded tail keeps them whole.
     const group: ModelInputItem[] = [];
@@ -573,7 +660,9 @@ export async function runConversationLoop(
           status: "deferred",
           message: "Not run — paused for a required confirmation.",
         });
-        await saveToolMessage(c.supabase, c.conversationId, c.courseId, { callId: call.callId, name: call.name, output: deferred });
+        if (persist) {
+          await saveToolMessage(c.supabase, c.conversationId, c.courseId, { callId: call.callId, name: call.name, output: deferred });
+        }
         group.push({ type: "function_call_output", callId: call.callId, output: deferred });
         continue;
       }
@@ -585,7 +674,7 @@ export async function runConversationLoop(
       let blockType: string | undefined;
 
       try {
-        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, planSpecIds, planSpecPoints };
+        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, analytics: c.analytics, planSpecIds, planSpecPoints };
         const outcome = await executeTool(call.name, call.arguments, ctx);
         summary = outcome.summary;
 
@@ -614,6 +703,8 @@ export async function runConversationLoop(
             status: "awaiting_confirmation",
             message: `Shown the creator a dialog to confirm deleting ${outcome.confirm.label}. Paused until they decide.`,
           });
+          // persist:false loops never include confirm-pausing tools (subagent
+          // toolsets exclude them), so this branch persisting is fine as-is.
           const toolMessageId = await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
             callId: call.callId,
             name: call.name,
@@ -673,11 +764,13 @@ export async function runConversationLoop(
         outputStr = JSON.stringify({ error: detail });
       }
 
-      await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
-        callId: call.callId,
-        name: call.name,
-        output: outputStr,
-      });
+      if (persist) {
+        await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
+          callId: call.callId,
+          name: call.name,
+          output: outputStr,
+        });
+      }
       group.push({ type: "function_call_output", callId: call.callId, output: outputStr });
       recentChanges.push({ turn, toolName: call.name, summary });
       c.emit({ type: "tool_result", toolCallId: call.callId, tool: call.name, ok, summary, blockId, blockType, lessonId: c.lessonId });
@@ -797,9 +890,11 @@ export function loopContext(p: LoopContextSource): LoopContext {
 export async function runAgentTurn(p: AgentRunParams): Promise<void> {
   await saveUserMessage(p.supabase, p.conversationId, p.courseId, p.userMessage);
 
-  const doc = await loadCourseDoc(p.supabase, p.courseId);
+  // loadCourseDoc throws on a transient read error (vs. null for a genuinely
+  // absent course) — either way we can't safely proceed, so bail gracefully.
+  const doc = await loadCourseDoc(p.supabase, p.courseId).catch(() => null);
   if (!doc) {
-    p.emit({ type: "error", message: "Course not found or you don't have access." });
+    p.emit({ type: "error", message: "Course not found, inaccessible, or failed to load. Please try again." });
     p.emit({ type: "done" });
     return;
   }
@@ -832,9 +927,12 @@ export interface AgentResumeParams {
  * even though the patch round-trips through the client.
  */
 export async function resumeAgentTurn(p: AgentResumeParams): Promise<void> {
-  let doc = await loadCourseDoc(p.supabase, p.courseId);
+  // A transient read error throws (vs. null for a genuinely absent course); either
+  // way, bail BEFORE the confirm-delete full reconcile below — proceeding on a
+  // failed/partial read would let that reconcile orphan-delete the whole course.
+  let doc = await loadCourseDoc(p.supabase, p.courseId).catch(() => null);
   if (!doc) {
-    p.emit({ type: "error", message: "Course not found or you don't have access." });
+    p.emit({ type: "error", message: "Course not found, inaccessible, or failed to load. Please try again." });
     p.emit({ type: "done" });
     return;
   }
@@ -848,6 +946,12 @@ export async function resumeAgentTurn(p: AgentResumeParams): Promise<void> {
       if (res.ok) {
         doc = res.doc;
         applied = true;
+        // Persist the deletion via the FULL reconcile — the scoped agent reconcile
+        // (used by the continuation loop below, baselined on the post-delete doc)
+        // never deletes a module / pre-existing lesson, so without this the delete
+        // would apply in memory but never reach the DB.
+        const e = await reconcileCourseDoc(p.supabase, doc, p.ownerId);
+        if (e) p.emit({ type: "error", message: `The deletion may not have saved: ${e}` });
       }
     }
   }

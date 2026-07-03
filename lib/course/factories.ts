@@ -15,7 +15,10 @@ import { DEFAULT_THEME_ID, findTheme, themeRef } from "./slide/themes";
 import type {
   BlockType,
   CourseModule,
+  DeckImportSourceType,
+  DeckImportStatus,
   HomeworkExercise,
+  ImportedDeckBlock,
   LectureParagraph,
   LessonBlock,
   LessonNode,
@@ -28,6 +31,7 @@ import type {
   SlideElementType,
   SlideThemeId,
   StructuredLayoutId,
+  VideoLessonBlock,
 } from "./types";
 
 export function newId(prefix: string): string {
@@ -237,6 +241,8 @@ export function createRubricCriterion(name = "New criterion"): RubricCriterion {
 
 const blockTitles: Record<BlockType, string> = {
   slide_deck: "Slide deck",
+  imported_deck: "Imported deck",
+  video: "Video lesson",
   lecture_text: "Lecture",
   quiz: "Knowledge check",
   homework: "Practice exercise",
@@ -244,6 +250,33 @@ const blockTitles: Record<BlockType, string> = {
   example: "Worked example",
   resource: "Resources",
 };
+
+/** Default playback settings for a fresh video block (conservative, low-stakes:
+ *  controls on, no download, transcript/chapters are "coming later"). */
+export function defaultVideoSettings(): VideoLessonBlock["settings"] {
+  return {
+    showControls: true,
+    allowDownload: false,
+    showTranscript: false,
+    showChapters: false,
+  };
+}
+
+/** A brand-new empty video block — no asset yet; the studio modal fills it in
+ *  after a recording/upload lands. */
+export function createVideoLessonBlock(order = 0, title = blockTitles.video): VideoLessonBlock {
+  return {
+    id: newRowId(),
+    type: "video",
+    title,
+    order,
+    ai: defaultAIMeta("video"),
+    asset: { provider: "mux", status: "empty" },
+    recording: { includeMic: true },
+    edit: {},
+    settings: defaultVideoSettings(),
+  };
+}
 
 /**
  * Create a fresh block. `opts.emptySlideDeck` makes a slide_deck with NO slides —
@@ -266,6 +299,28 @@ export function createBlock(
   switch (type) {
     case "slide_deck":
       return { ...base, type, slides: opts?.emptySlideDeck ? [] : [createSlide("title")] };
+    case "imported_deck":
+      // Placeholder for exhaustiveness — the real block is built by
+      // createImportedDeckBlock() from an upload result, never via this path.
+      return {
+        ...base,
+        type,
+        deckImportId: "",
+        sourceType: "upload",
+        originalFileName: "",
+        originalMimeType: "",
+        originalFileSize: 0,
+        status: "uploaded",
+      };
+    case "video":
+      return {
+        ...base,
+        type,
+        asset: { provider: "mux", status: "empty" },
+        recording: { includeMic: true },
+        edit: {},
+        settings: defaultVideoSettings(),
+      };
     case "lecture_text":
       return { ...base, type, tone: "beginner", paragraphs: [createParagraph()] };
     case "quiz":
@@ -285,6 +340,44 @@ export function createBlock(
     case "resource":
       return { ...base, type, links: [] };
   }
+}
+
+/**
+ * Build a fully-formed imported-deck block from an upload result. The caller
+ * (the upload UI) passes the block `id` it generated up-front so the matching
+ * `deck_imports.block_id` reference is correct, plus the file metadata returned
+ * by the upload route. Status defaults to `processing` (the worker takes over).
+ */
+export function createImportedDeckBlock(args: {
+  id?: string;
+  deckImportId: string;
+  title: string;
+  sourceType: DeckImportSourceType;
+  originalFileName: string;
+  originalMimeType: string;
+  originalFileSize: number;
+  status?: DeckImportStatus;
+  pageCount?: number;
+  order?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}): ImportedDeckBlock {
+  return {
+    id: args.id ?? newRowId(),
+    type: "imported_deck",
+    title: args.title,
+    order: args.order ?? 0,
+    ai: defaultAIMeta("imported_deck"),
+    deckImportId: args.deckImportId,
+    sourceType: args.sourceType,
+    originalFileName: args.originalFileName,
+    originalMimeType: args.originalMimeType,
+    originalFileSize: args.originalFileSize,
+    status: args.status ?? "processing",
+    ...(args.pageCount !== undefined ? { pageCount: args.pageCount } : {}),
+    ...(args.createdAt ? { createdAt: args.createdAt } : {}),
+    ...(args.updatedAt ? { updatedAt: args.updatedAt } : {}),
+  };
 }
 
 export { componentManifest };

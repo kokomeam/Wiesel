@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { findBlock, findLesson } from "@/lib/course/queries";
 import type { LessonBlock, LessonNode } from "@/lib/course/types";
+import { buildOutlineSnapshot } from "../courseStructure/outlineSnapshot";
 import { defineTool, ToolError, type Tool } from "./types";
 import { debugAgent } from "../debugLog";
 
@@ -37,6 +38,13 @@ export function summarizeBlock(block: LessonBlock): string {
       return `worked example — ${block.takeaway.slice(0, 120)}`;
     case "resource":
       return `${block.links.length} resource link(s)`;
+    case "imported_deck":
+      return `imported deck — ${block.originalFileName || "file"} (${block.pageCount ?? "?"} page(s), ${block.status})`;
+    case "video": {
+      const dur = block.asset.durationSeconds;
+      const mins = dur ? ` (${Math.floor(dur / 60)}:${String(Math.round(dur % 60)).padStart(2, "0")})` : "";
+      return `video lesson — ${block.recording.mode ?? "video"}${mins}, ${block.asset.status}`;
+    }
   }
 }
 
@@ -166,10 +174,28 @@ const getBlock = defineTool({
   },
 });
 
+const listCourseOutline = defineTool({
+  name: "list_course_outline",
+  description:
+    "Read the WHOLE course outline as a tree: every module and lesson with its STABLE id, the 'Module N' display label, lesson objectives, a content summary, and which lessons are EMPTY. Call this before any STRUCTURAL edit (create / delete / rename / move a lesson or module) so you act on the correct existing ids and can tell which lessons are empty.",
+  readOnly: true,
+  params: z.object({}),
+  execute(_args, ctx) {
+    const hit = findLesson(ctx.doc, ctx.lessonId);
+    const snapshot = buildOutlineSnapshot(ctx.doc, { moduleId: hit?.module.id, lessonId: ctx.lessonId });
+    const emptyCount = snapshot.modules.reduce((n, m) => n + m.lessons.filter((l) => l.isEmpty).length, 0);
+    return {
+      summary: `Read outline — ${snapshot.modules.length} module(s), ${emptyCount} empty lesson(s)`,
+      data: snapshot,
+    };
+  },
+});
+
 export const readTools: Tool[] = [
   getCourseContext,
   listModules,
   listLessons,
   getLesson,
   getBlock,
+  listCourseOutline,
 ];

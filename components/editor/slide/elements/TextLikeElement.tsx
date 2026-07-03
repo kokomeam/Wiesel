@@ -20,10 +20,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { commitElementTextPatches } from "@/lib/course/commands";
 import { SLIDE_H } from "@/lib/course/slide/geometry";
+import { textToList } from "@/lib/course/slide/list";
 import { resolveElementStyle, verticalAlignCss } from "@/lib/course/slide/styleResolver";
 import { findTheme } from "@/lib/course/slide/themes";
 import { useEditorStore } from "@/lib/course/store";
-import type { CalloutVariant, SlideElement, TextRun } from "@/lib/course/types";
+import type { CalloutVariant, ListMarkerKind, SlideElement, TextRun } from "@/lib/course/types";
+import { requestListAutoEdit } from "./ListElementView";
 import {
   plainTextToHtml,
   runsToHtml,
@@ -158,6 +160,40 @@ export function TextLikeContent({
   );
 }
 
+/** Which line indices the current selection covers within `node` (collapsed
+ *  cursor → its single line). Used to bullet only the selected paragraph(s). */
+function selectionLineRange(node: HTMLElement, text: string): Set<number> {
+  const lines = text.split("\n");
+  const starts: number[] = [];
+  let acc = 0;
+  for (const ln of lines) {
+    starts.push(acc);
+    acc += ln.length + 1;
+  }
+  let startOff = 0;
+  let endOff = text.length;
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0) {
+    const r = sel.getRangeAt(0);
+    const a = r.cloneRange();
+    a.selectNodeContents(node);
+    a.setEnd(r.startContainer, r.startOffset);
+    startOff = a.toString().length;
+    const b = r.cloneRange();
+    b.selectNodeContents(node);
+    b.setEnd(r.endContainer, r.endOffset);
+    endOff = b.toString().length;
+  }
+  const set = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const ls = starts[i];
+    const le = ls + lines[i].length;
+    if (startOff <= le && endOff >= ls) set.add(i);
+  }
+  if (set.size === 0) set.add(0);
+  return set;
+}
+
 export function TextLikeElement({
   el,
   blockId,
@@ -280,6 +316,19 @@ export function TextLikeElement({
     setRichHtml(null);
   }
 
+  /** ⌘/Ctrl+Shift+8 / +7: toggle the selected line(s) of a plain TEXT box into a
+   *  bullet / numbered list. Converts the box to the list model (it remounts as a
+   *  ListElement, which keeps editing alive via requestListAutoEdit). */
+  function toggleListInText(kind: ListMarkerKind) {
+    const node = richRef.current;
+    if (!node || el.type !== "text") return;
+    cancelled.current = true; // suppress commitRich on the blur that follows
+    const { text, runs } = serializeRuns(node);
+    const content = textToList(text, runs, selectionLineRange(node, text), kind);
+    requestListAutoEdit(el.id);
+    applyMany(commitElementTextPatches(blockId, slideId, el, { list: content }), "human");
+  }
+
   function openEditor(e: React.MouseEvent) {
     if (!editable || !soleSelected) return;
     e.stopPropagation();
@@ -374,6 +423,9 @@ export function TextLikeElement({
           } else if (mod && (e.key === "u" || e.key === "U")) {
             e.preventDefault();
             document.execCommand("underline");
+          } else if (mod && e.shiftKey && el.type === "text" && (e.code === "Digit8" || e.code === "Digit7")) {
+            e.preventDefault();
+            toggleListInText(e.code === "Digit8" ? "disc" : "number");
           } else if (e.key === "Escape") {
             cancelled.current = true;
             e.currentTarget.blur();

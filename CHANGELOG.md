@@ -6,6 +6,504 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Milestones 5+6 — maintenance agent (orchestrator + subagents) + learner comms, 2026-07-03
+
+- **M5 subagent primitive** (`lib/ai/subagent.ts`): `runSubagent` reuses the
+  agent loop with an arbitrary `allowedToolNames` allow-set + `persist:false`
+  (nothing in the conversation tables — replay lives in `agent_runs.report`),
+  then a one-shot strict-JSON verdict. **Global semaphore caps concurrent model
+  calls at 2** (`withSemaphore` ModelClient decorator — uniform across loops
+  and one-shots); ONE shared call budget (40) + token budget (300k) per run
+  with graceful truncation (partial verdict > nothing; skipped findings stay
+  open). Additive loop hooks only — every existing caller byte-identical
+  (verify:ai:int 143/143 re-run green).
+- **Analytics read tools** (`lib/ai/tools/analytics.ts`, 6 tools over the
+  rollups — never raw event pagination) via a `ToolContext.analytics`
+  capability (the `visuals` precedent): pre-loaded rollups + snapshot maps +
+  a memoized learner-profile loader; compact capped JSON; NO learner emails in
+  prompts. New sets `ANALYST_TOOL_NAMES` / `REMEDIATION_TOOL_NAMES` (authoring
+  only — no structural/destructive/confirm-pausing tools).
+- **The orchestrator** (`lib/ai/maintenance.ts`): Analyst (read-only loop) →
+  InsightReport → dedupe/prioritize (adopts open threshold findings, severity
+  desc, fan-out CAP 5) → Remediation SEQUENTIAL over the shared draft (each
+  finding staging ONE change-set whose EVERY item carries the finding's
+  evidence) ∥ Comms drafting `learner_messages` rows (template-grounded,
+  model-personalized, deterministic fallback — NEVER sends). Run ledger =
+  `agent_runs` (queued|running|completed|failed, report + budget_used);
+  findings = `agent_findings` (open→proposed→accepted|dismissed, transitioned
+  by the change-set Accept/Reject route; open-dedupe partial unique index).
+- **`analyze` = the 5th intent** (regex first — "why are students dropping
+  off in module 3?" scopes via `parseAnalysisScope` to that module's lessons);
+  one additive `maintenance` AgentEvent member streams stage + findings.
+- **Triggers ×3**: chat (SSE, unchanged route) · scheduled (weekly pg_cron
+  queues `agent_runs` in-DB; `POST /api/ai/maintenance/cron` guarded by
+  `Bearer CRON_SECRET` drains one run per invocation with the admin client —
+  the analytics RPCs gained a service-role allowance for this) · threshold
+  (`private.file_threshold_findings` after every rollup recompute files open
+  findings — one per question, reasons aggregated; studio header shows an
+  "N findings" badge; the agent panel's "Review flagged issues" chip runs an
+  adopting analysis).
+- **The evidence card** (`components/editor/agent/EvidenceCard.tsx` — the core
+  product moment): severity-tinted WHY above every proposed change ("Q1: 64%
+  incorrect over 41 attempts; distractor 'Demand increases' chosen 3× the
+  key…"), metric chips, rendered in BlockFrame's pending chrome + the panel;
+  evidence rides `change_set_items.evidence` (hydrate + realtime + the
+  change_set event, so it appears live).
+- **M6 learner comms** (`lib/comms/*`, standalone seam — the marketing branch
+  stays untouched): provider iface + **Resend via `fetch`, NO SDK** (runtime
+  deps stay 14; From-address pinned to RESEND_FROM, List-Unsubscribe header) +
+  recording mock + env factory + HMAC opt-out tokens (purpose-prefixed,
+  `MARKETING_TOKEN_SECRET`) + block renderer w/ compliant footer + 3 templates
+  (stalled nudge / almost done / struggling-on-topic w/ lesson deep link).
+  **`service.approveAndSend` is the ONLY caller of `provider.send`** and
+  re-checks `enrollments.comms_opt_out` at send time (opted-out → the row
+  STAYS draft). `learner_messages` (draft|approved|sent|failed, author-only
+  RLS). Routes: messages CRUD + approve_send; `/api/comms/opt-out` (GET =
+  confirm page — never flips on GET; POST = token-verified flag flip). UI:
+  MessageComposer + DraftList (agent panel "Messages to review"), the Stuck
+  queue's **"Draft follow-up" wired** (deterministic template prefill;
+  disabled+honest tooltip when opted out), learner-detail message audit list.
+  **No auto-send path exists — not even behind a flag.**
+- **Safety rails asserted end-to-end** (verify:maintenance:int): no publication
+  writes, no enrollment mutation, drafts only (comms mock records ZERO sends
+  across a full run), budgets ≤ cap, Accept applies to the draft, Reject
+  restores byte-for-byte, threshold adoption + dedupe index.
+- **Tests**: `verify:maintenance` (35 pure — semaphore ≤2 in flight under 6
+  concurrent calls, truncation, dedupe/cap, intent+scope, tool shapes) ·
+  `verify:maintenance:int` (25) · `verify:comms` (27) · `verify:comms:int`
+  (20 — opt-out at the seam) · `seed:fixtures` (the deliberately-bad quiz
+  fixture) · **`npm test`** now chains every pure suite (~900 checks, green).
+- **Docs**: `docs/publishing.md`, `docs/analytics-events.md`,
+  `docs/agent-architecture.md`. Env: `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET`
+  (+ optional `COMMS_PROVIDER=mock`, `MAINTENANCE_*` budgets).
+
+## Milestones 3+4 — learning-event pipeline + creator analytics dashboard, 2026-07-03
+
+- **M3 event pipeline.** Append-only `learning_events` (9-type Zod discriminated
+  union in `lib/analytics/events.ts`, camelCase wire ↔ snake DB via
+  `mapEventToColumns`; UNIQUE `client_event_id` = idempotent replay). **Hybrid
+  emission**: the browser SDK (`lib/analytics/client.ts` batching queue — 10s
+  flush + hidden/pagehide keepalive flush, backoff retry, chunking, offline cap;
+  `components/learn/AnalyticsProvider.tsx` owns DOM wiring + visible-only
+  heartbeat; `SlideDwellTracker` excludes hidden-tab time) sends the engagement
+  events through `POST /api/analytics/ingest`; the AUTHORITATIVE events
+  (quiz_submitted / homework_submitted / lesson_completed) are SERVER-emitted
+  from quizService/homework route/progressService keyed by stable row uuids
+  (`lib/analytics/serverEmit.ts`) so tab-close can't lose them and retries can't
+  double-count. `ProgressContext` gained `version`.
+- **Hard-won RLS gotcha:** Postgres applies the SELECT policy to
+  `INSERT … ON CONFLICT` rows — and students deliberately read none — so an RLS
+  upsert can never be idempotent here. Ingest therefore goes through the
+  SECURITY DEFINER **`ingest_learning_events` RPC** (pins user_id to auth.uid(),
+  enforces enrollment + publication↔course in SQL, `on conflict do nothing`);
+  the table's insert policy stays as defense-in-depth.
+- **Rollups (migration `20260702050000`)**: `rollup_lesson_funnel` (started =
+  events ∪ learn_progress backfill; completed cross-checks learn_progress;
+  lag() drop-off), `rollup_question_stats` (n / pct_correct / answer
+  distribution with the KEY bucket resolved from quiz_answer_keys at rollup
+  time / **point-biserial discrimination in SQL**), `rollup_slide_dwell`
+  (percentile_cont median/p90), `rollup_video_retention` (quartile counts),
+  `learner_flags` (inactive-7d-incomplete + repeated-quiz-failure). Nightly
+  **pg_cron** (`0 3 * * *`) + author-gated `refresh_course_analytics(cid)` for
+  manual/dev refresh. All keyed by (course, publication, version) so republishes
+  never mix. Thresholds mirrored in `lib/analytics/flags.ts` (verify asserts
+  TS === migration SQL literals); `lib/analytics/stats.ts` mirrors
+  percentile_cont + point-biserial for SQL↔TS agreement tests.
+- **M4 dashboard** at **`/studio/[courseId]/analytics`** (server components over
+  rollups + two definer RPCs `course_analytics_overview` / `course_roster` —
+  the roster needs auth.users.email): four `?tab=` tabs — **Overview** (stats +
+  hero lesson funnel + cumulative enrollments), **Content health** (drop-off
+  table · video quartile retention · quiz item analysis [rendered only when the
+  snapshot has quizzes; red flags: <40% @ n≥20, distractor ≥2× key,
+  discrimination <0.1] · dwell skim/stall outliers — every flagged row
+  deep-links to the editor block), **Learners** (roster → per-learner detail:
+  progress map, `<details>`-expandable attempt history w/ per-question
+  responses, paginated raw-event timeline on the indexed path, heartbeat time,
+  flags), **Stuck queue** (why-flagged rows + DISABLED "Draft follow-up" w/
+  tooltip — wired in a later milestone). First-class empty states everywhere
+  (charts guarded — `Math.max(...[])`).
+- **Entry points**: `/analytics` rewritten from mock → a real course picker;
+  gallery cards + the editor top bar link into the dashboard; **editor
+  deep-links** (`/studio?course=&lesson=&block=`) land via a new
+  `DeepLinkFocus` in `StudioLoader` (opens the lesson, selects + scrolls to the
+  block). `marketplace_listings` fallback re-branded ('A WiseSel educator').
+- **Tests**: `npm run verify:analytics` (57 pure — contract round-trip/rejects,
+  dwell timer visibility math, threshold + SQL-drift guard, point-biserial
+  golden, queue batching/retry/4xx-drop/flush-on-unload) and
+  `npm run verify:analytics:int` (55 vs live Supabase — idempotent replay, the
+  full RLS matrix incl. RPC-pinned forged user_id + direct-table rejections +
+  students-read-none + author-only rollups, server-emit keying + re-emit no-op,
+  rollup outputs vs hand-computed fixtures incl. SQL===TS discrimination,
+  refresh/roster/overview gating, cascade cleanup). verify:learn +
+  verify:learn:int re-run green (the server-emit touches).
+
+## Learner course-nav sidebar + WiseSel rebrand cleanup, 2026-07-02
+
+- **Course contents sidebar in the lesson player** (`components/learn/CourseNavSidebar.tsx`)
+  — collapsible modules → lessons with the current lesson highlighted, per-lesson
+  progress (completed / in-progress % / not-started), and click-to-navigate, so a
+  learner always sees where they are and can peek at upcoming units. Desktop = a
+  sticky panel (collapsible to a rail); mobile = a "Contents" button opening a
+  slide-over drawer. The player page (`app/(learn)/learn/[slug]/[lessonId]`) now loads
+  full-course progress in one query (`buildCourseProgressSummary`) to feed both the
+  sidebar and the current lesson's initial progress, and its header gained a
+  "Module N · Lesson X of Y" line + a Completed pill. Two-column on `lg+`, single
+  column with the drawer trigger below on mobile.
+- **Rebrand cleanup (CourseGen Pro → WiseSel).** The rename was already done across the
+  marketing site, app shell, login, and studio (via `components/brand/WiseSelLogo.tsx`);
+  this pass caught the stragglers: the **learner header wordmark** (was a hard-coded
+  `CourseGen*` — now `WiseSelLogo`), the **AI agent persona** string (`lib/ai/context.ts`),
+  the OS-clipboard payload marker (`coursegen`→`wisesel`), the package name, and header
+  comments / READMEs / CLAUDE.md. The GitHub repo slug (`kokomeam/coursegen-pro`) and the
+  Obsidian vault folder are left literal (unchanged infra names); historical PRD docs +
+  applied migration comments left as-is.
+
+## Student learning runtime — /learn, grading, progress, marketplace (Milestone 2), 2026-07-02
+
+Learners can now actually TAKE a published course. Verified by
+**`npm run verify:learn` (55 pure checks)**, **`npm run verify:learn:int`
+(61 checks vs live Supabase — RLS matrix + full service happy path + the
+lost-update concurrency regression)**, and **`npm run verify:learn:browser`
+(15 checks driving the real UI through Playwright: sign in → enroll → slides →
+graded quiz → homework → mark complete → course completion → My learning →
+author submissions review)** — plus build/lint/tsc and every existing suite
+green (publish 59+50, ai 257+143, slides, video 154, reject, imports,
+course-agent).
+
+- **Schema (migrations `20260702030000_learn_runtime` + `030100` + `040000`):**
+  `learn_progress` (one row per user/course/lesson; server-computed status/pct +
+  a `progress_state` jsonb of viewed slides / video high-water / viewed blocks /
+  markedComplete; **no client write policies at all** — the progress route is
+  the only writer), `quiz_attempts` + `question_responses` (Milestone 3's exact
+  column contract, ready for analytics; student reads own, author reads their
+  courses', **no client inserts — a client can never write a score**),
+  `homework_submissions` (student-inserted under RLS [own user_id + active
+  enrollment], and a DB trigger makes review status the ONLY mutable thing —
+  the author can't rewrite content, the student can't self-review),
+  `private.is_enrolled`, and two SECURITY DEFINER read RPCs
+  (`marketplace_listings`, `my_learning`) for the jsonb aggregations PostgREST
+  can't compose. Homework files reuse the course-assets bucket's existing
+  per-user-folder storage policies (tested).
+- **lib/learn/\*** (Zod-first): `grading.ts` (pure per-kind grading — the only
+  place responses meet keys; short answers normalized, multi-select set
+  equality, kind-mismatch = answered-but-wrong), `completion.ts` (the FIXED,
+  documented rule: all slides viewed / video ≥90% / every quiz ≥1 attempt;
+  unready media never blocks; untrackable lessons get an explicit
+  mark-complete), `progressService.ts` (server-only writer with **optimistic
+  locking** — the browser suite caught a lost-update race between two slide
+  reports; writes now retry-merge on conflict, and the client serializes its
+  reports), `quizService.ts` (grade → record attempt N + responses → recompute
+  progress; author preview grades but records NOTHING), slug resolution with
+  `previous_slugs` redirects, access checks, learner media resolution
+  (video MP4/captions + deck signed URLs via the admin client, strictly after
+  the enrollment gate), and course summaries ("continue where you left off").
+  Served snapshots are re-validated through the STRICT publish schema —
+  a corrupted snapshot fails closed instead of leaking keys.
+- **Routes** `/api/learn/{enroll,quiz,progress,homework,deck/[id],submissions}`
+  (Node, user-scoped client + RLS wherever possible; admin only for grading,
+  progress writes, and post-gate media). Grading returns per-question
+  correctness + authored explanations — never the correct answer.
+- **/learn (new public route group):** `[slug]` landing (outline, enroll CTA,
+  sign-in round-trip via `redirectTo`, progress + Continue for enrolled,
+  author-preview card, unlisted 404 copy) and `[slug]/[lessonId]` player —
+  every block type rendered READ-ONLY: SlideStage in its thumbnail mode with
+  keyboard/click navigation, the trim-aware video player (captions on, new
+  additive `onProgressPct`), imported-deck page viewer with learner-scoped
+  signed URLs + refresh, quiz taking, homework submission (text + file upload
+  to the student's own storage folder), lecture/example/exercise/resource
+  renderers. Zero editor chrome reaches a student.
+- **Marketplace rebuilt on real data:** mock listings replaced by live public
+  publications (deterministic warm-gradient thumbnails, Free pricing, module/
+  lesson counts, creator names); "My learning" sits in the SAME tab with
+  progress bars + Continue; a course card opens the /learn landing as the
+  confirmation/preview screen with Enroll at the bottom. The old mocks remain
+  only for the marketing page's decorative peek (noted in lib/data.ts).
+- **Creator review:** a minimal "Learner submissions" list on the studio's
+  Publish step (student name, text, file links, mark reviewed) —
+  view + mark-reviewed only, per scope.
+- **Found-by-test fixes:** unanswered questions no longer try to insert a null
+  response row; the landing's "Continue" fallback no longer masks course
+  completion; `question_responses.question_id` corrected to text (question ids
+  are jsonb-embedded short ids, not row UUIDs).
+
+## Snapshot publishing — versions, slugs, answer-key stripping (Milestone 1), 2026-07-02
+
+The first piece of the publishing/analytics phase: a course can now go LIVE as an
+**immutable snapshot** while the draft stays freely editable. Verified by
+**`npm run verify:publish` (59 pure checks)** + **`npm run verify:publish:int`
+(50 checks against live Supabase — full RLS matrix)**, plus build/lint/tsc and all
+existing suites green (`verify:ai` 257, `verify:ai:int` 143, `verify:slides`,
+`verify:video` 154, `verify:reject`, `verify:imports` 72, `verify:course-agent` 78).
+
+- **Schema (migration `20260702020000_publishing` + `20260702020100`):**
+  `course_publications` (versioned jsonb snapshots; slug + `previous_slugs` for
+  redirect-safe renames; `content_hash`; persisted `linter_report`; partial unique
+  indexes = one live per course, one live per slug), `quiz_answer_keys` (RLS enabled
+  with **zero policies** — no client role can ever read it; verified even the author's
+  client gets nothing while the service role sees the keys), `enrollments`
+  (course-level; student-owned rows; insert gated on a live publication via
+  `private.has_live_publication`). A **BEFORE UPDATE trigger makes publications
+  immutable in the DB** (snapshot/version/hash can never change), and there is **no
+  insert policy** — publishing only happens through the SECURITY DEFINER
+  **`publish_course` RPC**, the one transaction that verifies authorship, locks the
+  course row, bumps the version, retires the previous live row, inserts the
+  publication + answer keys, and mirrors `courses.status`.
+- **Snapshot pipeline (`lib/course/publish/*`, Zod-first, types inferred):**
+  `snapshot.ts` builds the denormalized document with **node IDs preserved verbatim**
+  (progress/analytics stay joinable across versions) and strips every quiz's correct
+  answers/accepted answers/explanations into per-block keys; the published-quiz Zod
+  schema is **strict**, so an unstripped question fails validation, and a deep
+  `findAnswerKeyLeaks` scan runs before every publish as belt-and-braces. `hash.ts` =
+  sorted-key stable stringify + WebCrypto SHA-256 (identical bytes in Node and the
+  browser). `preflight.ts` = publish gate (errors block: untitled / no content /
+  ungradable quiz questions; warnings overridable: empty lessons, pending AI images,
+  unprocessed decks/videos, aggregated slide lint). `diff.ts` = concise
+  added/changed/removed lesson+block counts via per-node hashing. `service.ts` =
+  status/publish/settings orchestration shared by the API route and the integration
+  test; an identical republish is detected by hash and does NOT bump the version.
+- **API (`/api/publish`, user-scoped client, RLS end-to-end):** GET status
+  (publication + preflight + draft-vs-live diff), POST publish (422 + report on
+  pre-flight errors), PATCH unpublish / restore / set_slug / set_visibility.
+- **Studio UI:** `PublishPanel` is real now — publication card (Live/Unpublished ·
+  version · visibility · published-at), the public `/learn/{slug}` URL with copy/open/
+  rename, a **live "unpublished draft changes" indicator** (the same snapshot+hash code
+  runs client-side against the store doc as you edit), live pre-flight card, a review
+  step with the diff summary + first-publish slug/visibility pickers + an explicit
+  warnings acknowledgement, republish/unpublish/restore. The header **Publish** button
+  (previously a no-op) now opens the step.
+- **Slug model:** chosen at first publish (from the title, collision-suffixed against
+  live slugs), stable across versions, renameable later — old slugs ride
+  `previous_slugs` + historical rows so redirects stay resolvable. Uniqueness is
+  enforced as "one live publication per slug" (deliberate deviation from a globally
+  unique column, which would forbid v2 reusing v1's slug).
+- **Learners are versioned-pinned by design:** editing the draft after publishing
+  provably does not alter the published snapshot (asserted byte-for-byte in the
+  integration test), and every future analytics event will carry
+  `publication_id` + version.
+
+## Video captions/transcripts (Mux auto-generated) + filmstrip trim, 2026-07-02
+
+Two educator-side additions to the video block. Verified by **`npm run verify:video`
+(153 checks, was 111)** + `npm run lint` + `tsc --noEmit`, other suites green
+(`verify:ai` 28, `verify:reject` 17). Runtime deps unchanged (**still 14** — captions
+render on the existing native `<video>` via a synced overlay, NOT Mux Player).
+
+- **Auto-generated English captions by default.** `create-upload` requests
+  `new_asset_settings.inputs[0].generated_subtitles` (the direct-upload shape omits the
+  input `url` — verified against Mux docs). Generation is asynchronous and never blocks
+  playback. Detected by the poll AND the **`video.asset.track.ready`** webhook (fixed
+  `parseWebhookEvent` to route a track event by `data.asset_id`, since `data.id` is the
+  track id). An on-demand **`/api/video/mux/generate-captions`** route (provider
+  `requestGeneratedSubtitles`) covers pre-existing videos + retries.
+- **Caption state + transcript.** New `video_assets` columns (migration `20260702010000`):
+  `caption_status`/`caption_track_id`/`_name`/`_language_code`/`_source`/`_error` +
+  `transcript`/`transcript_vtt`/`transcript_updated_at`. Caption METADATA is mirrored to
+  the block (`VideoLessonBlock.captions`) through the validated `UPDATE_VIDEO_LESSON`
+  patch; the transcript text stays on the row (kept off the course doc). Once a track is
+  ready, `syncVideoAssetFromMux` fetches the public WebVTT and derives a plain transcript
+  (`lib/video/captions.ts`) — the hook for future AI (summaries/chapters/quizzes).
+- **Caption UI.** `VideoPreviewPlayer` gets a CC toggle + a synced caption overlay
+  (respects the trim window); the manage panel gets a **Captions & transcript** section
+  (Not requested / Generating / Ready / Failed + generate/retry + a read-only transcript
+  preview). Extension points left clean: manual correction, WebVTT export, translations,
+  re-uploaded tracks, transcript editing.
+- **Filmstrip trim UI.** `VideoTrimEditor` rewritten from two sliders into an Apple-Photos
+  double-ended **filmstrip** — a thumbnail strip (Mux image API for a ready asset, canvas
+  frame-capture for a local clip) with draggable start/end handles that **seek the preview
+  to the cut frame**. Commits on release. "Done trimming" → a filled brand **"Save changes"**.
+
+## Video lessons — educator recording/upload block (Mux), 2026-07-01
+
+A new first-class **`video` block**: educators record (camera / screen / screen+camera)
+with browser-native APIs or upload a file, it's hosted by **Mux**, and it plays back in
+the studio with non-destructive trim. Educator-side only for now (no student player yet).
+Verified by **`npm run verify:video` (91 checks)** + `npm run build` + `npm run lint`,
+all other suites green. Runtime deps unchanged (14) — playback is a native `<video>` on a
+Mux MP4 static rendition, so no player library was added.
+
+- **Document model:** `VideoLessonBlock` (`types.ts`) — `asset` (Mux ids + status +
+  duration/aspect/thumb, NEVER bytes), `recording` (mode/layout/bubble/mic), `edit`
+  (trim), `settings`. Added to the `BlockType` union, `LessonBlockSchema` (Zod), the
+  `UPDATE_VIDEO_LESSON` patch (schema + reducer, the ONLY way the block changes),
+  `factories`/`commands`/`manifest`. Persistence is free (the block payload rides in
+  `blocks.content` jsonb; migration only widens the `blocks.type` CHECK).
+- **`video_assets` table** (migration `20260701010000`, RLS author-only via
+  `private.is_course_author`) is the source of truth for Mux status; the block mirrors a
+  snapshot for instant render (exactly like `imported_deck` mirrors `deck_imports`). No
+  storage bucket — Mux hosts the media; the recording uploads DIRECTLY to a Mux
+  direct-upload URL (never through our server).
+- **Provider seam** (`lib/video/provider/*`): a `VideoProvider` interface + a fetch-based
+  Mux adapter (Basic auth + `node:crypto` webhook HMAC — no Mux SDK, one file). Service /
+  status / access / URL layers in `lib/video/*` are pure + testable.
+- **Routes** (`app/api/video/*`, Node runtime): `mux/create-upload`, `mux/asset-status`
+  (client poll), `mux/webhook` (signed, admin-client, re-fetches the asset for
+  robustness), and `[id]` DELETE (Mux + row cleanup). Secrets are server-only.
+- **UI** (`components/editor/lesson/video/*`): `useVideoRecorder` (device enumeration,
+  camera/screen capture, **canvas compositing** of screen + webcam bubble, MediaRecorder
+  state machine, countdown, mic meter, pause/resume, deterministic track teardown),
+  `useVideoUpload` (create → PUT with progress → status), `useVideoAsset` (poll + mirror),
+  and the `VideoStudioModal` (mode → setup → record → review → upload; plus a manage/edit
+  screen for a ready video) + the block card (empty / processing / ready-with-inline-player
+  / failed). Friendly error states for every permission/hardware/support/upload failure.
+- **New env:** `MUX_TOKEN_ID` + `MUX_TOKEN_SECRET` (server-only), optional
+  `MUX_WEBHOOK_SIGNING_SECRET`; reuses the existing `SUPABASE_SERVICE_ROLE_KEY` for the
+  webhook. Optional client `NEXT_PUBLIC_MUX_DATA_ENV_KEY` is a deferred extension point.
+
+## Structure agent — repair/complete an EXISTING module (routing follow-up), 2026-07-01
+
+A real prompt — *"currently module one is very unfinished, doesn't have title, has
+empty slides, can you please complete it… intro econ class…"* — still created a NEW
+`Module 8: Introduction to Economics…` instead of repairing **Module 1** in place,
+and the review bar showed Slide/Content but no Structure. Root cause: the structure
+short-circuits caught only delete/add/recreate/rename/move/reorder — NOT
+repair/complete/fill phrases — so it fell to the classifier, which picked
+`generate_module`. Fixed end-to-end; verified by **`npm run verify:course-agent`
+(78 checks, +15)**, all other suites green.
+
+- **Routing** (`lib/ai/intent.ts`): a new short-circuit BEFORE `MODULE_BUILD` —
+  "complete / finish / fix / fill out / flesh out / improve" + an EXISTING-module
+  reference (ordinal / "Module N" / "module one" / "first/current/this module"), OR a
+  module described as "unfinished / incomplete / empty / missing a title / has empty
+  slides", OR "make/turn Module N into …" → `structure`. An explicit "new / another
+  module" opts back out (stays `generate_module`). `CLASSIFY_SYSTEM` rewritten:
+  structure now includes *repairing/completing/filling an existing* module/lesson, and
+  prefers structure over generate_module whenever an existing module is referenced.
+- **`rename_module` op** (new): the structure vocabulary had no way to set a module's
+  title — so "doesn't have a title" couldn't be satisfied. Added to the op union, the
+  plan schema, the executor (`UPDATE_TEXT` kind:module), and validation; `diffStructure`
+  already detects a module rename, so it stages + reverts for free.
+- **Word/ordinal module resolution** (`targetResolution.ts`): `resolveModule` only
+  handled digits — so "module one" / "the first module" / "the last module" resolved to
+  *unsafe* and the repair was refused even after routing. Now resolves word numbers
+  (one…ten) and ordinals (first/last).
+- **Validation** (`structureValidation.ts`): a `wantsRepairModule` signal + a rule —
+  repair stays IN the resolved module (rename it, touch its lessons, or regenerate its
+  empty decks), never a foreign/new module.
+- **Planner prompt** (`structurePlan.ts`): teaches repair-in-place; the snapshot now
+  flags an untitled module (`⚠ NO TITLE`) so the model sets a title.
+- **Edit-loop prompt softened** (`context.ts`): outline changes are the Structure path's
+  job; the general edit loop must not create a new module/lesson (or duplicate a
+  referenced one) unless explicitly asked this turn.
+- **Guards + instrumentation** (`phases.ts`): a hard assert that a structure turn can
+  NEVER increase the module count (it aborts + errors if it somehow does), plus
+  `agent_route` (mode + module count + message head) and `agent_structure_turn`
+  (intent, module count before/after, ops) logs so a mis-route is greppable.
+
+## Course Structure agent — accurate lesson/module editing, 2026-07-01
+
+The docked Content Agent treated COURSE-STRUCTURE requests as slide generation:
+"Add a lesson to Module 3" built a deck in the **currently-docked** lesson (never
+creating a lesson in Module 3); "delete the empty lessons" filled them; "recreate
+Module 1" made a duplicate `Module 10: Module 1…`. A new **Course Structure agent
+layer** makes the wrong CATEGORY of action hard or impossible — through tools,
+routing, and HARD validation, not prompt text alone. Verified: `npx tsc --noEmit`
++ `npm run lint` (0 errors) + `npm run build` + **`npm run verify:course-agent`
+(63 checks)**; the existing `verify:ai` / `verify:ai:int` (**143**) /
+`verify:reject` (17) / `verify:slides` suites stay green.
+
+- **Routing fix** (`lib/ai/intent.ts`): a 4th mode `structure`. The old
+  `LESSON_INTO_MODULE` regex that sent "add a lesson to Module X" → `generate_lesson`
+  (the bug) now routes to `structure`; "delete the empty lessons" + delete/recreate/
+  rename/move/reorder of a lesson|module route there too (checked BEFORE the
+  module/lesson content-build short-circuits). The classifier gained `structure`.
+- **The agent** (`lib/ai/phases.ts` `runStructureAgentTurn`): PLAN a structured
+  `CourseStructurePlan` (JSON) → HARD-validate it against the message's detected
+  SIGNALS + a deterministic `CourseOutlineSnapshot` (a request can COMBINE actions,
+  e.g. delete-empty + add) → execute the ops through the validated CoursePatch
+  pipeline → persist via the **full reconcile** (the scoped agent reconcile never
+  deletes/moves/renames an existing node) → stage a reviewable **structure
+  change-set** → for each lesson the plan asks to (re)build, chain the existing
+  PLAN→GENERATE deck pipeline. Ambiguous / unsafe targets become a clarification,
+  never a guess. There is deliberately **no create_module op**, so "recreate Module
+  1" can't mint a duplicate module — the bug is impossible by type.
+- **Pure core** (`lib/ai/courseStructure/*`): `outlineSnapshot.ts` (the snapshot +
+  a deterministic `isLessonEmpty`), `targetResolution.ts` (clear | ambiguous |
+  unsafe — never a numeric confidence), `structurePlan.ts` (the model schema +
+  "you are a course editor, not a slide generator" prompt), `structureValidation.ts`
+  (the rule table: add ⇒ create_lesson; delete-empty ⇒ delete ONLY empty lessons;
+  recreate ⇒ stay in the resolved module; every id must exist), `structureTools.ts`
+  (emptiness + plan execution). New AI-callable tools `rename_lesson` / `move_lesson`
+  + a `list_course_outline` read.
+- **Full structural change-set** (migration `20260701000000`, applied live + types
+  regenerated): `change_set_items` gained `node_type` ('block'|'lesson'|'module') +
+  `node_id`, `block_id` made nullable, an identity CHECK. `diffStructure` records
+  module/lesson create/rename/move/delete; `revertChangeSet` inverts them in
+  dependency order (re-add parents before children; a deleted module restores its
+  whole subtree byte-for-byte); a created/deleted node OWNS its subtree snapshot so
+  blocks/lessons aren't double-staged. Block path stays byte-compatible.
+- **Grouped review** (`AgentPanel`): the review bar now buckets pending changes into
+  **Structure · Slide · Content** so structural edits are never buried in "N changes";
+  created/renamed/moved lessons + modules get an amber pending-highlight in the
+  outline sidebar (`getPendingNodes` → `hydratePendingNodes` → `usePendingNodeChangeSetId`),
+  and Reject restores the previous structure.
+- **Latent bug fixed along the way:** the existing AI `delete_module`/`delete_lesson`
+  CONFIRM path applied the delete in memory but **never persisted it** (the scoped
+  reconcile can't delete + it re-baselined to the post-delete doc). `resumeAgentTurn`
+  now persists a confirmed delete via the full reconcile.
+
+## Imported decks (PPT / PPTX / PDF) — upload + rail viewer, 2026-06-29
+
+Educators can now bring an existing presentation into a lesson as a **slide deck**
+without converting it to native editable slides. The "Slide deck" item in the
+Add-block menu opens a **secondary chooser** — *Create new deck* (the unchanged
+native flow), *Import existing deck* (upload), and a schema-ready, disabled
+*Import from Google Slides* — so the user-facing category stays unified while the
+internals fork. Verified: `npx tsc --noEmit` + `npm run lint` (0 errors) +
+`npm run build` (all 5 routes register) + **`npm run verify:imports` (72 checks)**;
+the existing `verify:ai` (28) / `verify:slides` (95) suites stay green.
+
+**Option B — a new `imported_deck` block type** (a sibling of `slide_deck`, NOT a
+mode flag on it). The Zod block union discriminates on `type`, so a new branch is
+the established way to extend it and the native slide editor is untouched. The
+block content is a denormalized snapshot keyed by `deckImportId`; it carries **no
+storage paths** (those stay server-side, handed out only as signed URLs).
+
+- **DB** (`supabase/migrations/20260629000000_deck_imports.sql`, applied live +
+  types regenerated): `imported_deck` added to the `blocks.type` CHECK;
+  `deck_imports` + `deck_import_pages` tables (RLS via `private.is_course_author` /
+  a new `private.is_deck_import_author`); a **private** `deck-imports` storage
+  bucket with owner-folder RLS. `lesson_id`/`block_id` are FK-free (the row is
+  created before the block, and autosave churns block rows). The course autosave
+  reconcile only touches modules/lessons/blocks, so the new tables are never
+  orphan-deleted.
+- **Service layer** (`lib/course/imports/*`, pure where possible):
+  `deckImportValidation` (extension/MIME agreement — client MIME is never trusted
+  alone — size bounds, filename sanitize, the status state machine),
+  `deckImportStorage` (owner-first path builders + **signed-URL-only** access; there
+  is no `getPublicUrl` call), `deckImportAccess` (auth + ownership guards),
+  `deckImportService` (CRUD + the row→client `View` that mints signed page URLs),
+  `deckImportJobs` (the enqueue/claim seam).
+- **API** (`app/api/deck-imports/*`, Node runtime): `upload` (multipart → validate →
+  store original privately → row → enqueue), `[id]` GET (live status + signed pages)
+  / DELETE, `[id]/retry`, `[id]/replace`, `[id]/original` (signed download). Auth +
+  course-ownership enforced on every route.
+- **Worker** (`workers/deck-import/*` + `npm run worker:deck-imports`): a
+  worker-compatible `processDeckImport(id)` that normalizes to PDF (LibreOffice
+  headless), renders pages to PNG + thumbnails (Poppler `pdftoppm`), uploads
+  artifacts, writes page rows, and marks `ready`/`failed`. **Heavy conversion never
+  runs in a request handler** (the route only enqueues). Missing system binaries
+  fail gracefully (friendly "preview tools unavailable" → `failed`, app stays up).
+  Dockerfile + README document the system packages and the production-queue TODO.
+- **UI** (`components/editor/lesson/*`): the `AddSlideDeckChoice` chooser, a
+  drag-or-browse `DeckUploadButton` with a real progress bar, and the block surface
+  — `ImportedDeckProcessingCard` (intentional shimmer), `ImportedDeckFailedCard`
+  (calm retry/replace/download), and the custom `ImportedDeckViewer`: large central
+  slide, vertical thumbnail rail (horizontal on narrow screens), prev/next +
+  keyboard nav, page indicator, fullscreen (`ImportedDeckFullscreen`), signed-URL
+  loading skeletons, graceful missing-page fallback. `useDeckImport` polls while
+  processing and re-signs URLs on demand. No browser PDF chrome, no open-in-new-tab.
+
+**Verification notes — works now:** end-to-end upload → private storage → row →
+block insert → processing card → (worker) → ready rail viewer; retry, replace,
+download-original, and delete (with storage cleanup); the native deck path is
+unchanged; Google/OneDrive `source_type` + `source_external_id` are schema-ready.
+**Remaining for production:** run the worker as a deployed service/container with
+`SUPABASE_SERVICE_ROLE_KEY` + LibreOffice/Poppler installed; swap the poll-based
+`enqueueDeckImportJob`/`claimProcessingDeckImports` for a durable queue and add a
+worker lease for >1 worker (both documented in `workers/deck-import/README.md`); a
+Playwright pixel pass on the viewer; and the actual Google Drive OAuth/Picker
+(only the schema is in place here).
+
 ## The "missing content" rejection loop — DECISIVE fix (agent-null coercion), 2026-06-24
 
 Proven from `slide_reject` logs (lesson b240a404): the slides were NOT missing

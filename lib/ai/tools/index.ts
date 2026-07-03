@@ -7,6 +7,7 @@
 import { toStrictJsonSchema } from "../schema";
 import { debugAgent } from "../debugLog";
 import type { ToolDefinition } from "../modelClient";
+import { analyticsTools } from "./analytics";
 import { readTools } from "./read";
 import { slideTools } from "./slides";
 import { structuralTools } from "./structural";
@@ -20,6 +21,7 @@ export const ALL_TOOLS: Tool[] = [
   ...writerTools,
   ...slideTools,
   ...structuredSlideTools,
+  ...analyticsTools,
 ];
 
 /** Tools the GENERATE/CRITIQUE phases may use — AUTHORING only: read context +
@@ -41,6 +43,7 @@ const GENERATE_EXCLUDED_READS: ReadonlySet<string> = new Set([
   "list_modules",
   "list_lessons",
   "get_lesson",
+  "list_course_outline",
 ]);
 
 /** Writer tools the GENERATE/REPAIR phases must NOT have:
@@ -72,6 +75,23 @@ export const GENERATE_TOOL_NAMES: ReadonlySet<string> = new Set([
   ...structuralTools.filter((t) => t.name === "create_block").map((t) => t.name),
   ...structuredSlideTools.map((t) => t.name),
   ...writerTools.filter((t) => !GENERATE_EXCLUDED_WRITERS.has(t.name)).map((t) => t.name),
+]);
+
+/** The ANALYST subagent's set (maintenance runs): the six analytics read tools
+ *  PLUS the content reads — so its evidence can quote the actual question
+ *  wording, not just the numbers. Strictly read-only; no confirm-pausing tools. */
+export const ANALYST_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...analyticsTools.map((t) => t.name),
+  ...readTools.map((t) => t.name),
+]);
+
+/** The REMEDIATION subagent's set: everything the human-facing edit path has
+ *  (AUTHORING — already excludes ALL structural/destructive/confirm-pausing
+ *  tools) plus the two analytics reads useful for verifying its own fix. */
+export const REMEDIATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...AUTHORING_TOOL_NAMES,
+  "get_question_item_stats",
+  "get_slide_dwell_outliers",
 ]);
 
 const TOOL_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));

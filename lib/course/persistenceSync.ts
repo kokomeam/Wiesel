@@ -16,31 +16,61 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
-import { courseDocFromRows, courseDocToRows } from "./persistence";
-import type { CourseDocument } from "./types";
+import { blockToInsert, courseDocFromRows, courseDocToRows } from "./persistence";
+import type { CourseDocument, LessonBlock } from "./types";
 
 type DB = SupabaseClient<Database>;
 
 /** Load a course + its whole tree and reconstruct the editor document. Returns
- *  null if the course doesn't exist or RLS hides it from the caller. */
+ *  null ONLY when the course genuinely doesn't exist / RLS hides it (data null,
+ *  no error). THROWS on any read error: a transient RLS/transport/timeout failure
+ *  must NEVER masquerade as an empty tree, or a downstream full reconcile would
+ *  orphan-delete every real row of the course (see reconcileCourseDoc step 3). */
 export async function loadCourseDoc(
   supabase: DB,
   courseId: string
 ): Promise<CourseDocument | null> {
-  const { data: course } = await supabase
+  const { data: course, error: courseErr } = await supabase
     .from("courses")
     .select("*")
     .eq("id", courseId)
     .maybeSingle();
+  if (courseErr) throw new Error(`loadCourseDoc: failed to read course ${courseId}: ${courseErr.message}`);
   if (!course) return null;
 
-  const [{ data: modules }, { data: lessons }, { data: blocks }] = await Promise.all([
+  const [
+    { data: modules, error: modErr },
+    { data: lessons, error: lessonErr },
+    { data: blocks, error: blockErr },
+  ] = await Promise.all([
     supabase.from("modules").select("*").eq("course_id", courseId),
     supabase.from("lessons").select("*").eq("course_id", courseId),
     supabase.from("blocks").select("*").eq("course_id", courseId),
   ]);
+  const treeErr = modErr ?? lessonErr ?? blockErr;
+  if (treeErr) throw new Error(`loadCourseDoc: failed to read course ${courseId} tree: ${treeErr.message}`);
 
   return courseDocFromRows(course, modules ?? [], lessons ?? [], blocks ?? []);
+}
+
+/**
+ * Upsert a SINGLE block row without touching any other row. For narrow server
+ * paths (e.g. the visual-generate endpoint) that must persist exactly ONE block:
+ * a full `reconcileCourseDoc` there would upsert a seconds-old whole-course
+ * snapshot AND orphan-delete anything a concurrent autosave wrote in the meantime,
+ * so those paths write only their own block.
+ */
+export async function upsertBlock(
+  supabase: DB,
+  courseId: string,
+  lessonId: string,
+  block: LessonBlock,
+  signal?: AbortSignal
+): Promise<string | null> {
+  let query = supabase.from("blocks").upsert(blockToInsert(block, lessonId, courseId));
+  if (signal) query = query.abortSignal(signal);
+  const { error } = await query;
+  return error?.message ?? null;
 }
 
 /** Delete rows of `table` for this course whose id is no longer present. */
@@ -190,8 +220,16 @@ export async function reconcileCourseDocScoped(
   let liveModuleIds: Set<string> | null = null;
   let liveLessonIds: Set<string> | null = null;
   if (needsLiveCheck) {
-    const dbDoc = await loadCourseDoc(supabase, doc.id);
-    if (!dbDoc) return null; // course gone (deleted concurrently) — nothing to do
+    let dbDoc: CourseDocument | null;
+    try {
+      dbDoc = await loadCourseDoc(supabase, doc.id);
+    } catch (e) {
+      // A transient live-read failure must surface as an ERROR — never be treated
+      // as "course gone", which would skip persisting the agent's authored subtree
+      // and report success (the next incremental reconcile retries).
+      return e instanceof Error ? e.message : "live-check read failed";
+    }
+    if (!dbDoc) return null; // course genuinely gone (deleted concurrently) — nothing to do
     liveModuleIds = new Set(dbDoc.modules.map((m) => m.id));
     liveLessonIds = new Set(dbDoc.modules.flatMap((m) => m.lessons.map((l) => l.id)));
   }

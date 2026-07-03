@@ -15,15 +15,42 @@ import { moduleDisplayName, moduleNumber } from "@/lib/course/moduleLabel";
 import { findLesson } from "@/lib/course/queries";
 import { useEditorStore } from "@/lib/course/store";
 import type { LessonBlock, QualityHint } from "@/lib/course/types";
+import { deleteBlockPatch } from "@/lib/course/commands";
 import { AddBlockMenu } from "./AddBlockMenu";
 import { BlockFrame } from "./BlockFrame";
 import { EditableName } from "./EditableName";
 import { InlineTextArea } from "./InlineText";
+import { ImportedDeckBlock } from "./lesson/ImportedDeckBlock";
+import { VideoBlock } from "./lesson/video/VideoBlock";
 import { ExampleBlockEditor } from "./blocks/ExampleBlockEditor";
 import { HomeworkEditor } from "./blocks/HomeworkEditor";
 import { LectureTextEditor } from "./blocks/LectureTextEditor";
 import { QuizEditor } from "./blocks/QuizEditor";
 import { SlideDeckEditor } from "./blocks/SlideDeckEditor";
+
+/** Delete an imported-deck block AND clean up its storage + deck_imports row.
+ *  Best-effort on the asset cleanup; the block is removed either way. */
+function deleteImportedDeckBlock(
+  lessonId: string,
+  blockId: string,
+  deckImportId: string,
+  apply: ReturnType<typeof useEditorStore.getState>["apply"]
+) {
+  void fetch(`/api/deck-imports/${deckImportId}`, { method: "DELETE" }).catch(() => {});
+  apply(deleteBlockPatch(lessonId, blockId), "human");
+}
+
+/** Delete a video block AND clean up its Mux asset + video_assets row.
+ *  Best-effort on the asset cleanup; the block is removed either way. */
+function deleteVideoBlock(
+  lessonId: string,
+  blockId: string,
+  videoAssetId: string | undefined,
+  apply: ReturnType<typeof useEditorStore.getState>["apply"]
+) {
+  if (videoAssetId) void fetch(`/api/video/${videoAssetId}`, { method: "DELETE" }).catch(() => {});
+  apply(deleteBlockPatch(lessonId, blockId), "human");
+}
 
 function StandaloneExerciseEditor({ block }: { block: Extract<LessonBlock, { type: "exercise" }> }) {
   const apply = useEditorStore((s) => s.apply);
@@ -77,6 +104,10 @@ function BlockBody({ block, lessonId }: { block: LessonBlock; lessonId: string }
   switch (block.type) {
     case "slide_deck":
       return <SlideDeckEditor block={block} lessonId={lessonId} />;
+    case "imported_deck":
+      return <ImportedDeckBlock block={block} lessonId={lessonId} />;
+    case "video":
+      return <VideoBlock block={block} lessonId={lessonId} />;
     case "lecture_text":
       return <LectureTextEditor block={block} lessonId={lessonId} />;
     case "quiz":
@@ -198,6 +229,13 @@ export function LessonWorkspace() {
                   index={i}
                   blockCount={lesson.blocks.length}
                   hints={blockHints(block)}
+                  onDelete={
+                    block.type === "imported_deck"
+                      ? () => deleteImportedDeckBlock(lesson.id, block.id, block.deckImportId, apply)
+                      : block.type === "video"
+                        ? () => deleteVideoBlock(lesson.id, block.id, block.asset.videoAssetId, apply)
+                        : undefined
+                  }
                 >
                   <BlockBody block={block} lessonId={lesson.id} />
                 </BlockFrame>
