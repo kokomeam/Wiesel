@@ -20,6 +20,7 @@ import {
 import { SLIDE_H, type Frame } from "@/lib/course/slide/geometry";
 import type { CoursePatch } from "@/lib/course/patches";
 import type { ElementStyle, SlideElement } from "@/lib/course/types";
+import { ListContent } from "./ListElementView";
 import { TextLikeContent, textLikeBoxStyle, textLikeValue, type TextLike } from "./TextLikeElement";
 
 export function isTextLike(el: SlideElement): el is TextLike {
@@ -41,7 +42,11 @@ export function measureTextLikeHeight(
     "position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;";
   host.innerHTML = renderToStaticMarkup(
     <div style={{ ...textLikeBoxStyle(el, themeId), width: el.width, height: "auto" }}>
-      <TextLikeContent el={el} themeId={themeId} value={value} />
+      {el.type === "bullet_list" || (el.type === "text" && el.list) ? (
+        <ListContent el={el} themeId={themeId} />
+      ) : (
+        <TextLikeContent el={el} themeId={themeId} value={value} />
+      )}
     </div>
   );
   document.body.appendChild(host);
@@ -67,6 +72,7 @@ export function measuredContentHeight(el: TextLike, themeId: string): number {
     themeId,
     el.type,
     el.type === "callout" ? el.variant : null,
+    el.type === "bullet_list" || el.type === "text" ? el.list ?? null : null,
   ]);
   const hit = heightCache.get(el.id);
   if (hit && hit.key === key) return hit.height;

@@ -7,10 +7,12 @@
  * on-brand studio chrome; the ambition lives in the agent behind it.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, CheckCheck, ChevronDown, Lightbulb, PanelRightClose, ShieldCheck, Sparkles, Square, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, BarChart3, Check, CheckCheck, ChevronDown, Layers, Lightbulb, ListTree, PanelRightClose, Presentation, ShieldCheck, Sparkles, Square, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { DraftList } from "@/components/comms/DraftList";
 import { toolAttrs } from "@/lib/course/aiAttributes";
+import { useEditorStore } from "@/lib/course/store";
 import { useAgentStore, type QualityReport, type ValidationStatus } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { useAgentStream } from "./useAgentStream";
@@ -94,10 +96,13 @@ const TOOL_LABELS: Record<string, string> = {
   get_course_context: "Read course context",
   list_modules: "List modules",
   list_lessons: "List lessons",
+  list_course_outline: "Read course outline",
   get_lesson: "Read lesson",
   get_block: "Read block",
   create_module: "Create module",
   create_lesson: "Create lesson",
+  rename_lesson: "Rename lesson",
+  move_lesson: "Move lesson",
   create_block: "Add block",
   delete_block: "Delete block",
   reorder_blocks: "Reorder blocks",
@@ -114,6 +119,21 @@ const SUGGESTIONS = [
   "Add a 4-question knowledge check",
   "Draft lecture notes from the objective",
 ];
+
+/** A labeled count chip in the grouped review bar (Structure / Slide / Content),
+ *  so structural changes read distinctly from content/slide ones. */
+function ChangeGroup({ icon, label, n }: { icon: React.ReactNode; label: string; n: number }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200"
+      data-ai-review-group={label}
+    >
+      <span className="text-amber-500">{icon}</span>
+      <span className="font-bold">{n}</span>
+      {label}
+    </span>
+  );
+}
 
 function TypingDots() {
   return (
@@ -141,6 +161,8 @@ export function AgentPanel() {
   const validation = useAgentStore((s) => s.validation);
   const qualityReport = useAgentStore((s) => s.qualityReport);
   const pendingOutline = useAgentStore((s) => s.pendingOutline);
+  const maintenance = useAgentStore((s) => s.maintenance);
+  const openFindings = useAgentStore((s) => s.openFindings);
   const autoApprovePlan = useAgentStore((s) => s.autoApprovePlan);
   const setAutoApprovePlan = useAgentStore((s) => s.setAutoApprovePlan);
   const togglePanel = useUIStore((s) => s.togglePanel);
@@ -153,8 +175,30 @@ export function AgentPanel() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, toolCards, thinking]);
 
+  const pendingBlocks = useAgentStore((s) => s.pendingBlocks);
+  const doc = useEditorStore((s) => s.doc);
+  const courseId = useEditorStore((s) => s.courseId);
   const pendingSets = Object.values(changeSets);
   const pendingCount = pendingSets.reduce((n, cs) => n + cs.count, 0);
+
+  // Group the pending changes so STRUCTURE isn't buried inside "N changes": split
+  // into Structure (module/lesson ops), Slide (slide_deck blocks) and Content
+  // (other blocks). Block type comes from the live doc; a deleted block (gone from
+  // the doc) counts as content.
+  const groups = useMemo(() => {
+    const structure = pendingSets.reduce((n, cs) => n + (cs.structuralCount ?? 0), 0);
+    const slideBlockIds = new Set<string>();
+    for (const m of doc.modules) for (const l of m.lessons) for (const b of l.blocks) {
+      if (b.type === "slide_deck" || b.type === "imported_deck") slideBlockIds.add(b.id);
+    }
+    let slide = 0;
+    let content = 0;
+    for (const id of Object.keys(pendingBlocks)) {
+      if (slideBlockIds.has(id)) slide++;
+      else content++;
+    }
+    return { structure, slide, content };
+  }, [pendingSets, pendingBlocks, doc]);
 
   const blocked = thinking || !!pendingConfirmation || !!pendingOutline;
 
@@ -166,15 +210,24 @@ export function AgentPanel() {
     review: "Reviewing",
     critique: "Reviewing",
   };
+  const MAINTENANCE_LABEL: Record<string, string> = {
+    analyze: "Reading learner analytics",
+    findings: "Prioritizing findings",
+    remediate: "Proposing fixes",
+    comms: "Drafting check-ins",
+    report: "Wrapping up",
+  };
   const statusText = pendingOutline
     ? "Review the plan"
     : pendingConfirmation
       ? "Paused — needs your OK"
-      : phase && thinking
-        ? `${PHASE_LABEL[phase]}…`
-        : thinking
-          ? "Working…"
-          : "Ready";
+      : maintenance && thinking
+        ? `${MAINTENANCE_LABEL[maintenance.stage]}…`
+        : phase && thinking
+          ? `${PHASE_LABEL[phase]}…`
+          : thinking
+            ? "Working…"
+            : "Ready";
 
   function submit() {
     if (!input.trim() || blocked) return;
@@ -307,6 +360,43 @@ export function AgentPanel() {
             )}
             {validation && <ValidationLine validation={validation} thinking={thinking} />}
             {qualityReport && <QualityReportCard report={qualityReport} onImprove={send} />}
+            {maintenance && (
+              <div
+                className="rounded-xl border border-brand-200 bg-brand-50/50 px-3 py-2.5"
+                data-ai-maintenance-status=""
+              >
+                <p className="flex items-center gap-1.5 text-xs font-semibold text-brand-800">
+                  <BarChart3 className="size-3.5" aria-hidden />
+                  {maintenance.detail ?? MAINTENANCE_LABEL[maintenance.stage]}
+                </p>
+                {maintenance.findings.length > 0 && (
+                  <ul className="mt-1.5 space-y-1">
+                    {maintenance.findings.map((f) => (
+                      <li key={f.id} className="flex items-start gap-1.5 text-xs text-stone-600">
+                        <span
+                          className={cn(
+                            "mt-1 size-1.5 shrink-0 rounded-full",
+                            f.severity === "high" ? "bg-rose-500" : "bg-amber-400"
+                          )}
+                          aria-hidden
+                        />
+                        <span className="min-w-0">{f.title}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {/* Learner check-in drafts from this run (edit → approve → send;
+                    nothing sends without the creator). */}
+                {(maintenance.stage === "comms" || maintenance.stage === "report") && (
+                  <div className="mt-2">
+                    <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.15em] text-stone-400">
+                      Messages to review
+                    </p>
+                    <DraftList courseId={courseId ?? ""} compact />
+                  </div>
+                )}
+              </div>
+            )}
             {checkpoint && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {checkpoint}
@@ -321,34 +411,69 @@ export function AgentPanel() {
         )}
       </div>
 
-      {/* Review bar */}
+      {/* Review bar — grouped so STRUCTURE changes are never buried in a total. */}
       {pendingCount > 0 && (
-        <div
-          className="flex items-center gap-2 border-t border-amber-200 bg-amber-50 px-4 py-2.5"
-          data-ai-review-bar=""
-        >
-          <span className="text-xs font-medium text-amber-800">
-            <span className="font-bold">{pendingCount}</span> change{pendingCount === 1 ? "" : "s"} to review
-          </span>
-          <span className="flex-1" />
+        <div className="border-t border-amber-200 bg-amber-50 px-4 py-2.5" data-ai-review-bar="">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1" data-ai-review-groups="">
+            {groups.structure > 0 && (
+              <ChangeGroup icon={<ListTree className="size-3" />} label="structure" n={groups.structure} />
+            )}
+            {groups.slide > 0 && (
+              <ChangeGroup icon={<Presentation className="size-3" />} label="slide" n={groups.slide} />
+            )}
+            {groups.content > 0 && (
+              <ChangeGroup icon={<Layers className="size-3" />} label="content" n={groups.content} />
+            )}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-xs font-medium text-amber-800">
+              <span className="font-bold">{pendingCount}</span> change{pendingCount === 1 ? "" : "s"} to review
+            </span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={() => resolveAll("reject")}
+              {...toolAttrs({ tool: "agent-reject-all", action: "REJECT_CHANGES", label: "Reject changes" })}
+              className="rounded-full px-2.5 py-1 text-xs font-medium text-stone-500 transition-colors hover:bg-white hover:text-stone-700"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={() => resolveAll("accept")}
+              {...toolAttrs({ tool: "agent-accept-all", action: "ACCEPT_CHANGES", label: "Accept changes" })}
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+            >
+              <CheckCheck className="size-3" />
+              {/* Mid-run, accepting locks in what's built so far — lets the user gate
+                  out of a long repair loop early. */}
+              {thinking ? "Accept what's here" : "Accept all"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Threshold findings invite — the nightly rollup flagged issues; one
+          click runs an analysis that adopts them. */}
+      {openFindings > 0 && !thinking && !maintenance && (
+        <div className="border-t border-stone-200 px-4 py-2.5">
           <button
             type="button"
-            onClick={() => resolveAll("reject")}
-            {...toolAttrs({ tool: "agent-reject-all", action: "REJECT_CHANGES", label: "Reject changes" })}
-            className="rounded-full px-2.5 py-1 text-xs font-medium text-stone-500 transition-colors hover:bg-white hover:text-stone-700"
+            onClick={() => send("Analyze the flagged issues in this course.")}
+            {...toolAttrs({
+              tool: "agent-review-findings",
+              action: "AGENT_SEND",
+              label: "Review flagged issues",
+            })}
+            className="flex w-full items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-left text-xs text-amber-800 transition-colors hover:bg-amber-100/70"
           >
-            Reject
-          </button>
-          <button
-            type="button"
-            onClick={() => resolveAll("accept")}
-            {...toolAttrs({ tool: "agent-accept-all", action: "ACCEPT_CHANGES", label: "Accept changes" })}
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
-          >
-            <CheckCheck className="size-3" />
-            {/* Mid-run, accepting locks in what's built so far — lets the user gate
-                out of a long repair loop early. */}
-            {thinking ? "Accept what's here" : "Accept all"}
+            <BarChart3 className="size-3.5 shrink-0 text-amber-600" aria-hidden />
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold">
+                {openFindings} issue{openFindings === 1 ? "" : "s"} flagged
+              </span>{" "}
+              by learner data — review and propose fixes
+            </span>
           </button>
         </div>
       )}

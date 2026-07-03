@@ -9,7 +9,8 @@
 
 import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, ArrowRight, BarChart3, Trash2 } from "lucide-react";
 import { deleteCourse } from "@/app/(app)/studio/actions";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -38,6 +39,7 @@ function editedAt(iso: string): string {
 export function CourseCardItem({ course }: { course: CourseCard }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const router = useRouter();
   const title = course.title || "Untitled course";
 
   useEffect(() => {
@@ -65,6 +67,19 @@ export function CourseCardItem({ course }: { course: CourseCard }) {
               {initials(title)}
             </span>
             <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                aria-label={`Analytics for ${title}`}
+                title="Learner analytics"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  router.push(`/studio/${course.id}/analytics`);
+                }}
+                className="grid size-7 place-items-center rounded-lg text-stone-300 opacity-0 transition-all hover:bg-brand-50 hover:text-brand-600 focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <BarChart3 className="size-3.5" />
+              </button>
               <button
                 type="button"
                 aria-label={`Delete ${title}`}

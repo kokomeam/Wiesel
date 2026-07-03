@@ -7,7 +7,7 @@
  * Autosave is wired here, alongside the editor it guards.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 import { useEditorStore } from "@/lib/course/store";
 import { useAgentStore } from "@/lib/editor/agentStore";
@@ -46,18 +46,73 @@ function EditorWithAutosave({ ownerId }: { ownerId: string }) {
   );
 }
 
+/**
+ * Analytics deep-link focus (?lesson= / ?block= on the studio URL): opens the
+ * lesson, selects the block, and scrolls it into view. Mounts only AFTER the
+ * store is hydrated (StudioLoader gates on courseId), runs once per page load,
+ * and validates ids against the doc so a stale link degrades to a no-op.
+ */
+function DeepLinkFocus({
+  lessonId,
+  blockId,
+}: {
+  lessonId: string;
+  blockId: string | null;
+}) {
+  const doneRef = useRef(false);
+  useEffect(() => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    const state = useEditorStore.getState();
+    const lesson = state.doc.modules
+      .flatMap((m) => m.lessons)
+      .find((l) => l.id === lessonId);
+    if (!lesson) return;
+    state.openLesson(lessonId);
+    if (!blockId || !lesson.blocks.some((b) => b.id === blockId)) return;
+    state.select({ kind: "block", id: blockId, lessonId });
+    // The workspace renders on the next frames; poll briefly for the node.
+    let tries = 0;
+    const tick = () => {
+      const el = document.querySelector(
+        `[data-ai-component="lesson-block"][data-ai-id="${blockId}"]`
+      );
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (tries++ < 60) {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  }, [lessonId, blockId]);
+  return null;
+}
+
 export function StudioLoader({
   initialDoc,
   courseId,
   ownerId,
   pendingBlocks = [],
+  pendingNodes = [],
+  focusLessonId = null,
+  focusBlockId = null,
+  openFindingsCount = 0,
 }: {
   initialDoc: CourseDocument;
   courseId: string;
   ownerId: string;
   /** Blocks with a pending agent change-set (server-loaded) — drives the
-   *  editor highlight. Re-supplied on every router.refresh. */
-  pendingBlocks?: { blockId: string; changeSetId: string }[];
+   *  editor highlight; `evidence` present on maintenance proposals. Re-supplied
+   *  on every router.refresh. */
+  pendingBlocks?: { blockId: string; changeSetId: string; evidence?: unknown }[];
+  /** Modules/lessons with a pending STRUCTURAL change — drives the outline-sidebar
+   *  highlight + the AgentPanel Structure group. Re-supplied on router.refresh. */
+  pendingNodes?: { nodeId: string; nodeType: "module" | "lesson"; changeSetId: string; op: string }[];
+  /** Analytics deep-link (?lesson= / ?block=): focus this node after hydration. */
+  focusLessonId?: string | null;
+  focusBlockId?: string | null;
+  /** Open threshold findings (maintenance agent) — header badge + panel chip. */
+  openFindingsCount?: number;
 }) {
   const hydrate = useEditorStore((s) => s.hydrate);
   // Gate on the STORE's courseId (not local state): SSR and the first client
@@ -77,12 +132,23 @@ export function StudioLoader({
 
   // Reconcile the agent highlight with the DB's pending change-sets (authoritative
   // after a full reload; corrects the optimistic stream tracking after refresh).
-  const pendingKey = JSON.stringify(pendingBlocks);
+  const pendingKey = JSON.stringify({ pendingBlocks, pendingNodes, openFindingsCount });
   useEffect(() => {
+    // Blocks FIRST (it rebuilds changeSets), then nodes (augments with structural
+    // counts) — so neither hydration clobbers the other's per-set counts.
     useAgentStore.getState().hydratePending(pendingBlocks);
+    useAgentStore.getState().hydratePendingNodes(pendingNodes);
+    useAgentStore.getState().setOpenFindings(openFindingsCount);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingKey]);
 
   if (activeCourseId !== courseId) return <StudioSkeleton />;
-  return <EditorWithAutosave ownerId={ownerId} />;
+  return (
+    <>
+      {focusLessonId ? (
+        <DeepLinkFocus lessonId={focusLessonId} blockId={focusBlockId} />
+      ) : null}
+      <EditorWithAutosave ownerId={ownerId} />
+    </>
+  );
 }

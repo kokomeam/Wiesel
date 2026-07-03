@@ -40,6 +40,7 @@ export const STICKER_REGISTRY: StickerDef[] = [
   { id: "x", label: "Cross", keywords: ["wrong", "no", "remove", "avoid", "incorrect"] },
   { id: "target", label: "Target", keywords: ["goal", "aim", "objective", "focus", "bullseye"] },
   { id: "lightbulb", label: "Idea", keywords: ["insight", "concept", "understand", "tip", "learn"] },
+  { id: "info", label: "Note", keywords: ["note", "info", "aside", "caveat", "in practice", "remember"] },
   { id: "bar-chart", label: "Chart", keywords: ["data", "metrics", "results", "analytics", "performance"] },
   { id: "search", label: "Identify", keywords: ["find", "explore", "analyze", "magnify", "discover"] },
   { id: "brain", label: "Understand", keywords: ["think", "learn", "knowledge", "comprehend", "reason"] },

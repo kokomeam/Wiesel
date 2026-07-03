@@ -17,12 +17,12 @@ import { buildImagePrompt, type ImagePromptSpec } from "@/lib/ai/visuals/imageIn
 import { generateAndStoreImage } from "@/lib/ai/visuals/generateAndStore";
 import { VISUAL_WEIGHT } from "@/lib/ai/visuals/config";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
-import { loadCourseDoc, reconcileCourseDoc } from "@/lib/ai/serverPersistence";
+import { loadCourseDoc, upsertBlock } from "@/lib/ai/serverPersistence";
 import { setSlideTemplatePatch } from "@/lib/course/commands";
 import { applyCoursePatch } from "@/lib/course/patches";
-import { findSlide } from "@/lib/course/queries";
+import { findBlock, findSlide } from "@/lib/course/queries";
 import { createClient } from "@/lib/supabase/server";
-import type { ImageReferenceContent, ImageSupportingContent, ProseContent, RichText, SlideTemplate } from "@/lib/course/types";
+import type { CourseDocument, ImageReferenceContent, ImageSupportingContent, ProseContent, RichText, SlideTemplate } from "@/lib/course/types";
 
 type ImageContent = ImageReferenceContent | ImageSupportingContent;
 const rt = (s: string): RichText => ({ text: s.trim() });
@@ -63,7 +63,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!courseId || !blockId || !slideId) return new Response("Missing courseId, blockId, or slideId", { status: 400 });
   if (!isOpenAIConfigured()) return new Response("Image service not configured", { status: 503 });
 
-  const doc = await loadCourseDoc(supabase, courseId);
+  let doc: CourseDocument | null;
+  try {
+    doc = await loadCourseDoc(supabase, courseId);
+  } catch {
+    return new Response("Course read failed (transient)", { status: 503 });
+  }
   if (!doc) return new Response("Course not found", { status: 404 });
   const hit = findSlide(doc, blockId, slideId);
   const template = hit?.slide.template;
@@ -118,7 +123,14 @@ export async function POST(req: Request): Promise<Response> {
   const patch = setSlideTemplatePatch(blockId, slideId, next);
   const applied = applyCoursePatch(doc, patch, new Date().toISOString());
   if (!applied.ok) return new Response(applied.error, { status: 500 });
-  const err = await reconcileCourseDoc(supabase, applied.doc, user.id);
+
+  // Persist ONLY this one block. A full reconcileCourseDoc here would upsert a
+  // seconds-old whole-course snapshot AND orphan-delete anything a concurrent
+  // autosave wrote during image generation — this runs off the agent's critical
+  // path, so browser autosave is UNPAUSED and may have just saved a user edit.
+  const updated = findBlock(applied.doc, blockId);
+  if (!updated) return new Response("Block not found after patch", { status: 500 });
+  const err = await upsertBlock(supabase, courseId, updated.lesson.id, updated.block, req.signal);
   if (err) return new Response(err, { status: 500 });
 
   return Response.json({ ok: true, status: asset ? "filled" : "degraded", layoutId: next.layoutId });

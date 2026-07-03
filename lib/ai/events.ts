@@ -84,8 +84,29 @@ export type AgentEvent =
       /** The CoursePatch applied iff confirmed (re-validated server-side). */
       patch: unknown;
     }
-  /** This turn's mutations were grouped into a reviewable change-set. */
-  | { type: "change_set"; changeSetId: string; count: number; summary?: string }
+  /** This turn's mutations were grouped into a reviewable change-set. `structuralCount`
+   *  is how many of the `count` items are module/lesson structural ops (the rest are
+   *  block changes) — lets the panel group Structure vs Content/Slide. */
+  | {
+      type: "change_set";
+      changeSetId: string;
+      count: number;
+      summary?: string;
+      structuralCount?: number;
+      /** Maintenance runs: the finding's evidence (rendered as the evidence
+       *  card over the pending blocks — live, without a refetch). */
+      evidence?: unknown;
+    }
+  /** MAINTENANCE runs (Milestone 5): the orchestrator's stage progression —
+   *  analyze (Analyst reading the rollups) → findings (the prioritized list,
+   *  carried inline for the panel) → remediate/comms (subagents dispatched) →
+   *  report (run settled). Change-sets/tool cards reuse the existing events. */
+  | {
+      type: "maintenance";
+      stage: "analyze" | "findings" | "remediate" | "comms" | "report";
+      detail?: string;
+      findings?: { id: string; kind: string; severity: string; title: string }[];
+    }
   /** A very large job paused at a safe point and can be continued. */
   | { type: "checkpoint"; reason: string; completedSteps: number }
   /** The settled final assistant message for the turn (full text). */

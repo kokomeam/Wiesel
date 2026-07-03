@@ -8,7 +8,8 @@
  */
 
 import { useEffect } from "react";
-import { Eye, Focus, Minimize2, Redo2, Rocket, RotateCcw, Undo2 } from "lucide-react";
+import Link from "next/link";
+import { BarChart3, Eye, Focus, Minimize2, Redo2, Rocket, RotateCcw, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { aiAttrs, toolAttrs } from "@/lib/course/aiAttributes";
@@ -16,6 +17,7 @@ import { updateTextPatch } from "@/lib/course/commands";
 import { computeCreationFlow } from "@/lib/course/creationFlow";
 import { registerLintTextMeasurer } from "@/lib/course/lint";
 import { useEditorStore } from "@/lib/course/store";
+import { useAgentStore } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { AICommandBar } from "./AICommandBar";
 import { AgentConfirmHost } from "./agent/AgentConfirmHost";
@@ -76,6 +78,8 @@ function SaveIndicator({ status }: { status: "idle" | "saving" | "saved" | "erro
 
 export function CourseEditorShell() {
   const doc = useEditorStore((s) => s.doc);
+  const courseId = useEditorStore((s) => s.courseId);
+  const openFindings = useAgentStore((s) => s.openFindings);
   const selection = useEditorStore((s) => s.selection);
   const apply = useEditorStore((s) => s.apply);
   const undo = useEditorStore((s) => s.undo);
@@ -147,6 +151,16 @@ export function CourseEditorShell() {
               <Badge tone="amber" dot>
                 Draft
               </Badge>
+              {openFindings > 0 && (
+                <span
+                  title={`${openFindings} issue${openFindings === 1 ? "" : "s"} flagged by learner data — open the AI panel to review`}
+                  className="cursor-default"
+                >
+                  <Badge tone="rose" dot>
+                    {openFindings} finding{openFindings === 1 ? "" : "s"}
+                  </Badge>
+                </span>
+              )}
             </div>
             <p className="flex items-center gap-1.5 truncate text-xs text-stone-400">
               {doc.level && <span className="capitalize">{doc.level} ·</span>}
@@ -209,15 +223,38 @@ export function CourseEditorShell() {
             <Eye className="size-3.5" />
             Preview
           </Button>
+          {courseId ? (
+            <Link
+              href={`/studio/${courseId}/analytics`}
+              title="Learner analytics for this course"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-50"
+              {...toolAttrs({
+                tool: "open-analytics",
+                action: "OPEN_ANALYTICS",
+                targetType: "panel",
+                label: "Open learner analytics for this course",
+              })}
+            >
+              <BarChart3 className="size-3.5 text-stone-400" />
+              Analytics
+            </Link>
+          ) : null}
           <Button
             variant="primary"
             size="sm"
             disabled={!flow.readyToPublish}
             title={
               flow.readyToPublish
-                ? "Publish your course"
+                ? "Review and publish your course"
                 : "Add a course title and at least one lesson with content to publish"
             }
+            onClick={() => setActiveStep("publish")}
+            {...toolAttrs({
+              tool: "open-publish",
+              action: "OPEN_PUBLISH_STEP",
+              targetType: "panel",
+              label: "Open the publish step",
+            })}
           >
             <Rocket className="size-3.5" />
             Publish

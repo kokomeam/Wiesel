@@ -20,6 +20,7 @@ import { useUIStore } from "@/lib/editor/uiStore";
 import type { SlideElement } from "@/lib/course/types";
 import { CodeElement } from "./elements/CodeElement";
 import { ImageElementView } from "./elements/ImageElementView";
+import { ListElement } from "./elements/ListElementView";
 import {
   DividerElementView,
   ShapeElementView,
@@ -60,11 +61,31 @@ function ElementBody({
 }) {
   switch (el.type) {
     case "text":
+      // A text box with a toggled list edits/renders through the list path;
+      // plain text keeps the rich-text editor.
+      if (el.list) {
+        return (
+          <ListElement el={el} blockId={blockId} slideId={slideId} themeId={themeId} editable={editable} soleSelected={soleSelected} />
+        );
+      }
+      return (
+        <TextLikeElement el={el} blockId={blockId} slideId={slideId} themeId={themeId} editable={editable} soleSelected={soleSelected} />
+      );
     case "heading":
     case "callout":
-    case "bullet_list":
       return (
         <TextLikeElement
+          el={el}
+          blockId={blockId}
+          slideId={slideId}
+          themeId={themeId}
+          editable={editable}
+          soleSelected={soleSelected}
+        />
+      );
+    case "bullet_list":
+      return (
+        <ListElement
           el={el}
           blockId={blockId}
           slideId={slideId}

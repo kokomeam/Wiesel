@@ -68,6 +68,8 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
       "A teachable unit containing slides, lecture text, quizzes, and exercises.",
     allowedChildren: [
       "slide_deck",
+      "imported_deck",
+      "video",
       "lecture_text",
       "quiz",
       "homework",
@@ -92,6 +94,28 @@ export const componentManifest: Record<ComponentTypeName, ComponentManifestEntry
       "DELETE_BLOCK",
     ],
     semanticTags: ["presentation", "visual-teaching"],
+  },
+  imported_deck: {
+    description:
+      "A presentation imported from PowerPoint or PDF, shown as page preview images in a rail viewer. Not natively editable — it is an asset-backed deck, not SlideElement slides.",
+    allowedActions: [
+      "UPDATE_BLOCK_TITLE",
+      "UPDATE_IMPORTED_DECK",
+      "REORDER_BLOCK",
+      "DELETE_BLOCK",
+    ],
+    semanticTags: ["presentation", "imported", "external-content"],
+  },
+  video: {
+    description:
+      "An educator-recorded or uploaded video lesson (talking-head, screen share, or screen+camera), hosted by Mux. Playable in the studio with non-destructive trim. The block stores only Mux IDs + metadata + trim — never raw bytes.",
+    allowedActions: [
+      "UPDATE_VIDEO_LESSON",
+      "UPDATE_BLOCK_TITLE",
+      "REORDER_BLOCK",
+      "DELETE_BLOCK",
+    ],
+    semanticTags: ["video", "lecture", "media"],
   },
   slide: {
     description:

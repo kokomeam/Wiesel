@@ -38,6 +38,15 @@ export async function POST(
     } else {
       return new Response('action must be "accept" or "reject"', { status: 400 });
     }
+    // Maintenance-run findings track their proposal's fate: accept → accepted,
+    // reject → dismissed (the underlying problem may re-file if it recurs).
+    // Best-effort — a finding-status failure must not fail the resolution.
+    const { error: findingErr } = await supabase
+      .from("agent_findings")
+      .update({ status: action === "accept" ? "accepted" : "dismissed" })
+      .eq("change_set_id", id)
+      .eq("status", "proposed");
+    if (findingErr) console.error("[maintenance] finding transition failed", findingErr.message);
   } catch (error) {
     return new Response(error instanceof Error ? error.message : "Failed", { status: 500 });
   }

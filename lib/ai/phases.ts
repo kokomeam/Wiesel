@@ -19,7 +19,7 @@
  * import cycle: phases → agentLoop, never the reverse.
  */
 
-import { addBlockPatch } from "@/lib/course/commands";
+import { addBlockPatch, deleteBlockPatch } from "@/lib/course/commands";
 import { createLesson, createModule } from "@/lib/course/factories";
 import { applyCoursePatch, type CoursePatch } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
@@ -32,12 +32,18 @@ import {
   reconcileDoc,
   runConversationLoop,
   stageChangeSet,
+  stageStructureChangeSet,
   type AgentRunParams,
   type LoopContext,
   type LoopContextSource,
   type LoopResult,
   type PhaseUsage,
 } from "./agentLoop";
+import { buildOutlineSnapshot, serializeOutlineSnapshot } from "./courseStructure/outlineSnapshot";
+import { executeStructurePlan } from "./courseStructure/structureTools";
+import { parseStructurePlan, structurePlanResponseFormat, STRUCTURE_PLAN_SYSTEM_PROMPT } from "./courseStructure/structurePlan";
+import { detectSignals, validateStructurePlan } from "./courseStructure/structureValidation";
+import type { CourseStructurePlan, GenerateContentBrief } from "./courseStructure/types";
 import { courseContextLines } from "./context";
 import { computePlanCoverage, templateTextLength, THIN_SLIDE_CHARS } from "./generationState";
 import { editHistoryPolicy } from "./historyPolicy";
@@ -45,6 +51,7 @@ import { saveUserMessage } from "./conversations";
 import type { PlanOutline } from "./events";
 import { classifyIntent } from "./intent";
 import { lintLessonGeneration, type LintWarning } from "./lintGeneration";
+import { runMaintenanceTurn } from "./maintenance";
 import { runLightReview, shouldRunLightReview, type ReviewSuggestion } from "./lightReview";
 import {
   AI_GENERATE_MAX_OUTPUT_TOKENS,
@@ -96,7 +103,7 @@ import {
  *  can't starve the structured JSON (the 16k default could be consumed entirely
  *  by reasoning → an empty/incomplete response → a silent "invalid" failure). */
 const PLAN_MAX_OUTPUT_TOKENS = 32000;
-import { loadCourseDoc } from "./serverPersistence";
+import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
 
 function addUsage(a: PhaseUsage, u: ModelTurnResult["usage"]): PhaseUsage {
   return {
@@ -149,7 +156,7 @@ function logPhase(
 
 /** What kind of plan a call is producing — distinguishes the compact module
  *  skeleton, its ultra-lean fallback, and the (rich) lesson plans in the logs. */
-type PlanType = "lesson" | "lesson_rich" | "module_skeleton" | "module_fallback";
+type PlanType = "lesson" | "lesson_rich" | "module_skeleton" | "module_fallback" | "structure";
 
 /** The OUTCOME category of a plan call — kept SEPARATE so a transport timeout is
  *  never logged/messaged as a JSON/schema problem (the core mis-report we're
@@ -1285,6 +1292,262 @@ export async function runGenerateModuleTurn(
   }
 }
 
+/* ───────────────────────── Course Structure agent ────────────────────────── */
+
+/** A user-facing message for a failed STRUCTURE plan, categorized by error type so
+ *  a timeout never reads as "invalid JSON". */
+function structurePlanFailureMessage(errorType: PlanErrorType, providerError?: string): string {
+  if (errorType === "transport_timeout") return "Planning that change timed out before the model responded — please try again.";
+  if (errorType === "model_error" || errorType === "transport") {
+    const reason = providerError ? ` (${providerError.slice(0, 160)})` : "";
+    return `The AI service hit an error while planning the change${reason} — please try again.`;
+  }
+  return "I couldn't work out a safe set of structural changes for that — try rephrasing the request.";
+}
+
+/** The lesson-plan REQUEST for a (re)built lesson, sourced from the structure plan's
+ *  content brief (mirrors lessonBriefToPlanRequest's shape). */
+function structureBriefToPlanRequest(brief: GenerateContentBrief): string {
+  const parts = [`Plan the lesson "${brief.title}".`];
+  if (brief.objective) parts.push(`Objective: ${brief.objective}.`);
+  if (brief.contentRequest) parts.push(`Cover: ${brief.contentRequest}.`);
+  parts.push("Size it by depth — enough slides to teach it well.");
+  return parts.join(" ");
+}
+
+/** Plan ONE lesson's full outline for the structure agent's chained deck build
+ *  (the SAME PLAN machinery as runGenerateLessonTurn, seeded from a content brief).
+ *  Returns the arc-guaranteed outline, or null on a plan failure (lesson skipped). */
+async function planLessonOutlineForStructure(
+  c: LoopContext,
+  lessonId: string,
+  request: string,
+  doc: CourseDocument,
+  detail: string
+): Promise<LessonOutline | null> {
+  const lc: LoopContext = { ...c, lessonId };
+  const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
+  const context = courseContextLines(doc, lessonId).join("\n");
+  const r = await runStructuredPlan<LessonOutline>(lc, system, context, outlineResponseFormat(), validateOutline, request, {
+    planType: "lesson_rich",
+    model: AI_PHASE_MODELS.moduleLessonPlan.model,
+    effort: AI_PHASE_MODELS.moduleLessonPlan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+    detail,
+  });
+  return r.outline ? ensureLessonArc(r.outline) : null;
+}
+
+/**
+ * The Course Structure agent: edit the course TREE accurately. PLAN (a structured
+ * CourseStructurePlan) → HARD-validate against the detected intent + a deterministic
+ * snapshot (the wrong CATEGORY of action is impossible) → execute the ops through
+ * the validated patch pipeline → persist via the FULL reconcile (the scoped agent
+ * reconcile can't delete/move/rename existing nodes) → stage a reviewable +
+ * reject-able STRUCTURE change-set → for each lesson the plan asked to (re)build,
+ * chain the existing PLAN→GENERATE deck pipeline and stage a content change-set.
+ * Ambiguous / unsafe targets become a clarification, never a guess.
+ */
+export async function runStructureAgentTurn(
+  p: AgentRunParams & { autoApprove?: boolean },
+  preloaded?: CourseDocument
+): Promise<void> {
+  const c = loopContext(p);
+  const doc0 = preloaded ?? (await loadCourseDoc(p.supabase, p.courseId));
+  if (!doc0) {
+    c.emit({ type: "error", message: "Course not found or you don't have access." });
+    c.emit({ type: "done" });
+    return;
+  }
+  // Run-start anchor: the structure change-set + scoped content reconciles diff
+  // against the pre-everything doc.
+  c.baselineDoc ??= structuredClone(doc0);
+
+  const hit = findLesson(doc0, p.lessonId);
+  const snapshot = buildOutlineSnapshot(doc0, { moduleId: hit?.module.id, lessonId: p.lessonId });
+  const signals = detectSignals(p.userMessage);
+
+  // PLAN — one structured call with ONE corrective re-ask on a FIXABLE rule violation.
+  const { outline: plan, errorType, providerError } = await runStructuredPlan<CourseStructurePlan>(
+    c,
+    STRUCTURE_PLAN_SYSTEM_PROMPT,
+    serializeOutlineSnapshot(snapshot),
+    structurePlanResponseFormat(),
+    (raw) => {
+      const r = parseStructurePlan(raw);
+      return { outline: r.plan, errors: r.errors };
+    },
+    p.userMessage,
+    {
+      planType: "structure",
+      model: AI_PHASE_MODELS.plan.model,
+      effort: "medium",
+      postValidate: (pl) => {
+        if (pl.clarification && pl.ops.length === 0) return null; // model chose to ask
+        const r = validateStructurePlan(pl, signals, snapshot, p.userMessage);
+        // Re-ask only on a fixable rule violation; an unresolved target is handled
+        // as a clarification after the call (a blind re-ask won't resolve ambiguity).
+        return r.ok || r.resolution ? null : r.errors.join("; ");
+      },
+    }
+  );
+
+  if (!plan) {
+    c.emit({ type: "error", message: structurePlanFailureMessage(errorType, providerError) });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // The model chose to ask for clarification rather than guess a target.
+  if (plan.clarification && plan.ops.length === 0 && plan.generateContentFor.length === 0) {
+    c.emit({ type: "assistant_message", content: plan.clarification });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // Final HARD validation (post re-ask). An unresolved target → clarify, never guess.
+  const v = validateStructurePlan(plan, signals, snapshot, p.userMessage);
+  if (v.resolution) {
+    const msg =
+      v.resolution.status === "ambiguous"
+        ? v.resolution.question
+        : v.resolution.status === "unsafe"
+          ? v.resolution.reason
+          : "Which lesson or module should I change?";
+    c.emit({ type: "assistant_message", content: msg });
+    c.emit({ type: "done" });
+    return;
+  }
+  if (!v.ok) {
+    c.emit({
+      type: "assistant_message",
+      content: `I held off — that wouldn't be a safe structural change: ${v.errors.join("; ")} Tell me more specifically what to change.`,
+    });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  if (plan.summary) c.emit({ type: "assistant_message", content: plan.summary });
+
+  // EXECUTE the structural ops deterministically (resolving tempRef → real ids).
+  const exec = executeStructurePlan(doc0, plan, nowIso());
+  let doc = exec.doc;
+
+  // HARD GUARD: the Structure agent must NEVER increase the module count. There is
+  // no create_module op, so this is structurally impossible — but assert it (and
+  // log it) so a regression can't silently create a duplicate module like the
+  // "Module 8: Introduction to Economics…" mis-route this layer exists to prevent.
+  console.log(
+    JSON.stringify({
+      tag: "agent_structure_turn",
+      intent: plan.intent,
+      moduleCountBefore: doc0.modules.length,
+      moduleCountAfter: doc.modules.length,
+      ops: plan.ops.map((o) => o.op),
+      createdLessons: exec.createdLessons.length,
+      generateContentFor: plan.generateContentFor.length,
+      lessonId: p.lessonId,
+      courseId: p.courseId,
+    })
+  );
+  if (doc.modules.length > doc0.modules.length) {
+    c.emit({ type: "error", message: "Internal guard: a structure edit must not create a new module. No changes were made — please rephrase." });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // PERSIST structure via the FULL reconcile — the scoped agent reconcile never
+  // deletes modules / pre-existing lessons or persists a rename/move of an existing
+  // lesson (only the human path may). A structure turn is short + creator-initiated,
+  // so the scoped-reconcile resurrection guard (for long concurrent module builds)
+  // doesn't apply.
+  if (exec.applied) {
+    const err = await reconcileCourseDoc(p.supabase, doc, p.ownerId);
+    if (err && !c.signal?.aborted) c.emit({ type: "error", message: `Some structural changes may not have saved: ${err}` });
+  }
+
+  // STAGE the structural change-set (reviewable + reject-able). Cascade block-deletes
+  // from a deleted lesson are owned by that lesson's snapshot (filtered in staging).
+  await stageStructureChangeSet(c, doc, c.baselineDoc, null);
+
+  // CHAIN: generate decks for the lessons the plan asked to (re)build.
+  const builtTitles: string[] = [];
+  const skipped: string[] = [];
+  if (plan.generateContentFor.length) {
+    const contentBaseline = structuredClone(doc);
+    let contentMutated = false;
+    let lastMsgId: string | null = null;
+    const tempRefToId = new Map(exec.createdLessons.map((l) => [l.tempRef, l.lessonId]));
+    const n = plan.generateContentFor.length;
+
+    for (let i = 0; i < n; i++) {
+      if (c.signal?.aborted || (c.callBudget && c.callBudget.remaining <= 0)) {
+        skipped.push(...plan.generateContentFor.slice(i).map((b) => b.title));
+        break;
+      }
+      const brief = plan.generateContentFor[i];
+      const lessonId = brief.tempRef ? tempRefToId.get(brief.tempRef) : (brief.lessonId ?? undefined);
+      if (!lessonId || !findLesson(doc, lessonId)) {
+        skipped.push(brief.title);
+        continue;
+      }
+      const detail = `${brief.title} (${i + 1}/${n})`;
+
+      // Replace an existing lesson's outdated deck(s) before regenerating.
+      if (brief.lessonId && brief.replaceExisting) {
+        const decks = findLesson(doc, lessonId)!.lesson.blocks.filter((b) => b.type === "slide_deck");
+        for (const d of decks) {
+          const r = applyCoursePatch(doc, deleteBlockPatch(lessonId, d.id), nowIso());
+          if (r.ok) {
+            doc = r.doc;
+            contentMutated = true;
+          }
+        }
+      }
+
+      const outline = await planLessonOutlineForStructure(c, lessonId, structureBriefToPlanRequest(brief), doc, detail);
+      if (!outline) {
+        skipped.push(brief.title);
+        continue;
+      }
+
+      const [gen, auxDoc] = await Promise.all([
+        generateLesson(c, lessonId, doc, outline, detail),
+        authorAndMergeAux(c, lessonId, doc, outline),
+      ]);
+      doc = mergeAuxBlocks(gen.doc, lessonId, collectAuxBlocks(auxDoc, lessonId));
+      contentMutated = true;
+      lastMsgId = gen.lastAssistantMessageId ?? lastMsgId;
+
+      if (AI_VALIDATION.validateGeneration) {
+        const vr = await validateAndRepairLesson(c, lessonId, doc, outline, {
+          deckBlockId: gen.deckBlockId,
+          checkpointed: gen.checkpointed,
+          detail,
+        });
+        doc = vr.doc;
+        lastMsgId = vr.lastMsgId ?? lastMsgId;
+      }
+      doc = applyAll(doc, pruneEmptyDeckPatches(doc, lessonId)).doc;
+      builtTitles.push(brief.title);
+      await reconcileDoc(c, doc); // scoped — new/touched lessons persist + live-render
+    }
+
+    if (contentMutated) {
+      await reconcileDoc(c, doc);
+      await stageChangeSet(c, doc, contentBaseline, lastMsgId);
+    }
+  }
+
+  const parts: string[] = [];
+  if (builtTitles.length) parts.push(`Built ${builtTitles.length} deck${builtTitles.length === 1 ? "" : "s"}.`);
+  if (exec.errors.length) parts.push(`Note: ${exec.errors.length} operation(s) couldn't be applied.`);
+  if (skipped.length) parts.push(`Still to build: ${skipped.join(", ")}.`);
+  if (parts.length) c.emit({ type: "assistant_message", content: parts.join(" ") });
+  if (skipped.length) c.emit({ type: "checkpoint", reason: `Some lessons still need content: ${skipped.join(", ")}. Ask me to continue.`, completedSteps: builtTitles.length });
+  c.emit({ type: "done" });
+}
+
 /** The route entrypoint: persist the user msg, classify, then branch to the
  *  module build, the single-lesson pipeline, or the single-turn edit loop. The
  *  edit loop is LAYERED (teaching bar + layout guide) so any content it creates
@@ -1301,7 +1564,24 @@ export async function runContentAgentTurn(p: AgentRunParams & { autoApprove?: bo
   const hasDeck = !!lesson?.blocks.some((b) => b.type === "slide_deck");
   const mode = await classifyIntent(p.model, { hasDeck }, p.userMessage);
 
-  if (mode === "generate_module") {
+  // Routing observability: which mode a turn took + the module count at entry, so a
+  // mis-route ("complete module one" → a NEW module) is greppable (agent_route).
+  console.log(
+    JSON.stringify({
+      tag: "agent_route",
+      mode,
+      moduleCount: doc.modules.length,
+      msgHead: p.userMessage.slice(0, 160),
+      courseId: p.courseId,
+      lessonId: p.lessonId,
+    })
+  );
+
+  if (mode === "analyze") {
+    await runMaintenanceTurn(p, doc);
+  } else if (mode === "structure") {
+    await runStructureAgentTurn(p, doc);
+  } else if (mode === "generate_module") {
     await runGenerateModuleTurn(p, doc);
   } else if (mode === "generate_lesson") {
     await runGenerateLessonTurn(p, doc);

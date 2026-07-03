@@ -12,5 +12,6 @@ export {
   loadCourseDoc,
   reconcileCourseDoc,
   reconcileCourseDocScoped,
+  upsertBlock,
   type ReconcileScope,
 } from "@/lib/course/persistenceSync";

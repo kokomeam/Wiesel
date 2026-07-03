@@ -33,6 +33,7 @@ import { useUIStore } from "@/lib/editor/uiStore";
 import type { Slide, SlideElement } from "@/lib/course/types";
 import { ElementView } from "./ElementView";
 import { MultiSelectionBox } from "./MultiSelectionBox";
+import { StructuredBackdrop } from "./structured/StructuredBackdrop";
 import { StructuredSlide } from "./structured/StructuredSlide";
 import { useStageScale } from "./useStageScale";
 
@@ -536,6 +537,11 @@ export function SlideStage({
             />
           ) : (
             <>
+              {/* Ambient themed backdrop kept after eject (glows bleed off the
+                  canvas, so it's a non-interactive layer, not an element). */}
+              {slide.backdrop === "structured" && (
+                <StructuredBackdrop accent={slide.style.theme.accentColor} />
+              )}
               {sortedElements.map((el) => (
                 <ElementView
                   key={el.id}

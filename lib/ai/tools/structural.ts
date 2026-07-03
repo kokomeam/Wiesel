@@ -12,9 +12,11 @@ import {
   deleteLessonPatch,
   deleteModulePatch,
   reorderBlockPatch,
+  updateTextPatch,
 } from "@/lib/course/commands";
 import { createLesson } from "@/lib/course/factories";
 import { moduleDisplayName, moduleNumber } from "@/lib/course/moduleLabel";
+import type { CoursePatch } from "@/lib/course/patches";
 import { findBlock, findLesson, findModule } from "@/lib/course/queries";
 import type { BlockType } from "@/lib/course/types";
 import { defineTool, ToolError, type Tool } from "./types";
@@ -132,6 +134,47 @@ const deleteLessonTool = defineTool({
   },
 });
 
+const renameLessonTool = defineTool({
+  name: "rename_lesson",
+  description:
+    "Rename a lesson — its TITLE and/or learning OBJECTIVE (lesson metadata, NOT a slide title). Defaults to the current lesson. Use this when the creator asks to rename/retitle a lesson.",
+  params: z.object({
+    lessonId: z.string().nullable(),
+    title: z.string().nullable(),
+    objective: z.string().nullable(),
+  }),
+  execute(args, ctx) {
+    const lessonId = args.lessonId ?? ctx.lessonId;
+    const hit = findLesson(ctx.doc, lessonId);
+    if (!hit) throw new ToolError(`Lesson ${lessonId} not found`);
+    const patches: CoursePatch[] = [];
+    if (args.title != null) patches.push(updateTextPatch({ kind: "lesson", id: lessonId, field: "title" }, args.title));
+    if (args.objective != null) patches.push(updateTextPatch({ kind: "lesson", id: lessonId, field: "objective" }, args.objective));
+    if (patches.length === 0) throw new ToolError("Provide a new title and/or objective");
+    return { summary: `Renamed lesson to "${args.title ?? hit.lesson.title}"`, patches };
+  },
+});
+
+const moveLessonTool = defineTool({
+  name: "move_lesson",
+  description:
+    "Move a lesson to another module, or reposition it within its module. Give the destination moduleId (or null to keep the same module) and the 0-based target index.",
+  params: z.object({
+    lessonId: z.string(),
+    toModuleId: z.string().nullable(),
+    toIndex: z.number().int(),
+  }),
+  execute(args, ctx) {
+    const hit = findLesson(ctx.doc, args.lessonId);
+    if (!hit) throw new ToolError(`Lesson ${args.lessonId} not found`);
+    if (args.toModuleId && !findModule(ctx.doc, args.toModuleId)) throw new ToolError(`Module ${args.toModuleId} not found`);
+    return {
+      summary: `Moved lesson "${hit.lesson.title}"`,
+      patches: [{ action: "REORDER_LESSON", lessonId: args.lessonId, toModuleId: args.toModuleId ?? undefined, toIndex: args.toIndex }],
+    };
+  },
+});
+
 const reorderBlocks = defineTool({
   name: "reorder_blocks",
   description:
@@ -160,5 +203,7 @@ export const structuralTools: Tool[] = [
   deleteBlockTool,
   deleteModuleTool,
   deleteLessonTool,
+  renameLessonTool,
+  moveLessonTool,
   reorderBlocks,
 ];

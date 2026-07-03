@@ -28,6 +28,7 @@ import { cn } from "@/lib/cn";
 import { aiAttrs, toolAttrs } from "@/lib/course/aiAttributes";
 import { addLessonPatch, addModulePatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
+import { usePendingNodeChangeSetId } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { CourseModule, LessonNode } from "@/lib/course/types";
 import { confirmDeleteLesson, confirmDeleteModule } from "./deleteConfirm";
@@ -47,12 +48,21 @@ function SortableLesson({
     useSortable({ id: lesson.id });
 
   const active = lesson.id === activeLessonId;
+  // The lesson has a PENDING agent structural change (created / renamed / moved) —
+  // highlight it so the creator can see exactly what the agent changed before
+  // accepting; Reject (in the agent panel) restores the previous structure.
+  const pending = usePendingNodeChangeSetId(lesson.id);
 
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn("group/lesson relative", isDragging && "z-10 opacity-80")}
+      data-ai-pending-node={pending ? "lesson" : undefined}
+      className={cn(
+        "group/lesson relative",
+        isDragging && "z-10 opacity-80",
+        pending && "rounded-lg ring-1 ring-amber-300 bg-amber-50/60"
+      )}
     >
       <button
         type="button"
@@ -119,6 +129,7 @@ function SortableModule({ module, index }: { module: CourseModule; index: number
     useSortable({ id: module.id });
 
   const selected = selection.kind === "module" && selection.id === module.id;
+  const pending = usePendingNodeChangeSetId(module.id);
 
   return (
     <div
@@ -134,7 +145,10 @@ function SortableModule({ module, index }: { module: CourseModule; index: number
       })}
       className={cn("group/module mb-1", isDragging && "z-10 opacity-80")}
     >
-      <div className="relative flex items-center">
+      <div
+        data-ai-pending-node={pending ? "module" : undefined}
+        className={cn("relative flex items-center", pending && "rounded-lg ring-1 ring-amber-300 bg-amber-50/60")}
+      >
         <span
           {...attributes}
           {...listeners}

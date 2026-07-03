@@ -10,6 +10,7 @@
  */
 
 import type { z } from "zod";
+import type { CourseAnalytics, SnapshotMaps } from "@/lib/analytics/dashboard";
 import type { CoursePatch } from "@/lib/course/patches";
 import type { CourseDocument } from "@/lib/course/types";
 
@@ -23,6 +24,33 @@ export interface VisualGenContext {
   maxPerLesson: number;
 }
 
+/** One learner's compact profile for the Analyst/Comms subagents — built lazily
+ *  (and memoized) by the maintenance run's loader closure. */
+export interface LearnerProfileJson {
+  userId: string;
+  displayName: string;
+  enrolledAt: string;
+  enrollmentStatus: string;
+  progressPct: number;
+  completedLessons: number;
+  totalLessons: number;
+  lastActivityAt: string | null;
+  flags: string[];
+  /** Recent quiz outcomes, newest first (capped). */
+  recentAttempts: { blockId: string; attempt: number; scorePct: number; at: string }[];
+}
+
+/** The analytics-read CAPABILITY (maintenance runs only) — the `visuals`
+ *  precedent: everything pre-loaded once at run start so the six analytics read
+ *  tools are pure lookups; only the per-learner profile is a lazy (memoized)
+ *  closure over the run's Supabase client. Tools ToolError when this is absent,
+ *  so exposing them elsewhere is harmless. */
+export interface AnalyticsToolContext {
+  data: CourseAnalytics;
+  maps: SnapshotMaps;
+  loadLearnerProfile(userId: string): Promise<LearnerProfileJson | null>;
+}
+
 /** What a tool sees when it runs. `doc` is the CURRENT document (the loop keeps
  *  it in sync after each applied mutation). `lessonId` is the lesson the agent
  *  is docked beside — the default target for writes. */
@@ -32,6 +60,8 @@ export interface ToolContext {
   lessonId: string;
   /** Image-generation capability (injected by the loop for the GENERATE phase). */
   visuals?: VisualGenContext;
+  /** Analytics-read capability (injected only for maintenance runs). */
+  analytics?: AnalyticsToolContext;
   /** The approved plan's ORDERED slide-spec ids (GENERATE/REPAIR only). Lets batch
    *  authoring deterministically stamp each new slide with its spec id — so coverage
    *  matches even when the model omits or mistypes slideSpecId. Empty/absent on the

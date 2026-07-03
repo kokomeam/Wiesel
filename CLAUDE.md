@@ -1,4 +1,10 @@
-# CLAUDE.md — CourseGen Pro (handoff)
+# CLAUDE.md — WiseSel (handoff)
+
+> **Naming (2026-07-02):** the product/brand was renamed **CourseGen Pro → WiseSel**
+> (logo assets in `public/brand/`, placed via `components/brand/WiseSelLogo.tsx`).
+> The GitHub repo slug (`kokomeam/coursegen-pro`) and the Obsidian vault folder
+> (`Personal/Projects/CourseGen Pro/`) are unchanged infra/filesystem names — keep
+> those literal where they appear. Everywhere else, the product is WiseSel.
 
 > **Obsidian scoping note:** This is a **personal project**, separate from the
 > internship. Its vault notes live under `Personal/Projects/CourseGen Pro/`
@@ -9,7 +15,7 @@
 
 ## What this product is
 
-**CourseGen Pro** — an AI co-pilot for educators. Creators turn expertise into
+**WiseSel** — an AI co-pilot for educators. Creators turn expertise into
 engaging, monetizable courses (multi-agent studio: Curriculum Architect →
 Content Producer → "Magic Wand" iterative editor), then market them (AI landing
 pages / emails / social kits), analyze them (drop-off insights, feedback
@@ -35,12 +41,14 @@ from Postgres (or auto-creates an empty one), autosaves every edit, and is
 gated behind sign-in. The **docked AI agent** authors slide decks, knowledge
 checks, homework, and lecture text by calling tools that mutate the course
 through the SAME validated CoursePatch pipeline the UI uses, streams its work,
-and stages every change for review (highlight → Accept/Reject). The **other
-in-app pages** (dashboard, analytics, marketplace, exports, marketing,
-settings) are still **presentational placeholders backed by `lib/data.ts` mock
-data**. The legacy inline command bar (`AICommandBar` → `requestAIPatches` in
-`lib/course/ai/mockClient.ts`) remains a deterministic mock and is secondary to
-the real agent panel; Publish/Export buttons remain non-functional.
+and stages every change for review (highlight → Accept/Reject). **Publishing
+(M1) and the student runtime + real marketplace (M2) are LIVE** — see their
+sections below. The **remaining in-app pages** (dashboard, analytics, exports,
+marketing, settings) are still **presentational placeholders backed by
+`lib/data.ts` mock data**. The legacy inline command bar (`AICommandBar` →
+`requestAIPatches` in `lib/course/ai/mockClient.ts`) remains a deterministic
+mock and is secondary to the real agent panel; Export buttons remain
+non-functional (Publish is real).
 
 ## Stack
 
@@ -79,8 +87,8 @@ and put reusable primitives in `components/ui/`.
   preserved** (RotatingText word-swap hero, BackgroundPaths lines, HeroPreview
   self-assembling demo, full section lineup) but **re-skinned to the warm
   orange identity** (components/marketing/* recolored violet→orange, serif
-  headings, mono eyebrows, typographic `CourseGen*` wordmark replacing the
-  Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
+  headings, mono eyebrows, the `WiseSel` logo (`components/brand/WiseSelLogo.tsx`)
+  replacing the Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
   collapse to the hamburger below `lg` (the mono links don't fit at md).
   `components/ui/background-paths.tsx` default tint is now `text-orange-400`.
 - `/dashboard` — creator dashboard (moved here from `/` when the landing took root)
@@ -165,10 +173,16 @@ and put reusable primitives in `components/ui/`.
   persist across reload).
 - `/api/ai/component-manifest` — JSON manifest of component types + allowed
   patch actions for AI agents.
-- `/marketing`, `/analytics`, `/exports`, `/marketplace`, `/settings` — in-app
+- `/marketplace` — REAL since Milestone 2: live public publications + the
+  caller's "My learning" (one tab); cards open `/learn/{slug}`.
+- `/learn/[slug]` + `/learn/[slug]/[lessonId]` — the PUBLIC learner runtime
+  (route group `app/(learn)/`, own minimal shell) — see the Student learning
+  runtime section.
+- `/marketing`, `/analytics`, `/exports`, `/settings` — in-app placeholder
   pages under `app/(app)/` sharing the Sidebar+Topbar shell in `app/(app)/layout.tsx`.
-- `/login` — email/password auth (Supabase). `app/(app)/layout.tsx` +
-  `lib/supabase/middleware.ts` redirect signed-out visitors here.
+- `/login` — email/password auth (Supabase); honors `?redirectTo=`.
+  `app/(app)/layout.tsx` + `lib/supabase/middleware.ts` redirect signed-out
+  visitors here (`/learn/*` stays public).
 
 ## Supabase (auth + persistence)
 
@@ -194,6 +208,339 @@ and put reusable primitives in `components/ui/`.
   skips re-saving the reverted doc (so a stale flush can't clobber the revert /
   trip "Failed to fetch"). Autosave failures auto-retry (2× backoff) before
   `saveStatus("error")`.
+
+## Publishing — immutable snapshots (Milestone 1, 2026-07-02)
+
+Courses go live as **immutable, versioned snapshots**; the draft stays freely
+editable and learners never see it. Everything lives in `lib/course/publish/*`
+(Zod-first — types INFERRED from schemas, unlike lib/course/schemas.ts).
+
+- **Tables (migration `20260702020000` + `20260702020100`):**
+  `course_publications` (course_id + `version` unique; `slug` + `previous_slugs`
+  [redirect-safe renames]; `snapshot` jsonb; `visibility` public|unlisted; `status`
+  live|unpublished; `content_hash`; `linter_report`; partial unique indexes = ONE
+  live row per course AND per slug) · `quiz_answer_keys` (PK publication_id+block_id;
+  **RLS enabled, ZERO policies — server-only**, not even the author's client can
+  read it; grading will use the service role) · `enrollments` (course-level, unique
+  (course_id,user_id), status active|dropped|completed + `comms_opt_out`; student
+  owns the row, owner reads; insert requires `private.has_live_publication`).
+  **Immutability is enforced in the DB**: a BEFORE UPDATE trigger rejects any change
+  to snapshot/version/hash/report/published_at/created_by (status/visibility/slug
+  stay mutable). There is **NO insert policy** — the only writer is the SECURITY
+  DEFINER **`publish_course` RPC** (the one transaction: verify author → lock course
+  row → bump version → retire previous live → insert publication + keys → mirror
+  `courses.status`). `courses.visibility` deliberately stays `private` so the OLD
+  published+public draft-table read path never opens; students read snapshots only.
+- **Snapshot invariants:** node ids (module/lesson/block/slide/question) are the
+  draft row ids, preserved verbatim — progress/analytics/agent evidence stay
+  joinable across versions. Quiz `correctChoiceId(s)`/`correctAnswer`/
+  `expectedAnswer`/`acceptedAnswers`/`explanation` are STRIPPED into the keys table;
+  the published-quiz Zod schema is **strict** (an unstripped question fails parse)
+  and `findAnswerKeyLeaks` deep-scans before every publish. No volatile metadata in
+  the snapshot; `content_hash` = WebCrypto sha256 over sorted-key
+  {snapshot, answerKeys} (`hash.ts` is isomorphic — the studio computes the SAME
+  hash client-side for the live "unpublished draft changes" chip).
+- **Pre-flight (`preflight.ts`, pure):** ERRORS block (untitled, no content,
+  ungradable quiz question); WARNINGS are overridable with an explicit
+  acknowledgement (empty module/lesson/quiz, pending/failed AI images, unprocessed
+  imported decks / videos, per-slide `lintSlide` findings as `SLIDE_*`). The report
+  persists to `linter_report` at publish time.
+- **Flow:** `/api/publish` (GET status+preflight+diff · POST publish · PATCH
+  unpublish/restore/set_slug/set_visibility) on the user-scoped client; service
+  layer = `service.ts` (shared with the integration test). Republish inherits the
+  slug and bumps the version; an IDENTICAL republish (same hash) is a no-op, not a
+  version bump. Slug: first publish slugifies the title + suffixes against live
+  slugs ("one live publication per slug" — deliberately NOT a globally-unique
+  column, so v2 can reuse v1's slug); renames append to `previous_slugs`. Studio UI
+  = `PublishPanel` (real since M1) + the header Publish button opens it.
+- **Tests:** `npm run verify:publish` (59 pure — slug/hash/snapshot-strip/preflight/
+  diff) and `npm run verify:publish:int` (50 vs live Supabase — the full RLS matrix
+  incl. answer-key invisibility for every client role, DB immutability, draft-edit
+  independence [byte-for-byte], version retirement, unlisted link-possession,
+  enrollment gating, slug collision/rename/redirect).
+- **Not yet (later milestones):** analytics events (every event will carry
+  publication_id + version), rollups, dashboards, maintenance agent. (The
+  `/learn/*` runtime + server-side grading shipped in Milestone 2 — next
+  section.)
+
+## Student learning runtime — `/learn/*` (Milestone 2, 2026-07-02)
+
+Learners consume LIVE snapshots only; everything server-trusted. Core =
+`lib/learn/*` (Zod-first) + `app/(learn)/learn/[slug]{,/[lessonId]}` +
+`app/api/learn/*`.
+
+- **Tables (migrations `20260702030000` + `030100` + `040000`):** `learn_progress`
+  (unique (user,course,lesson); server-computed `status`/`pct` + `progress_state`
+  jsonb {viewedSlides, videoPct, viewedBlocks, markedComplete}; **RLS: select
+  own-or-author, ZERO client write policies** — /api/learn/progress with the
+  service role is the only writer, using **optimistic locking** (updated_at guard
+  + retry-merge; a plain upsert lost concurrent slide reports) while the client
+  serializes its POSTs) · `quiz_attempts`/`question_responses` (M3's exact column
+  contract + denormalized course_id; `question_id` is TEXT — question ids are
+  jsonb short ids, not row UUIDs; student reads own, author reads, **no client
+  inserts**; attempt_number is per (user, block) ACROSS versions, unique-indexed,
+  max+1 with one retry; only ANSWERED questions get response rows) ·
+  `homework_submissions` (student INSERTs under RLS [own user_id +
+  `private.is_enrolled` + publication∈course]; a BEFORE UPDATE trigger makes
+  review `status` the only mutable column — author can't rewrite content, student
+  can't self-review; files go to course-assets under the student's own
+  `{uid}/homework/…` via the EXISTING per-user storage policies) · definer read
+  RPCs `marketplace_listings()` + `my_learning()` (jsonb count aggregation,
+  authenticated-only, card metadata never snapshots).
+- **Grading** (`lib/learn/grading.ts`, pure; orchestrated by `quizService.ts`):
+  the ONLY place responses meet `quiz_answer_keys` (admin client). mc = id equal;
+  ms = exact SET equality; tf = boolean; sa = trim/lowercase/collapse-whitespace
+  match vs expected+accepted. Kind mismatch = answered-but-wrong; unanswered =
+  wrong; unknown ids ignored; maxScore = key count. Returns correctness +
+  authored explanations, **never the correct answer**. Author submits = graded
+  PREVIEW, nothing recorded. "Grade what they saw": the publication is fetched
+  by id (admin) so a mid-session republish doesn't break submission; access is
+  checked against the COURSE.
+- **Completion rule** (`lib/learn/completion.ts`, pure, fixed + documented):
+  complete = all slides of every deck viewed + every imported deck paged to the
+  end + every video ≥90% + every quiz ≥1 attempt. Unready media (video/deck not
+  "ready" in the snapshot) and empty decks/quizzes are NOT trackable — a broken
+  asset can never strand a lesson. No trackables ⇒ explicit "Mark complete"
+  (server rejects it for trackable lessons). Slide/viewed sets are INTERSECTED
+  with the snapshot. Course complete = every lesson ⇒ enrollment flips to
+  `completed` (upgrade-only; republish never downgrades). pct = mean of unit
+  fractions, capped at 99 until truly complete.
+- **Pages:** new PUBLIC route group `app/(learn)/` (own minimal shell; middleware
+  leaves /learn open; unauth lesson access bounces to `/login?redirectTo=…`).
+  Landing = outline + enroll CTA (`EnrollButton` → /api/learn/enroll, RLS does
+  the gating) + progress/Continue (`lib/learn/summary.ts` — note: for enrolled
+  users `summary.continueLessonId` is authoritative; null means DONE, don't
+  fall back to lesson 1) + author-preview card; renamed slugs redirect via
+  `previous_slugs`; unknown-vs-unlisted-anon share the 404 (indistinguishable by
+  design). Player renders every block READ-ONLY (`components/learn/*`):
+  **SlideStage `mode="thumbnail"`** (the existing read-only path — global
+  zustand store, no provider needed), `VideoPreviewPlayer` (pure; captions
+  overlay; new ADDITIVE `onProgressPct` prop reports window-relative position),
+  a learner deck viewer over `/api/learn/deck/[id]` (admin-signed page URLs,
+  gated on enrollment AND the deck being IN the live snapshot), `LearnQuiz`
+  (unlimited attempts), `LearnHomework` (text + files to own storage folder +
+  past submissions w/ review status), read-only lecture/example/exercise/
+  resource. Learner media rides through `lib/learn/media.ts` (ADMIN client —
+  video rows/deck pages are author-only under RLS; callers MUST gate first).
+- **Marketplace** (`app/(app)/marketplace`) is REAL: live public publications
+  (via the RPC) + a "My learning" section in the same tab; cards link to the
+  /learn landing (which doubles as the enroll confirmation/preview screen). The
+  old `lib/data.ts` listings survive ONLY for the marketing page's decorative
+  peek. **Creator review:** `SubmissionsCard` on the Publish step +
+  `/api/learn/submissions` (GET author-scoped w/ profile names + public file
+  URLs · PATCH mark reviewed — the trigger backs it).
+- **Tests:** `npm run verify:learn` (55 pure — grading/completion/merge/summary/
+  clamps/contracts), `npm run verify:learn:int` (61 vs live Supabase — happy
+  path incl. republish resilience + attempt-number continuity + enrollment
+  flip, the full stranger/enrolled/owner RLS matrix incl. no-client-writes and
+  the review-only trigger, RPCs, unlisted gating, storage paths, and the
+  concurrent-slide-reports lost-update regression), `npm run verify:learn:browser`
+  (15 — Playwright over the real UI: enroll → slides → graded quiz →
+  homework → completion → My learning → submissions review; needs the dev
+  server running).
+- **Not yet (deliberate):** learner-facing video poll while an MP4 is still
+  `preparing` (the card explains instead), deck viewer in the browser suite
+  (needs the import worker). (Analytics events SHIPPED in M3 — next section.)
+
+## Analytics — event pipeline + creator dashboard (Milestones 3+4, 2026-07-03)
+
+Learner behaviour telemetry end-to-end: an append-only event stream, nightly
+SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
+(Zod-first, pure modules) + migration `20260702050000_analytics_events.sql`.
+
+- **Contract** (`lib/analytics/events.ts`): 9-type discriminated union
+  (lesson_started, slide_viewed{slideId,dwellMs}, video_progress{quartile},
+  video_completed, quiz_started, quiz_submitted{attemptId},
+  homework_submitted, lesson_completed, session_heartbeat) — every event
+  carries publicationId/version/courseId/lessonId + a uuid `clientEventId`
+  (idempotency) + clientTs. **camelCase on the wire** (matches /api/learn),
+  `mapEventToColumns` → the snake row. Batch ≤100.
+- **HYBRID emission (the trust split):** the browser emits ENGAGEMENT events
+  only; the AUTHORITATIVE events are SERVER-emitted from the existing writers
+  (`lib/analytics/serverEmit.ts`, admin client, never throws): quiz_submitted
+  in quizService keyed by the ATTEMPT id, homework_submitted in the homework
+  route keyed by the submission id, lesson_completed in progressService on the
+  completed FLIP keyed by the learn_progress row id — stable-uuid keys make
+  re-emits no-ops, and tab-close can't lose them. `ProgressContext` carries
+  `version` now. No dashboard number depends solely on a client event (funnel
+  completion cross-checks learn_progress; quiz stats read quiz_attempts).
+- **Client SDK**: `lib/analytics/client.ts` (`createAnalyticsQueue` —
+  injectable fetch/timers; 10s interval flush; `keepalive:true` POSTs; failed
+  batch re-queued w/ exponential backoff; 4xx = dropped [poisoned batch];
+  ≤100-event chunks; 500-event offline cap) + `lib/analytics/dwell.ts`
+  (`SlideDwellTracker` — injectable clock/visibility, accrues VISIBLE time
+  only) + `components/learn/AnalyticsProvider.tsx` (owns DOM wiring:
+  interval + visibilitychange→hidden flush + pagehide flush + 60s
+  visible-only heartbeat; `enabled=false` for author previews → track() is a
+  no-op). Wired: LearnLessonView (lesson_started), LearnSlideDeck (per-slide
+  dwell), LearnVideo (25/50/75 quartile crossings + completed at
+  VIDEO_COMPLETE_PCT), LearnQuiz (quiz_started on mount).
+- **Ingest** `POST /api/analytics/ingest` (Node): requireUser + Zod batch +
+  best-effort per-instance rate limit → the SECURITY DEFINER
+  **`ingest_learning_events(jsonb)` RPC**. ⚠ **Hard-won:** Postgres applies
+  the SELECT policy to `INSERT … ON CONFLICT` rows (the conflict check must
+  see the row) — students read NONE by design, so a client-side RLS upsert
+  can NEVER be idempotent here. The RPC pins user_id to auth.uid() (forged
+  ids are ignored, not trusted), enforces enrolled-or-author + every
+  publication belongs to its claimed course, inserts
+  `on conflict (client_event_id) do nothing`, returns the accepted count.
+  The table's insert policy stays as defense-in-depth for direct inserts.
+- **Tables/RLS**: `learning_events` (append-only; UNIQUE client_event_id;
+  indexes (course,server_ts) / (user,course,server_ts) / (pub,lesson); insert
+  policy as above; select = course author ONLY — students read none; no
+  update/delete). Rollups (`rollup_lesson_funnel`, `rollup_question_stats`,
+  `rollup_slide_dwell`, `rollup_video_retention`, `learner_flags`) keyed by
+  (course_id, publication_id, version) — republishes never mix; author-select
+  RLS, zero client writes (definer functions are the writers).
+- **Rollup functions**: `private.recompute_course_analytics(cid)` per
+  publication — funnel (started = ANY event ∪ learn_progress≠not_started
+  [pre-instrumentation backfill, keeps completed ⊆ started]; completed =
+  learn_progress='completed' OR lesson_completed event; `lag()` dropoff_pct),
+  slide dwell (`percentile_cont(0.5|0.9)`; labels via `mode() within group` —
+  **min()/max() don't exist for uuid**), question stats (one attempt = one
+  respondent; total = # correct; **point-biserial in SQL**:
+  `((m1−m0)/stddev_pop(total))·√(p(1−p))`; answer_distribution buckets =
+  choiceId | text | 'true'/'false' | sorted choiceIds joined '+'; the KEY's
+  bucket resolved from quiz_answer_keys AT ROLLUP TIME into `key_value` so
+  the dashboard never touches the admin client; null for short_answer),
+  video retention (distinct users per quartile; video_completed ⇒ q4),
+  learner_flags (inactive: enrolled-active + coalesce(max(last_activity),
+  enrolled_at) < now()−7d; repeated failure: ≥2 attempts <60% on one block —
+  detail = {quizzes:[{blockId,failedAttempts,lastScorePct}]}).
+  `public.refresh_course_analytics(cid)` = author-gated manual refresh (the
+  dashboard's "Refresh data"); `private.refresh_all_course_analytics()` runs
+  nightly via **pg_cron** (`0 3 * * *`, extension created in-migration).
+- **Threshold single-source rule:** raw stats live ONLY in SQL (dashboard
+  never recomputes); item-analysis flag thresholds live ONLY in
+  `lib/analytics/flags.ts` (red: pct_correct<40 & n≥20 · distractor ≥2× key ·
+  discrimination <0.1 · dwell skim/stall vs the publication's median-of-
+  medians); the stuck-queue constants (7d/2/0.60) unavoidably exist in BOTH —
+  `verify-analytics.ts` regex-asserts the migration still encodes the TS
+  values, so drift trips CI. `lib/analytics/stats.ts` = pure percentile_cont
+  + pointBiserial mirrors, golden-tested against the SQL.
+- **Dashboard** `/studio/[courseId]/analytics` (+ `learners/[learnerId]`),
+  server components; author-gated (explicit 404 + RLS backstop); reads
+  rollups + `course_analytics_overview(cid)` / `course_roster(cid)` (definer
+  RPCs — roster joins auth.users.email + profiles + flags; both author-gated
+  + anon-revoked). Four `?tab=` tabs (server-rendered, deep-linkable):
+  Overview / Content health / Learners / Stuck queue (disabled "Draft
+  follow-up" + tooltip until the outreach milestone). Learner detail: progress
+  map, native-`<details>` attempt history w/ per-question responses, PAGINATED
+  raw-event timeline (the ONE raw-event read, on the (user,course,server_ts)
+  index), heartbeat-derived time, flags. Empty states everywhere; chart
+  callsites guard empty arrays (AreaChart/BarChart `Math.max(...[])`).
+  Components in `components/studio/analytics/*`; data access in
+  `lib/analytics/dashboard.ts` (incl. `buildSnapshotMaps` for id→title lookups
+  + `bucketLabel` choice-text rendering).
+- **Entry points**: `/analytics` = a real course picker now (was mock);
+  CourseGallery card icon + editor top-bar "Analytics" link; flagged rows
+  deep-link `/studio?course=&lesson=&block=` → `DeepLinkFocus` in
+  `StudioLoader` (post-hydration: openLesson + select block +
+  scrollIntoView via `[data-ai-id]`; stale ids degrade to a no-op).
+- **Tests**: `npm run verify:analytics` (57 pure) + `npm run
+  verify:analytics:int` (55 vs live Supabase) — see CHANGELOG for the full
+  matrices. The learn suites re-ran green after the server-emit touches.
+- **Not yet (deliberate):** wiring "Draft follow-up" (later milestone / M7
+  triggers read `learner_flags`), Mux Data / video heatmaps beyond quartiles,
+  a persistent-quota rate limiter (in-memory per-instance is documented as
+  best-effort), event-driven rollup freshness (nightly + manual is the
+  contract; the dashboard shows "refreshed X ago").
+
+## Maintenance agent + learner comms (Milestones 5+6, 2026-07-03)
+
+> Full design: **`docs/agent-architecture.md`** (orchestrator/subagents/budgets/
+> triggers/safety rails) — read it before touching `lib/ai/maintenance.ts`,
+> `lib/ai/subagent.ts`, or `lib/comms/*`. Companions: `docs/publishing.md`,
+> `docs/analytics-events.md`.
+
+- **Subagent primitive** (`lib/ai/subagent.ts`): `runSubagent` = the existing
+  loop with `LoopOptions.allowedToolNames` (arbitrary allow-set) +
+  `persist:false` (NOTHING in conversations/messages — replay lives in
+  `agent_runs.report`) + a one-shot strict-JSON verdict (`runStructuredCall`,
+  the intent.ts pattern — `runStructuredPlan` stays private to phases).
+  **`withSemaphore(model)` caps concurrent model calls at 2 globally**
+  (`MAINTENANCE_MAX_CONCURRENT_MODEL_CALLS`); ONE shared CallBudget
+  (`MAINTENANCE_MAX_CALLS` 40) + token budget (`MAINTENANCE_MAX_TOKENS` 300k)
+  per run; graceful truncation (last call → partial verdict; skipped findings
+  stay open). Loop hooks are ADDITIVE — existing callers byte-identical.
+- **`analyze` = the 5th intent** (regex checked FIRST; classifier bullet added).
+  `parseAnalysisScope` narrows "module 3"/"lesson 2"/quoted titles to lesson
+  ids. Routing: `runContentAgentTurn` → `runMaintenanceTurn` (maintenance.ts).
+- **Analytics read tools ×6** (`lib/ai/tools/analytics.ts`) via
+  **`ToolContext.analytics`** (capability injection, the `visuals` precedent):
+  rollups + `SnapshotMaps` pre-loaded ONCE at run start + a memoized
+  `loadLearnerProfile` closure — tools are pure lookups, compact capped JSON,
+  **no learner emails in prompts**. Sets: `ANALYST_TOOL_NAMES` (analytics +
+  content reads so evidence can quote question wording),
+  `REMEDIATION_TOOL_NAMES` (= AUTHORING + 2 reads; NEVER the confirm-pausing
+  deletes — unattended runs must not stall).
+- **Orchestrator** (`lib/ai/maintenance.ts` + pure `maintenanceSchema.ts`):
+  Analyst (loop) → `InsightReportSchema` → `dedupeAndPrioritize` (adopts OPEN
+  threshold findings by dedupe key — Analyst wins but takes the filed row's id;
+  severity desc; **fan-out cap 5**) → persist to `agent_findings` → dispatch
+  **Remediation SEQUENTIALLY over the shared draft doc** (doc-race-free;
+  concurrency lives in the semaphore) ∥ **Comms concurrently** (drafts
+  `learner_messages` rows; deterministic template fallback; NEVER sends) →
+  settle `agent_runs` (report + budget_used). Findings lifecycle
+  open→proposed→accepted|dismissed — the change-set Accept/Reject route
+  transitions them. ⚠ staging coalesces the subagents' placeholder `""`
+  conversationId to null (uuid FK).
+- **Evidence** (the core product moment): `stageChangeSetWithEvidence` stamps
+  the finding's evidence on EVERY `change_set_items` row; it rides
+  `getPendingBlocks` + the `change_set` event (live) + realtime; rendered by
+  `components/editor/agent/EvidenceCard.tsx` in BlockFrame's pending chrome
+  (above Accept/Reject) + the AgentPanel findings list.
+- **Triggers**: chat (SSE, one additive `maintenance` AgentEvent member) ·
+  scheduled (weekly pg_cron `0 4 * * 1` QUEUES `agent_runs` in-DB for courses
+  w/ a publication + enrollment; **`POST /api/ai/maintenance/cron`** w/
+  `Authorization: Bearer CRON_SECRET` drains ONE run per invocation, admin
+  client + real OpenAI client — the `course_roster`/`course_analytics_overview`
+  RPCs allow `service_role` for this) · threshold
+  (`private.file_threshold_findings` after every rollup recompute — one OPEN
+  finding per question, reasons aggregated, deduped by a partial unique index
+  on `(course_id, dedupe_key) where status='open'`; studio header "N findings"
+  badge via StudioLoader → agentStore.openFindings; AgentPanel "Review flagged
+  issues" chip sends a canned analyze message that adopts them).
+- **M6 `lib/comms/*`** — STANDALONE seam (the marketing branch's email suite is
+  unmerged; these mirror its patterns at different paths — don't unify until
+  the branches merge). **Resend via `fetch`, NO SDK (runtime deps stay 14)**;
+  From-address pinned to RESEND_FROM ("<creator> via WiseSel <addr>");
+  HMAC opt-out tokens purpose-prefixed `wisesel.comms-optout.v1` over
+  `MARKETING_TOKEN_SECRET` (never cross-usable with marketing's tokens);
+  EmailBody block renderer w/ compliant footer; templates ×3.
+  **`service.approveAndSend` is the ONLY caller of `provider.send` in the
+  repo** (grep-able invariant) — it re-checks `enrollments.comms_opt_out` AT
+  SEND TIME (opted-out → `{ok:false, reason:"opted_out"}`, row STAYS draft;
+  `failed` is for provider errors only) and resolves the recipient server-side
+  (auth.admin). `learner_messages` = draft|approved|sent|failed, author-only
+  RLS. `/api/comms/opt-out`: GET renders a CONFIRM page (never flips on GET —
+  link prefetchers), POST verifies the token + flips. **No auto-send path
+  exists — not even behind a flag**; the orchestrator/cron never import the
+  seam. UI: MessageComposer + DraftList (AgentPanel "Messages to review"),
+  StuckQueueTab's "Draft follow-up" WIRED (deterministic template prefill, no
+  model call; disabled+tooltip when opted out), learner-detail audit list.
+- **Tables** (migration `20260703000000`): `agent_runs` (course_id, quoted
+  `"trigger"` chat|scheduled|threshold — reserved word, quote it in raw SQL —
+  status queued|running|completed|failed, scope/budget_used/report jsonb),
+  `agent_findings` (run_id nullable = threshold-filed unadopted; dedupe_key;
+  finding jsonb; change_set_id), `change_set_items.evidence jsonb` (nullable,
+  additive), `learner_messages`. All author-only RLS; cron/opt-out use admin.
+- **Tests**: `npm run verify:maintenance` (35 pure — the ≤2-in-flight semaphore
+  assertion, truncation, dedupe/adoption/cap-5, analyze routing, scope, tool
+  shapes) · `verify:maintenance:int` (25 vs live Supabase + the mock model —
+  the FULL acceptance: `seedFixture` [deliberately-bad quiz: 36% correct @
+  n=41, distractor 3× the key, discrimination .05] → scheduled run → ≥1
+  evidence-annotated proposal → Accept applies to the draft → Reject restores
+  BYTE-FOR-BYTE → budgets ≤ cap → rails: no publication writes, no enrollment
+  mutation, ZERO sends) · `verify:comms` (27 pure) · `verify:comms:int` (20 —
+  draft→edit→approve→send + **opt-out enforced at the seam** + the opt-out
+  route token flow + RLS). `npm run seed:fixtures` seeds a demo fixture.
+  **`npm test`** chains every pure suite (~900 checks). ⚠ PostgREST multi-row
+  inserts unify columns across rows (missing keys → explicit nulls) — seed
+  scripts must carry not-null columns on EVERY row.
+- **Env**: `NEXT_PUBLIC_SITE_URL` + `CRON_SECRET` (new, in .env.local +
+  .env.example), `RESEND_API_KEY`/`RESEND_FROM`/`MARKETING_TOKEN_SECRET`
+  (already present), optional `COMMS_PROVIDER=mock` + `MAINTENANCE_*` budgets.
 
 ## AI Content Agent (OpenAI) — `lib/ai/*` (2026-06-15)
 
@@ -647,6 +994,159 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
   path is tested with no key. Tests: `npm run verify:visuals` (84 checks) + the
   live image path in `npm run verify:ai:int`.
 
+## Video lessons — educator recording/upload (Mux), 2026-07-01
+
+A first-class **`video` block** (sibling of `slide_deck` / `imported_deck`) for
+educator-recorded or uploaded lessons, hosted by **Mux**. Educator-side only (no
+student player yet). The pattern mirrors imported decks: an external asset with a
+status lifecycle, a source-of-truth row, and a denormalized snapshot on the block.
+
+- **Env:** server-only `MUX_TOKEN_ID` + `MUX_TOKEN_SECRET` (required to record/upload);
+  optional `MUX_WEBHOOK_SIGNING_SECRET` (enforces webhook signatures — without it the
+  webhook route skips verification and logs it; polling covers status either way). The
+  webhook reuses the existing privileged `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_SECRET_KEY`
+  (admin client). Optional client-safe `NEXT_PUBLIC_MUX_DATA_ENV_KEY` is a DEFERRED
+  extension point (Mux Data analytics — not wired). Optional `MUX_MP4_RESOLUTION`
+  (default **`highest`**; `720p`/…) sets the downloadable MP4 rendition the studio
+  plays. **Mux gotchas (2026-07-01 — learned the hard way, verify against a LIVE
+  asset, don't guess the shape):**
+  (1) Request MP4 via `static_renditions: [{resolution}]`, NOT the deprecated
+  `mp4_support: "standard"`. Default to **`highest`** — it renders at the source's
+  own resolution, so it's never upscale-skipped and is a VALID resolution input on
+  every tier. Do NOT use `capped-1080p` as a resolution input — it's a rendition
+  *name* Mux can emit but Mux **rejects it as a resolution input with a 400**
+  ("Invalid static rendition resolution"), which 502s create-upload. A fixed size
+  (`720p`) is SKIPPED whenever the source is smaller than it → no MP4.
+  (2) **`mp4_support` is a red herring:** the modern renditions API always reports
+  `mp4_support: "none"` even for a healthy asset with a ready `highest.mp4`. NEVER
+  gate playability on `mp4_support` — read `static_renditions.files` + each file's
+  per-file `status`. Gating on `mp4_support === "none"` was the true cause of the
+  "preview stuck on Preparing… forever" bug (a ready MP4 was being hidden).
+  **No new runtime dep** (stays 14): recording is browser-native, and playback is a
+  native `<video>` on a Mux MP4 static rendition — Mux Player / HLS are documented
+  upgrade paths, not used.
+- **Document model** (`lib/course/types.ts`): `VideoLessonBlock` = `asset`
+  (`VideoAssetSnapshot`: provider + status `empty|uploading|processing|ready|failed` +
+  Mux ids + duration/aspect/thumbnail — **never raw bytes**), `recording`
+  (mode/layout/bubble/mic), `edit` (non-destructive `trimStartSeconds`/`trimEndSeconds`),
+  `settings`. In the `BlockType` union, `LessonBlockSchema` (Zod), `factories`
+  (`createVideoLessonBlock`), `commands` (`updateVideoLessonPatch`), `manifest`. The ONLY
+  mutation path is the **`UPDATE_VIDEO_LESSON`** patch (schema + reducer in `patches.ts`;
+  null clears an optional field, sub-objects merge shallowly).
+- **Persistence:** free — the block payload rides in `blocks.content` jsonb, so
+  autosave/load/reconcile handle it unchanged. Migration `20260701010000_video_lessons`
+  only widens the `blocks.type` CHECK and adds the **`video_assets`** table (source of
+  truth for Mux status; RLS author-only via `private.is_course_author`; soft
+  `lesson_id`/`block_id`, like `deck_imports`). **No storage bucket** — Mux hosts the
+  media; recordings upload DIRECTLY to a Mux direct-upload URL (never through our server).
+- **Provider seam** (`lib/video/provider/*`): `types.ts` = the provider-agnostic
+  `VideoProvider` interface + normalized shapes; `muxClient.ts` = the ONLY file with Mux
+  HTTP (fetch + Basic auth + `node:crypto` webhook HMAC — **no Mux SDK**), normalizing
+  uploads/assets and resolving the MP4 rendition URL from `static_renditions.files`
+  (`resolveMp4` reads ONLY the files + each file's per-file `status`, NEVER
+  `mp4_support`: a READY video file → play it; still-generating → keep polling; every
+  rendition SKIPPED/errored → definitively `disabled`, never a forever-"preparing").
+  It also flags `adaptiveMp4Present` (an existing `highest` rendition). `index.ts`
+  selects the provider. Also `addMp4Rendition(assetId, resolution?)` — the self-heal
+  that adds an adaptive rendition to an existing asset that ended up with no usable
+  MP4 (only swallows an "already exists" 400; re-throws others). Server-only.
+- **Service/status/access** (`lib/video/*`, mostly PURE): `videoService.ts` (CRUD +
+  `syncVideoAssetFromMux` + row→`VideoAssetView` with derived public URLs;
+  **self-heal:** a `ready` VIDEO asset with no usable MP4 AND no adaptive rendition
+  yet re-requests a `highest` rendition once and reports `preparing` so the poll
+  fills `mp4_url` in — recovers assets stranded by the old fixed-resolution bug;
+  gated by `adaptiveMp4Present` so it can't loop),
+  `videoStatus.ts` (state machine, `reconcileMuxState` — an asset goes `ready` as
+  soon as it's playable; the MP4 rendition fills in via continued polling
+  [`isActiveVideoStatus` keeps `ready`+mp4-`preparing` active] — and `validateTrim`),
+  `videoAccess.ts`
+  (auth+ownership guards), `playbackUrls.ts` (HLS/thumbnail builders), `videoTypes.ts`
+  (row aliases + `snapshotFromView`), `recorderConfig.ts` (the 3 modes, bubble geometry,
+  formatters, file validation).
+- **Routes** (`app/api/video/*`, Node runtime, secrets server-only): `mux/create-upload`
+  (POST → row + Mux direct upload, row id = Mux passthrough), `mux/asset-status` (POST →
+  the client poll: sync from Mux + return the view), `mux/webhook` (POST → verify
+  signature → admin client → re-FETCH the asset and reconcile, immune to event-name
+  churn), `[id]` (DELETE → Mux asset + row cleanup).
+- **UI** (`components/editor/lesson/video/*`): `useVideoRecorder` (device enumeration,
+  `getUserMedia`/`getDisplayMedia`/`MediaRecorder`, **canvas compositing** of screen +
+  webcam bubble, state machine idle→setup→countdown→recording→paused→recorded, timer,
+  countdown, mic-level meter, pause/resume, and **deterministic teardown of every track**
+  on unmount — closing the modal mid-recording releases the camera/mic), `useVideoUpload`
+  (create → PUT to Mux with progress → status), `useVideoAsset` (poll while active +
+  mirror to the block). `VideoStudioModal` orchestrates mode → setup → record → review →
+  upload, plus a manage/edit screen for a ready video (trim, description, settings,
+  replace, remove). `VideoBlock` is the block card (empty / processing / ready-with-inline-
+  player / failed). Wired into `AddBlockMenu`, `BlockFrame` (icon+label), and
+  `LessonWorkspace` (`BlockBody` case + Mux-cleanup on delete). The ready card
+  distinguishes an MP4 still `preparing` (shows "Preparing high-quality preview…")
+  from one genuinely `disabled` (an honest "Preview isn't available" — never a
+  forever-loading spinner). **`VideoPreviewPlayer` presents a NON-DESTRUCTIVE trim
+  as the actual clip:** instead of native controls (which show the full source
+  timeline and just pause partway — making a trim look broken), it renders a branded
+  control bar whose scrubber / elapsed / total are all window-relative and clamps
+  playback to `[trimStart, trimEnd]`; the shown duration everywhere is the trimmed
+  length (`trimmedDurationSeconds`). The `VideoTrimEditor` still uses a full-timeline
+  native `<video>` (you WANT the whole timeline while picking start/end).
+- **Captions & transcripts — Mux auto-generated (2026-07-02):** English captions are
+  requested **by default at upload** — `new_asset_settings.inputs[0].generated_subtitles`
+  (for a direct upload the first input **omits `url`**; verified against Mux docs, do NOT
+  guess — see the video-captions memory). Generation is **asynchronous** and NEVER blocks
+  playback (Mux transcribes after ingest; the text track lands in `preparing` then
+  `ready`). Detected by BOTH the poll AND the **`video.asset.track.ready`** webhook (the
+  route re-fetches the asset + reconciles, so it's event-name-agnostic). `parseWebhookEvent`
+  routes a **track** event by `data.asset_id` (its `data.id` is the TRACK id, not the
+  asset). **On-demand path** = `POST /api/video/mux/generate-captions` → provider
+  `requestGeneratedSubtitles(assetId, audioTrackId, …)` (`POST /video/v1/assets/{id}/tracks/
+  {audioTrackId}/generate-subtitles`) for a video uploaded before captions-by-default or a
+  retry. **Caption state** = `caption_status` (`none`|`generating`|`ready`|`failed`) +
+  track id/name/language/source on `video_assets` (migration `20260702010000`); mirrored to
+  the block as `VideoLessonBlock.captions` METADATA via `UPDATE_VIDEO_LESSON` (the heavy
+  **transcript** text stays on the row + rides in the view — kept OFF the course doc to keep
+  it lean). Once a track is `ready`, `syncVideoAssetFromMux` fetches the WebVTT
+  (`https://stream.mux.com/{playbackId}/text/{trackId}.vtt`, public, no auth), derives a
+  plain transcript (`lib/video/captions.ts` `parseVtt`/`plainTextFromVtt`), and stores both
+  `transcript` + `transcript_vtt` (for future AI: summaries/chapters/quizzes/timestamped
+  help). `isActiveVideoStatus` keeps polling while captions `generating`. **Display:** NO
+  Mux Player (keeps the 14-dep invariant + the trim-aware player) — `VideoPreviewPlayer`
+  renders a **synced caption overlay** from the parsed cues with a CC toggle (respects the
+  trim window since playback time is clamped). The manage panel has a **Captions & transcript**
+  section (status + Generate/retry + read-only transcript preview). **Extension points left
+  clean:** manual correction, WebVTT export (`captionVttUrl`), re-uploaded/translated tracks
+  (`caption_source: "uploaded"`), transcript-based editing, Mux Player.
+- **Trim UI (2026-07-02):** the two start/end sliders were replaced by an Apple-Photos-style
+  **filmstrip trimmer** (`VideoTrimEditor`) — a thumbnail strip with a **double-ended
+  selection frame** whose handles you drag; dragging a handle **seeks the preview to that
+  frame** so you see where you're cutting. Thumbnails come from the Mux image API
+  (`thumbnailAt`) for a ready asset, or **canvas frame-capture** for a local pre-upload clip.
+  Commits on release (one autosave/undo step). The "Done trimming" button is now a filled
+  brand **"Save changes"** (was a ghost button that blended in). Handles use `role="slider"`
+  + arrow-key nudge; refs are synced in an effect (React 19 forbids ref writes in render).
+- **Tests:** `npm run verify:video` (153 checks, no key/DB/browser) — schema +
+  persistence round-trip, the `UPDATE_VIDEO_LESSON` reducer, status machine +
+  `reconcileMuxState`, trim validation + `trimmedDurationSeconds`/`hasTrim`, playback
+  URLs, row→view mapping, recorder config/geometry, the Mux adapter (create/get/delete
+  + webhook HMAC) via a mocked fetch, incl. **`highest` is requested**, the
+  **mp4_support:none + ready highest.mp4 → ready** regression guard, a **skipped
+  rendition → `disabled`** (not forever-preparing), a **per-file `preparing` → keep
+  polling**, `addMp4Rendition` (POSTs highest, swallows "already exists" 400 but
+  re-throws others), the **self-heal** (a ready video with no MP4 re-requests a
+  rendition; audio-only and adaptive-already-present do not — no loop), AND the whole
+  **captions surface**: `parseVtt`/`plainTextFromVtt`/`activeCaption`, `deriveCaptionFields`
+  + caption reconcile, block-captions schema/patch/round-trip, `createDirectUpload` requests
+  `generated_subtitles`, `getAsset` normalizes caption tracks + audio track id,
+  `requestGeneratedSubtitles`/`fetchCaptionVtt`, the **track.ready webhook routes by
+  `asset_id`**, and `syncVideoAssetFromMux` fetching + storing the transcript once (settled
+  captions short-circuit). React 19 note: the studio avoids setState-in-effect (screen is
+  derived; the recorder fires an `onRecordingComplete` event) and never writes refs during render.
+- **Out of scope / extension points (left clean):** the student-facing player,
+  chapters, AI summary/quiz-from-video (the stored transcript is the hook), progress
+  tracking, and Mux Data analytics (the HLS URL + `NEXT_PUBLIC_MUX_DATA_ENV_KEY` are the
+  hooks for a future Mux Player upgrade). The asset goes `ready` as soon as it's playable;
+  the MP4 static rendition (used by the native `<video>`) fills in shortly after via
+  continued polling, so the card shows the poster + "Preparing high-quality preview…" for
+  a beat before the video appears. Captions fill in independently, never blocking playback.
+
 ## Where things live
 
 - `lib/course/` — the Studio's **structured course document model** (UI-free):
@@ -711,8 +1211,9 @@ change-set staging/reject, and picker — **no new patch actions, no new storage
 - Typography: Geist Sans UI, Geist Mono eyebrows/labels (uppercase tracked),
   **Fraunces** (`--font-display`, loaded globally in app/layout.tsx) for page
   titles & marketing headlines via `[font-family:var(--font-display)]
-  font-light`. Brand mark = typographic `CourseGen*` (orange asterisk) — no
-  sparkle-icon logos.
+  font-light`. Brand mark = the **WiseSel** logo (real assets in `public/brand/`,
+  placed via `components/brand/WiseSelLogo.tsx` — `horizontal`/`wordmark`/`mark`/
+  `appIcon` variants) — no sparkle-icon logos.
 - Buttons are **pills** (`rounded-full`; `components/ui/Button.tsx`: primary =
   brand-gradient). Cards: `rounded-2xl`, `border-stone-200/80`, warm whisper
   shadow `[0_1px_2px_rgba(68,48,28,0.05)]`. Emerald = success semantics only.

@@ -26,7 +26,7 @@ import type { Slide, SlideElement } from "@/lib/course/types";
 import { useUIStore, type ElementClipboard } from "./uiStore";
 
 interface ElementsPayload {
-  coursegen: "elements";
+  wisesel: "elements";
   elements: SlideElement[];
   sourceSlideId: string;
 }
@@ -42,14 +42,14 @@ export function copyElementsToClipboards(
   const ui = useUIStore.getState();
   ui.setElementClipboard(clip);
   ui.setSlideClipboard(null); // the clipboard holds one thing
-  void writeOS({ coursegen: "elements", ...clip });
+  void writeOS({ wisesel: "elements", ...clip });
 }
 
 export function copySlideToClipboards(slide: Slide): void {
   const ui = useUIStore.getState();
   ui.setSlideClipboard(structuredClone(slide));
   ui.setElementClipboard(null);
-  void writeOS({ coursegen: "slide", slide });
+  void writeOS({ wisesel: "slide", slide });
 }
 
 async function writeOS(payload: unknown): Promise<void> {
@@ -69,10 +69,10 @@ async function readOS(): Promise<ElementsPayload | string | null> {
       if (
         typeof parsed === "object" &&
         parsed !== null &&
-        "coursegen" in parsed
+        "wisesel" in parsed
       ) {
-        const p = parsed as { coursegen: string };
-        if (p.coursegen === "elements" && Array.isArray((p as ElementsPayload).elements)) {
+        const p = parsed as { wisesel: string };
+        if (p.wisesel === "elements" && Array.isArray((p as ElementsPayload).elements)) {
           return p as ElementsPayload;
         }
         return null; // our slide payload — not element-pasteable
