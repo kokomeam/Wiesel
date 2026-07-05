@@ -24,12 +24,19 @@ import {
   runThroughGate,
   type GateOutcome,
 } from "../gate";
+import { recordSegmentSend } from "../autonomyStore";
 import type { MarketingServices } from "../services/types";
 import { analyticsTools } from "./analytics";
+import { askTools } from "./ask";
 import { campaignTools } from "./campaign";
+import { campaignLifecycleTools } from "./campaignLifecycle";
+import { complianceTools } from "./compliance";
 import { emailTools } from "./email";
 import { landingTools } from "./landing";
+import { leadTools } from "./leads";
 import { readTools } from "./read";
+import { senderIdentityTools } from "./senderIdentity";
+import { voiceTools } from "./voice";
 import {
   MarketingToolError,
   type EntityRef,
@@ -40,12 +47,30 @@ import {
 
 type DB = SupabaseClient<Database>;
 
-const allReadTools = [...readTools, ...analyticsTools];
-const mutatingTools = [...campaignTools, ...landingTools, ...emailTools];
+const allReadTools = [
+  ...readTools,
+  ...analyticsTools,
+  ...leadTools.filter((t) => t.reversibility === "read"),
+  ...campaignLifecycleTools.filter((t) => t.reversibility === "read"),
+  ...senderIdentityTools.filter((t) => t.reversibility === "read"),
+  ...voiceTools.filter((t) => t.reversibility === "read"),
+];
+const mutatingTools = [
+  ...campaignTools,
+  ...landingTools,
+  ...emailTools,
+  ...complianceTools,
+  ...leadTools.filter((t) => t.reversibility !== "read"),
+  ...campaignLifecycleTools.filter((t) => t.reversibility !== "read"),
+  ...senderIdentityTools.filter((t) => t.reversibility !== "read"),
+  ...voiceTools.filter((t) => t.reversibility !== "read"),
+];
 
 const reversibleTools = mutatingTools.filter((t) => t.reversibility === "reversible");
 
-export const ALL_MARKETING_TOOLS: MarketingTool[] = [...allReadTools, ...mutatingTools];
+// ask_creator: the clarifying-question interaction tool — pauses the loop, so
+// it belongs to the AGENT sets (generate + action), never the plain read set.
+export const ALL_MARKETING_TOOLS: MarketingTool[] = [...allReadTools, ...mutatingTools, ...askTools];
 
 const TOOL_BY_NAME = new Map(ALL_MARKETING_TOOLS.map((t) => [t.name, t]));
 
@@ -57,6 +82,7 @@ export const MARKETING_READ_TOOLS: ReadonlySet<string> = new Set(allReadTools.ma
 export const MARKETING_GENERATE_TOOLS: ReadonlySet<string> = new Set([
   ...allReadTools.map((t) => t.name),
   ...reversibleTools.map((t) => t.name),
+  ...askTools.map((t) => t.name),
 ]);
 
 /** Everything, including irreversible actions (which still pause for approval at
@@ -109,8 +135,13 @@ export interface MarketingExecContext {
 }
 
 /**
- * Approve a pending IRREVERSIBLE action: re-run the tool with `approved:true`
- * (this time it performs the real effect), then mark it executed.
+ * Approve a pending IRREVERSIBLE action: atomically CLAIM the row
+ * (pending → 'approved' — the one-click card makes double-clicks likely, and
+ * the loser of the race must see "already resolved", never a duplicate send),
+ * re-run the tool with `approved:true` (this time it performs the real
+ * effect), then mark it executed. A failed execute releases the claim back to
+ * 'pending' so the approval stays retryable (provider hiccups must not strand
+ * the action).
  */
 export async function approveMarketingAction(
   actionId: string,
@@ -129,6 +160,17 @@ export async function approveMarketingAction(
   if (!parsed.success)
     throw new MarketingToolError(`Stored action params invalid: ${parsed.error.message}`);
 
+  // Atomic claim — exactly one caller can move pending → approved.
+  const { data: claimed, error: claimError } = await exec.supabase
+    .from("marketing_action")
+    .update({ status: "approved" })
+    .eq("id", actionId)
+    .eq("status", "pending")
+    .select("id");
+  if (claimError) throw new MarketingToolError(`approve: ${claimError.message}`);
+  if (!claimed || claimed.length === 0)
+    throw new MarketingToolError("Action was already resolved (someone else approved or denied it).");
+
   const ctx: MarketingToolContext = {
     supabase: exec.supabase,
     courseId: action.courseId,
@@ -138,14 +180,73 @@ export async function approveMarketingAction(
     requestedBy: exec.requestedBy ?? action.requestedBy,
     approved: true,
   };
-  const outcome = await tool.execute(parsed.data, ctx);
+  let outcome: MarketingToolResult;
+  try {
+    outcome = await tool.execute(parsed.data, ctx);
+  } catch (err) {
+    // Release the claim — the action stays pending and retryable.
+    await exec.supabase
+      .from("marketing_action")
+      .update({ status: "pending" })
+      .eq("id", actionId)
+      .eq("status", "approved");
+    throw err;
+  }
   await markActionExecuted(exec.supabase, actionId, (outcome.target as EntityRef | undefined) ?? null);
+
+  // Human-approved segment sends also teach the first-send-to-new-segment
+  // guardrail — the history is about what the COURSE has sent, not who
+  // approved it.
+  const segmentKey = tool.segmentKey ? tool.segmentKey(parsed.data) : null;
+  if (segmentKey) {
+    await recordSegmentSend(exec.supabase, {
+      courseId: action.courseId,
+      campaignId: action.campaignId,
+      segmentKey,
+      nowIso: exec.services.clock.now(),
+    });
+  }
   return outcome;
 }
 
+/**
+ * Re-run a pending action's side-effect-FREE preview (the approvalPreview is
+ * never persisted — it must stay truthful to CURRENT state, e.g. audience
+ * counts move between request and review). Returns null when the preview
+ * can't be built (unknown tool / stale params) — the card degrades to the
+ * stored summary.
+ */
+export async function previewMarketingAction(
+  action: { toolName: string; params: Record<string, unknown>; courseId: string; campaignId: string | null },
+  exec: MarketingExecContext
+): Promise<Record<string, unknown> | null> {
+  try {
+    const tool = TOOL_BY_NAME.get(action.toolName);
+    if (!tool) return null;
+    const parsed = tool.params.safeParse(action.params);
+    if (!parsed.success) return null;
+    const outcome = await tool.execute(parsed.data, {
+      supabase: exec.supabase,
+      courseId: action.courseId,
+      campaignId: action.campaignId,
+      ownerId: exec.ownerId,
+      services: exec.services,
+      requestedBy: exec.requestedBy ?? "user",
+      approved: false,
+    });
+    return outcome.approvalPreview ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Deny a pending action (no effect) or revert a staged reversible one. */
-export async function rejectMarketingAction(supabase: DB, actionId: string): Promise<void> {
-  await rejectAction(supabase, actionId);
+export async function rejectMarketingAction(
+  supabase: DB,
+  actionId: string,
+  opts: { nowIso?: string } = {}
+): Promise<void> {
+  await rejectAction(supabase, actionId, opts);
 }
 
 /** Keep a staged reversible change (clear the staging flag). */

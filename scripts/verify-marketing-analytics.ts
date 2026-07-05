@@ -95,7 +95,11 @@ async function main() {
   check("emailsSent = 5 / opens = 3 / clicks = 1", s.funnel.emailsSent === 5 && s.funnel.emailOpens === 3 && s.funnel.emailClicks === 1);
   check("enrollments = 1", s.funnel.enrollments === 1, String(s.funnel.enrollments));
   check("openRate = 3/5", Math.abs((s.rates.openRate ?? 0) - 0.6) < 1e-9);
-  check("clickRate = 1/3", Math.abs((s.rates.clickRate ?? 0) - 1 / 3) < 1e-9);
+  // Amendment 11: clickRate is PER DELIVERED (the primary engagement metric),
+  // not per open — opens are MPP-inflated. No delivered events seeded → the
+  // denominator falls back to sent (5).
+  check("clickRate = 1/5 (per delivered)", Math.abs((s.rates.clickRate ?? 0) - 0.2) < 1e-9);
+  check("open-rate caveat present (MPP honesty)", s.openRateCaveat.length > 0);
   check("viewToLead = 7/10", Math.abs((s.rates.viewToLead ?? 0) - 0.7) < 1e-9);
   check("byStatus lead=3 engaged=2 enrolled=1", s.subscribersByStatus.lead === 3 && s.subscribersByStatus.engaged === 2 && s.subscribersByStatus.enrolled === 1, JSON.stringify(s.subscribersByStatus));
 

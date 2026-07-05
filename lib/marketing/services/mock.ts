@@ -46,6 +46,17 @@ export function createMockEmailProvider(): MockEmailProvider {
     async send(input: SendEmailInput): Promise<SendEmailResult> {
       sends.push(input);
       const h = hash(`${input.to}|${input.subject}`);
+      // ADDRESS-TRIGGERED bounce simulation (Amendment 8) — the pattern real
+      // ESP sandboxes use (Resend's bounced@resend.dev, SES's bounce
+      // simulator): an address containing "hard-bounce" / "soft-bounce"
+      // deterministically bounces; every other address delivers. Controllable
+      // in tests, never randomly flaky.
+      if (input.to.includes("hard-bounce")) {
+        return { providerMessageId: `mock-${h.toString(16)}-${++seq}`, simulatedBounce: { type: "hard" } };
+      }
+      if (input.to.includes("soft-bounce")) {
+        return { providerMessageId: `mock-${h.toString(16)}-${++seq}`, simulatedBounce: { type: "soft" } };
+      }
       // ~66% open, and of those ~40% click — a plausible funnel, deterministic.
       const opened = h % 3 !== 0;
       const clicked = opened && h % 5 < 2;

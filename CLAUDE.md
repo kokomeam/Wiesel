@@ -308,6 +308,18 @@ never import a provider SDK.
   pending blocks → `StudioLoader` → `agentStore.hydratePending`.
 - **Env:** set `OPENAI_API_KEY` (required) in `.env.local`; optional
   `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS`.
+  **Proxy (2026-07-03):** the OpenAI SDK's bundled fetch IGNORES `HTTPS_PROXY`,
+  so on this machine (OpenAI reachable only via local Clash) it connected
+  DIRECTLY and every agent call — studio content agent AND marketing agent —
+  died at the transport timeout (~75–89s,
+  `{"tag":"openai_error","message":"Request timed out."}`). The provider now
+  builds a CLIENT-SCOPED undici `fetch`+`ProxyAgent` transport when
+  `OPENAI_PROXY_URL`/`HTTPS_PROXY` is set (ported from the sibling App repo;
+  global dispatcher untouched — Supabase stays direct; production sets no proxy
+  env ⇒ direct as before; undici is a devDependency loaded via non-literal
+  `createRequire` so the bundler never resolves it). Diagnose with
+  `npm run smoke:openai`; grep `openai_client_config` in server logs to see
+  whether the proxy engaged.
 - **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts`, no key) and
   `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — 47
   checks incl. the phased lesson + MODULE plan→approve→generate pipeline, per-call
@@ -364,35 +376,196 @@ CHANGELOG. Built on **three spines**: ONE typed tool layer
 the hub cards, AND the agent), ONE event stream (`analytics_event`; subscriber
 status is a pure reducer over it — `lib/marketing/stateMachine.ts`), ONE
 **reversibility-graded governance gate** (`lib/marketing/gate.ts` +
-`marketing_action` ledger: read executes; reversible auto-stages Reject-able with
-a before-snapshot; irreversible records `pending` + waits for human approval).
+`marketing_action` ledger: read executes; reversible executes + before-snapshot;
+irreversible routed by the autonomy engine — see below).
 Mock-first: `lib/marketing/services/*` (EmailProvider/Clock interfaces + mock +
 env-gated factory; **Resend** swaps in via `RESEND_API_KEY`, zero contract
 changes). The Marketing Agent (`lib/marketing/agent/*`) reuses the studio's
 provider-agnostic `ModelClient`: observe (funnel injected as a developer msg) →
-act (every tool call through the gate) → **pauses** at any irreversible action.
+act (every tool call through the gate) → **pauses** whenever the gate blocks on
+a human (approval OR clarifying question — ONE blocked shape).
 
-- **DB:** migration `20260618000000_marketing_assistant.sql` — 9 author-scoped
-  tables (`marketing_campaign`, `landing_page` [public-read when published],
-  `email_sequence`/`email_touch`, `subscriber`, `sequence_enrollment`,
-  `scheduled_send` [idempotent outbox], `analytics_event`, `marketing_action`),
-  RLS via `private.is_course_author(course_id)`. Public lead/analytics writes go
-  through a **service-role** ingest route (`app/api/marketing/ingest`,
-  `lib/supabase/admin.ts`), not anon RLS.
-- **Routes:** public `/p/[slug]` (landing pages, `components/marketing-pages/*`);
-  `app/api/marketing/{ingest,agent,scheduler/tick,unsubscribe}`. Creator UI:
-  `app/(app)/marketing/{page,actions,MarketingHub,analytics,agent}` +
+**Autonomy redesign (2026-07-03, full detail `docs/marketing-autonomy.md`):**
+grades (what CAN be undone) and **autonomy modes** (HOW approval is obtained)
+are orthogonal. **Reversible tier, unconditional:** executes + lands as a QUIET
+dismissible activity-log entry with a one-click Revert for a configurable
+window (`revert_expires_at`, default 24h; `rejectAction` refuses past expiry —
+fail closed; never a blocking Accept/Reject card, in any mode). **Irreversible
+tier** routed by the PURE, deterministic policy engine
+(`lib/marketing/autonomy.ts` + IO in `autonomyStore.ts`, per-course
+`marketing_autonomy_settings`): `manual` = always one card · `assisted`
+(default, = no settings row) = card, but ambiguous targeting raises a
+**clarifying question** first (tool hook `clarifyTargeting`; today on
+send_broadcast/enroll_segment_in_sequence when `status` is null over a mixed
+audience — `"all"` is the EXPLICIT everyone value so answers never re-trigger)
+and an owner-addressed `send_test_email` auto-logs (`ownerEmail` on ctx, gate
+falls back to auth.getUser; foreign address stays carded) · `auto` =
+auto-executes ONLY on a clean policy match (opt-in tool allowlist + recipient
+cap + allowed hours + first-send-to-new-segment history in
+`marketing_segment_send`; EVERY unset field fails closed — the empty policy is
+inert; full guardrail audit persisted as `marketing_action.autonomy_decision`).
+**Hard-deny list checked FIRST** (engine + gate, defense in depth):
+`launch_campaign`/`cancel_campaign`/`send_consent_confirmations` never
+auto-approve under any mode/policy. **`ask_creator`** = the model's own
+clarifying-question tool (2–5 options; `interaction:"question"`, gate-resolved,
+execute never runs); both question sources + approvals pause the loop through
+one `agent_blocked {kind}` event and resume via `agent/resume.ts` (3 paths:
+approve / deny / `resumeAgentAfterAnswer` — same conversation, one turn).
+**One-card approval** (`components/marketing/ApprovalCard.tsx`, used by chat +
+hub + builder + leads): inline preview (`effectLabel`/`bodyPreview` on tool
+previews; hub/builder re-run the side-effect-free preview server-side via
+`previewMarketingAction` so counts stay current), exactly Approve-&-effect /
+Edit (`editableParams` + `editPendingAction`) / Reject; request buttons return
+the pending payload so the card renders in place (no scroll-to-inbox);
+`approveMarketingAction` claims `pending→'approved'` atomically (double-click
+⇒ "already resolved"; failed execute releases back to pending). Settings UI =
+`components/marketing/AutonomySettings.tsx` on the hub (hard-denied tools
+render locked; server strips them again regardless).
+
+**Audience + agent-surface QoL (2026-07-03, same-day follow-up):**
+**Audience tools** — `build_audience_list` (create + fill a list from EXISTING
+contacts in one step, filter = consent × funnel stage, suppressed always
+excluded; a confirmed-only list is consent_confirmed at birth),
+`add_leads_to_list` (filter OR explicit ids; already-members skipped),
+`remove_leads_from_list` — all reversible, all send nothing. The `lead_list`
+snapshotter is now **COMPOSITE (row + membership)** so reverting any
+membership edit (incl. `import_leads` — previously a silent row-only revert)
+restores membership byte-for-byte; legacy bare-row snapshots still restore.
+`lead_list_member` was missing its UPDATE policy (restore's upsert hits
+ON-CONFLICT-UPDATE → RLS) — fixed in migration
+`20260703120000_lead_list_member_update_policy.sql`. The system prompt now
+TEACHES the audience capability ("never claim you can't put existing contacts
+on a list" — the exact observed failure). UI: `components/marketing/
+ListBuilder.tsx` (live-counted consent×stage slicing, new-list or
+add-to-existing) sits prominently on BOTH `/marketing/leads` and
+`/marketing/audience`; `removeLeadFromListAction` now routes through the gate
+(was the one direct-delete bypass). **Agent dock** — `app/(app)/marketing/
+layout.tsx` mounts `components/marketing/agent/AgentDock.tsx` (floating "Ask
+the agent" pill → right slide-over hosting the SAME AgentPanel; panel stays
+mounted on close so the transcript survives; hidden on /marketing/agent + the
+campaign builder which embed their own) + a prominent **ask-bar** with
+suggestion chips at the top of the hub that seeds the dock
+(`lib/marketing/agentDockStore.ts`, `AgentPanel` `seed`/`onSeedConsumed`
+one-shot autosend). **Questions** — every QuestionCard now has a
+"Something else…" free-text path (`value: "__other__"`); `answeredMessage`
+hands the creator's words to the agent verbatim (may redirect the plan, never
+coerced into an option); user-path gate questions skip the tool retry for
+freeform answers.
+
+**Autonomous Email Campaign layer (2026-07-02, PRD amendments 1–15 implemented in
+code):** goal-driven sequence **blueprints** (6 goals, launch = 5 emails default,
+4–7 range; `lib/marketing/blueprints.ts`) · mechanical **copy quality rubric**
+(advisory-only; `quality.ts`) · **Campaign Brief** (`config.brief`) + creator
+**voice profile** (`voice_profile` table) grounding an **LLM-backed
+`generate_email_sequence`** (`email/llmGenerate.ts`, falls back to blueprint
+templates without a key) · consent-first **lead lists + double opt-in** (import
+requires the exact consent text; pending → confirmed via signed link or →
+lapsed after 30d; `tools/leads.ts`, `consent.ts`; **contacts are COURSE-level
+— `subscriber.campaign_id` is nullable (migration 20260702120000; the old NOT
+NULL made every campaign-less import silently fail), dedupe is course-wide,
+and `send_consent_confirmations` bulk-asks a whole list under ONE approval,
+resolvable inline on the Leads page**) · **signed tokens** for
+click/unsubscribe/consent links (`tokens.ts`, `MARKETING_TOKEN_SECRET`) ·
+**click attribution + 7d last-click enrollment attribution** (`attribution.ts`)
+· behavioral **segments + read-time engagement score + lead profile**
+(`segments.ts`) · **hard/soft bounce taxonomy** (soft retries 3× w/ backoff →
+escalates; mock bounces are ADDRESS-triggered: `hard-bounce`/`soft-bounce` in
+the address) · **guardrail auto-pause** (hard-bounce >2%, complaint >0.1%,
+unsub >1%, only at ≥50 sends) + **per-creator send ramp** (200/500/2000 per day;
+held sends stay queued) (`guardrails.ts`) · **send windows** (default 9–11
+creator-tz weekdays; scheduler holds outside) · **campaign lifecycle** draft→…→
+completed with per-step approval, edit-after-approval → back to review (enforced
+in `write_email_touch`), a launch-checklist predicate + approved-audience
+snapshot (`campaignLifecycle.ts`), and the compliance+quality gate
+(`tools/compliance.ts`; blocking: consent/sender+mailing-address/CTA-resolution/
+merge-var-fallbacks/fake-urgency; quality never blocks) · **agent auto-resume**
+after approve/deny (`agent/resume.ts`) · click-first, **MPP-honest analytics**
+(clickRate per delivered is primary; openRate carries a caveat) · localized
+compliant footers (8 locales, `language.ts`).
+
+- **DB:** migrations `20260618000000_marketing_assistant.sql` (9 tables) +
+  `20260622000000_marketing_account_tier.sql` (`audience_contact`; creator-wide
+  unsubscribe) + `20260702000000_email_campaign_agent.sql` (campaign lifecycle
+  columns, `email_touch` step fields, `scheduled_send` bounce counters,
+  `subscriber.consent_status`, new event types, and `lead_list`/
+  `lead_list_member`/`sender_identity`/`follow_up_rule`/`voice_profile`) +
+  `20260703000000_marketing_autonomy.sql` (`marketing_action.revert_expires_at`
+  + `autonomy_decision`; `marketing_autonomy_settings`/`marketing_question`/
+  `marketing_segment_send`), all
+  RLS via `private.is_course_author(course_id)` (voice_profile:
+  `author_id = auth.uid()`). Public lead/analytics writes go through the
+  **service-role** ingest route, not anon RLS.
+- **Routes:** public `/p/[slug]`;
+  `app/api/marketing/{ingest,agent,scheduler/tick,unsubscribe,click,consent-confirm,webhooks/resend}`.
+  Creator UI: `app/(app)/marketing/{page,actions,campaignActions,MarketingHub,analytics,agent}`
+  + **`email/` (campaign list · `new/` wizard · `[id]/` builder)** +
+  **`leads/` (lists + consent-gated import · `[id]/` lead profile)** +
   `components/marketing/agent/AgentPanel`.
-- **Env (new):** `SUPABASE_SERVICE_ROLE_KEY` (ingest + scheduler; server-only),
-  `RESEND_API_KEY`/`RESEND_FROM` (real email), `CRON_SECRET`,
-  `NEXT_PUBLIC_SITE_URL`. All optional — absent → the engine runs mock/author-
-  scoped.
-- **Verify:** `verify:marketing` (gate 37), `:flow` (Phase 1 e2e 13 — ingest
-  needs the service key), `:analytics` (12), `:email` (31), `:agent` (18, mock
-  model), `:swap` (7). All self-provision a throwaway live-Supabase user.
-- **Status:** Phases 0/2/3/4/5 verified green. Phase 1's 6 anonymous-ingest
-  checks pass once `SUPABASE_SERVICE_ROLE_KEY` is in `.env.local` (everything
-  else stands without it).
+- **Env:** `SUPABASE_SERVICE_ROLE_KEY` (ingest/tick/click/unsub/confirm;
+  server-only), `RESEND_API_KEY`/`RESEND_FROM` (real email; **RESEND_FROM MUST
+  be an address on the Resend-verified domain** — a freemail address makes
+  every send throw "domain is not verified"; sender identities only skin the
+  From DISPLAY NAME + set Reply-To via `composeFromHeader` in
+  `services/resend.ts`, they can never point sending at an unverified domain),
+  `RESEND_WEBHOOK_SECRET` (delivery webhooks), `MARKETING_TOKEN_SECRET` (link
+  signing — required before real sends), `CRON_SECRET`, `NEXT_PUBLIC_SITE_URL`.
+  All optional in dev — absent → the engine runs mock/author-scoped.
+  Approval failures (e.g. a provider config error) return an error
+  `ActionResult` and leave the action PENDING/retryable — they never crash to
+  the error boundary; `create_sender_identity` is idempotent on identical
+  fields (double-submit guard).
+- **Creator UX (2026-07-03 overhaul):** the builder is a **guided stepper**
+  (Audience → Sender → Review emails → Compliance → Launch) with interactive
+  Audience/Sender cards (attach an existing list / create+attach a sender
+  inline — previously only settable in the wizard), course analysis demoted to
+  a collapsed left-column card, and a **Delivery card** when launched
+  (queued/sent/failed + next-due + a "Process due sends now" button →
+  `processDueSendsAction`, the same idempotent course-scoped tick cron runs).
+  Approving a launch fires one immediate scoped tick (dev has no cron). The
+  Leads page spells out the 3-step consent flow, resolves consent-send
+  approvals inline, and each list card has an "Ask N contacts to confirm"
+  bulk button; the import panel reuses a mid-submit-created list on retry
+  (the old flow created duplicate lists and swallowed the error).
+- **Delivery-timing honesty (2026-07-04, from live usage):** a creator
+  launched at 23:41 local, saw "4 subscribers will begin receiving", and got
+  no email — the sends were HELD by the default send window (9–11 **UTC**
+  weekdays) with nothing saying so, and dev has no cron to deliver them when
+  it opens. Fix: pure helpers in `scheduler.ts`
+  (`sendWindowState`/`describeSendWindow`/`sendTimingSentence`,
+  `withinSendWindow` now exported; `DEFAULT_WINDOW` = the types'
+  `DEFAULT_SEND_WINDOW`); every summary that enqueues sends
+  (launch_campaign preview + executed, activate_sequence,
+  enroll_segment_in_sequence) appends the timing sentence ("HELD until the
+  send window opens (09:00–11:00 UTC, weekdays); next opening …"), launch
+  `data` carries `nextWindowOpensAt`; the builder Delivery card shows a
+  server-computed held-now callout (`sendWindowInfo` prop — computed with the
+  injected clock, NEVER `Date.now()` in render: react-hooks/purity flags it
+  even in server components); the agent prompt gained an **END OF RUN**
+  wrap-up contract ("Enqueued is NOT sent" — what happened / what's true /
+  what happens next WITH timing / what awaits the creator) and the approve
+  resume message demands that wrap-up.
+- **Verify:** `verify:marketing` (gate 37), `:flow` (18 — ingest needs the
+  service key), `:analytics` (13), `:email` (34), `:agent` (22, mock model —
+  incl. the one-pause-shape `agent_blocked` for approvals AND questions),
+  `:swap` (7), `:landing-edit` (11), `:account` (10), `:sequences` (10),
+  **`:campaign` (112 — the whole amendment set end-to-end, incl. campaign-less
+  import + course-wide dedupe + bulk consent + From-composition/Reply-To
+  threading + sender idempotency + owner test-send auto-log)**,
+  **`:autonomy` (93 — every redesign invariant: unknown-tool fail-closed +
+  registry drift guard, hard-deny × mode × policy, deny-never-executes,
+  each guardrail failing alone blocks, reversible never pends, revert window,
+  governance language, question pause/resume parity, approve race, segment
+  history)**, **`:lists` (31 — audience filters, byte-for-byte membership
+  revert incl. the import-revert regression, legacy snapshot back-compat,
+  agent-driven list build, "__other__" answer messages)**. All self-provision
+  a throwaway live-Supabase user.
+  **398 checks green (2026-07-04).** NOTE for suites on a `fixedClock`: pass
+  `{ nowIso: services.clock.now() }` to `rejectMarketingAction` when reverting
+  staged rows — the gate stamps windows from the injected clock but reject
+  defaults to wall-clock.
+- **Status:** all phases + the campaign layer verified green, including
+  anonymous ingest (the service key had been stored under a typo'd env-var name
+  — `UPABASE_…` — since setup; fixed 2026-07-02).
 
 ## Where things live
 

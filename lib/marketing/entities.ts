@@ -30,7 +30,14 @@ interface EntitySnapshotter {
 
 /** A simple single-row entity: snapshot = the row, restore = upsert/delete. */
 function singleRow(
-  table: "marketing_campaign" | "landing_page" | "subscriber" | "sequence_enrollment"
+  table:
+    | "marketing_campaign"
+    | "landing_page"
+    | "subscriber"
+    | "sequence_enrollment"
+    | "sender_identity"
+    | "follow_up_rule"
+    | "voice_profile"
 ): EntitySnapshotter {
   return {
     async snapshot(supabase, id) {
@@ -98,12 +105,62 @@ const sequenceSnapshotter: EntitySnapshotter = {
   },
 };
 
+/**
+ * lead_list is a composite: the list row + its MEMBERSHIP rows. Snapshotting
+ * only the row (the original shape) meant reverting an import or an
+ * add-contacts action restored the name but kept the added members — the
+ * composite makes membership edits genuinely revertable. Back-compat: legacy
+ * snapshots are a bare row (no `list` key) and restore row-only.
+ */
+const leadListSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, id) {
+    const { data: list } = await supabase.from("lead_list").select("*").eq("id", id).maybeSingle();
+    if (!list) return null;
+    const { data: members } = await supabase.from("lead_list_member").select("*").eq("list_id", id);
+    return { list, members: members ?? [] } as unknown as Json;
+  },
+  async restore(supabase, id, before) {
+    if (before === null) {
+      // revert of a create — cascade removes the membership rows too.
+      const { error } = await supabase.from("lead_list").delete().eq("id", id);
+      if (error) throw new Error(`restore(delete lead_list/${id}): ${error.message}`);
+      return;
+    }
+    const composite = (before as Record<string, unknown>).list
+      ? (before as unknown as {
+          list: Database["public"]["Tables"]["lead_list"]["Row"];
+          members: Database["public"]["Tables"]["lead_list_member"]["Row"][];
+        })
+      : null;
+    const row = composite?.list ?? (before as unknown as Database["public"]["Tables"]["lead_list"]["Row"]);
+    const { error: le } = await supabase.from("lead_list").upsert(row as never, { onConflict: "id" });
+    if (le) throw new Error(`restore(upsert lead_list/${id}): ${le.message}`);
+    if (!composite) return; // legacy row-only snapshot — membership unknown, leave as-is
+
+    if (composite.members.length) {
+      const { error: me } = await supabase
+        .from("lead_list_member")
+        .upsert(composite.members as never, { onConflict: "list_id,subscriber_id" });
+      if (me) throw new Error(`restore(upsert lead_list_member for ${id}): ${me.message}`);
+    }
+    const keep = composite.members.map((m) => m.subscriber_id);
+    let del = supabase.from("lead_list_member").delete().eq("list_id", id);
+    if (keep.length) del = del.not("subscriber_id", "in", `(${keep.join(",")})`);
+    const { error: de } = await del;
+    if (de) throw new Error(`restore(prune lead_list_member for ${id}): ${de.message}`);
+  },
+};
+
 const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   campaign: singleRow("marketing_campaign"),
   landing_page: singleRow("landing_page"),
   subscriber: singleRow("subscriber"),
   sequence_enrollment: singleRow("sequence_enrollment"),
   email_sequence: sequenceSnapshotter,
+  lead_list: leadListSnapshotter,
+  sender_identity: singleRow("sender_identity"),
+  follow_up_rule: singleRow("follow_up_rule"),
+  voice_profile: singleRow("voice_profile"),
 };
 
 export async function snapshotEntity(supabase: DB, ref: EntityRef): Promise<Json | null> {

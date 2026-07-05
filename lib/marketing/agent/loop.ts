@@ -6,13 +6,16 @@
  *   reason  → stream a model turn with the marketing tool definitions
  *   act     → route EVERY tool call through the gate (executeMarketingTool):
  *               read       → execute, feed result back
- *               reversible → executes + stages (Reject-able), feed result back
- *               irreversible → records pending + emits approval_request, then
- *                              PAUSES the run (the gate's hard stop)
+ *               reversible → executes + logs (revertable for a window), feed
+ *                            result back
+ *               irreversible → routed by the autonomy engine: a policy-granted
+ *                            auto-execution feeds back like any result; a
+ *                            pending approval OR a clarifying question PAUSES
+ *                            the run (ONE blocked branch for both shapes)
  *
- * The loop never executes an irreversible action — that's the human's call via
- * the approval inbox. On approval the action runs out-of-band; the creator can
- * send another message to have the agent continue.
+ * The loop itself never executes an irreversible action — the gate does, and
+ * only under the creator's per-action approval or their explicit auto-mode
+ * policy. On approval/answer the run resumes out-of-band (agent/resume.ts).
  */
 
 import type { ModelClient, ModelInputItem } from "@/lib/ai/modelClient";
@@ -34,6 +37,8 @@ export interface MarketingAgentParams {
   courseId: string;
   campaignId: string | null;
   ownerId: string;
+  /** The creator's email — powers the send_test_email owner auto-log guard. */
+  ownerEmail?: string | null;
   conversationId?: string | null;
   userMessage: string;
   services: MarketingServices;
@@ -66,7 +71,11 @@ export async function runMarketingAgentTurn(
     courseId: p.courseId,
     campaignId: p.campaignId,
     ownerId: p.ownerId,
+    ownerEmail: p.ownerEmail ?? null,
     services: p.services,
+    // The agent's own model doubles as the generation tools' copywriter seam
+    // (generate_email_sequence / regenerate_email_step run LLM-grounded).
+    model: p.model,
     requestedBy: "agent",
   };
 
@@ -105,31 +114,45 @@ export async function runMarketingAgentTurn(
       }
 
       try {
-        const outcome = await executeMarketingTool(call.name, args, ctx);
-        if (outcome.status === "pending_approval") {
+        const outcome = await executeMarketingTool(call.name, args, {
+          ...ctx,
+          toolCallId: call.callId,
+          conversationId,
+        });
+        // ONE blocked branch — a pending approval and a clarifying question
+        // pause identically; only the payload differs.
+        if (outcome.status === "pending_approval" || outcome.status === "needs_clarification") {
+          const blockedOnApproval = outcome.status === "pending_approval";
           emit({
             type: "tool_result",
             toolCallId: call.callId,
             tool: call.name,
             ok: true,
             summary: outcome.summary,
-            status: "pending_approval",
+            status: outcome.status,
             actionId: outcome.actionId,
           });
           emit({
-            type: "approval_request",
-            actionId: outcome.actionId!,
+            type: "agent_blocked",
+            kind: blockedOnApproval ? "approval" : "question",
             tool: call.name,
             summary: outcome.summary,
-            preview: outcome.approvalPreview,
+            ...(blockedOnApproval
+              ? { actionId: outcome.actionId!, preview: outcome.approvalPreview }
+              : { questionId: outcome.questionId!, question: outcome.question }),
           });
-          const out = `Paused — awaiting the creator's approval: ${outcome.summary}`;
+          // Short on purpose — the original arguments already live in the
+          // transcript's function_call; never re-embed bodies (4000-slice).
+          const out = blockedOnApproval
+            ? `Paused — awaiting the creator's approval: ${outcome.summary}`
+            : `Paused — asked the creator: ${outcome.summary}`;
           await saveToolMessage(p.supabase, conversationId, p.courseId, { callId: call.callId, name: call.name, output: out });
           input.push({ type: "function_call_output", callId: call.callId, output: out });
           pausedThisTurn = true;
           break;
         }
-        const status = outcome.status === "read" ? "read" : "staged";
+        const status =
+          outcome.status === "read" ? "read" : outcome.status === "executed" ? "executed" : "staged";
         emit({
           type: "tool_result",
           toolCallId: call.callId,

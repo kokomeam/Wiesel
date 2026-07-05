@@ -26,6 +26,14 @@ export interface SendEmailInput {
   text?: string;
   /** A working one-click unsubscribe URL — REQUIRED on every marketing send. */
   unsubscribeUrl: string;
+  /**
+   * Display name for the From header. The From ADDRESS is always the
+   * provider's verified sending address (RESEND_FROM) — a sender identity can
+   * only skin the display name, never impersonate an unverified domain.
+   */
+  fromName?: string | null;
+  /** Where replies land (Reply-To) — typically the sender identity's address. */
+  replyTo?: string | null;
   /** Tracking context (sequence/touch/subscriber ids) for correlation. */
   meta?: Record<string, unknown>;
 }
@@ -40,6 +48,13 @@ export interface SendEmailResult {
    * webhook/pixel.
    */
   simulatedEngagement?: { opened: boolean; clicked: boolean };
+  /**
+   * MOCK ONLY: deterministic simulated hard/soft bounce (Amendment 8) so the
+   * retry/suppression logic has real data to run against before Resend exists.
+   * Real providers report bounces asynchronously via webhook
+   * (app/api/marketing/webhooks/resend), never synchronously from `send()`.
+   */
+  simulatedBounce?: { type: "hard" | "soft" };
 }
 
 export interface EmailProvider {

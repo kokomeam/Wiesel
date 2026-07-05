@@ -9,7 +9,14 @@ import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase/server";
-import { loadAudience, loadCampaignForCourse, selectCourseForAuthor } from "@/lib/marketing/persistence";
+import {
+  listLeadListsWithCounts,
+  listSubscribersForCourse,
+  loadAudience,
+  loadCampaignForCourse,
+  selectCourseForAuthor,
+} from "@/lib/marketing/persistence";
+import { ListBuilder } from "@/components/marketing/ListBuilder";
 import { AudienceControls } from "./AudienceControls";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +52,11 @@ export default async function AudiencePage({
   }
 
   const campaign = await loadCampaignForCourse(supabase, course.id);
-  const audience = campaign ? await loadAudience(supabase, course.id) : [];
+  const [audience, subscribers, lists] = await Promise.all([
+    campaign ? loadAudience(supabase, course.id) : Promise.resolve([]),
+    listSubscribersForCourse(supabase, course.id),
+    listLeadListsWithCounts(supabase, course.id),
+  ]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6 lg:p-8">
@@ -57,6 +68,12 @@ export default async function AudiencePage({
       </div>
 
       <AudienceControls courseId={course.id} />
+
+      <ListBuilder
+        courseId={course.id}
+        contacts={subscribers.map((s) => ({ consentStatus: s.consentStatus, status: s.status }))}
+        lists={lists.map((l) => ({ id: l.id, name: l.name }))}
+      />
 
       <div className="flex flex-wrap items-center gap-2 text-xs text-stone-400">
         Lifecycle:

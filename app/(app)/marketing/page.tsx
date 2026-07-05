@@ -1,23 +1,42 @@
 /**
- * Marketing hub (creator surface). Server-loads the author's current course, its
- * campaign, landing pages, and any staged/pending gate actions, then hands them
- * to the client hub. All mutations flow through the server actions → the shared
- * tool layer → the gate.
+ * Marketing hub (creator surface). Server-loads the author's current course,
+ * its campaign, landing pages, the approval inbox (pending irreversible
+ * actions WITH live previews), the agent's open clarifying questions, the
+ * quiet activity log (revertable reversible changes + policy-executed
+ * actions), and the autonomy settings — then hands them to the client hub.
+ * All mutations flow through the server actions → the shared tool layer →
+ * the gate.
  */
 
 import Link from "next/link";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { createClient } from "@/lib/supabase/server";
-import { listPendingApprovals, listStagedActions } from "@/lib/marketing/gate";
+import { parseAutonomyDecision } from "@/lib/marketing/autonomy";
+import { loadAutonomySettings } from "@/lib/marketing/autonomyStore";
+import { listPendingApprovals, listRecentActivity } from "@/lib/marketing/gate";
 import {
   listAuthorCourses,
   listLandingPages,
   loadCampaignForCourse,
   selectCourseForAuthor,
 } from "@/lib/marketing/persistence";
-import { MarketingHub, type ActionVM, type LandingPageVM } from "./MarketingHub";
+import { listPendingQuestions } from "@/lib/marketing/questions";
+import { createMarketingServices } from "@/lib/marketing/services/factory";
+import { getMarketingTool, previewMarketingAction } from "@/lib/marketing/tools";
+import type { ActivityEntryVM } from "@/components/marketing/ActivityLogEntry";
+import type { PendingActionPayload } from "./actions";
+import { MarketingHub, type LandingPageVM, type QuestionVM } from "./MarketingHub";
 
 export const dynamic = "force-dynamic";
+
+function revertLabel(expiresAt: string | null, nowMs: number): { canRevert: boolean; label: string | null } {
+  if (!expiresAt) return { canRevert: false, label: null };
+  const left = new Date(expiresAt).getTime() - nowMs;
+  if (left <= 0) return { canRevert: false, label: null };
+  const hours = Math.floor(left / 3_600_000);
+  const label = hours >= 1 ? `${hours}h left` : `${Math.max(1, Math.floor(left / 60_000))}m left`;
+  return { canRevert: true, label };
+}
 
 export default async function MarketingPage({
   searchParams,
@@ -53,20 +72,57 @@ export default async function MarketingPage({
     );
   }
 
-  const campaign = await loadCampaignForCourse(supabase, course.id);
+  const services = createMarketingServices();
+  const [campaign, pending, questions, activity, autonomy] = await Promise.all([
+    loadCampaignForCourse(supabase, course.id),
+    listPendingApprovals(supabase, course.id),
+    listPendingQuestions(supabase, course.id),
+    listRecentActivity(supabase, course.id, { limit: 15 }),
+    loadAutonomySettings(supabase, course.id),
+  ]);
   const pages = campaign ? await listLandingPages(supabase, campaign.id) : [];
-  const staged = await listStagedActions(supabase, course.id);
-  const pending = await listPendingApprovals(supabase, course.id);
 
+  // Only PENDING approvals gate a page's Publish/Unpublish buttons — a staged
+  // reversible row is a quiet, revertable log entry, not an open request.
   const openTargetIds = new Set(
-    [...staged, ...pending].filter((a) => a.targetRef?.entity === "landing_page").map((a) => a.targetRef!.id)
+    pending.filter((a) => a.targetRef?.entity === "landing_page").map((a) => a.targetRef!.id)
   );
 
-  const toVM = (a: (typeof staged)[number]): ActionVM => ({
-    id: a.id,
-    actionKind: a.actionKind,
-    summary: a.summary ?? a.actionKind,
-    requestedBy: a.requestedBy,
+  // Live, truthful previews for the one-card inbox (never persisted — counts
+  // must reflect the CURRENT audience, not the moment of the request).
+  const pendingVms: PendingActionPayload[] = await Promise.all(
+    pending.map(async (a) => ({
+      actionId: a.id,
+      toolName: a.toolName,
+      summary: a.summary ?? a.actionKind,
+      preview: await previewMarketingAction(a, { supabase, ownerId: user!.id, services }),
+      editableParams: getMarketingTool(a.toolName)?.editableParams ?? null,
+      requestedBy: a.requestedBy,
+    }))
+  );
+
+  const questionVms: QuestionVM[] = questions.map((q) => ({
+    id: q.id,
+    question: q.question,
+    options: q.options,
+  }));
+
+  const nowMs = services.clock.epochMs();
+  const activityVms: ActivityEntryVM[] = activity.map((a) => {
+    const autoExecuted = a.status === "executed" && a.autonomyDecision != null;
+    const { canRevert, label } = autoExecuted
+      ? { canRevert: false, label: null }
+      : revertLabel(a.revertExpiresAt, nowMs);
+    return {
+      id: a.id,
+      actionKind: a.actionKind,
+      summary: a.summary ?? a.actionKind,
+      requestedBy: a.requestedBy,
+      canRevert,
+      revertWindowLabel: label,
+      autoExecuted,
+      autoReason: autoExecuted ? (parseAutonomyDecision(a.autonomyDecision)?.reason ?? null) : null,
+    };
   });
 
   const pageVms: LandingPageVM[] = pages.map((p) => ({
@@ -85,8 +141,10 @@ export default async function MarketingPage({
       campaignName={campaign?.name ?? null}
       campaignStatus={campaign?.status ?? null}
       pages={pageVms}
-      staged={staged.map(toVM)}
-      pending={pending.map(toVM)}
+      pending={pendingVms}
+      questions={questionVms}
+      activity={activityVms}
+      autonomy={autonomy}
       courses={courses}
     />
   );

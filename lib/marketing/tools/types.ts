@@ -21,6 +21,8 @@
 import type { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import type { ModelClient } from "@/lib/ai/modelClient";
+import type { QuestionSpec } from "../questions";
 import type { MarketingServices } from "../services/types";
 import type { Reversibility } from "../types";
 
@@ -32,7 +34,11 @@ export type EntityKind =
   | "landing_page"
   | "email_sequence"
   | "subscriber"
-  | "sequence_enrollment";
+  | "sequence_enrollment"
+  | "lead_list"
+  | "sender_identity"
+  | "follow_up_rule"
+  | "voice_profile";
 
 export interface EntityRef {
   entity: EntityKind;
@@ -48,8 +54,30 @@ export interface MarketingToolContext {
   /** The signed-in author (for audit + any owner-scoped writes). */
   ownerId: string;
   services: MarketingServices;
+  /**
+   * Optional model seam for LLM-grounded generation (generate_email_sequence,
+   * regenerate_email_step, generate_email_variants). Undefined when
+   * OPENAI_API_KEY isn't configured OR the caller didn't wire one — every
+   * generation tool falls back to the deterministic template generator in that
+   * case (mock-first stays intact; nothing REQUIRES a model to function).
+   */
+  model?: ModelClient;
   /** Who initiated this call — recorded on the gate ledger row. */
   requestedBy: "user" | "agent";
+  /**
+   * The signed-in creator's email, when the caller knows it. Powers exactly
+   * one privilege: send_test_email addressed HERE may auto-log under
+   * assisted/auto mode (it reaches nobody but the creator). Absent → the gate
+   * falls back to auth.getUser(); if that also misses, the test email stays
+   * on the approval path (fail closed, never open).
+   */
+  ownerEmail?: string | null;
+  /** Set by the agent loop per tool call — stored on gate-raised clarifying
+   *  questions so the answer can be tied back to the paused call. */
+  toolCallId?: string | null;
+  /** Set by the agent loop — clarifying questions raised mid-run store it so
+   *  the answer resumes the SAME conversation. Null on user-surface calls. */
+  conversationId?: string | null;
   /**
    * Set by the gate for IRREVERSIBLE tools only:
    *   false/undefined → return a side-effect-FREE preview (audience size, etc.)
@@ -85,6 +113,32 @@ export interface MarketingTool<P extends z.ZodTypeAny = z.ZodTypeAny> {
   /** Short semantic label for the gate ledger + approval card. Defaults to the
    *  tool name. */
   actionKind?: string;
+  /**
+   * "question" marks an INTERACTION tool (ask_creator): the gate intercepts it
+   * before grade routing, records a marketing_question, and pauses the loop —
+   * `execute` never runs. Leave unset on every normal tool.
+   */
+  interaction?: "question";
+  /**
+   * IRREVERSIBLE tools only, optional: return a QuestionSpec when the call's
+   * targeting is ambiguous (e.g. a broadcast with no segment over a mixed
+   * audience) and null when it's unambiguous. Under assisted/auto mode the
+   * gate turns a returned spec into a clarifying question INSTEAD of a
+   * half-specified approval card; manual mode skips the hook entirely.
+   */
+  clarifyTargeting?(
+    args: z.infer<P>,
+    ctx: MarketingToolContext
+  ): QuestionSpec | null | Promise<QuestionSpec | null>;
+  /**
+   * IRREVERSIBLE segment-send tools only, PURE: the segment identity this call
+   * targets (e.g. "status:engaged"). Drives the first-send-to-new-segment
+   * guardrail + the segment send history. Null = not a segment send.
+   */
+  segmentKey?(args: z.infer<P>): string | null;
+  /** Param names the approval card lets the creator edit in place before
+   *  approving. Omit → the card shows no Edit action. */
+  editableParams?: string[];
   /**
    * For a REVERSIBLE tool that edits an EXISTING entity, return its ref so the
    * gate can snapshot it BEFORE `execute` mutates. Return null for a create

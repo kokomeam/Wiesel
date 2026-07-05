@@ -81,7 +81,15 @@ async function main() {
     description: "Loosen up and paint with confidence.",
     plan: { outcomes: ["Mix a basic palette", "Paint a simple landscape"], prerequisites: [], teachingStyle: "encouraging" } as never,
   });
-  await supabase.from("marketing_campaign").insert({ id: campaignId, course_id: courseId, name: "Launch" });
+  // Open send window (0–23, weekends allowed) so the fixed-clock ticks aren't
+  // held by the default 9–11-weekday window (Amendment 12 — tested separately
+  // in verify-marketing-campaign.ts).
+  await supabase.from("marketing_campaign").insert({
+    id: campaignId,
+    course_id: courseId,
+    name: "Launch",
+    config: { sendWindow: { startHour: 0, endHour: 23, timezone: "UTC", skipWeekends: false } } as never,
+  });
   const subEmails = ["a", "b", "c"].map((x) => `sub-${x}-${crypto.randomUUID().slice(0, 6)}@example.com`);
   await supabase.from("subscriber").insert(
     subEmails.map((e) => ({ campaign_id: campaignId, course_id: courseId, email: e, status: "lead" }))
@@ -94,12 +102,12 @@ async function main() {
 
   // ── generate sequence (reversible) ────────────────────────────────────
   console.log("\n# generate_email_sequence → accept");
-  const gen = await executeMarketingTool("generate_email_sequence", {}, ctx);
+  const gen = await executeMarketingTool("generate_email_sequence", { goal: null, length: null }, ctx);
   check("sequence staged", gen.status === "staged");
   const seqId = (gen.data as { sequenceId: string }).sequenceId;
   await acceptMarketingAction(supabase, gen.actionId!);
   const seq = await loadEmailSequence(supabase, seqId);
-  check("sequence has 4 touches", seq?.touches.length === 4, String(seq?.touches.length));
+  check("sequence has 5 touches (launch blueprint default)", seq?.touches.length === 5, String(seq?.touches.length));
   check("touch 0 has delay 0; touch 1 delay 2d", seq?.touches[0].delaySeconds === 0 && seq?.touches[1].delaySeconds === 2 * 86400);
 
   // ── write_email_touch (reversible) + reject restores ──────────────────
@@ -114,7 +122,7 @@ async function main() {
   check("touch update staged", upd.status === "staged");
   const afterEdit = await loadEmailSequence(supabase, seqId);
   check("touch subject changed", afterEdit?.touches.find((t) => t.id === t0.id)?.subject === "CHANGED SUBJECT");
-  await rejectMarketingAction(supabase, upd.actionId!);
+  await rejectMarketingAction(supabase, upd.actionId!, { nowIso: services.clock.now() });
   const afterReject = await loadEmailSequence(supabase, seqId);
   check("reject restores the touch byte-for-byte", JSON.stringify(afterReject?.touches.find((t) => t.id === t0.id)) === before, "touch differs");
 
@@ -179,7 +187,9 @@ async function main() {
 
   // ── broadcast (irreversible) ──────────────────────────────────────────
   console.log("\n# send_broadcast → approve");
-  const bc = await executeMarketingTool("send_broadcast", { subject: "Quick update", body: { blocks: [{ kind: "paragraph", text: "Hello everyone." }] }, status: null }, ctx);
+  // status "all" = EXPLICITLY everyone (null would be ambiguous targeting → a
+  // clarifying question over this mixed-status audience; see verify-marketing-autonomy).
+  const bc = await executeMarketingTool("send_broadcast", { subject: "Quick update", body: { blocks: [{ kind: "paragraph", text: "Hello everyone." }] }, status: "all" }, ctx);
   check("broadcast pends with audience", bc.status === "pending_approval" && (bc.approvalPreview as { audience: number }).audience >= 1);
   await approveMarketingAction(bc.actionId!, { supabase, ownerId: userId, services });
   const summary = await getAnalyticsSummary(supabase, courseId);

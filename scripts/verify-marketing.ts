@@ -174,7 +174,7 @@ async function main() {
   const gen2 = await executeMarketingTool("generate_landing_page", { title: "Throwaway", ctaLabel: null }, ctx);
   const page2Id = (gen2.data as { pageId: string }).pageId;
   check("throwaway page exists before reject", !!(await loadLandingPage(supabase, page2Id)));
-  await rejectMarketingAction(supabase, gen2.actionId!);
+  await rejectMarketingAction(supabase, gen2.actionId!, { nowIso: services.clock.now() });
   check("reject of a create DELETES the page", (await loadLandingPage(supabase, page2Id)) === null);
   check("rejected create action is 'reverted'", (await loadAction(supabase, gen2.actionId!))?.status === "reverted");
 
@@ -188,7 +188,7 @@ async function main() {
   check("section changed after update", JSON.stringify(afterEdit?.sections.find((s) => s.kind === "hero")) !== heroBefore);
   const updAction = await loadAction(supabase, upd.actionId!);
   check("update action captured a before_snapshot", !!updAction?.beforeSnapshot);
-  await rejectMarketingAction(supabase, upd.actionId!);
+  await rejectMarketingAction(supabase, upd.actionId!, { nowIso: services.clock.now() });
   const afterReject = await loadLandingPage(supabase, pageId);
   check("reject restores the section BYTE-FOR-BYTE", JSON.stringify(afterReject?.sections.find((s) => s.kind === "hero")) === heroBefore, "section differs after restore");
 

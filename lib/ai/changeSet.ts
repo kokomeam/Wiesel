@@ -87,7 +87,11 @@ export async function getPendingBlocks(supabase: DB, courseId: string): Promise<
     .from("change_set_items")
     .select("block_id,change_set_id,op")
     .in("change_set_id", ids);
-  return (items ?? []).map((i) => ({ blockId: i.block_id, changeSetId: i.change_set_id, op: i.op }));
+  // block_id is nullable in the schema (structural change items carry node_id
+  // instead); only block-level items drive the editor highlight.
+  return (items ?? []).flatMap((i) =>
+    i.block_id ? [{ blockId: i.block_id, changeSetId: i.change_set_id, op: i.op }] : []
+  );
 }
 
 /** Accept: the edits already live in the DB — just resolve the change-set so the
@@ -190,7 +194,12 @@ export async function rejectChangeSet(
   const now = new Date().toISOString();
 
   // Compute the FULL restored doc first; only touch the DB if every item reverts.
-  const reverted = revertChangeSet(doc, items ?? [], now);
+  // block_id is nullable in the schema (structural items carry node_id); this
+  // block-level revert only handles rows that actually reference a block.
+  const blockItems = (items ?? []).filter(
+    (i): i is typeof i & { block_id: string } => i.block_id !== null
+  );
+  const reverted = revertChangeSet(doc, blockItems, now);
   if (!reverted.ok) throw new Error(`Reject aborted (no changes applied): ${reverted.error}`);
 
   const err = await reconcileCourseDoc(supabase, reverted.doc, ownerId);

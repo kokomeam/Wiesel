@@ -83,7 +83,7 @@ async function main() {
   check("set_page_design is staged", d.status === "staged");
   const afterDesign = await loadLandingPage(supabase, pageId);
   check("design tokens applied to the draft", afterDesign?.theme.colorTheme === "cool" && afterDesign?.theme.density === "airy");
-  await rejectMarketingAction(supabase, d.actionId!);
+  await rejectMarketingAction(supabase, d.actionId!, { nowIso: services.clock.now() });
   check("reject restores the theme byte-for-byte", JSON.stringify((await loadLandingPage(supabase, pageId))?.theme ?? {}) === themeBefore);
 
   // ── section variant (set_section_variant) ─────────────────────────────
@@ -110,7 +110,7 @@ async function main() {
   const edited = { ...heroNow, headline: "Write like an artist" } as typeof heroNow;
   const c = await executeMarketingTool("update_landing_section", { pageId, section: edited }, ctx);
   check("content edit is staged", c.status === "staged");
-  await rejectMarketingAction(supabase, c.actionId!);
+  await rejectMarketingAction(supabase, c.actionId!, { nowIso: services.clock.now() });
   check("reject restores the section byte-for-byte", JSON.stringify((await loadLandingPage(supabase, pageId))?.sections.find((s) => s.id === hero.id)) === heroJson);
 
   // ── agent path (mock model) drives a design edit ──────────────────────

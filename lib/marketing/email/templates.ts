@@ -8,7 +8,8 @@
  * `EmailBody` (length-capped via the schema at the tool boundary).
  */
 
-import type { AnalyticsEventType, CourseMarketingContext, EmailBody, SequenceKind } from "../types";
+import type { BlueprintStage, CopyFramework } from "../blueprints";
+import type { AnalyticsEventType, CampaignBrief, CourseMarketingContext, EmailBody, SequenceKind } from "../types";
 
 const DAY = 86400;
 
@@ -19,6 +20,10 @@ export interface TouchDraft {
   subject: string;
   previewText: string | null;
   body: EmailBody;
+  stageName?: string;
+  purpose?: string;
+  aiRationale?: string;
+  personalizationVariables?: string[];
 }
 
 export interface SequenceDraft {
@@ -103,6 +108,56 @@ export function generateLaunchSequence(
         },
       },
     ],
+  };
+}
+
+const FRAMEWORK_OPENERS: Record<CopyFramework, (course: CourseMarketingContext, brief: CampaignBrief | undefined) => string> = {
+  PAS: (course) =>
+    `Most people trying to learn ${course.title} stall on the same hurdle. It costs them time and confidence — and it's completely avoidable with the right approach.`,
+  claim_mechanism_proof: (course) =>
+    `By the end of ${course.title}, you'll be able to ${course.outcomes[0] ?? "apply what you learn with confidence"}. Here's exactly how the course gets you there.`,
+  objection_reframe_evidence: (course) =>
+    `"Is this really for me?" is the question most people ask before starting ${course.title}. Here's the honest answer.`,
+  offer_transformation_deadline: (course, brief) =>
+    brief?.offerDeadlineIso
+      ? `${course.title} — here's what's included, and why now is the moment to start.`
+      : `If you've been meaning to start ${course.title}, this is your sign.`,
+};
+
+/** Blueprint-driven deterministic generator (Amendment 1's default engine when
+ *  no model is configured). One touch per stage, grounded in the course +
+ *  brief; the LLM path (email/llmGenerate.ts) produces richer copy against the
+ *  SAME rubric when a model is available. */
+export function generateBlueprintSequence(
+  course: CourseMarketingContext,
+  stages: BlueprintStage[],
+  opts: { landingPath?: string | null; brief?: CampaignBrief } = {}
+): SequenceDraft {
+  const path = opts.landingPath ?? null;
+  return {
+    name: "Launch sequence",
+    kind: "time_launch",
+    trigger: {},
+    touches: stages.map((stage, i) => ({
+      position: i,
+      delaySeconds: stage.dayOffset * DAY,
+      triggerEvent: null,
+      subject: `${stage.name} — ${course.title}`,
+      previewText: FRAMEWORK_OPENERS[stage.framework](course, opts.brief).slice(0, 90),
+      body: {
+        blocks: [
+          { kind: "paragraph", text: FRAMEWORK_OPENERS[stage.framework](course, opts.brief) },
+          {
+            kind: "bullets",
+            items: (course.outcomes.length ? course.outcomes : [`the core ideas behind ${course.title}`]).slice(0, 3),
+          },
+          cta(path, stage.framework === "offer_transformation_deadline" ? "Enroll now" : "Learn more"),
+        ],
+      },
+      stageName: stage.name,
+      purpose: stage.framework,
+      personalizationVariables: [],
+    })),
   };
 }
 

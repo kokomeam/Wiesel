@@ -57,7 +57,14 @@ async function main() {
   const courseId = crypto.randomUUID();
   const campaignId = crypto.randomUUID();
   await supabase.from("courses").insert({ id: courseId, author_id: userId, title: "Bread Baking", plan: { outcomes: ["Mix dough", "Bake a loaf"], prerequisites: [], teachingStyle: "warm" } as never });
-  await supabase.from("marketing_campaign").insert({ id: campaignId, course_id: courseId, name: "Launch" });
+  await supabase.from("marketing_campaign").insert({
+    id: campaignId,
+    course_id: courseId,
+    name: "Launch",
+    // Open send window so the fixed-clock tick isn't held (window behavior is
+    // tested in verify-marketing-campaign.ts).
+    config: { sendWindow: { startHour: 0, endHour: 23, timezone: "UTC", skipWeekends: false } } as never,
+  });
   await supabase.from("subscriber").insert([
     { campaign_id: campaignId, course_id: courseId, email: `a-${crypto.randomUUID().slice(0, 6)}@example.com`, status: "lead" },
     { campaign_id: campaignId, course_id: courseId, email: `b-${crypto.randomUUID().slice(0, 6)}@example.com`, status: "lead" },
@@ -68,7 +75,7 @@ async function main() {
   const ctx: MarketingToolContext = { supabase, courseId, campaignId, ownerId: userId, services, requestedBy: "user" };
 
   // generate + activate + tick (deliver touch 0)
-  const gen = await executeMarketingTool("generate_email_sequence", {}, ctx);
+  const gen = await executeMarketingTool("generate_email_sequence", { goal: null, length: null }, ctx);
   const seqId = (gen.data as { sequenceId: string }).sequenceId;
   await acceptMarketingAction(supabase, gen.actionId!);
   const act = await executeMarketingTool("activate_sequence", { sequenceId: seqId }, ctx);
@@ -81,7 +88,7 @@ async function main() {
   const overview = await loadSequencesOverview(supabase, campaignId);
   check("overview lists the sequence", overview.length === 1 && overview[0].id === seqId);
   const seq = overview[0];
-  check("4 touches with subjects + schedule", seq.touches.length === 4 && seq.touches.every((t) => t.subject.length > 0));
+  check("5 touches with subjects + schedule", seq.touches.length === 5 && seq.touches.every((t) => t.subject.length > 0));
   check("touch 1 delay is +2 days", seq.touches[1].delaySeconds === 2 * 86400);
   check("enrolledCount = 2", seq.enrolledCount === 2, String(seq.enrolledCount));
   check("touch 0 shows 2 sent", seq.touches[0].sent === 2, String(seq.touches[0].sent));

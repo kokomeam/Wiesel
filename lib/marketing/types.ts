@@ -15,10 +15,42 @@
 
 /* ──────────────────────────── enums / unions ─────────────────────────── */
 
-export type CampaignStatus = "draft" | "active" | "paused" | "archived";
+/** The full campaign lifecycle (Amendment: replaces the old draft/active/
+ *  paused/archived set — `archived` rows were migrated to `completed`). */
+export type CampaignStatus =
+  | "draft"
+  | "generated"
+  | "in_review"
+  | "approved"
+  | "scheduled"
+  | "sending"
+  | "active"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
+export type ComplianceStatus = "not_reviewed" | "passed" | "warnings" | "blocked";
 export type LandingPageStatus = "draft" | "published" | "unpublished";
 export type SequenceKind = "time_launch" | "event_triggered";
 export type SequenceStatus = "draft" | "active" | "paused";
+export type EmailStepApprovalStatus = "draft" | "pending_review" | "approved";
+export type ConsentStatus = "confirmed" | "pending" | "lapsed";
+export type LeadListSourceType = "manual_import" | "course_interest_signup" | "previous_students" | "custom";
+export type FollowUpTrigger =
+  | "after_previous_email"
+  | "opened_not_clicked"
+  | "clicked_not_enrolled"
+  | "not_opened"
+  | "not_enrolled";
+export type FollowUpRuleStatus = "draft" | "approved" | "active" | "paused";
+export type LeadSegmentKey =
+  | "clicked_not_enrolled"
+  | "opened_not_clicked"
+  | "not_opened"
+  | "engaged_30d"
+  | "most_engaged"
+  | "by_source";
+export type EngagementBucket = "hot" | "warm" | "cool" | "cold";
 
 /** The subscriber lifecycle state machine. `unsubscribed`/`bounced` are
  *  terminal SUPPRESSED states no send may target. */
@@ -48,10 +80,14 @@ export type AnalyticsEventType =
   | "form_submit"
   | "free_lesson_capture"
   | "email_sent"
+  | "email_delivered"
   | "email_open"
   | "email_click"
   | "email_bounce"
   | "email_unsubscribe"
+  | "spam_complaint"
+  | "consent_confirmed"
+  | "campaign_auto_paused"
   | "enrollment";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
@@ -195,6 +231,50 @@ export interface EmailBody {
   blocks: EmailBlock[];
 }
 
+/* ───────────────────── campaign config (jsonb) shapes ─────────────────── */
+
+/** The Campaign Brief (Amendment 3a) — optional-but-encouraged creator input,
+ *  injected into generation alongside the auto-pulled course context. Lives at
+ *  `marketing_campaign.config.brief`. */
+export interface CampaignBrief {
+  audienceNotes?: string;
+  proofPoints?: string;
+  offerDetails?: string;
+  thingsToAvoid?: string;
+  freeform?: string;
+  /** Amendment 14 — overrides the auto-detected course language. */
+  language?: string;
+  /** Amendment 1 (promote_discount) — a REAL ISO deadline; required for that
+   *  blueprint (fake-scarcity compliance rule blocks without it). */
+  offerDeadlineIso?: string;
+}
+
+/** Send-window config (Amendment 12). Lives at `config.sendWindow`. */
+export interface SendWindow {
+  startHour: number;
+  endHour: number;
+  timezone: string;
+  skipWeekends: boolean;
+}
+
+export const DEFAULT_SEND_WINDOW: SendWindow = {
+  startHour: 9,
+  endHour: 11,
+  timezone: "UTC",
+  skipWeekends: true,
+};
+
+export interface MarketingCampaignConfig {
+  blueprintKey?: string;
+  brief?: CampaignBrief;
+  sendWindow?: SendWindow;
+  /** Snapshotted at launch — the FIXED audience the approval covers (Amendment
+   *  4c: "operates only within the approved list"). */
+  approvedAudienceIds?: string[];
+  autoPauseReason?: { metric: string; value: number; threshold: number; occurredAt: string };
+  [key: string]: unknown;
+}
+
 /* ───────────────────────────── entities ──────────────────────────────── */
 
 export interface MarketingCampaign {
@@ -203,7 +283,13 @@ export interface MarketingCampaign {
   name: string;
   goal: string | null;
   status: CampaignStatus;
-  config: Record<string, unknown>;
+  complianceStatus: ComplianceStatus;
+  complianceReport: Record<string, unknown>;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  senderIdentityId: string | null;
+  leadListId: string | null;
+  config: MarketingCampaignConfig;
 }
 
 export interface LandingPage {
@@ -230,6 +316,13 @@ export interface EmailTouch {
   subject: string;
   previewText: string | null;
   body: EmailBody;
+  stageName: string | null;
+  purpose: string | null;
+  aiRationale: string | null;
+  personalizationVariables: string[];
+  approvalStatus: EmailStepApprovalStatus;
+  complianceWarnings: string[];
+  qualityScore: { score: number; failedCriteria: string[]; passedCriteria: string[] } | null;
 }
 
 export interface EmailSequence {
@@ -253,9 +346,50 @@ export interface Subscriber {
   status: SubscriberStatus;
   source: string | null;
   consent: Record<string, unknown>;
+  consentStatus: ConsentStatus;
+  consentRequestedAt: string | null;
   attributes: Record<string, unknown>;
   anonymousId: string | null;
   unsubscribedAt: string | null;
+}
+
+/* ─────────────────────── new campaign-layer entities ───────────────────── */
+
+export interface LeadList {
+  id: string;
+  courseId: string;
+  campaignId: string | null;
+  name: string;
+  sourceType: LeadListSourceType;
+  consentConfirmed: boolean;
+}
+
+export interface SenderIdentity {
+  id: string;
+  courseId: string;
+  fromName: string;
+  fromEmail: string;
+  replyTo: string | null;
+  mailingAddress: string;
+  businessName: string | null;
+  verified: boolean;
+}
+
+export interface FollowUpRule {
+  id: string;
+  campaignId: string;
+  courseId: string;
+  name: string;
+  trigger: FollowUpTrigger;
+  delayDays: number;
+  emailTouchId: string | null;
+  status: FollowUpRuleStatus;
+}
+
+export interface VoiceProfile {
+  id: string;
+  authorId: string;
+  rules: string[];
 }
 
 export interface SequenceEnrollment {
@@ -312,6 +446,12 @@ export interface MarketingActionRow {
   requestedBy: RequestedBy;
   resolvedAt: string | null;
   createdAt: string;
+  /** Reversible actions: one-click Revert is offered until this instant
+   *  (then the revert closes, fail-closed). Null on irreversible rows. */
+  revertExpiresAt: string | null;
+  /** Irreversible actions routed by the autonomy engine: the full audit of
+   *  mode + every guardrail evaluated (autonomy.ts AutonomyDecision). */
+  autonomyDecision: unknown | null;
 }
 
 /* ─────────────── grounding context (read from the course) ─────────────── */

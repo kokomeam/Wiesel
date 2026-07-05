@@ -6,6 +6,154 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — delivery-timing honesty (send-window visibility + agent wrap-ups), 2026-07-04
+
+From live usage: a creator launched a campaign at 23:41 local, the agent said
+"4 subscriber(s) will begin receiving the sequence", and nothing arrived — the
+sends were correctly HELD by the default send window (9–11 UTC weekdays,
+Amendment 12) but NOTHING said so, and the agent ended its run without any
+summary of what had happened or what would happen next.
+
+- **Pure window helpers** (`lib/marketing/scheduler.ts`): `sendWindowState`
+  (open now? when does it next open — 15-min stepping, weekend-aware, 14-day
+  horizon), `describeSendWindow` ("09:00–11:00 UTC, weekdays"),
+  `formatWindowOpening`, and `sendTimingSentence` — the ONE sentence that keeps
+  everyone honest ("Queued emails are HELD until the send window opens (…);
+  next opening Fri, Jul 4, 09:00 (UTC)."). `withinSendWindow` exported; the
+  private DEFAULT_WINDOW now aliases the types' `DEFAULT_SEND_WINDOW`.
+- **Every summary that enqueues sends states the timing**: `launch_campaign`
+  (preview AND executed — so the approval card warns BEFORE the creator
+  approves; executed `data` carries `nextWindowOpensAt`), `activate_sequence`,
+  `enroll_segment_in_sequence`.
+- **Builder Delivery card** (`CampaignBuilder.tsx` + server-computed
+  `sendWindowInfo` in `page.tsx`): a due-but-held state now renders an amber
+  callout — "N queued emails are due but held until your send window opens
+  (09:00–11:00 UTC, weekdays). Next opening: {local time} your time." The old
+  copy hardcoded "default 9–11am weekdays" with no timezone (misleading for a
+  non-UTC creator) and never said sends were being held. Window state is
+  computed with the injected clock — react-hooks/purity forbids `Date.now()`
+  in render even in server components.
+- **Agent END-OF-RUN wrap-up contract** (`agent/prompt.ts`): never stop
+  silently after tool calls — close every run with (1) what you did, (2)
+  what's true now, (3) what happens next and WHEN ("Enqueued is NOT sent"),
+  (4) what awaits the creator. The approve-resume message
+  (`agent/resume.ts`) now explicitly demands that wrap-up with timing.
+- **Tests**: campaign suite 101 → 112 (pure window-state/timing-sentence
+  matrix incl. weekend skip + degenerate window; launch preview/executed
+  summaries + `nextWindowOpensAt` asserted at the fixed clock); autonomy
+  92 → 93 (prompt wrap-up directive). Full marketing set: **398 checks
+  green**; build + lint clean.
+
+## Fix — OpenAI transport proxy (agent "Request timed out."), 2026-07-03
+
+Every real-model agent call (marketing agent AND studio content agent) died at
+`{"tag":"openai_error","message":"Request timed out."}` after ~85–89s. Root
+cause (verified with `curl` + the smoke test): on this machine
+`api.openai.com` is reachable ONLY through the local Clash proxy, and the
+OpenAI SDK's bundled undici fetch IGNORES `HTTPS_PROXY` — it connected
+directly and hung until the transport deadline. This repo copy never received
+the proxy shim the sibling App repo already had; ported it:
+
+- `lib/ai/providers/openai.ts`: `resolveProxyUrl()` (`OPENAI_PROXY_URL` wins,
+  else `HTTPS_PROXY`/`HTTP_PROXY`) + `makeProxyTransport()` — undici's own
+  `fetch` + a `ProxyAgent` dispatcher with socket-level timeouts, passed
+  TOGETHER and scoped to the OpenAI client only (global dispatcher untouched;
+  Supabase and all other fetch stay direct). No proxy env ⇒ direct connection
+  exactly as before (production unaffected). undici loaded via non-literal
+  `createRequire` (devDependency; the bundler never resolves it). An
+  `openai_client_config` log line states the ACTUAL transport per client.
+- `scripts/smoke-openai.ts` + `npm run smoke:openai`: Phase A reproduces the
+  direct-connection failure, Phase C proves the provider's scoped proxy works
+  while the global dispatcher stays direct. Verified: A1 direct fetch failed
+  (dead), C1 wrapper call answered in 2.8s through Clash.
+
+## Marketing — audience list building + agent dock + freeform answers, 2026-07-03
+
+Follow-up QoL pass from live usage: the agent (and the UI) couldn't put
+EXISTING contacts on a list, the chat was buried in a card grid, and question
+cards had no type-your-own-answer path.
+
+- **Audience tools** (all reversible, all send nothing): `build_audience_list`
+  (create + fill from existing contacts in one step — consent × funnel-stage
+  filter, suppressed always excluded, confirmed-only lists are
+  consent-confirmed at birth), `add_leads_to_list` (filter or explicit ids,
+  already-members skipped), `remove_leads_from_list`. The `lead_list`
+  snapshotter is now COMPOSITE (row + membership) — reverting any membership
+  edit restores it byte-for-byte, fixing the silent `import_leads` revert gap;
+  legacy bare-row snapshots still restore. Found + fixed along the way:
+  `lead_list_member` had no UPDATE policy, so restore's upsert failed RLS
+  (migration `20260703120000`). `removeLeadFromListAction` now routes through
+  the gate (was the one direct-delete bypass). The agent's system prompt now
+  teaches the capability explicitly.
+- **ListBuilder UI** (`components/marketing/ListBuilder.tsx`): a prominent
+  "turn your contacts into a mailing list" panel on BOTH `/marketing/leads`
+  and `/marketing/audience` — live-counted consent × stage slicing, new-list
+  or add-to-existing, revert hint on success.
+- **Agent dock**: `app/(app)/marketing/layout.tsx` mounts a floating "Ask the
+  agent" pill on every marketing page (hidden where a chat already owns the
+  surface) opening a right slide-over with the same AgentPanel; the transcript
+  survives close (panel stays mounted). The hub gets a front-and-center
+  ask-bar + suggestion chips that seed the dock and auto-send
+  (`agentDockStore`, `AgentPanel seed/onSeedConsumed`).
+- **Freeform question answers**: every QuestionCard offers "Something else…"
+  (`value: "__other__"`); the resume message hands the creator's words to the
+  agent verbatim — allowed to redirect the plan, never coerced into an option.
+- **Verified:** new `verify:marketing:lists` **31/31**; all 12 suites green —
+  **386 checks total**; build + lint + tsc clean; 15-check Playwright pass
+  (dock open/close/seed, list builder end-to-end → quiet revertable hub log,
+  audience-page parity).
+
+## Marketing agent — gate/autonomy redesign, 2026-07-03
+
+The approval system rebuilt around one principle: LOUD only where a human is
+load-bearing. Full design doc: `docs/marketing-autonomy.md`.
+
+- **Reversible tier fixed (the core bug):** all 25 reversible tools used to
+  stage blocking Accept/Reject cards with the same weight as the 10 real gate
+  cards. Now they execute + land as a quiet, dismissible **activity log** with
+  a one-click **Revert** for a configurable window (default 24h,
+  `marketing_action.revert_expires_at`; refused after expiry, fail-closed;
+  Dismiss = accept). Unconditional — not gated behind any mode.
+- **Three autonomy modes** (per-course `marketing_autonomy_settings`,
+  governing ONLY the irreversible tier): `manual` / `assisted` (default; no
+  row needed) / `auto`. Auto evaluates an explicit creator policy through the
+  PURE engine `lib/marketing/autonomy.ts` (allowlist + recipient cap + budget
+  cap + allowed hours + first-send-to-new-segment via the new
+  `marketing_segment_send` history); every unset field fails closed, the empty
+  policy is inert, one failing guardrail routes to a card, and the full audit
+  persists as `autonomy_decision`. **Hard-deny first** — `launch_campaign`,
+  `cancel_campaign`, `send_consent_confirmations` never auto-approve.
+  Assisted auto-logs owner-addressed test emails (foreign addresses stay
+  carded) and resolves ambiguous targeting via a question before the card.
+- **Clarifying questions** (`marketing_question`): model-raised (`ask_creator`,
+  a narrow 2–5-option interaction tool the gate resolves) or gate-raised
+  (`clarifyTargeting` hooks on send_broadcast / enroll_segment_in_sequence —
+  null status over a mixed audience; `"all"` = explicit everyone so answers
+  never re-trigger). Both pause the loop through ONE `agent_blocked {kind}`
+  branch; `resumeAgentAfterAnswer` is the third resume path (same
+  conversation, one turn; gate-raised answers tell the agent to retry the
+  tool with the param resolved; user-path answers re-run the tool directly).
+- **One-card approval** (`ApprovalCard`, shared by chat/hub/builder/leads):
+  full inline preview (new `effectLabel` + `bodyPreview` on irreversible
+  previews; pages re-run previews server-side so counts stay current),
+  exactly Approve-&-effect / Edit (in-place param edit + re-preview) /
+  Reject (+ optional note to the agent). Request buttons return the pending
+  payload → the card renders where the creator clicked; the old two-location
+  request→approve round-trip is gone. `approveMarketingAction` claims
+  `pending→'approved'` atomically — double-clicks see "already resolved",
+  failed executes release back to pending (retryable).
+- **UI:** `components/marketing/{ApprovalCard,QuestionCard,ActivityLogEntry,
+  AutonomySettings}.tsx`; MarketingHub gets Needs-approval cards, "The agent
+  asked", the quiet Recent-changes log, and the autonomy settings section.
+- **Verified:** new `verify:marketing:autonomy` **92/92** (pure invariant
+  permutations first, then live: unknown-tool fail-closed + registry drift
+  guard, hard-deny sweep, deny-never-executes, per-guardrail ladder,
+  reversible-never-pends, revert window, governance language, pause/resume
+  parity, approve race, segment history). Updated `:agent` 18→22,
+  `:campaign` 99→101, `:email`/`:marketing`/`:landing-edit` adjusted for the
+  revert-window clock injection. **Full marketing suite: 355 checks green**;
+  `build` + `lint` + `tsc` clean; Supabase advisors show no new findings.
+
 ## Marketing studio — Email & sequences hub (Slice 5), 2026-06-22
 
 You can now SEE what will be emailed, when, and to whom — before it sends.

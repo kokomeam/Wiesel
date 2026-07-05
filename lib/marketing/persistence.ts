@@ -16,13 +16,18 @@ import type {
   EmailBody,
   EmailSequence,
   EmailTouch,
+  FollowUpRule,
   LandingPage,
   LandingPageStatus,
   LandingSection,
   LandingTheme,
+  LeadList,
   MarketingCampaign,
+  SenderIdentity,
   SequenceKind,
   SequenceStatus,
+  SubscriberStatus,
+  VoiceProfile,
 } from "./types";
 
 type DB = SupabaseClient<Database>;
@@ -40,7 +45,13 @@ export function campaignFromRow(row: CampaignRow): MarketingCampaign {
     name: row.name,
     goal: row.goal,
     status: row.status as CampaignStatus,
-    config: (row.config as Record<string, unknown>) ?? {},
+    complianceStatus: row.compliance_status as MarketingCampaign["complianceStatus"],
+    complianceReport: (row.compliance_report as Record<string, unknown>) ?? {},
+    approvedAt: row.approved_at,
+    approvedBy: row.approved_by,
+    senderIdentityId: row.sender_identity_id,
+    leadListId: row.lead_list_id,
+    config: ((row.config as Record<string, unknown>) ?? {}) as MarketingCampaign["config"],
   };
 }
 
@@ -168,6 +179,13 @@ export function touchFromRow(row: TouchRow): EmailTouch {
     subject: row.subject,
     previewText: row.preview_text,
     body: ((row.body as unknown) as EmailBody) ?? { blocks: [] },
+    stageName: row.stage_name,
+    purpose: row.purpose,
+    aiRationale: row.ai_rationale,
+    personalizationVariables: ((row.personalization_variables as unknown) as string[]) ?? [],
+    approvalStatus: row.approval_status as EmailTouch["approvalStatus"],
+    complianceWarnings: ((row.compliance_warnings as unknown) as string[]) ?? [],
+    qualityScore: (row.quality_score as unknown as EmailTouch["qualityScore"]) ?? null,
   };
 }
 
@@ -454,5 +472,230 @@ export async function loadAudience(supabase: DB, courseId: string): Promise<Audi
     status: s.status,
     enrollments: enrBySub.get(s.id) ?? [],
     pending: pendBySub.get(s.id) ?? [],
+  }));
+}
+
+/* ─────────────────────── lead lists (Amendment 4) ──────────────────────── */
+
+export function leadListFromRow(row: Database["public"]["Tables"]["lead_list"]["Row"]): LeadList {
+  return {
+    id: row.id,
+    courseId: row.course_id,
+    campaignId: row.campaign_id,
+    name: row.name,
+    sourceType: row.source_type as LeadList["sourceType"],
+    consentConfirmed: row.consent_confirmed,
+  };
+}
+
+export async function loadLeadList(supabase: DB, id: string): Promise<LeadList | null> {
+  const { data } = await supabase.from("lead_list").select("*").eq("id", id).maybeSingle();
+  return data ? leadListFromRow(data) : null;
+}
+
+export async function listLeadLists(supabase: DB, courseId: string): Promise<LeadList[]> {
+  const { data } = await supabase
+    .from("lead_list")
+    .select("*")
+    .eq("course_id", courseId)
+    .order("created_at", { ascending: false });
+  return (data ?? []).map(leadListFromRow);
+}
+
+export async function listLeadListMemberIds(supabase: DB, listId: string): Promise<string[]> {
+  const { data } = await supabase.from("lead_list_member").select("subscriber_id").eq("list_id", listId);
+  return (data ?? []).map((r) => r.subscriber_id);
+}
+
+/** Totals/eligible are ALWAYS computed at read time (never cached) — the same
+ *  "one event stream, no counters that can drift" discipline as everywhere
+ *  else in this suite. Eligible = consented AND not suppressed AND not lapsed. */
+export async function listLeadListsWithCounts(
+  supabase: DB,
+  courseId: string
+): Promise<(LeadList & { totalLeads: number; eligibleLeads: number; awaitingConsentRequest: number })[]> {
+  const lists = await listLeadLists(supabase, courseId);
+  return Promise.all(
+    lists.map(async (list) => {
+      const memberIds = await listLeadListMemberIds(supabase, list.id);
+      if (memberIds.length === 0) return { ...list, totalLeads: 0, eligibleLeads: 0, awaitingConsentRequest: 0 };
+      const { data: subs } = await supabase
+        .from("subscriber")
+        .select("status,consent_status,consent_requested_at")
+        .in("id", memberIds);
+      const eligible = (subs ?? []).filter(
+        (s) => s.status !== "unsubscribed" && s.status !== "bounced" && s.consent_status === "confirmed"
+      ).length;
+      // Pending double-opt-in contacts who were never asked — the "send
+      // consent confirmations" CTA's count.
+      const awaiting = (subs ?? []).filter((s) => s.consent_status === "pending" && !s.consent_requested_at).length;
+      return { ...list, totalLeads: memberIds.length, eligibleLeads: eligible, awaitingConsentRequest: awaiting };
+    })
+  );
+}
+
+/** Outbox counts for one campaign — the "is anything actually sending?"
+ *  answer the builder's Delivery card shows. Pure read over scheduled_send. */
+export interface DeliveryStats {
+  queued: number;
+  sent: number;
+  skipped: number;
+  failed: number;
+  cancelled: number;
+  /** Earliest still-pending send, if any. */
+  nextDueAt: string | null;
+}
+
+export async function loadDeliveryStats(supabase: DB, campaignId: string): Promise<DeliveryStats> {
+  const { data: seqs } = await supabase.from("email_sequence").select("id").eq("campaign_id", campaignId);
+  const ids = (seqs ?? []).map((s) => s.id);
+  const stats: DeliveryStats = { queued: 0, sent: 0, skipped: 0, failed: 0, cancelled: 0, nextDueAt: null };
+  if (ids.length === 0) return stats;
+  const { data } = await supabase.from("scheduled_send").select("status,scheduled_for").in("sequence_id", ids);
+  for (const row of data ?? []) {
+    if (row.status === "pending") {
+      stats.queued++;
+      if (!stats.nextDueAt || row.scheduled_for < stats.nextDueAt) stats.nextDueAt = row.scheduled_for;
+    } else if (row.status === "sent") stats.sent++;
+    else if (row.status === "skipped") stats.skipped++;
+    else if (row.status === "failed") stats.failed++;
+    else if (row.status === "cancelled") stats.cancelled++;
+  }
+  return stats;
+}
+
+/* ────────────────────── sender identity (Amendment 9) ──────────────────── */
+
+export function senderIdentityFromRow(row: Database["public"]["Tables"]["sender_identity"]["Row"]): SenderIdentity {
+  return {
+    id: row.id,
+    courseId: row.course_id,
+    fromName: row.from_name,
+    fromEmail: row.from_email,
+    replyTo: row.reply_to,
+    mailingAddress: row.mailing_address,
+    businessName: row.business_name,
+    verified: row.verified,
+  };
+}
+
+export async function loadSenderIdentity(supabase: DB, id: string): Promise<SenderIdentity | null> {
+  const { data } = await supabase.from("sender_identity").select("*").eq("id", id).maybeSingle();
+  return data ? senderIdentityFromRow(data) : null;
+}
+
+export async function listSenderIdentities(supabase: DB, courseId: string): Promise<SenderIdentity[]> {
+  const { data } = await supabase
+    .from("sender_identity")
+    .select("*")
+    .eq("course_id", courseId)
+    .order("created_at", { ascending: false });
+  return (data ?? []).map(senderIdentityFromRow);
+}
+
+/* ────────────────────── follow-up rules (Amendment) ─────────────────────── */
+
+export function followUpRuleFromRow(row: Database["public"]["Tables"]["follow_up_rule"]["Row"]): FollowUpRule {
+  return {
+    id: row.id,
+    campaignId: row.campaign_id,
+    courseId: row.course_id,
+    name: row.name,
+    trigger: row.trigger as FollowUpRule["trigger"],
+    delayDays: row.delay_days,
+    emailTouchId: row.email_touch_id,
+    status: row.status as FollowUpRule["status"],
+  };
+}
+
+export async function listFollowUpRules(supabase: DB, campaignId: string): Promise<FollowUpRule[]> {
+  const { data } = await supabase
+    .from("follow_up_rule")
+    .select("*")
+    .eq("campaign_id", campaignId)
+    .order("created_at", { ascending: true });
+  return (data ?? []).map(followUpRuleFromRow);
+}
+
+/* ─────────────────────── voice profile (Amendment 3c) ───────────────────── */
+
+export function voiceProfileFromRow(row: Database["public"]["Tables"]["voice_profile"]["Row"]): VoiceProfile {
+  return { id: row.id, authorId: row.author_id, rules: ((row.rules as unknown) as string[]) ?? [] };
+}
+
+export async function loadVoiceProfile(supabase: DB, authorId: string): Promise<VoiceProfile | null> {
+  const { data } = await supabase.from("voice_profile").select("*").eq("author_id", authorId).maybeSingle();
+  return data ? voiceProfileFromRow(data) : null;
+}
+
+/** Seed the default voice profile the first time a creator's copy is
+ *  generated — plain, concrete, no hype, lightly informed by teaching style. */
+export function defaultVoiceRules(teachingStyle: string | null): string[] {
+  const rules = [
+    "Plain words over jargon.",
+    "Short sentences — one clear idea per sentence.",
+    "No hype adjectives (never say \"amazing\", \"incredible\", \"game-changing\").",
+    "Be specific — cite real course details, not generic claims.",
+    "One clear idea per email.",
+  ];
+  if (teachingStyle) rules.push(`Match the course's own ${teachingStyle} teaching style.`);
+  return rules;
+}
+
+/* ──────────────── subscriber (typed row, used by leads/segments) ────────── */
+
+export interface SubscriberRow {
+  id: string;
+  campaignId: string | null;
+  courseId: string;
+  email: string;
+  name: string | null;
+  status: SubscriberStatus;
+  source: string | null;
+  consentStatus: "confirmed" | "pending" | "lapsed";
+  consentRequestedAt: string | null;
+  consent: Record<string, unknown>;
+  unsubscribedAt: string | null;
+  createdAt: string;
+}
+
+export async function loadSubscriberRow(supabase: DB, id: string): Promise<SubscriberRow | null> {
+  const { data } = await supabase.from("subscriber").select("*").eq("id", id).maybeSingle();
+  if (!data) return null;
+  return {
+    id: data.id,
+    campaignId: data.campaign_id,
+    courseId: data.course_id,
+    email: data.email,
+    name: data.name,
+    status: data.status as SubscriberStatus,
+    source: data.source,
+    consentStatus: data.consent_status as SubscriberRow["consentStatus"],
+    consentRequestedAt: data.consent_requested_at,
+    consent: (data.consent as Record<string, unknown>) ?? {},
+    unsubscribedAt: data.unsubscribed_at,
+    createdAt: data.created_at,
+  };
+}
+
+export async function listSubscribersForCourse(supabase: DB, courseId: string): Promise<SubscriberRow[]> {
+  const { data } = await supabase
+    .from("subscriber")
+    .select("*")
+    .eq("course_id", courseId)
+    .order("created_at", { ascending: false });
+  return (data ?? []).map((data) => ({
+    id: data.id,
+    campaignId: data.campaign_id,
+    courseId: data.course_id,
+    email: data.email,
+    name: data.name,
+    status: data.status as SubscriberStatus,
+    source: data.source,
+    consentStatus: data.consent_status as SubscriberRow["consentStatus"],
+    consentRequestedAt: data.consent_requested_at,
+    consent: (data.consent as Record<string, unknown>) ?? {},
+    unsubscribedAt: data.unsubscribed_at,
+    createdAt: data.created_at,
   }));
 }

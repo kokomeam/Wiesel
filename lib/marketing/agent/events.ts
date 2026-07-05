@@ -1,9 +1,13 @@
 /**
  * Marketing agent → browser event protocol (SSE). One vocabulary drives the
  * chat transcript AND the staging/approval surfaces — `tool_result.status`
- * distinguishes a read, an auto-staged reversible change, and a paused
- * irreversible action; `approval_request` drives the approval inbox + the pause.
+ * distinguishes a read, an auto-logged reversible change, a policy-executed
+ * irreversible action, and the two blocked shapes; `agent_blocked` drives the
+ * pause (approval card OR clarifying question — the loop treats them as ONE
+ * "waiting on a human" state).
  */
+
+import type { QuestionSpec } from "../questions";
 
 export type MarketingAgentEvent =
   | { type: "conversation"; conversationId: string }
@@ -17,22 +21,31 @@ export type MarketingAgentEvent =
       tool: string;
       ok: boolean;
       summary: string;
-      /** read = executed, no ledger; staged = reversible, Reject-able;
-       *  pending_approval = irreversible, paused for a human. */
-      status: "read" | "staged" | "pending_approval" | "error";
+      /** read = executed, no ledger; staged = reversible, quiet log entry w/
+       *  time-boxed Revert; executed = irreversible, auto-executed under the
+       *  creator's policy (audited); pending_approval / needs_clarification =
+       *  the two blocked shapes — the loop PAUSES on either. */
+      status: "read" | "staged" | "executed" | "pending_approval" | "needs_clarification" | "error";
       actionId?: string | null;
     }
-  /** An irreversible action is awaiting approval — the loop PAUSES here. */
+  /**
+   * The run is blocked on a human — the ONE pause event. kind "approval"
+   * carries the pending action (+ its inline preview); kind "question"
+   * carries the clarifying question (model-asked or gate-raised alike).
+   */
   | {
-      type: "approval_request";
-      actionId: string;
+      type: "agent_blocked";
+      kind: "approval" | "question";
       tool: string;
       summary: string;
+      actionId?: string;
       preview?: Record<string, unknown>;
+      questionId?: string;
+      question?: QuestionSpec;
     }
   | { type: "assistant_message"; content: string }
   | { type: "error"; message: string }
-  /** Terminal. `paused` = stopped at an approval gate (not a clean finish). */
+  /** Terminal. `paused` = stopped blocked on a human (not a clean finish). */
   | { type: "done"; paused: boolean };
 
 export type MarketingAgentEventType = MarketingAgentEvent["type"];

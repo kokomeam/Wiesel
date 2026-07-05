@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * Marketing hub — the creator surface. A unified approval inbox sits up top:
- * staged reversible changes (Accept/Reject) and pending irreversible actions
- * (Approve/Deny), whatever surface created them (Generate Kit, a card, or the
- * agent). Below: the landing pages, and links to the analytics dashboard + the
- * Marketing Agent. Every button routes a server action → the shared tool layer
- * + gate.
+ * Marketing hub — the creator surface. The LOUD things sit up top and are the
+ * only loud things: pending irreversible approvals (one card each — full
+ * preview, Approve & effect / Edit / Reject) and the agent's open clarifying
+ * questions. Reversible changes recede into a quiet "Recent changes" log with
+ * a time-boxed Revert. The autonomy settings live at the bottom. Every button
+ * routes a server action → the shared tool layer + gate.
  */
 
 import { useEffect, useState, useTransition } from "react";
@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Eye,
   Globe,
+  HelpCircle,
   Loader2,
   Mail,
   Sparkles,
@@ -29,23 +30,25 @@ import {
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { ActivityLogEntry, type ActivityEntryVM } from "@/components/marketing/ActivityLogEntry";
+import { ApprovalCard } from "@/components/marketing/ApprovalCard";
+import { AutonomySettings } from "@/components/marketing/AutonomySettings";
+import { QuestionCard, type QuestionCardOption } from "@/components/marketing/QuestionCard";
+import type { AutonomySettings as AutonomySettingsModel } from "@/lib/marketing/autonomy";
+import { useAgentDockStore } from "@/lib/marketing/agentDockStore";
 import {
-  acceptStagedAction,
-  approvePendingAction,
-  denyPendingAction,
   generateKitAction,
   generateLandingPageAction,
   publishPageAction,
-  rejectStagedAction,
   unpublishPageAction,
   type ActionResult,
+  type PendingActionPayload,
 } from "./actions";
 
-export interface ActionVM {
+export interface QuestionVM {
   id: string;
-  actionKind: string;
-  summary: string;
-  requestedBy: "user" | "agent";
+  question: string;
+  options: QuestionCardOption[];
 }
 
 export interface LandingPageVM {
@@ -63,18 +66,16 @@ const statusTone: Record<LandingPageVM["status"], "amber" | "green" | "slate"> =
   unpublished: "slate",
 };
 
-function prettyKind(k: string): string {
-  return k.replace(/_/g, " ");
-}
-
 export function MarketingHub({
   courseId,
   courseTitle,
   campaignName,
   campaignStatus,
   pages,
-  staged,
   pending,
+  questions,
+  activity,
+  autonomy,
   courses,
 }: {
   courseId: string;
@@ -82,17 +83,33 @@ export function MarketingHub({
   campaignName: string | null;
   campaignStatus: string | null;
   pages: LandingPageVM[];
-  staged: ActionVM[];
-  pending: ActionVM[];
+  pending: PendingActionPayload[];
+  questions: QuestionVM[];
+  activity: ActivityEntryVM[];
+  autonomy: AutonomySettingsModel;
   courses: { id: string; title: string }[];
 }) {
   const router = useRouter();
+  const openDock = useAgentDockStore((s) => s.openDock);
+  const [ask, setAsk] = useState("");
   const [busy, startTransition] = useTransition();
   const [toast, setToast] = useState<ActionResult | null>(null);
+  /** In-place approval cards for pages whose publish/unpublish was just
+   *  requested — the card renders on the page row, no scroll-to-inbox. */
+  const [pagePending, setPagePending] = useState<Record<string, PendingActionPayload>>({});
   const run = (fn: () => Promise<ActionResult | void>) =>
     startTransition(async () => {
       const r = await fn();
       if (r) setToast(r);
+    });
+  const runPageRequest = (pageId: string, fn: () => Promise<ActionResult>) =>
+    startTransition(async () => {
+      const r = await fn();
+      if (r.pending) {
+        setPagePending((cur) => ({ ...cur, [pageId]: r.pending! }));
+      } else {
+        setToast(r);
+      }
     });
   useEffect(() => {
     if (!toast) return;
@@ -145,12 +162,13 @@ export function MarketingHub({
             >
               <BarChart3 className="size-4" /> Overview
             </Link>
-            <Link
-              href={`/marketing/agent?course=${courseId}`}
+            <button
+              type="button"
+              onClick={() => openDock()}
               className="inline-flex h-9 items-center gap-2 rounded-full border border-stone-300/80 bg-white px-4 text-sm font-medium text-stone-700 hover:border-stone-400 hover:bg-stone-50"
             >
               <Wand2 className="size-4" /> Open agent
-            </Link>
+            </button>
             <Button onClick={() => run(() => generateKitAction(courseId))} disabled={busy}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               Generate Kit
@@ -167,55 +185,87 @@ export function MarketingHub({
         </div>
       ) : null}
 
-      {/* Needs approval (irreversible) */}
+      {/* the agent, front and center — one keystroke away from any ask */}
+      <section className="rounded-2xl border border-stone-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(68,48,28,0.05)]">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!ask.trim()) return openDock();
+            openDock(ask);
+            setAsk("");
+          }}
+          className="flex items-center gap-3"
+        >
+          <span className="brand-gradient grid size-9 shrink-0 place-items-center rounded-xl text-white [font-family:var(--font-display)] text-lg">
+            *
+          </span>
+          <input
+            value={ask}
+            onChange={(e) => setAsk(e.target.value)}
+            placeholder="Ask your marketing agent anything — it can build lists, draft campaigns, and read your funnel…"
+            className="h-10 min-w-0 flex-1 rounded-xl border border-stone-200 bg-stone-50/60 px-3.5 text-sm text-stone-900 placeholder:text-stone-400 focus:border-brand-300 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/15"
+            aria-label="Ask the marketing agent"
+          />
+          <Button type="submit">
+            <Wand2 className="size-4" /> Ask
+          </Button>
+        </form>
+        <div className="mt-2.5 flex flex-wrap gap-1.5 pl-12">
+          {[
+            "Put everyone who consented on a mailing list",
+            "How is my funnel doing?",
+            "Draft a follow-up for people who viewed but didn't enroll",
+          ].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => openDock(s)}
+              className="rounded-full border border-stone-200 bg-white px-3 py-1 text-xs text-stone-500 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Needs approval (irreversible) — the ONE loud surface */}
       {pending.length > 0 ? (
         <section className="space-y-2">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-red-700">
             <AlertTriangle className="size-4" /> Needs your approval
           </h2>
-          <div className="space-y-2">
-            {pending.map((a) => (
-              <div
-                key={a.id}
-                className="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900"
-              >
-                <Badge tone="rose">{prettyKind(a.actionKind)}</Badge>
-                <span>{a.summary}</span>
-                {a.requestedBy === "agent" ? <span className="text-xs text-red-400">· agent</span> : null}
-                <span className="flex-1" />
-                <Button size="sm" onClick={() => run(() => approvePendingAction(a.id))} disabled={busy}>
-                  <Check className="size-3.5" /> Approve
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => run(() => denyPendingAction(a.id))} disabled={busy}>
-                  Deny
-                </Button>
-              </div>
+          <div className="space-y-3">
+            {pending.map((p) => (
+              <ApprovalCard key={p.actionId} pending={p} onResult={setToast} />
             ))}
           </div>
         </section>
       ) : null}
 
-      {/* Staged for review (reversible) */}
-      {staged.length > 0 ? (
+      {/* The agent asked (clarifying questions) */}
+      {questions.length > 0 ? (
         <section className="space-y-2">
-          <h2 className="text-sm font-semibold text-amber-700">Staged for review</h2>
-          <div className="space-y-2">
-            {staged.map((a) => (
-              <div
-                key={a.id}
-                className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-              >
-                <Badge tone="amber">{prettyKind(a.actionKind)}</Badge>
-                <span>{a.summary}</span>
-                {a.requestedBy === "agent" ? <span className="text-xs text-amber-500">· agent</span> : null}
-                <span className="flex-1" />
-                <Button size="sm" variant="outline" onClick={() => run(() => acceptStagedAction(a.id))} disabled={busy}>
-                  <Check className="size-3.5" /> Accept
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => run(() => rejectStagedAction(a.id))} disabled={busy}>
-                  <X className="size-3.5" /> Reject
-                </Button>
-              </div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-sky-700">
+            <HelpCircle className="size-4" /> The agent asked
+          </h2>
+          <div className="space-y-3">
+            {questions.map((q) => (
+              <QuestionCard key={q.id} questionId={q.id} question={q.question} options={q.options} onResult={setToast} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {/* Recent changes — quiet, dismissible, time-boxed Revert */}
+      {activity.length > 0 ? (
+        <section>
+          <h2 className="text-sm font-semibold text-stone-700">Recent changes</h2>
+          <p className="mt-0.5 text-xs text-stone-400">
+            Drafts and edits apply automatically — revert anything here while its window is open.
+          </p>
+          <div className="mt-2 rounded-2xl border border-stone-200/80 bg-white px-4 py-1 shadow-[0_1px_2px_rgba(68,48,28,0.05)]">
+            {activity.map((a) => (
+              <ActivityLogEntry key={a.id} entry={a} onResult={setToast} />
             ))}
           </div>
         </section>
@@ -269,27 +319,80 @@ export function MarketingHub({
                     View live <ExternalLink className="size-3.5" />
                   </Link>
                 ) : null}
-                {p.hasOpenAction ? (
-                  <span className="text-xs italic text-stone-400">in review above</span>
-                ) : p.status === "published" ? (
-                  <Button size="sm" variant="outline" onClick={() => run(() => unpublishPageAction(courseId, p.id))} disabled={busy}>
-                    Unpublish…
+                {p.hasOpenAction && !pagePending[p.id] ? (
+                  <span className="text-xs italic text-stone-400">awaiting approval above</span>
+                ) : pagePending[p.id] ? null : p.status === "published" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => runPageRequest(p.id, () => unpublishPageAction(courseId, p.id))}
+                    disabled={busy}
+                  >
+                    Unpublish
                   </Button>
                 ) : (
-                  <Button size="sm" onClick={() => run(() => publishPageAction(courseId, p.id))} disabled={busy}>
-                    Publish…
+                  <Button size="sm" onClick={() => runPageRequest(p.id, () => publishPageAction(courseId, p.id))} disabled={busy}>
+                    Publish
                   </Button>
                 )}
+                {pagePending[p.id] ? (
+                  <div className="w-full">
+                    <ApprovalCard
+                      pending={pagePending[p.id]}
+                      onResult={setToast}
+                      onResolved={() =>
+                        setPagePending((cur) => {
+                          const next = { ...cur };
+                          delete next[p.id];
+                          return next;
+                        })
+                      }
+                    />
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
         )}
       </section>
 
+      {/* Autonomy — how much the agent may do without a card */}
+      <AutonomySettings courseId={courseId} initial={autonomy} onResult={setToast} />
+
       {/* More of the engine */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-stone-900">More of the engine</h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Link
+            href={`/marketing/email?course=${courseId}`}
+            className="group rounded-2xl border border-brand-200 bg-brand-50/40 p-5 shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-all hover:border-brand-300 hover:shadow-md"
+          >
+            <span className="grid size-10 place-items-center rounded-xl bg-white text-brand-600 ring-1 ring-brand-200">
+              <Mail className="size-5" />
+            </span>
+            <h3 className="mt-4 text-[15px] font-semibold text-stone-900">Email Campaigns</h3>
+            <p className="mt-1 text-sm leading-relaxed text-stone-500">
+              Goal-driven sequences (3–7 emails by blueprint) — drafted by AI, reviewed by you, sent automatically.
+            </p>
+            <span className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-brand-600 transition-all group-hover:gap-2">
+              Open campaigns <ExternalLink className="size-3.5" />
+            </span>
+          </Link>
+          <Link
+            href={`/marketing/leads?course=${courseId}`}
+            className="group rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-all hover:border-brand-200 hover:shadow-md"
+          >
+            <span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600 ring-1 ring-brand-100">
+              <Users className="size-5" />
+            </span>
+            <h3 className="mt-4 text-[15px] font-semibold text-stone-900">Leads</h3>
+            <p className="mt-1 text-sm leading-relaxed text-stone-500">
+              Consent-first lists, imports with double opt-in, and per-lead profiles with engagement scores.
+            </p>
+            <span className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-brand-600 transition-all group-hover:gap-2">
+              Manage leads <ExternalLink className="size-3.5" />
+            </span>
+          </Link>
           <Link
             href={`/marketing/sequences?course=${courseId}`}
             className="group rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-all hover:border-brand-200 hover:shadow-md"

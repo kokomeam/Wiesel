@@ -10,6 +10,7 @@
 
 import { NextResponse } from "next/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { sweepLapsedConsent } from "@/lib/marketing/consent";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { runSchedulerTick } from "@/lib/marketing/scheduler";
 
@@ -34,8 +35,11 @@ async function handle(req: Request): Promise<Response> {
 
   const admin = createAdminClient();
   const services = createMarketingServices();
+  // The tick is the suite's heartbeat: process due sends, then sweep pending
+  // consents past the 30-day lapse window (Amendment 7).
   const result = await runSchedulerTick(admin, services, { limit: 200 });
-  return NextResponse.json({ ok: true, ...result });
+  const consent = await sweepLapsedConsent(admin);
+  return NextResponse.json({ ok: true, ...result, consentLapsed: consent.lapsed });
 }
 
 export const GET = handle;

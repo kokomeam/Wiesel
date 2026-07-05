@@ -130,6 +130,7 @@ const publishLandingPage = defineMarketingTool({
           slug: page.slug,
           url: `/p/${page.slug}`,
           sectionCount: page.sections.length,
+          effectLabel: `publish /p/${page.slug}`,
         },
       };
     }
@@ -160,7 +161,7 @@ const unpublishLandingPage = defineMarketingTool({
       return {
         summary: `Take "${page.title}" offline (it will no longer be reachable at /p/${page.slug}).`,
         target: { entity: "landing_page", id: page.id },
-        approvalPreview: { title: page.title, slug: page.slug },
+        approvalPreview: { title: page.title, slug: page.slug, effectLabel: "take the page offline" },
       };
     }
     const { error } = await ctx.supabase

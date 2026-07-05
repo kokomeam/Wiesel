@@ -1,8 +1,10 @@
 /**
  * Phase 4 test against LIVE Supabase: the Marketing Agent loop driven by the
  * deterministic MOCK model client (no OpenAI key). Proves observe → act → gate:
- * reversible generation auto-stages; reads execute; an irreversible action
- * PAUSES the loop for approval and does not execute until approved.
+ * reversible generation auto-logs (quiet, revertable); reads execute; an
+ * irreversible action PAUSES the loop for approval (agent_blocked
+ * kind='approval') and does not execute until approved; ask_creator pauses
+ * through the SAME blocked shape (kind='question').
  * Run: `npx tsx scripts/verify-marketing-agent.ts`
  */
 
@@ -82,15 +84,15 @@ async function main() {
   console.log("\n# agent run 1 — reversible generation auto-stages");
   const ev1: MarketingAgentEvent[] = [];
   const model1 = createMockModelClient(
-    [{ text: "Drafting a launch sequence.", toolCalls: [{ name: "generate_email_sequence", arguments: {} }] }],
-    { finalText: "Staged a 4-email launch sequence for your review." }
+    [{ text: "Drafting a launch sequence.", toolCalls: [{ name: "generate_email_sequence", arguments: { goal: null, length: null } }] }],
+    { finalText: "Staged a launch sequence for your review." }
   );
   const r1 = await runMarketingAgentTurn({
     supabase, model: model1, courseId, campaignId, ownerId: userId, userMessage: "Set up my launch emails", services, emit: (e) => ev1.push(e),
   });
   check("emits an observation (observe step)", ev1.some((e) => e.type === "observation"));
   check("tool_result is 'staged' (reversible auto-staged)", ev1.some((e) => e.type === "tool_result" && e.status === "staged"));
-  check("no approval_request for a reversible action", !ev1.some((e) => e.type === "approval_request"));
+  check("no agent_blocked for a reversible action", !ev1.some((e) => e.type === "agent_blocked"));
   check("run did NOT pause", r1.paused === false);
   check("done event is not paused", ev1.some((e) => e.type === "done" && e.paused === false));
   check("the model received the marketing tools", (model1.getCalls()[0]?.tools ?? []).some((t) => t.name === "generate_email_sequence"));
@@ -119,12 +121,12 @@ async function main() {
   const r3 = await runMarketingAgentTurn({
     supabase, model: model3, courseId, campaignId, ownerId: userId, userMessage: "Publish the page", services, emit: (e) => ev3.push(e),
   });
-  const approvalEvt = ev3.find((e) => e.type === "approval_request");
-  check("emits an approval_request", !!approvalEvt && approvalEvt.type === "approval_request");
+  const approvalEvt = ev3.find((e) => e.type === "agent_blocked");
+  check("emits agent_blocked kind='approval'", !!approvalEvt && approvalEvt.type === "agent_blocked" && approvalEvt.kind === "approval");
   check("run PAUSED", r3.paused === true);
   check("done event marked paused", ev3.some((e) => e.type === "done" && e.paused === true));
   check("page is STILL draft (not executed)", (await loadLandingPage(supabase, pageId))?.status === "draft");
-  const actionId = approvalEvt && approvalEvt.type === "approval_request" ? approvalEvt.actionId : "";
+  const actionId = approvalEvt && approvalEvt.type === "agent_blocked" ? (approvalEvt.actionId ?? "") : "";
   check("a pending action was recorded", (await loadAction(supabase, actionId))?.status === "pending");
   check("the agent only made ONE model call before pausing", model3.getCalls().length === 1, String(model3.getCalls().length));
 
@@ -132,6 +134,41 @@ async function main() {
   await approveMarketingAction(actionId, { supabase, ownerId: userId, services });
   check("approving publishes the page", (await loadLandingPage(supabase, pageId))?.status === "published");
   check("approved action is executed", (await loadAction(supabase, actionId))?.status === "executed");
+
+  // ── run 4: ask_creator pauses through the SAME blocked shape ──────────
+  console.log("\n# agent run 4 — ask_creator pauses identically (one pause shape)");
+  const ev4: MarketingAgentEvent[] = [];
+  const model4 = createMockModelClient(
+    [
+      {
+        text: "I need to know which list.",
+        toolCalls: [
+          {
+            name: "ask_creator",
+            arguments: {
+              question: "Which lead list should this campaign use?",
+              options: [
+                { label: "Spring launch list", value: "list-a", description: null },
+                { label: "Past students", value: "list-b", description: "Everyone who finished the course" },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+    { finalText: "(should not be reached — loop pauses)" }
+  );
+  const r4 = await runMarketingAgentTurn({
+    supabase, model: model4, courseId, campaignId, ownerId: userId, userMessage: "Set up the audience", services, emit: (e) => ev4.push(e),
+  });
+  const questionEvt = ev4.find((e) => e.type === "agent_blocked");
+  check("emits agent_blocked kind='question'", !!questionEvt && questionEvt.type === "agent_blocked" && questionEvt.kind === "question");
+  check("question run PAUSED (same shape as approval)", r4.paused === true);
+  check(
+    "tool_result is 'needs_clarification'",
+    ev4.some((e) => e.type === "tool_result" && e.status === "needs_clarification")
+  );
+  check("only ONE model call before the question pause", model4.getCalls().length === 1, String(model4.getCalls().length));
 
   // ── conversation persisted ────────────────────────────────────────────
   const { count: msgCount } = await supabase.from("messages").select("id", { count: "exact", head: true }).eq("course_id", courseId);

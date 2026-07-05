@@ -50,6 +50,7 @@ export async function POST(req: Request) {
           courseId,
           campaignId: campaign?.id ?? null,
           ownerId: user.id,
+          ownerEmail: user.email ?? null,
           conversationId: body.conversationId ?? null,
           userMessage: message,
           services: createMarketingServices(),

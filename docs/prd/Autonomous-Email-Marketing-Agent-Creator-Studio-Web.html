@@ -1,0 +1,1266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Autonomous Email Marketing Agent — Marketing Studio (Web) + Public Signup — MVP</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&display=swap');
+
+  :root{
+    --brand-50:#fff7ed; --brand-100:#ffedd5; --brand-200:#fed7aa; --brand-300:#fdba74;
+    --brand-400:#fb923c; --brand-500:#f97316; --brand-600:#ea580c; --brand-700:#c2410c;
+    --brand-800:#9a3412; --brand-900:#7c2d12;
+    --paper:#faf7f1; --line:#ece7de; --card:#ffffff;
+    --ink:#1c1917; --ink-soft:#44403c; --muted:#78716c; --faint:#a8a29e;
+    --emerald:#059669; --emerald-bg:#ecfdf5; --emerald-line:#a7f3d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --amber-line:#fde68a;
+    --red:#dc2626; --red-bg:#fef2f2; --red-line:#fecaca;
+    --blue:#1d4ed8; --blue-bg:#eff6ff; --blue-line:#bfdbfe;
+    --violet:#6d28d9; --violet-bg:#f5f3ff; --violet-line:#ddd6fe;
+    --gradient:linear-gradient(135deg,#f59e0b 0%,#ea580c 100%);
+    --shadow:0 1px 2px rgba(68,48,28,.05);
+    --shadow-md:0 2px 12px rgba(68,48,28,.08);
+    --display:'Fraunces',Georgia,serif;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --mono:'Geist Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand-700);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- atmosphere ---------- */
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(900px 420px at 88% -8%, rgba(249,115,22,.10), transparent 60%),
+      radial-gradient(700px 380px at 8% 0%, rgba(245,158,11,.07), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1}
+
+  /* ---------- top bar ---------- */
+  header.top{
+    position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);
+    background:rgba(250,247,241,.82);border-bottom:1px solid var(--line);
+  }
+  .top-inner{max-width:1120px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .wordmark{font-family:var(--display);font-weight:500;font-size:19px;letter-spacing:-.01em}
+  .wordmark .star{color:var(--brand-600)}
+  .top .sep{width:1px;height:22px;background:var(--line)}
+  .top .doctitle{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .top .spacer{flex:1}
+  .pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .pill.draft{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+
+  /* ---------- hero ---------- */
+  .hero{max-width:1120px;margin:0 auto;padding:64px 28px 36px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand-700);margin:0 0 18px}
+  h1{font-family:var(--display);font-weight:300;font-size:clamp(34px,5vw,56px);line-height:1.04;letter-spacing:-.02em;margin:0 0 18px}
+  h1 .accent{font-weight:500;font-style:italic;color:var(--brand-700)}
+  .lede{font-size:18px;color:var(--ink-soft);max-width:840px;margin:0}
+  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  @media(max-width:760px){.meta-grid{grid-template-columns:repeat(2,1fr)}}
+  .meta-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow)}
+  .meta-card .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .meta-card .v{font-size:14px;color:var(--ink);font-weight:500}
+
+  /* ---------- toc ---------- */
+  .toc{max-width:1120px;margin:36px auto 0;padding:0 28px}
+  .toc-inner{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:10px;display:flex;flex-wrap:wrap;gap:6px;box-shadow:var(--shadow)}
+  .toc a{display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:12px;color:var(--ink-soft);font-weight:500;font-size:14px;flex:1;min-width:180px}
+  .toc a:hover{background:var(--brand-50);text-decoration:none;color:var(--brand-800)}
+  .toc a .num{font-family:var(--mono);font-size:11px;color:var(--brand-600);border:1px solid var(--brand-200);background:#fff;border-radius:7px;padding:2px 7px}
+
+  /* ---------- sections ---------- */
+  main{max-width:1120px;margin:0 auto;padding:20px 28px 90px}
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  section:first-child{border-top:none}
+  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700);margin:0 0 12px}
+  h2{font-family:var(--display);font-weight:300;font-size:clamp(26px,3.4vw,36px);letter-spacing:-.015em;margin:0 0 16px;line-height:1.12}
+  h3{font-family:var(--display);font-weight:500;font-size:21px;letter-spacing:-.01em;margin:34px 0 12px}
+  h4{font-family:var(--sans);font-weight:600;font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  p{margin:0 0 14px;color:var(--ink-soft)}
+  .lead-p{font-size:16.5px;color:var(--ink-soft);max-width:860px}
+  ul,ol{margin:0 0 14px;padding-left:20px;color:var(--ink-soft)}
+  li{margin:6px 0}
+  strong{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#f5f1ea;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--brand-800)}
+
+  .callout{border:1px solid var(--line);border-left:3px solid var(--brand-500);background:#fffdfa;border-radius:12px;padding:16px 18px;margin:18px 0}
+  .callout .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);margin-bottom:6px}
+  .callout.guard{border-left-color:var(--red);background:var(--red-bg)}
+  .callout.guard .lbl{color:#b91c1c}
+  .callout.ok{border-left-color:var(--emerald);background:var(--emerald-bg)}
+  .callout.ok .lbl{color:#047857}
+  .callout.dec{border-left-color:var(--blue);background:var(--blue-bg)}
+  .callout.dec .lbl{color:#1d4ed8}
+
+  /* cards / grids */
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:840px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+  .card h4{margin-top:0}
+  .kpi .big{font-family:var(--display);font-weight:500;font-size:30px;color:var(--brand-700);letter-spacing:-.02em}
+  .kpi .na{color:var(--faint);font-style:italic;font-family:var(--sans);font-size:22px}
+  .kk{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0 8px;border-radius:14px}
+  .tablewrap > table{margin:0}
+  table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0 8px;font-size:13.5px;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:#fbf8f3;font-weight:500}
+  tr:last-child td{border-bottom:none}
+  td code{font-size:12px}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.05em;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .tag.read{background:var(--blue-bg);border-color:var(--blue-line);color:#1d4ed8}
+  .tag.rev{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .tag.irrev{background:var(--red-bg);border-color:var(--red-line);color:#b91c1c}
+  .tag.struct{background:var(--violet-bg);border-color:var(--violet-line);color:#6d28d9}
+  .tag.exists{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .tag.extend{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+  .tag.new{background:var(--violet-bg);border-color:var(--violet-line);color:#6d28d9}
+  .tag.no{background:var(--red-bg);border-color:var(--red-line);color:#b91c1c;text-decoration:line-through}
+
+  /* flow diagram */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:18px 0}
+  .node{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:112px;text-align:center;box-shadow:var(--shadow);flex:1}
+  .node .t{font-weight:600;font-size:13px}
+  .node .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .node.accent{border-color:var(--brand-300);background:var(--brand-50)}
+  .node.ok{border-color:var(--emerald-line);background:var(--emerald-bg)}
+  .node.warn{border-color:var(--amber-line);background:var(--amber-bg)}
+  .node.bad{border-color:var(--red-line);background:var(--red-bg)}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--brand-500);font-size:18px;padding:0 7px;flex:0 0 auto}
+  .loop-note{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--brand-700);text-align:center;margin-top:6px}
+
+  /* lifecycle chips */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+  .chip{font-family:var(--mono);font-size:10px;letter-spacing:.05em;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);display:inline-flex;align-items:center;gap:6px}
+  .chip .cdot{width:7px;height:7px;border-radius:50%;background:#cdc4b3}
+  .chip.on{border-color:var(--brand-200);background:var(--brand-50);color:var(--brand-800)}
+  .chip.on .cdot{background:var(--brand-500)}
+  .chip.done{border-color:var(--emerald-line);background:var(--emerald-bg);color:#047857}
+  .chip.done .cdot{background:var(--emerald)}
+  .chip.stop{border-color:var(--red-line);background:var(--red-bg);color:#b91c1c}
+  .chip.stop .cdot{background:var(--red)}
+  .chip.wait{border-color:var(--amber-line);background:var(--amber-bg);color:#92400e}
+  .chip.wait .cdot{background:var(--amber)}
+
+  /* ---------- prototype "screens" ---------- */
+  .screens{display:grid;gap:22px}
+  .surface-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:30px 0 4px;display:flex;align-items:center;gap:10px}
+  .surface-label::after{content:"";height:1px;flex:1;background:var(--line)}
+  .surface-label .badge{border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--ink-soft);background:#fff}
+  .screen{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-md)}
+  .screen .chrome{display:flex;align-items:center;gap:7px;padding:9px 14px;border-bottom:1px solid var(--line);background:#fbf8f3}
+  .screen .chrome .dot{width:9px;height:9px;border-radius:50%;background:#e7e1d6}
+  .screen .chrome .ttl{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-left:8px;letter-spacing:.04em}
+  .screen .cap{padding:12px 16px;border-top:1px solid var(--line);background:#fdfbf7;font-size:12.5px;color:var(--muted)}
+  .screen .cap b{color:var(--ink-soft)}
+  .screen .body{padding:16px}
+  .scaption{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--brand-700);margin:20px 0 -8px}
+
+  .mini-h{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+  .btn{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:999px;padding:5px 13px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);cursor:default}
+  .btn.accept{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .btn.reject{background:#fff;border-color:var(--line);color:var(--muted)}
+  .btn.grad{background:var(--gradient);color:#fff;border:none}
+  .btn.ghost{background:transparent}
+  .btn.warn{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+  .btn.deny{background:#fff;border-color:var(--red-line);color:#b91c1c}
+  .ln{height:6px;border-radius:3px;background:#efe9df;margin:5px 0}
+  .ln.w70{width:70%}.ln.w50{width:50%}.ln.w90{width:90%}.ln.w40{width:40%}.ln.w60{width:60%}.ln.w30{width:30%}
+
+  /* hub cards */
+  .hubgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:840px){.hubgrid{grid-template-columns:1fr}}
+  .toolcard2{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+  .toolcard2.lim{opacity:.72;background:#fbf8f3}
+  .toolcard2 .ic{width:30px;height:30px;border-radius:9px;background:var(--brand-50);border:1px solid var(--brand-200);display:flex;align-items:center;justify-content:center;color:var(--brand-700);font-size:15px}
+  .toolcard2 .tt{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:7px}
+  .toolcard2 .td{font-size:11.5px;color:var(--muted);flex:1}
+  .lbtag{font-family:var(--mono);font-size:8px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--muted);background:#fff}
+  .lbtag.future{border-color:var(--violet-line);background:var(--violet-bg);color:#6d28d9}
+  .statusrow{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+  .dots{width:8px;height:8px;border-radius:50%}
+  .dots.green{background:var(--emerald)}.dots.amber{background:var(--amber)}.dots.grey{background:#cdc4b3}.dots.pulse{background:var(--brand-500)}.dots.blue{background:var(--blue)}
+
+  /* campaign list row */
+  .crow2{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#fff;box-shadow:var(--shadow);margin-bottom:9px}
+  .crow2 .cnm{font-weight:600;font-size:13.5px}
+  .crow2 .cgoal{font-size:11px;color:var(--muted)}
+  .statuspill{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft)}
+  .statuspill.draft{background:#fbf8f3;color:var(--muted)}
+  .statuspill.review{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+  .statuspill.active{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .statuspill.sending{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-800)}
+  .statuspill.paused{background:var(--blue-bg);border-color:var(--blue-line);color:#1d4ed8}
+
+  /* builder 3-col */
+  .builder{display:grid;grid-template-columns:210px 1fr 290px;min-height:520px;font-size:12px}
+  @media(max-width:900px){.builder{grid-template-columns:1fr}}
+  .bcol{padding:14px;overflow:hidden}
+  .bcol.settings{background:#fbf8f3;border-right:1px solid var(--line)}
+  .bcol.main{background:#f7f3ec;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:12px}
+  .bcol.assist{background:#fff;display:flex;flex-direction:column;gap:10px;min-width:0}
+  .formcol{display:flex;flex-direction:column;gap:9px}
+  .frow2{display:flex;flex-direction:column;gap:3px}
+  .frow2 .fl2{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .frow2 .fv2{background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:11px;color:var(--ink-soft)}
+  .frow2 .fv2.sel{display:flex;align-items:center;justify-content:space-between}
+  .frow2 .fv2.sel::after{content:"▾";color:var(--faint);font-size:9px}
+
+  /* email card */
+  .ecard{border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:var(--shadow);overflow:hidden;margin-bottom:11px}
+  .ecard.pending{border-color:var(--amber-line);box-shadow:0 0 0 2px rgba(217,119,6,.20),var(--shadow)}
+  .ecard .eh{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--line);background:#fbf8f3;flex-wrap:wrap}
+  .ecard .estage{font-family:var(--mono);font-size:9px;letter-spacing:.07em;text-transform:uppercase;color:var(--brand-700);background:var(--brand-50);border:1px solid var(--brand-100);border-radius:6px;padding:2px 7px}
+  .ecard .edelay{font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:2px 7px}
+  .ecard .eb{padding:11px 13px}
+  .ecard .esub{font-weight:600;font-size:13px;margin-bottom:3px}
+  .ecard .eprev{font-size:11px;color:var(--muted);margin-bottom:8px}
+  .ecard .efield{display:grid;grid-template-columns:110px 1fr;gap:8px;font-size:11px;padding:6px 0;border-top:1px dashed var(--line)}
+  .ecard .efield .fk{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);padding-top:1px}
+  .ecard .eactions{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px solid var(--line);background:#fdfbf7}
+
+  /* checklist */
+  .checklist{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+  .crow3{display:flex;align-items:flex-start;gap:9px;font-size:12px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:#fff}
+  .crow3 .ci{flex:0 0 auto;width:16px;height:16px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700}
+  .crow3.pass .ci{background:var(--emerald-bg);color:#047857;border:1px solid var(--emerald-line)}
+  .crow3.warn{background:var(--amber-bg);border-color:var(--amber-line)}
+  .crow3.warn .ci{background:#fff;color:#92400e;border:1px solid var(--amber-line)}
+  .crow3.fail{background:var(--red-bg);border-color:var(--red-line)}
+  .crow3.fail .ci{background:#fff;color:#b91c1c;border:1px solid var(--red-line)}
+  .crow3 .ct{color:var(--ink-soft)}
+  .crow3 .ct b{color:var(--ink)}
+
+  /* patch diff */
+  .patch{border:1px solid var(--brand-200);border-radius:12px;background:var(--brand-50);overflow:hidden;margin:9px 0}
+  .patch .ph{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--brand-100);font-weight:600;font-size:11.5px;color:var(--brand-800)}
+  .patch .ph .rk{margin-left:auto;font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--brand-200);border-radius:5px;padding:1px 6px;color:var(--brand-700);background:#fff}
+  .patch .pcols{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  @media(max-width:560px){.patch .pcols{grid-template-columns:1fr}}
+  .patch .pc{padding:10px 12px;font-size:11px;color:var(--ink-soft)}
+  .patch .pc.before{background:#fff;border-right:1px solid var(--brand-100)}
+  @media(max-width:560px){.patch .pc.before{border-right:none;border-bottom:1px solid var(--brand-100)}}
+  .patch .pc .pl{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+  .patch .pc.after .pl{color:var(--brand-700)}
+  .patch .pact{display:flex;flex-wrap:wrap;gap:6px;padding:9px 12px;border-top:1px solid var(--brand-100);background:#fff}
+
+  /* agent chat */
+  .agent{display:flex;flex-direction:column;min-width:0;height:100%}
+  .agent .ah{display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:10px}
+  .agent .ah .av{width:22px;height:22px;border-radius:7px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display);font-size:13px}
+  .agent .ah .nm{font-weight:600;font-size:12.5px}
+  .agent .ah .st{margin-left:auto;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--emerald)}
+  .agent .ah .st.paused{color:var(--amber)}
+  .chatscroll{flex:1;overflow:hidden;display:flex;flex-direction:column;gap:9px}
+  .msg{border-radius:11px;padding:9px 11px;font-size:11px;line-height:1.5}
+  .msg.user{background:var(--brand-50);border:1px solid var(--brand-100);color:var(--brand-900);align-self:flex-end;max-width:92%}
+  .msg.ai{background:#fbf8f3;border:1px solid var(--line);color:var(--ink-soft)}
+  .toolcard{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;font-size:11px;display:flex;gap:8px;align-items:flex-start}
+  .toolcard .ic{width:16px;height:16px;border-radius:5px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px}
+  .toolcard.done .ic{background:var(--emerald-bg);color:#047857;border:1px solid var(--emerald-line)}
+  .toolcard.run .ic{background:var(--amber-bg);color:#92400e;border:1px solid var(--amber-line)}
+  .toolcard.gate .ic{background:var(--red-bg);color:#b91c1c;border:1px solid var(--red-line)}
+  .toolcard .tt{font-family:var(--mono);font-size:10px;color:var(--ink)}
+  .toolcard .ts{color:var(--muted);font-size:10.5px}
+  .composer{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:#fff;display:flex;align-items:center;gap:8px}
+  .composer .ph2{color:var(--faint);font-size:11px;flex:1}
+  .composer .send{width:24px;height:24px;border-radius:8px;background:var(--gradient);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px}
+
+  /* approval gate box */
+  .gatebox{border:1px solid var(--red-line);background:var(--red-bg);border-radius:12px;padding:13px 15px;margin-top:4px}
+  .gatebox .gh{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12.5px;color:#b91c1c;margin-bottom:7px}
+  .gatebox .gmeta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:9px 0}
+  .gatebox .gm{background:#fff;border:1px solid var(--red-line);border-radius:9px;padding:7px 10px;font-size:11px}
+  .gatebox .gm .k{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .gatebox .gm .v{font-weight:600;color:var(--ink);font-size:12px}
+  .gatebox .gact{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+
+  .reviewbar{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:11px;font-size:11px;color:#92400e}
+  .reviewbar .cnt{font-weight:700}
+  .reviewbar .sp{flex:1}
+
+  /* schedule picker */
+  .sched{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:9px 0}
+  @media(max-width:560px){.sched{grid-template-columns:1fr}}
+  .schedopt{border:1px solid var(--line);border-radius:11px;padding:12px;background:#fff;text-align:center;font-size:11px;color:var(--muted)}
+  .schedopt.on{border-color:var(--brand-300);background:var(--brand-50);color:var(--brand-800)}
+  .schedopt .si{font-size:18px;margin-bottom:5px}
+  .schedopt .st2{font-weight:600;font-size:12px;color:var(--ink)}
+  .schedopt.on .st2{color:var(--brand-800)}
+
+  /* import / consent */
+  .importbox{border:1px solid var(--line);border-radius:12px;background:#fbf8f3;padding:14px}
+  .paste{background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-family:var(--mono);font-size:10.5px;color:var(--muted);line-height:1.7}
+  .consentbox{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--amber-line);background:var(--amber-bg);border-radius:9px;padding:10px 12px;font-size:11px;color:#92400e;margin-top:9px}
+  .consentbox .cb{width:15px;height:15px;border:1.5px solid var(--amber);border-radius:4px;flex:0 0 auto;margin-top:1px;display:flex;align-items:center;justify-content:center;color:var(--amber);font-size:10px}
+
+  /* lead table small */
+  .leadtbl{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;background:#fff;border:1px solid var(--line);border-radius:11px;overflow:hidden;box-shadow:none;margin:0}
+  .leadtbl th,.leadtbl td{padding:8px 11px;border-bottom:1px solid var(--line)}
+  .leadtbl tr:last-child td{border-bottom:none}
+
+  /* metrics */
+  .mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  @media(max-width:760px){.mgrid{grid-template-columns:repeat(2,1fr)}}
+  .metric{border:1px solid var(--line);border-radius:12px;background:#fff;padding:13px;box-shadow:var(--shadow)}
+  .metric .ml{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .metric .mv{font-family:var(--display);font-size:24px;font-weight:500;color:var(--ink);letter-spacing:-.02em}
+  .metric .mv.na{font-family:var(--sans);font-size:13px;font-style:italic;color:var(--faint)}
+  .metric .ms{font-size:10px;color:var(--muted);margin-top:3px}
+
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:9px;margin:6px 0}
+  .frow{display:grid;grid-template-columns:150px 1fr 92px;align-items:center;gap:12px;font-size:12px}
+  .frow .fl{color:var(--ink-soft);font-weight:500}
+  .fbarwrap{background:#f3eee5;border-radius:8px;overflow:hidden;height:26px}
+  .fbar{height:26px;border-radius:8px;background:var(--gradient);display:flex;align-items:center;padding-left:11px;color:#fff;font-size:10.5px;font-weight:600}
+  .frow .fv{font-family:var(--mono);font-size:11.5px;color:var(--ink);text-align:right}
+  .frow .fv .pct{color:var(--muted);font-size:10px}
+
+  /* role grid */
+  .roles{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  @media(max-width:760px){.roles{grid-template-columns:1fr}}
+  .role{border:1px solid var(--line);border-radius:12px;padding:13px 15px;background:#fff;box-shadow:var(--shadow)}
+  .role .rn{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:5px}
+  .role .rn .ri{width:22px;height:22px;border-radius:7px;background:var(--brand-50);border:1px solid var(--brand-200);display:flex;align-items:center;justify-content:center;color:var(--brand-700);font-size:12px}
+  .role .rd{font-size:11.5px;color:var(--muted)}
+  .role .rd code{font-size:10px}
+
+  /* states */
+  .state-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media(max-width:840px){.state-grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:560px){.state-grid{grid-template-columns:1fr}}
+  .state{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px;box-shadow:var(--shadow);min-height:150px;display:flex;flex-direction:column}
+  .state .st-h{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+  .state .st-body{flex:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:11.5px}
+  .state.err{border-color:var(--red-line);background:#fffafa}
+  .state.err .st-h{color:#b91c1c}
+  .state.info{border-color:var(--amber-line);background:var(--amber-bg)}
+  .state.info .st-h{color:#92400e}
+  .state.ok2{border-color:var(--emerald-line);background:var(--emerald-bg)}
+  .state.ok2 .st-h{color:#047857}
+
+  /* public landing / unsub */
+  .lp{background:#fff;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+  .lp .lphero{background:linear-gradient(135deg,#fff7ed,#fef3e2);padding:24px 22px;border-bottom:1px solid var(--line)}
+  .lp .lpeyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700)}
+  .lp .lph1{font-family:var(--display);font-weight:400;font-size:23px;letter-spacing:-.01em;margin:8px 0 6px;line-height:1.1}
+  .lp .lph1 em{font-style:italic;color:var(--brand-700)}
+  .lp .lpsub{font-size:12px;color:var(--ink-soft);max-width:440px}
+  .leadform{background:#fbf8f3;border:1px solid var(--line);border-radius:12px;padding:14px;max-width:360px}
+  .leadform .lf-h{font-weight:600;font-size:13px;margin-bottom:4px}
+  .leadform .lf-s{font-size:11px;color:var(--muted);margin-bottom:10px}
+  .field{background:#fff;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:11px;color:var(--faint);margin-bottom:8px}
+  .consent{font-size:10px;color:var(--faint);margin-top:8px;line-height:1.5}
+  .unsub{max-width:420px;margin:8px auto;text-align:center;padding:26px 22px;border:1px solid var(--line);border-radius:14px;background:#fff}
+  .unsub .um{font-family:var(--display);font-size:20px;font-weight:400;margin-bottom:8px}
+
+  /* acceptance stories */
+  .story{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:0;box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+  .story .sh{display:flex;align-items:center;gap:12px;padding:14px 18px;background:#fbf8f3;border-bottom:1px solid var(--line)}
+  .story .sn{font-family:var(--display);font-size:18px;color:var(--brand-600);font-weight:500}
+  .story .stt{font-weight:600;font-size:15px}
+  .story .sb{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:0}
+  @media(max-width:760px){.story .sb{grid-template-columns:1fr}}
+  .story .cell{padding:14px 18px;border-right:1px solid var(--line)}
+  .story .cell:last-child{border-right:none}
+  .story .cl{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .story .cell p{margin:0;font-size:13px}
+  .story .pass{color:#047857;font-weight:600}
+
+  footer{max-width:1120px;margin:0 auto;padding:30px 28px 70px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;font-family:var(--mono);letter-spacing:.04em}
+
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 0;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+
+  /* mobile */
+  @media(max-width:560px){
+    body{font-size:14.5px}
+    .top .doctitle,.top .sep{display:none}
+    .top-inner{padding:12px 18px;gap:9px}
+    .hero{padding:44px 18px 26px}
+    .toc{padding:28px 18px 0}
+    main{padding:16px 18px 70px}
+    footer{padding:26px 18px 60px}
+    .toc a{min-width:140px}
+    .frow{grid-template-columns:96px 1fr 66px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="top-inner">
+    <span class="wordmark">WiseSel<span class="star">*</span></span>
+    <span class="sep"></span>
+    <span class="doctitle">PRD · Autonomous Email Agent</span>
+    <span class="spacer"></span>
+    <span class="pill draft">Draft for review</span>
+    <span class="pill">v1 · 2026-07-02</span>
+  </div>
+</header>
+
+<!-- ===================== HERO ===================== -->
+<div class="hero">
+  <p class="eyebrow">Product Requirements · Marketing Studio · Web + Public</p>
+  <h1>Autonomous Email Campaigns —<br/>from a finished course to a sent, tracked, <span class="accent">self-improving launch</span>.</h1>
+  <p class="lede">A creator finishes a course and opens <strong>Marketing Studio</strong>. They pick a goal, choose a permission-based lead list, and the AI reads the syllabus to write a complete <strong>4-email launch sequence</strong> — every email editable by card or by chat. A compliance reviewer sweeps it; the creator approves; and WiseSel sends the sequence <strong>automatically</strong>, on schedule, suppressing anyone who unsubscribes or bounces, while a single event stream tracks opens, clicks, and enrollments. The autonomy is real — but every list-facing send waits for one human “go.”</p>
+
+  <div class="meta-grid">
+    <div class="meta-card"><div class="k">Surfaces</div><div class="v">Web · Marketing Studio (creator) + Public signup &amp; unsubscribe</div></div>
+    <div class="meta-card"><div class="k">Audience</div><div class="v">Creators, coaches, tutors (primary) · permission-based leads</div></div>
+    <div class="meta-card"><div class="k">Scope</div><div class="v">Email Campaigns MVP — no social auto-post · no A/B execution</div></div>
+    <div class="meta-card"><div class="k">Engine</div><div class="v">OpenAI Responses (server-only) · Resend send · our scheduler + gate</div></div>
+  </div>
+</div>
+
+<!-- ===================== TOC ===================== -->
+<div class="toc">
+  <div class="toc-inner">
+    <a href="#purpose"><span class="num">1</span> Purpose &amp; Goals</a>
+    <a href="#competitive"><span class="num">2</span> Competitive Analysis</a>
+    <a href="#approach"><span class="num">3</span> Product Approach</a>
+    <a href="#functional"><span class="num">4</span> Functional Design</a>
+    <a href="#ux"><span class="num">5</span> User Experience (Acceptance)</a>
+  </div>
+</div>
+
+<main>
+
+<!-- ===================== 1. PURPOSE ===================== -->
+<section id="purpose">
+  <p class="sec-eyebrow">01 — Purpose &amp; Goals</p>
+  <h2>A course that no one hears about earns nothing. Make the launch itself the product.</h2>
+  <p class="lead-p">WiseSel already turns expertise into a course and — with the <strong>Marketing Assistant foundation</strong> — into a landing page, a lead list, and an event stream. This milestone builds the piece that actually <em>converts</em>: a course-aware <strong>Autonomous Email Marketing Agent</strong> that plans a goal-driven campaign, writes a reviewable email sequence from the syllabus, reviews it for compliance, and — once a human approves — <strong>sends and follows up on its own</strong>, tracking every event and suggesting the next move. Ambitious in the AI; conservative in what reaches a real inbox.</p>
+
+  <h3>The problem</h3>
+  <ul>
+    <li><strong>Marketing is a different skill than teaching.</strong> Creators finish a course and freeze: no list, no sequence, no idea when to follow up.</li>
+    <li><strong>Email sequencing is hard to write from scratch</strong> — and generic AI copy tools don't know what the course teaches, so every email starts from a blank page.</li>
+    <li><strong>Consent and deliverability are confusing and risky.</strong> Most creators don't know list-permission rules, unsubscribe requirements, or how to avoid the spam folder — and one careless blast can burn a domain.</li>
+    <li><strong>The tooling is fragmented.</strong> An email platform, a spreadsheet of contacts, a copywriter, and an analytics dashboard — none of them course-aware, none of them talking to each other.</li>
+    <li><strong>Creators want automation but not a loose cannon.</strong> They'll happily let AI do 90% of the work — but not send unreviewed content to their audience.</li>
+  </ul>
+
+  <div class="callout ok"><div class="lbl">Builds on an existing foundation — this is the campaign layer, not a rebuild</div>
+  <p style="margin-bottom:0">The three spines are already shipped and verified (~157 checks): <strong>one typed tool layer</strong> (<code>executeMarketingTool</code>), <strong>one event stream</strong> (<code>analytics_event</code> + a subscriber-status reducer), and <strong>one reversibility-graded governance gate</strong> (<code>marketing_action</code> ledger), plus a 9-table schema, our own scheduler/outbox with idempotent sends, a mock→Resend swap seam, and a reason→act→pause agent loop. <strong>This milestone adds the campaign-centric layer on top:</strong> a full campaign lifecycle, goal-driven 4-email generation with per-step fields, consent-first <em>lead lists</em> with manual import, a <em>Compliance &amp; Trust reviewer</em>, explicit <em>follow-up rules</em>, <em>sender identity</em>, and the 26-tool Marketing Chat surface. Section 4 marks every capability <span class="tag exists">exists</span> / <span class="tag extend">extend</span> / <span class="tag new">new</span>.</p></div>
+
+  <h3>Goals</h3>
+  <div class="grid g3">
+    <div class="card"><h4>Course-grounded, goal-driven campaigns</h4><p>Pick a goal (launch, re-engage, convert interest, promote an offer); the AI reads the syllabus, outcomes, and tone and writes a complete sequence — not a blank template.</p></div>
+    <div class="card"><h4>Editable, then trustworthy autonomy</h4><p>Every email is editable by card or chat; a compliance reviewer runs before launch; and only after explicit approval does WiseSel send, follow up, and suppress on its own.</p></div>
+    <div class="card"><h4>Permission-first list building</h4><p>Manual import demands a consent confirmation; interest-list signups capture provenance; unsubscribed and bounced contacts are suppressed forever. Consent is a precondition, not a footnote.</p></div>
+    <div class="card"><h4>Real tracking, real analytics</h4><p>Sent, delivered, opened, clicked, bounced, unsubscribed, enrolled — one event stream drives the dashboard <em>and</em> the agent's next suggestion. Missing metrics say “Not available yet,” never a fake number.</p></div>
+    <div class="card"><h4>A marketing co-pilot with tools</h4><p>A Cursor-style chat that can plan, rewrite an email, generate variants, adjust timing, run compliance, pause a campaign, and explain performance — every change staged as a reviewable patch.</p></div>
+    <div class="card"><h4>Built to extend cleanly</h4><p>The schema and tool surface leave clean seams for social posting, real A/B testing, segmentation, and advanced analytics — added later without reworking the core.</p></div>
+  </div>
+
+  <h3>Non-goals (this milestone)</h3>
+  <ul>
+    <li><strong>No social or forum auto-posting</strong> — social/forum/offer copy exists as a <em>draft generator</em> only (copy/export, never auto-publish).</li>
+    <li><strong>No real A/B testing engine</strong> — variants are generated for the creator to pick manually; no recipient splitting, no winner declaration, no statistics.</li>
+    <li><strong>No advanced segmentation, no CRM/pipeline, no multi-channel orchestration.</strong></li>
+    <li><strong>No cold outreach</strong> to scraped or purchased lists — ever. And <strong>no unsupervised campaign creation</strong> that reaches a real person without creator approval.</li>
+    <li><strong>No Stripe/checkout changes</strong> — “enrollment” is recorded as an event; payment lives elsewhere. Per-creator sending domains are a later seam (MVP sends from the platform's verified domain).</li>
+  </ul>
+
+  <h3>Success metrics</h3>
+  <p>There is <strong>no production analytics yet</strong>, so current values are <code>N/A</code>. This engine <em>creates</em> the event stream that makes these measurable; these are the metrics to instrument with it. Guardrail metrics (bottom row) protect the creator's sending reputation and must stay <em>below</em> thresholds.</p>
+  <div class="grid g4">
+    <div class="card kpi"><div class="kk">Time-to-first-campaign</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Median minutes from “Create campaign” to an approved, scheduled sequence.</p></div>
+    <div class="card kpi"><div class="kk">Campaign launch rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of generated campaigns that reach <em>Active</em> (approved + sending).</p></div>
+    <div class="card kpi"><div class="kk">Lead → enrollment rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Enrollments ÷ leads emailed. The business outcome of the whole engine.</p></div>
+    <div class="card kpi"><div class="kk">AI asset acceptance</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">% of AI-generated emails accepted (not rejected) — the copy-quality signal.</p></div>
+  </div>
+  <div class="grid g4" style="margin-top:14px">
+    <div class="card kpi"><div class="kk">Open rate</div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Opens ÷ delivered, per campaign &amp; per email. The observe-step input.</p></div>
+    <div class="card kpi"><div class="kk">Unsubscribe rate <span class="tag" style="font-size:8px">guardrail</span></div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Unsubs ÷ delivered. Rising = the content or cadence is wrong.</p></div>
+    <div class="card kpi"><div class="kk">Bounce rate <span class="tag" style="font-size:8px">guardrail</span></div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Hard bounces ÷ sent. High = a risky list; auto-pause threshold.</p></div>
+    <div class="card kpi"><div class="kk">Spam complaint rate <span class="tag" style="font-size:8px">guardrail</span></div><div class="big na">N/A</div><p style="font-size:12.5px;margin:6px 0 0">Complaints ÷ delivered (provider-reported). Flag/pause on threshold.</p></div>
+  </div>
+
+  <div class="callout guard"><div class="lbl">Hard non-negotiables (enforced by design)</div>
+  <ul style="margin-bottom:0">
+    <li><strong>Approved autonomy, never unsupervised.</strong> The AI may generate, plan, and prepare a whole campaign — but <strong>sending requires explicit creator approval</strong>. Once approved, it operates only within the approved content, list, schedule, and rules.</li>
+    <li><strong>Every send routes the governance gate.</strong> Agent, card, or button — there is no second write path; even the <em>mock</em> send passes the gate, and even a test send to the creator's own address is gated.</li>
+    <li><strong>Consent &amp; deliverability are mandatory.</strong> Every subscriber carries source + consent provenance; every marketing email carries a compliant footer and a working one-click unsubscribe; <code>unsubscribed</code>/<code>bounced</code> are terminal suppressed states no send can target.</li>
+    <li><strong>Real analytics only.</strong> A metric with no data reads <code>Not available yet</code> — never a placeholder number.</li>
+    <li><strong>Server-only secrets.</strong> The OpenAI key, the Resend key, and the Supabase service-role key never reach the browser; each provider SDK is imported in exactly one file.</li>
+    <li><strong>No scraped/purchased outreach.</strong> The system refuses cold-list imports and flags suspicious ones; the agent will refuse a request to email a non-consented list or to use fake urgency.</li>
+  </ul></div>
+
+  <div class="callout dec"><div class="lbl">Decisions for sign-off (defaults chosen — flag any to change)</div>
+  <ul style="margin-bottom:0">
+    <li><strong>Default 4-email sequence</strong> <span class="tag">default</span> — Welcome+Problem → Solution+Credibility → Objection-handling → Offer/Final-CTA. The creator can add/remove steps; the AI honors the chosen goal.</li>
+    <li><strong>MVP sender = platform's verified Resend domain</strong> <span class="tag">default</span>. A <code>sender_identity</code> record exists so per-creator verified domains (SPF/DKIM/DMARC) swap in later with no flow change.</li>
+    <li><strong>One active campaign per course for MVP</strong> <span class="tag">default</span>. The schema allows many; the UI assumes one to keep the model simple.</li>
+    <li><strong>Editing an approved email returns the campaign to <em>In&nbsp;Review</em></strong> <span class="tag">default</span> — future unsent steps re-require compliance + approval; already-sent emails are immutable.</li>
+    <li><strong>Follow-up rules are approved with the campaign</strong> <span class="tag">default</span>; the agent may not add or change a live rule outside the approved set.</li>
+  </ul></div>
+</section>
+
+<!-- ===================== 2. COMPETITIVE ===================== -->
+<section id="competitive">
+  <p class="sec-eyebrow">02 — Competitive Analysis</p>
+  <h2>Borrow the creator-first list &amp; deliverability hygiene; reject the blank-canvas copywriter.</h2>
+  <p class="lead-p">No competitor screenshots were supplied, so this is reasoned from well-known product patterns and <span style="font-style:italic">marked as inference</span>. We compare only the decision-relevant dimensions for an <em>email-campaign</em> agent: where the copy comes from, how consent &amp; the list work, how automation and follow-ups are built, how much autonomy the tool has, and what the creator must still do by hand.</p>
+
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Product</th><th>Core pattern (inferred)</th><th>What to borrow</th><th>What to avoid</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Kit (ConvertKit)</strong><br/><span class="tag">creator email</span></td>
+        <td>Creator-first tagged subscribers; visual automations; hosted forms; broadcasts + sequences; solid deliverability.</td>
+        <td>The <strong>subscriber-as-state</strong> model, consent-first forms, one-click unsubscribe, and a list the creator owns. Our north star for list hygiene.</td>
+        <td>Every email starts from a <strong>blank editor</strong> — the tool has no idea what the course teaches. The creator writes all the copy and decides all the timing.</td>
+      </tr>
+      <tr>
+        <td><strong>Kajabi</strong><br/><span class="tag">all-in-one</span></td>
+        <td>Course hosting + pages + email + pipelines in one suite; “pipelines” = pre-built funnel templates.</td>
+        <td>The <strong>all-in-one context</strong>: course and marketing in one place, so an email can link a real free lesson — and pre-built <strong>funnel intents</strong> as goal presets.</td>
+        <td>Heavy, expensive, steep learning curve; the “AI” is generic copy fill-in. We win with <strong>one goal → a full grounded sequence</strong>, reviewed and auto-sent.</td>
+      </tr>
+      <tr>
+        <td><strong>Mailchimp</strong><br/><span class="tag">SMB email</span></td>
+        <td>Mature journeys, deliverability, analytics; a generative “content optimizer”; huge surface area.</td>
+        <td><strong>Behavioral triggers + a real analytics funnel</strong> and deliverability discipline (consent, unsubscribe, bounce/complaint handling).</td>
+        <td>General-purpose &amp; un-grounded; complexity overwhelms a solo educator. No course context, no autonomous reviewed-send loop.</td>
+      </tr>
+      <tr>
+        <td><strong>Teachable / Podia</strong><br/><span class="tag">course storefront</span></td>
+        <td>Course platform with basic email broadcasts + simple automations bolted on.</td>
+        <td><strong>Radical simplicity</strong> and fast time-to-first-email; course &amp; email in the same product.</td>
+        <td>Thin sequencing, weak analytics, little automation, no assistant. Simplicity at the cost of leverage and follow-up.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout"><div class="lbl">Net takeaways — where we win</div>
+  <p style="margin-bottom:0"><strong>1. Grounding is the moat.</strong> Every competitor starts from a blank canvas; we start from the finished course — subject lines, problem framings, objections, and CTAs are drawn from real outcomes and modules. <strong>2. Reviewed autonomy is the differentiator.</strong> No creator email tool runs a plan→write→<em>compliance-review</em>→approve→auto-send-and-follow-up loop with a reversibility-graded brake. <strong>3. Borrow the proven primitives</strong> — subscriber-as-state, consent-first forms, behavioral triggers, one-click unsubscribe, bounce/complaint suppression. <strong>4. Reject the bloat</strong> — a goal and a sentence beat an automation-builder maze; the creator approves, not assembles.</p></div>
+</section>
+
+<!-- ===================== 3. APPROACH ===================== -->
+<section id="approach">
+  <p class="sec-eyebrow">03 — Product Approach</p>
+  <h2>Extend the three spines with a campaign lifecycle and a compliance gate on every send.</h2>
+
+  <h3>Approaches considered</h3>
+  <div class="grid g3">
+    <div class="card"><h4>A · Embed a third-party ESP</h4><p>Wire Kit / Mailchimp via API for the list + sequences.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Rejected:</strong> no course grounding, no reviewed-send loop, and the list + analytics live outside the product — fragmenting the very event stream the agent must observe.</p></div>
+    <div class="card" style="border-color:var(--brand-300);box-shadow:0 0 0 2px var(--brand-100),var(--shadow)"><h4>B · Campaign layer on the existing spines ✓</h4><p>Reuse the shipped tool layer + gate + event stream + scheduler; add campaign lifecycle, lead lists, compliance reviewer, follow-up rules, and the 26-tool chat.</p><p style="font-size:12.5px;color:var(--brand-800)"><strong>Recommended:</strong> grounded, trustworthy, autonomous-capable, and mostly <em>already built underneath</em> — the new surface is the campaign model + copy intelligence + compliance, not new plumbing.</p></div>
+    <div class="card"><h4>C · Standalone manual campaign builder</h4><p>A form-driven sequence editor with manual copy only.</p><p style="font-size:12.5px;color:var(--muted)"><strong>Deferred:</strong> no leverage and no assistant — and it's just the editor that already sits <em>beneath</em> B. We build it as B's substrate, not as the product.</p></div>
+  </div>
+
+  <h3>Core product logic — the campaign lifecycle</h3>
+  <p>A campaign is a state machine the creator drives and the agent assists. Generation and editing are reversible and free; the two irreversible boundaries — <strong>Approve</strong> and any <strong>send</strong> — require a human. Editing a step after approval drops the campaign back to <em>In&nbsp;Review</em>.</p>
+  <div class="chips">
+    <span class="chip">•&nbsp;Draft</span>
+    <span class="chip">→</span>
+    <span class="chip">Generated</span>
+    <span class="chip">→</span>
+    <span class="chip wait"><span class="cdot"></span>In Review</span>
+    <span class="chip">→</span>
+    <span class="chip done"><span class="cdot"></span>Approved</span>
+    <span class="chip">→</span>
+    <span class="chip">Scheduled</span>
+    <span class="chip">→</span>
+    <span class="chip on"><span class="cdot"></span>Sending</span>
+    <span class="chip">→</span>
+    <span class="chip on"><span class="cdot"></span>Active</span>
+    <span class="chip">→</span>
+    <span class="chip done"><span class="cdot"></span>Completed</span>
+  </div>
+  <div class="chips" style="margin-top:0">
+    <span style="font-size:11px;color:var(--muted);font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;padding-top:5px">control / terminal:</span>
+    <span class="chip wait"><span class="cdot"></span>Paused</span>
+    <span class="chip stop"><span class="cdot"></span>Cancelled</span>
+    <span class="chip stop"><span class="cdot"></span>Failed</span>
+  </div>
+  <p style="font-size:13px"><strong>Approve</strong> and <strong>Sending</strong> are the only two gates. Everything before Approved is a reversible draft (generate/edit/regenerate/variants — auto-staged, rejectable). <em>Pause</em> halts future queued sends; <em>Resume</em> continues only the unsent ones; <em>Cancel</em> is terminal. <em>Failed</em> is entered only on unrecoverable provider/config errors and surfaces to the creator.</p>
+
+  <h3>The governance gate — reversibility decides everything</h3>
+  <p>Reused verbatim from the shipped foundation: one function every mutating tool call passes through, regardless of origin, routing on the tool's declared <strong>reversibility grade</strong> and recording to the <code>marketing_action</code> ledger. The PRD's “MarketingPatch” <em>is</em> a staged reversible action; “approve campaign / launch / send” <em>are</em> the irreversible ones.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Tool call</th><th style="width:140px">Reversibility</th><th>Gate behavior</th><th style="width:170px">Ledger status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag read">read / analytics</span></td><td>n/a (no mutation)</td><td>Executes immediately; never staged.</td><td>not recorded</td></tr>
+      <tr><td><span class="tag rev">generate / edit / regenerate / variants / import</span></td><td><strong>Reversible</strong></td><td>Executes immediately, captures a <code>before_snapshot</code>, stages the result as <strong>rejectable</strong> (a MarketingPatch). Reject replays the snapshot atomically.</td><td><code>auto_approved → executed</code> (or <code>reverted</code>)</td></tr>
+      <tr><td><span class="tag irrev">approve / launch / send / activate / cancel</span></td><td><strong>Irreversible</strong></td><td><strong>Does not execute.</strong> Logs a <code>pending</code> action, surfaces an approval request, pauses the agent loop. Human <em>approve</em> executes; <em>deny</em> discards.</td><td><code>pending → approved/executed</code> (or <code>rejected</code>)</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Why one gate for every surface:</strong> a human clicking “Approve &amp; send” in a card routes the <em>same</em> <code>gate()</code> as the agent calling <code>launch_campaign</code>. The autonomy boundary <em>is</em> the gate — the agent chains reversible steps freely but must stop at every irreversible one.</p>
+
+  <h3>Two supporting state machines</h3>
+  <div class="grid g2">
+    <div>
+      <h4 style="margin-top:0">Email send status (per lead × step)</h4>
+      <div class="chips">
+        <span class="chip">Pending</span><span class="chip">→</span><span class="chip">Queued</span><span class="chip">→</span><span class="chip on"><span class="cdot"></span>Sent</span><span class="chip">→</span><span class="chip done"><span class="cdot"></span>Delivered</span><span class="chip">→</span><span class="chip done"><span class="cdot"></span>Opened</span><span class="chip">→</span><span class="chip done"><span class="cdot"></span>Clicked</span>
+      </div>
+      <div class="chips" style="margin-top:0">
+        <span class="chip stop"><span class="cdot"></span>Bounced</span><span class="chip stop"><span class="cdot"></span>Failed</span><span class="chip wait"><span class="cdot"></span>Skipped</span><span class="chip stop"><span class="cdot"></span>Unsubscribed</span>
+      </div>
+      <p style="font-size:12.5px">Materialized on the <code>scheduled_send</code> outbox; a unique <code>(touch_id, subscriber_id)</code> makes scheduler ticks idempotent. <em>Skipped</em> = suppressed at send time (unsub/bounce). Delivered/Opened/Clicked are advanced by provider events (webhooks in production; simulated in mock).</p>
+    </div>
+    <div>
+      <h4 style="margin-top:0">Lead / subscriber lifecycle (reducer over the event stream)</h4>
+      <div class="chips">
+        <span class="chip"><span class="cdot"></span>lead</span><span class="chip">→</span><span class="chip on"><span class="cdot"></span>subscribed</span><span class="chip">→</span><span class="chip on"><span class="cdot"></span>engaged</span><span class="chip">→</span><span class="chip done"><span class="cdot"></span>enrolled</span>
+      </div>
+      <div class="chips" style="margin-top:0">
+        <span class="chip stop"><span class="cdot"></span>unsubscribed · terminal</span><span class="chip stop"><span class="cdot"></span>bounced · terminal</span>
+      </div>
+      <p style="font-size:12.5px">Status is a <strong>reducer over <code>analytics_event</code></strong>, not a column the app pokes. <code>form_submit</code>→lead, first <code>email_sent</code>→subscribed, <code>email_open/click</code>→engaged, <code>enrollment</code>→enrolled; <code>email_unsubscribe/bounce</code>→terminal suppressed. Consent is stamped at capture and required before a lead can be emailed.</p>
+    </div>
+  </div>
+
+  <h3>The AI: one agent, seven separated responsibilities</h3>
+  <p>Implemented as one workflow initially, with distinct roles the pipeline can route between — mirroring the studio's Content Agent phases. Copy roles run under a narrow generate tool-set; the orchestrator's sends always hit the gate.</p>
+  <div class="roles">
+    <div class="role"><div class="rn"><span class="ri">◈</span> 1 · Course Marketing Analyst</div><div class="rd">Extracts audience, benefits, pain points, outcomes, objections, differentiators, credibility signals, and missing info from the course plan.</div></div>
+    <div class="role"><div class="rn"><span class="ri">◇</span> 2 · Campaign Planner</div><div class="rd">Chooses the sequence structure, timing, follow-up logic, and CTA strategy for the selected goal. Output = the plan the creator approves before generation.</div></div>
+    <div class="role"><div class="rn"><span class="ri">✎</span> 3 · Email Copywriter</div><div class="rd">Writes subject lines, preview text, body, CTA copy, and personalization variables for each step — grounded in the analyst's findings.</div></div>
+    <div class="role"><div class="rn"><span class="ri">⎇</span> 4 · Variant Generator</div><div class="rd">Produces subject / CTA / hook / tone variants for the creator to pick. <strong>Selection only</strong> — never an A/B experiment.</div></div>
+    <div class="role"><div class="rn"><span class="ri">⚖</span> 5 · Compliance &amp; Trust Reviewer</div><div class="rd">Flags fake urgency, unsupported claims, spammy tone, misleading subjects, risky list source, missing unsubscribe, and aggressive frequency — before launch.</div></div>
+    <div class="role"><div class="rn"><span class="ri">◴</span> 6 · Sending Orchestrator</div><div class="rd">Queues + drips sends on our scheduler, retries transient failures, suppresses unsub/bounce, handles pause/resume/cancel. All sends routed through the gate.</div></div>
+    <div class="role"><div class="rn"><span class="ri">◉</span> 7 · Analytics Interpreter</div><div class="rd">Explains performance, weak emails, strong CTAs, drop-offs, and follow-up opportunities — without overclaiming causality from small data.</div></div>
+  </div>
+
+  <h3>Key business rules</h3>
+  <div class="tablewrap"><table>
+    <tbody>
+      <tr><td style="width:230px"><strong>Approved autonomy</strong></td><td>The AI generates and prepares freely; <strong>no send fires without a recorded human approval</strong>. Once approved, the orchestrator operates strictly inside the approved content, list, schedule, and follow-up rules.</td></tr>
+      <tr><td><strong>Launch preconditions (one predicate)</strong></td><td>A campaign may launch <em>only if</em>: course has a title · a lead list with confirmed consent is attached · a sender identity is set · all steps are approved &amp; compliance ≠ blocked · a schedule is chosen · every CTA URL resolves. Any failure blocks launch with a specific reason.</td></tr>
+      <tr><td><strong>Consent &amp; suppression</strong></td><td>Only consented leads are emailed. <code>unsubscribed</code>/<code>bounced</code> are terminal suppressed states; a global suppression list is checked at enqueue <em>and</em> at send. A click after unsubscribe is recorded but triggers no send.</td></tr>
+      <tr><td><strong>Edit-after-approval → re-review</strong></td><td>Editing any future unsent step returns the campaign to <em>In&nbsp;Review</em>; that step re-requires compliance + approval. Already-sent emails are immutable.</td></tr>
+      <tr><td><strong>Our scheduler, not the provider's</strong></td><td>Sequence + follow-up timing is our state machine on our <code>scheduled_send</code> outbox. Resend (or the mock) only moves bytes; it never owns sequence logic.</td></tr>
+      <tr><td><strong>Idempotent sends</strong></td><td>Unique <code>(touch_id, subscriber_id)</code> guarantees a subscriber never receives the same touch twice, even under repeated scheduler ticks or retries.</td></tr>
+      <tr><td><strong>One event stream</strong></td><td>All measurement is <code>analytics_event</code>. The dashboard, the observe step, and the lifecycle reducer read the same table — no metric computed two ways; missing data shows “Not available yet.”</td></tr>
+      <tr><td><strong>Author scope by RLS</strong></td><td>Creators touch only their own courses' campaigns/lists/sequences via <code>private.is_course_author(course_id)</code>. Public writes (leads, pageviews, unsubscribes) go through a service-role ingest route, never anon table writes.</td></tr>
+      <tr><td><strong>Mock-first contracts</strong></td><td>Tools depend on provider <em>interfaces</em>, not SDKs. The whole loop runs on a deterministic mock; Resend + cron swap in behind env-gated factories with zero contract changes.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================== 4. FUNCTIONAL DESIGN ===================== -->
+<section id="functional">
+  <p class="sec-eyebrow">04 — Functional Design</p>
+  <h2>High-fidelity design &amp; engineering spec.</h2>
+  <p class="lead-p">The Autonomous Email Agent lives in the <strong>Marketing</strong> area of the in-app shell (creator surface) and adds two <strong>public routes</strong> (interest signup + unsubscribe). The two surfaces are grouped separately below. All in-screen copy is final. The creator surface reuses the studio's warm-editorial system and its Accept/Reject staging treatment; the public surface is what a lead sees. Each capability is tagged <span class="tag exists">exists</span> (shipped in the foundation), <span class="tag extend">extend</span> (present but grows), or <span class="tag new">new</span> (this milestone).</p>
+
+  <!-- ============ SURFACE: CREATOR ============ -->
+  <div class="surface-label"><span class="badge">Surface 1</span> Web · Marketing Studio (creator)</div>
+
+  <!-- SCREEN 1: Marketing Studio dashboard -->
+  <p class="scaption">Screen 1 · Marketing Studio dashboard</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/courses/options-trading/marketing</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <div class="mini-h">Marketing Studio</div>
+          <div style="font-family:var(--display);font-size:19px;font-weight:500">Intro to Options Trading</div>
+        </div>
+        <span class="spacer" style="flex:1"></span>
+        <span class="btn ghost">Open agent</span>
+        <span class="btn grad">＋ Create campaign</span>
+      </div>
+      <div class="hubgrid">
+        <div class="toolcard2" style="border-color:var(--brand-200);background:var(--brand-50)"><div class="ic" style="background:#fff">✉</div><div class="tt">Email Campaigns <span class="lbtag">primary</span></div><div class="td">Create, review, launch, and track email campaigns for this course.</div><div class="statusrow"><span class="dots amber"></span> 1 draft · 0 active</div><span class="btn grad" style="align-self:flex-start">Open campaigns</span></div>
+        <div class="toolcard2"><div class="ic">◑</div><div class="tt">Leads</div><div class="td">Course interest lists and permission-based contacts. Import with consent.</div><div class="statusrow"><span class="dots green"></span> 298 leads · 2 lists</div><span class="btn ghost" style="align-self:flex-start">Manage leads</span></div>
+        <div class="toolcard2"><div class="ic">◴</div><div class="tt">Analytics</div><div class="td">Real campaign performance — sent, opened, clicked, enrolled.</div><div class="statusrow"><span class="dots blue"></span> Awaiting first send</div><span class="btn ghost" style="align-self:flex-start">Open dashboard</span></div>
+        <div class="toolcard2 lim"><div class="ic">◭</div><div class="tt">Social Posts <span class="lbtag future">draft only</span></div><div class="td">Generate LinkedIn / X / Instagram copy. Copy &amp; export — no auto-posting.</div><div class="statusrow"><span class="dots grey"></span> Generator</div><span class="btn ghost" style="align-self:flex-start">Generate drafts</span></div>
+        <div class="toolcard2 lim"><div class="ic">◰</div><div class="tt">Discounts &amp; Offers <span class="lbtag future">draft only</span></div><div class="td">Generate offer messaging to feed a campaign. No coupon engine in MVP.</div><div class="statusrow"><span class="dots grey"></span> Generator</div><span class="btn ghost" style="align-self:flex-start">Generate offer</span></div>
+        <div class="toolcard2 lim"><div class="ic">⎇</div><div class="tt">Smart Testing <span class="lbtag future">variants only</span></div><div class="td">Generate subject / CTA variants to pick from. No live A/B experiments.</div><div class="statusrow"><span class="dots grey"></span> Generator</div><span class="btn ghost" style="align-self:flex-start">Generate variants</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>Three live surfaces + three clearly-limited generators.</b> <span class="tag exists" style="font-size:8px">exists</span> Marketing hub, leads, analytics. <span class="tag new" style="font-size:8px">new</span> the campaign-centric IA (<code>/courses/[courseId]/marketing/email</code>, <code>/leads</code>, <code>/analytics</code>, <code>/social</code>, <code>/offers</code>). Social, Offers, and Smart Testing are visibly badged <b>draft/variant only</b> — no auto-posting, no experiments — so scope is honest at a glance.</div>
+  </div>
+
+  <!-- SCREEN 2: Campaigns list -->
+  <p class="scaption">Screen 2 · Email Campaigns list</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/email</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="font-family:var(--display);font-size:16px;font-weight:500">Email Campaigns</div><span class="spacer" style="flex:1"></span><span class="btn grad">＋ Create campaign</span></div>
+      <div class="crow2"><div><div class="cnm">Launch — Intro to Options Trading</div><div class="cgoal">Goal · Launch this course · 4 emails · list: Interest signups (245)</div></div><span class="spacer" style="flex:1"></span><span class="statuspill review">In Review</span><span class="btn ghost">Open</span></div>
+      <div class="crow2"><div><div class="cnm">Re-engage — cold leads</div><div class="cgoal">Goal · Re-engage previous students · 3 emails · list: Past students (89)</div></div><span class="spacer" style="flex:1"></span><span class="statuspill active">Active</span><span class="btn ghost">Open</span></div>
+      <div class="crow2"><div><div class="cnm">Enrollment reminder</div><div class="cgoal">Goal · Convert interest → enrolled · 2 emails · list: Clicked-not-enrolled (34)</div></div><span class="spacer" style="flex:1"></span><span class="statuspill draft">Draft</span><span class="btn ghost">Open</span></div>
+    </div>
+    <div class="cap"><b>Every campaign, its goal, and its lifecycle status at a glance.</b> <span class="tag new" style="font-size:8px">new</span> Status pills map 1:1 to the lifecycle state machine (§3). <code>listMarketingCampaigns</code> feeds this; <b>Create campaign</b> opens the wizard (Screen 3). <i>(Counts are illustrative prototype data.)</i></div>
+  </div>
+
+  <!-- SCREEN 3: Create campaign wizard -->
+  <p class="scaption">Screen 3 · Create campaign (goal → list → sender → framing)</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/email — new campaign</span></div>
+    <div class="body">
+      <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <span class="chip done"><span class="cdot"></span>1 · Goal</span><span class="chip on"><span class="cdot"></span>2 · Lead list &amp; consent</span><span class="chip"><span class="cdot"></span>3 · Sender</span><span class="chip"><span class="cdot"></span>4 · Tone, CTA &amp; offer</span>
+      </div>
+      <div class="grid g2">
+        <div class="card" style="padding:15px">
+          <h4 style="margin-top:0">Step 2 · Choose a lead list</h4>
+          <div class="frow2" style="margin-bottom:8px"><span class="fl2">List</span><span class="fv2 sel">Interest signups — 245 leads</span></div>
+          <div class="leadtbl" style="margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;padding:8px 11px;border-bottom:1px solid var(--line);font-size:11px"><span>Total leads</span><b>245</b></div>
+            <div style="display:flex;justify-content:space-between;padding:8px 11px;border-bottom:1px solid var(--line);font-size:11px"><span>Eligible (consented, not suppressed)</span><b style="color:var(--emerald)">231</b></div>
+            <div style="display:flex;justify-content:space-between;padding:8px 11px;font-size:11px"><span>Suppressed (unsub / bounced)</span><b>14</b></div>
+          </div>
+          <div class="consentbox"><span class="cb">✓</span><div>Consent confirmed for this list — captured via course interest signup, provenance on file. Eligible for marketing sends.</div></div>
+        </div>
+        <div class="card" style="padding:15px">
+          <h4 style="margin-top:0">Step 1 · Campaign goal <span style="font-weight:400;color:var(--muted);font-size:12px">(selected)</span></h4>
+          <div class="chips" style="margin:6px 0 10px">
+            <span class="chip done"><span class="cdot"></span>Launch this course</span>
+            <span class="chip">Re-engage students</span>
+            <span class="chip">Convert interest → enrolled</span>
+            <span class="chip">Promote a discount</span>
+            <span class="chip">Follow up · no response</span>
+            <span class="chip">Welcome interest list</span>
+          </div>
+          <h4>Preview of what AI will draft</h4>
+          <ul style="font-size:12px;margin-bottom:0">
+            <li>A <b>4-email launch sequence</b> grounded in your syllabus</li>
+            <li>Suggested timing (drip over ~6 days) + follow-up rules</li>
+            <li>Subject lines, preview text, body, and CTAs per step</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>The wizard makes consent a gate, not a checkbox.</b> <span class="tag new" style="font-size:8px">new</span> The list step surfaces <b>eligible vs suppressed</b> counts and a consent confirmation before you can proceed; a list without confirmed consent <b>blocks</b> the campaign. <code>createMarketingCampaign</code> + <code>createSendingSchedule</code> back this; goal drives the Campaign Planner's sequence structure.</div>
+  </div>
+
+  <!-- SCREEN 4: Campaign builder (3-panel) -->
+  <p class="scaption">Screen 4 · Campaign builder — the centerpiece</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/email/launch-options-trading — In Review</span></div>
+    <div class="builder">
+      <!-- LEFT: settings -->
+      <div class="bcol settings">
+        <div class="mini-h">Campaign settings</div>
+        <div class="formcol">
+          <div class="frow2"><span class="fl2">Goal</span><span class="fv2 sel">Launch this course</span></div>
+          <div class="frow2"><span class="fl2">Audience</span><span class="fv2 sel">Beginners, curious about options</span></div>
+          <div class="frow2"><span class="fl2">Tone</span><span class="fv2 sel">Warm · plain-language</span></div>
+          <div class="frow2"><span class="fl2">Primary CTA</span><span class="fv2">Get the free first lesson</span></div>
+          <div class="frow2"><span class="fl2">Offer (optional)</span><span class="fv2">Cohort opens Friday</span></div>
+          <div class="frow2"><span class="fl2">Lead list</span><span class="fv2 sel">Interest signups · 231 eligible</span></div>
+          <div class="frow2"><span class="fl2">Sender</span><span class="fv2 sel">WiseSel · options@mail.wisesel.pro</span></div>
+          <div class="frow2"><span class="fl2">Schedule</span><span class="fv2 sel">Drip · every 2 days</span></div>
+        </div>
+        <div class="reviewbar" style="margin-top:12px"><span class="cnt">3</span> of 4 steps approved<span class="sp"></span></div>
+      </div>
+      <!-- MAIN: analysis + sequence + rules + checklist -->
+      <div class="bcol main">
+        <div>
+          <div class="mini-h">Course analysis <span style="color:var(--brand-700)">· by the Analyst</span></div>
+          <div class="card" style="padding:11px;font-size:11px">
+            <b>Audience:</b> beginners intimidated by finance jargon · <b>Top objection:</b> “too risky / too complex” · <b>Outcome:</b> place a first trade with a plan · <b>Credibility:</b> 12 lessons, payoff-diagram practice.
+          </div>
+        </div>
+        <div>
+          <div class="mini-h">Email sequence · 4 steps</div>
+          <!-- email 1 -->
+          <div class="ecard">
+            <div class="eh"><span class="estage">1 · Welcome + Problem</span><span class="edelay">on signup</span><span class="spacer" style="flex:1"></span><span class="btn accept" style="font-size:9px;padding:3px 8px">✓ Approved</span></div>
+            <div class="eb">
+              <div class="esub">Welcome — your free first lesson inside</div>
+              <div class="eprev">The thing that stops most beginners isn't math — it's jargon. Let's fix that…</div>
+              <div class="efield"><span class="fk">CTA</span><span>Get the free first lesson → /p/options-trading</span></div>
+              <div class="efield"><span class="fk">Purpose</span><span>Connect with the pain point; deliver value fast.</span></div>
+              <div class="efield"><span class="fk">Personalize</span><span>{{firstName}}</span></div>
+            </div>
+          </div>
+          <!-- email 2 -->
+          <div class="ecard pending">
+            <div class="eh"><span class="estage">2 · Solution + Credibility</span><span class="edelay">+2 days</span><span class="spacer" style="flex:1"></span><span class="statuspill review" style="font-size:8px;padding:2px 7px">Pending review</span></div>
+            <div class="eb">
+              <div class="esub">How 12 short lessons get you to your first trade</div>
+              <div class="eprev">Here's exactly what you'll be able to do — and how the course is built…</div>
+              <div class="eactions"><span class="btn">Edit</span><span class="btn">Regenerate</span><span class="btn">Variants</span><span class="btn accept">Approve</span><span class="btn ghost">Preview</span></div>
+            </div>
+          </div>
+          <!-- email 3/4 collapsed -->
+          <div class="ecard"><div class="eh"><span class="estage">3 · Objection handling</span><span class="edelay">+4 days</span><span class="spacer" style="flex:1"></span><span class="btn accept" style="font-size:9px;padding:3px 8px">✓ Approved</span></div></div>
+          <div class="ecard"><div class="eh"><span class="estage">4 · Offer / Final CTA</span><span class="edelay">+6 days</span><span class="spacer" style="flex:1"></span><span class="btn accept" style="font-size:9px;padding:3px 8px">✓ Approved</span></div></div>
+        </div>
+        <div>
+          <div class="mini-h">Follow-up rules</div>
+          <div class="card" style="padding:10px;font-size:11px;line-height:1.9">
+            ↳ <b>opened, not clicked</b> → send “One link, one free lesson” (+2d)<br/>
+            ↳ <b>clicked, not enrolled</b> → send “Answers to 3 common questions” (+2d)<br/>
+            ✕ <b>stop</b> on unsubscribe · bounce · enroll
+          </div>
+        </div>
+      </div>
+      <!-- RIGHT: assistant + compliance + status -->
+      <div class="bcol assist">
+        <div class="mini-h">Marketing Assistant</div>
+        <div class="agent" style="flex:0 0 auto">
+          <div class="chatscroll" style="gap:8px">
+            <div class="msg user">Make email 2 more concise and warmer.</div>
+            <div class="msg ai">Tightened it ~30% and softened the open. Staged as a patch for your review →</div>
+            <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">update_email_step · #2</div><div class="ts">staged · reversible</div></div></div>
+          </div>
+          <div class="composer"><span class="ph2">Ask the assistant to edit, plan, or explain…</span><span class="send">↑</span></div>
+        </div>
+        <div class="mini-h" style="margin-top:2px">Compliance</div>
+        <div class="checklist" style="margin:0">
+          <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>No fake urgency</b> — “Friday” is a real cohort date.</span></div>
+          <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>Unsubscribe</b> present in every email footer.</span></div>
+          <div class="crow3 warn"><span class="ci">!</span><span class="ct"><b>Subject #2</b> could over-promise — soften “get you to your first trade.”</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>Left = settings, main = the sequence, right = the assistant + compliance + status.</b> <span class="tag new" style="font-size:8px">new</span> Each email card exposes every <code>EmailStep</code> field and per-card actions (Edit · Regenerate · Variants · Approve · Preview · Delete-before-launch · View-performance-after). Approving all steps + a clean compliance pass unlocks <b>Launch</b> (Screen 8). Editing an approved step drops it back to <b>Pending review</b>.</div>
+  </div>
+
+  <!-- SCREEN 5: Chat patch preview -->
+  <p class="scaption">Screen 5 · Marketing Chat — staged patch (accept / reject / revise)</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/email/launch-options-trading — assistant</span></div>
+    <div class="body" style="display:grid;grid-template-columns:1fr 340px;gap:0;padding:0">
+      <div style="padding:16px;border-right:1px solid var(--line)">
+        <div class="mini-h">Proposed change · MarketingPatch</div>
+        <div class="patch">
+          <div class="ph">✎ Rewrite email 2 for parents <span class="rk">reversible</span></div>
+          <div class="pcols">
+            <div class="pc before"><div class="pl">Before · subject</div>How 12 short lessons get you to your first trade<div class="ln w70"></div><div class="ln w50"></div></div>
+            <div class="pc after"><div class="pl">After · subject</div>Fit options learning around a busy family week<div class="ln w70"></div><div class="ln w60"></div></div>
+          </div>
+          <div class="pact"><span class="btn accept">Accept</span><span class="btn">Accept selected</span><span class="btn reject">Reject</span><span class="btn ghost">Ask for a revision</span></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px">Affects <b>1 email</b> (step 2). No compliance warnings introduced. This change is reversible — Reject restores the prior text exactly.</div>
+      </div>
+      <div class="agent" style="padding:16px;background:#fff">
+        <div class="ah"><span class="av">*</span><span class="nm">Marketing Assistant</span><span class="st">● Ready</span></div>
+        <div class="chatscroll">
+          <div class="msg user">Rewrite the sequence for parents — short on time.</div>
+          <div class="msg ai">I'll reframe around fitting learning into a busy week. Starting with email 2; here's the diff. I won't touch anything you've already sent.</div>
+          <div class="toolcard done"><span class="ic">✓</span><div><div class="tt">get_course_plan</div><div class="ts">read</div></div></div>
+          <div class="toolcard run"><span class="ic">…</span><div><div class="tt">update_email_step · #2</div><div class="ts">staged — awaiting your accept</div></div></div>
+        </div>
+        <div class="composer"><span class="ph2">Reply, or accept the change on the left…</span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>The AI never mutates state directly — it proposes a validated <code>MarketingPatch</code>.</b> <span class="tag exists" style="font-size:8px">exists</span> the staging/Accept/Reject gate; <span class="tag new" style="font-size:8px">new</span> the before/after email diff view + “affected emails” + “Accept selected” + “Ask for a revision.” Every AI edit shows what changes, which emails are affected, and any compliance warnings before you commit.</div>
+  </div>
+
+  <!-- SCREEN 6: Compliance review -->
+  <p class="scaption">Screen 6 · Pre-launch compliance &amp; trust review</p>
+  <div class="screen">
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><div style="font-family:var(--display);font-size:16px;font-weight:500">Compliance &amp; Trust review</div><span class="statuspill review">2 warnings · 0 blocking</span></div>
+      <div class="checklist">
+        <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>Lead source risk</b> — list is a course interest signup with consent provenance. Not purchased or scraped.</span></div>
+        <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>Consent status</b> — 231 eligible; 14 suppressed and excluded automatically.</span></div>
+        <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>Unsubscribe handling</b> — one-click unsubscribe + compliant footer present in all 4 emails.</span></div>
+        <div class="crow3 pass"><span class="ci">✓</span><span class="ct"><b>Sender identity &amp; CTA URLs</b> — sender set; all 4 CTA links resolve (200).</span></div>
+        <div class="crow3 warn"><span class="ci">!</span><span class="ct"><b>Subject line #2</b> may over-promise a specific outcome — consider softening. <span style="color:var(--brand-700)">Fix with AI</span></span></div>
+        <div class="crow3 warn"><span class="ci">!</span><span class="ct"><b>Send frequency</b> — 4 emails in 6 days is slightly brisk for a cold list. Consider +1 day spacing.</span></div>
+        <div class="crow3 fail" style="opacity:.55"><span class="ci">✕</span><span class="ct"><b>Guaranteed outcomes / fake scarcity</b> — none detected (would block launch if present).</span></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><span class="btn grad">Fix warnings with AI</span><span class="btn ghost">Proceed anyway</span><span class="btn">Re-run review</span></div>
+    </div>
+    <div class="cap"><b>The reviewer runs before every launch and after edits.</b> <span class="tag new" style="font-size:8px">new</span> <code>reviewCampaignCompliance</code> checks the ten pre-launch rules (§ compliance below). <b>Warnings</b> are advisory; a <b>blocking</b> finding (missing unsubscribe, missing sender, broken CTA, guaranteed outcomes, fake scarcity, non-consented list) sets <code>complianceStatus: "blocked"</code> and <b>disables Launch</b> until resolved.</div>
+  </div>
+
+  <!-- SCREEN 7: Approval + schedule + send gate -->
+  <p class="scaption">Screen 7 · Approve, schedule &amp; the send gate</p>
+  <div class="screen">
+    <div class="body" style="display:grid;grid-template-columns:1fr 320px;gap:0;padding:0">
+      <div style="padding:16px;border-right:1px solid var(--line)">
+        <div class="mini-h">Choose how it sends</div>
+        <div class="sched">
+          <div class="schedopt"><div class="si">➤</div><div class="st2">Send now</div>First email immediately</div>
+          <div class="schedopt on"><div class="si">◷</div><div class="st2">Drip sequence</div>Every 2 days from a start date</div>
+          <div class="schedopt"><div class="si">▦</div><div class="st2">Schedule start</div>Begin on a set date/time</div>
+        </div>
+        <div class="mini-h" style="margin-top:14px">Launch checklist</div>
+        <div class="checklist" style="margin:0">
+          <div class="crow3 pass"><span class="ci">✓</span><span class="ct">Course has a title · lead list w/ consent · sender identity set</span></div>
+          <div class="crow3 pass"><span class="ci">✓</span><span class="ct">All 4 steps approved · compliance not blocked · schedule chosen</span></div>
+        </div>
+      </div>
+      <div style="padding:16px">
+        <div class="mini-h">Approval required · irreversible</div>
+        <div class="gatebox">
+          <div class="gh">⚠ Launch this campaign?</div>
+          <div style="font-size:11px;color:#7f1d1d">Approving activates the sequence — WiseSel will begin sending automatically on your schedule.</div>
+          <div class="gmeta">
+            <div class="gm"><div class="k">Action</div><div class="v">launch_campaign</div></div>
+            <div class="gm"><div class="k">Audience</div><div class="v">231 eligible</div></div>
+            <div class="gm"><div class="k">First send</div><div class="v">Now · email 1</div></div>
+            <div class="gm"><div class="k">Reversible?</div><div class="v">No · pause anytime</div></div>
+          </div>
+          <div class="gact"><span class="btn accept">Approve &amp; launch</span><span class="btn deny">Cancel</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>Approval and every send are the only two irreversible gates.</b> <span class="tag exists" style="font-size:8px">exists</span> the gate + scheduler; <span class="tag new" style="font-size:8px">new</span> the campaign-level approval + schedule picker + launch checklist. The checklist is the launch predicate (§ business rules) made visible; a failing item disables <b>Approve &amp; launch</b>. After approval the status advances Draft→…→<b>Sending</b>→<b>Active</b>, and the orchestrator drips on our scheduler.</div>
+  </div>
+
+  <!-- SCREEN 8: Leads + import -->
+  <p class="scaption">Screen 8 · Leads — lists, consent-gated import, engagement</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/leads</span></div>
+    <div class="body" style="display:grid;grid-template-columns:1fr 300px;gap:16px">
+      <div>
+        <div class="mini-h">Contacts · Interest signups (245)</div>
+        <div class="tablewrap" style="margin-top:0"><table class="leadtbl">
+          <thead><tr><th>Email</th><th>Source</th><th>Consent</th><th>Activity</th></tr></thead>
+          <tbody>
+            <tr><td>maria@…</td><td>interest signup</td><td><span class="chip done" style="font-size:8px;padding:2px 7px"><span class="cdot"></span>confirmed</span></td><td>opened ·2</td></tr>
+            <tr><td>devin@…</td><td>interest signup</td><td><span class="chip done" style="font-size:8px;padding:2px 7px"><span class="cdot"></span>confirmed</span></td><td>clicked</td></tr>
+            <tr><td>sam@…</td><td>manual import</td><td><span class="chip wait" style="font-size:8px;padding:2px 7px"><span class="cdot"></span>pending</span></td><td>—</td></tr>
+            <tr><td>alex@…</td><td>interest signup</td><td><span class="chip stop" style="font-size:8px;padding:2px 7px"><span class="cdot"></span>unsubscribed</span></td><td>suppressed</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <div>
+        <div class="mini-h">Import contacts</div>
+        <div class="importbox">
+          <div class="paste">maria@example.com, Maria<br/>devin@example.com, Devin<br/>…paste or upload CSV</div>
+          <div class="consentbox"><span class="cb">☐</span><div><b>I confirm</b> these contacts gave permission to receive marketing emails from me. This list is not purchased, scraped, or unsolicited.</div></div>
+          <div style="display:flex;gap:6px;margin-top:9px"><span class="btn grad">Import 2 contacts</span><span class="btn ghost">Cancel</span></div>
+          <div style="font-size:10px;color:var(--faint);margin-top:8px">Suspicious imports (role addresses, disposable domains, huge unverified lists) are flagged and held for review.</div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>Consent is required to import — the confirmation is a hard gate.</b> <span class="tag extend" style="font-size:8px">extend</span> the subscriber/contact model; <span class="tag new" style="font-size:8px">new</span> named lead lists, manual import + the consent confirmation, and <code>validateLeadConsent</code>. Imported leads land as <code>consent: pending/confirmed</code> per the confirmation; <b>unconfirmed leads can't be emailed</b>. Unsubscribed/bounced rows are suppressed everywhere.</div>
+  </div>
+
+  <!-- SCREEN 9: Analytics -->
+  <p class="scaption">Screen 9 · Campaign analytics — real data only</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/analytics — Launch campaign</span></div>
+    <div class="body">
+      <div class="mini-h">Funnel · this campaign <span style="color:var(--faint)">· illustrative prototype data</span></div>
+      <div class="funnel">
+        <div class="frow"><span class="fl">Sent</span><div class="fbarwrap"><div class="fbar" style="width:100%">email_sent</div></div><span class="fv">231</span></div>
+        <div class="frow"><span class="fl">Delivered</span><div class="fbarwrap"><div class="fbar" style="width:97%">delivered</div></div><span class="fv">224 <span class="pct">97%</span></span></div>
+        <div class="frow"><span class="fl">Opened</span><div class="fbarwrap"><div class="fbar" style="width:58%">email_open</div></div><span class="fv">130 <span class="pct">58%</span></span></div>
+        <div class="frow"><span class="fl">Clicked</span><div class="fbarwrap"><div class="fbar" style="width:22%">email_click</div></div><span class="fv">49 <span class="pct">22%</span></span></div>
+        <div class="frow"><span class="fl">Enrolled</span><div class="fbarwrap"><div class="fbar" style="width:8%">enrollment</div></div><span class="fv">18 <span class="pct">8%</span></span></div>
+      </div>
+      <div class="mgrid" style="margin-top:14px">
+        <div class="metric"><div class="ml">Delivery rate</div><div class="mv">97%</div><div class="ms">224 / 231</div></div>
+        <div class="metric"><div class="ml">Open rate</div><div class="mv">58%</div><div class="ms">per delivered</div></div>
+        <div class="metric"><div class="ml">Unsubscribe rate</div><div class="mv">0.9%</div><div class="ms">guardrail · healthy</div></div>
+        <div class="metric"><div class="ml">Revenue attributed</div><div class="mv na">Not available yet</div><div class="ms">needs checkout data</div></div>
+      </div>
+      <div class="grid g3" style="margin-top:14px">
+        <div class="card" style="padding:12px"><div class="kk">Per-email</div><div style="font-size:11.5px;color:var(--ink-soft);margin-top:6px;line-height:1.8">#1 open <b>61%</b> · #2 <b>54%</b> · #3 <b>49%</b> · #4 <b>44%</b></div></div>
+        <div class="card" style="padding:12px"><div class="kk">Best subject</div><div style="font-size:11.5px;color:var(--ink-soft);margin-top:6px">#1 “Welcome — your free first lesson inside” (61% open)</div></div>
+        <div class="card" style="padding:12px;border-color:var(--brand-200);background:var(--brand-50)"><div class="kk" style="color:var(--brand-700)">Analytics Interpreter</div><div style="font-size:11.5px;color:var(--brand-900);margin-top:6px">“Opens are strong but clicks dip on #3. Want me to draft a clicked-not-enrolled follow-up with one clear link?”</div></div>
+      </div>
+    </div>
+    <div class="cap"><b>The dashboard and the agent read the same event stream.</b> <span class="tag exists" style="font-size:8px">exists</span> the one-stream funnel + observe tool; <span class="tag new" style="font-size:8px">new</span> per-email + per-campaign breakdown and guardrail metrics. Any metric without data reads <b>“Not available yet”</b> — never a fake number. <i>(Numbers here are illustrative prototype data; production values are <code>N/A</code> until instrumented.)</i></div>
+  </div>
+
+  <!-- States -->
+  <h3>States</h3>
+  <div class="state-grid">
+    <div class="state ok2"><div class="st-h">Empty · no campaign</div><div class="st-body"><span style="width:30px;height:30px;border-radius:9px;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display)">*</span><div>“Your course is ready to sell. Pick a goal and I'll draft a full email campaign you can review.”</div><span class="btn grad" style="font-size:10px">＋ Create campaign</span></div></div>
+    <div class="state info"><div class="st-h">Mock mode · Resend off</div><div class="st-body"><div style="font-size:22px">✉</div><div>“Sends are simulated. The sequence runs end-to-end and analytics populate; set <code style="font-size:9px">RESEND_API_KEY</code> to deliver real email.”</div></div></div>
+    <div class="state err"><div class="st-h">Error · AI not configured</div><div class="st-body"><div style="font-size:22px">⚠</div><div>“The AI service isn't configured. Add <code style="font-size:9px">OPENAI_API_KEY</code> on the server to enable generation and the assistant.”</div></div></div>
+    <div class="state info"><div class="st-h">Guardrail · high bounce</div><div class="st-body"><div style="font-size:22px">◮</div><div>“Bounce rate crossed the threshold. Sending is <b>paused</b> — review the list before resuming.”</div></div></div>
+  </div>
+
+  <!-- ============ SURFACE: PUBLIC ============ -->
+  <div class="surface-label"><span class="badge">Surface 2</span> Web · Public (lead-facing)</div>
+
+  <!-- SCREEN 10: interest signup -->
+  <p class="scaption">Screen 10 · Course interest signup (public)</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/p/options-trading — published, public</span></div>
+    <div class="body" style="padding:16px;background:#f7f3ec">
+      <div class="lp">
+        <div class="lphero">
+          <div class="lpeyebrow">New cohort open</div>
+          <div class="lph1">Trade options with <em>confidence</em></div>
+          <div class="lpsub">A beginner-friendly path from “what's a call?” to your first spread — plain language, no finance degree required.</div>
+          <div style="margin-top:14px">
+            <div class="leadform">
+              <div class="lf-h">Join the course interest list</div>
+              <div class="lf-s">Get the free first lesson + notified when enrollment opens.</div>
+              <div class="field">Your name (optional)</div>
+              <div class="field">you@email.com</div>
+              <span class="btn grad" style="width:100%;justify-content:center">Send me Lesson 1</span>
+              <div class="consent">By submitting, you agree to receive course emails from this creator. Unsubscribe anytime — one click, in every email. We record your consent, source, and time for compliance.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>The public form is the primary permission-based lead source.</b> <span class="tag exists" style="font-size:8px">exists</span> the <code>/p/[slug]</code> route + service-role ingest; <span class="tag extend" style="font-size:8px">extend</span> the form records <b>email · name · course id · source · timestamp · consent-text version · unsubscribe status</b> (IP/UA optional for audit). POST → service-role ingest → creates/links a <code>subscriber</code> with <code>consent: confirmed</code> + emits <code>page_view</code> + <code>form_submit</code>.</div>
+  </div>
+
+  <!-- SCREEN 11: unsubscribe -->
+  <p class="scaption">Screen 11 · One-click unsubscribe (public)</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/api/marketing/unsubscribe?sid=…</span></div>
+    <div class="body" style="background:#f7f3ec;padding:20px">
+      <div class="unsub">
+        <div class="um">You're unsubscribed ✓</div>
+        <div style="font-size:12.5px;color:var(--muted)">You won't receive further marketing emails about <b>Intro to Options Trading</b>. Changed your mind? <span style="color:var(--brand-700)">Resubscribe</span>.</div>
+      </div>
+    </div>
+    <div class="cap"><b>One click, honored immediately.</b> <span class="tag exists" style="font-size:8px">exists</span> the unsubscribe route + global suppression; <span class="tag extend" style="font-size:8px">extend</span> signed unsubscribe tokens (MVP uses the subscriber id). Unsubscribing marks the lead <code>unsubscribed</code>, adds it to the suppression list, cancels future queued sends, and emits <code>email_unsubscribe</code> — a terminal state no campaign can target.</div>
+  </div>
+
+  <!-- ===== SPEC SUBSECTIONS ===== -->
+
+  <h3>The Marketing Chat tool surface (26 tools)</h3>
+  <p>Every AI action is a tool call through the one <code>executeMarketingTool(name, args, ctx)</code> → <code>gate()</code> seam — the same contract behind the wizard, the cards, and the chat. Params are Zod (single source of truth) → strict JSON Schema, with <code>.max()</code> length caps as the validate→repair guard. The PRD's 26 tools map onto the 15 shipped tools plus new campaign/lead/compliance/follow-up tools; each is tagged for build status and reversibility.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:36px">Grade</th><th style="width:210px">Tool</th><th>Purpose</th><th style="width:92px">Status</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="6"><span class="tag read">read</span></td><td><code>getCourseMarketingContext</code></td><td>Course plan + campaign + assets rollup — the grounding for all copy.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>getMarketingCampaign</code></td><td>One campaign + its steps, rules, status.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>listMarketingCampaigns</code></td><td>All campaigns for the course + statuses.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>getLeadList</code></td><td>A list's totals, eligible/suppressed counts, consent state.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>getCampaignAnalytics</code> / <code>getEmailEvents</code></td><td>Funnel aggregates + a filtered slice of the event stream. The observe input.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>validateLeadConsent</code></td><td>Assess a list's consent + source risk (read side of import).</td><td><span class="tag new">new</span></td></tr>
+
+      <tr><td rowspan="12"><span class="tag rev">reversible</span></td><td><code>createMarketingCampaign</code></td><td>Create the campaign container (goal, list, sender, schedule). Staged.</td><td><span class="tag extend">extend</span></td></tr>
+      <tr><td><code>generateEmailSequence</code></td><td>Draft the goal-driven 4-email sequence from the course. Staged, rejectable.</td><td><span class="tag extend">extend</span></td></tr>
+      <tr><td><code>regenerateEmailStep</code></td><td>Redraft one step, keeping the rest. Staged.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>generateEmailVariants</code></td><td>Subject / CTA / hook / tone variants for manual selection. Staged.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>updateEmailStep</code></td><td>Edit one step's fields (subject/preview/body/CTA/delay/personalization). Staged.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>createEmailStep</code> / <code>deleteEmailStep</code></td><td>Add/remove a step before launch (delete blocked post-send). Staged.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>reviewCampaignCompliance</code></td><td>Run the trust review; returns warnings + blocking findings. Staged (advisory).</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>createLeadList</code> / <code>importLeads</code></td><td>Create a list; import contacts with a consent confirmation. Staged.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>createSendingSchedule</code></td><td>Set send-now / drip / scheduled-start timing. Staged.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>createFollowUpRule</code> / <code>updateFollowUpRule</code></td><td>Define/adjust a follow-up trigger + delay + which step to send. Staged.</td><td><span class="tag extend">extend</span></td></tr>
+      <tr><td><code>pauseCampaign</code> / <code>resumeCampaign</code></td><td>Halt / continue future queued sends. Reversible control.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>exportCampaign</code></td><td>Export the campaign as Markdown / CSV (copy steps, analytics CSV).</td><td><span class="tag new">new</span></td></tr>
+
+      <tr><td rowspan="3"><span class="tag irrev">irreversible</span></td><td><code>approveCampaign</code> / <code>launchCampaign</code></td><td>Approve content + activate sending. <strong>Human approval required.</strong></td><td><span class="tag extend">extend</span></td></tr>
+      <tr><td><code>cancelCampaign</code></td><td>Terminally stop a campaign. Approval required.</td><td><span class="tag new">new</span></td></tr>
+      <tr><td><code>send_test_email</code> / <code>send_broadcast</code></td><td>Test send to the creator / one-off send to a list. Gated — no exceptions.</td><td><span class="tag exists">exists</span></td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Phase tool-sets, mirroring the studio:</strong> <code>MARKETING_READ_TOOLS</code> / <code>MARKETING_GENERATE_TOOLS</code> (reads + reversible only — the agent can't launch or send here) / <code>MARKETING_ACTION_TOOLS</code>. The copy roles (Analyst, Planner, Copywriter, Variant Generator, Compliance) run under the generate set; only the Orchestrator's gated actions can reach a real inbox.</p>
+
+  <h3>Data model (this milestone) &amp; mapping to the shipped schema</h3>
+  <p>The PRD's TypeScript model maps directly onto the existing 9 tables plus a small set of additive columns and two new tables. All creator data is author-scoped by RLS via a denormalized <code>course_id</code>; <code>landing_page</code> is the only public-readable table; public writes go through the service-role ingest route.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:170px">PRD type</th><th>Backing table &amp; shape</th><th style="width:150px">Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>MarketingCampaign</code></td><td><code>marketing_campaign</code> — add <code>goal</code>, richer <code>status</code> (draft/generated/in_review/approved/scheduled/sending/active/paused/completed/cancelled/failed), <code>sender_identity_id</code>, <code>compliance_status</code> + warnings, <code>approved_at/by</code>, schedule fields (config jsonb).</td><td><span class="tag extend">extend cols</span></td></tr>
+      <tr><td><code>EmailStep</code></td><td><code>email_touch</code> — add <code>stage_name</code>, <code>purpose</code>, <code>ai_rationale</code>, <code>personalization_variables</code>, per-step <code>approval_status</code>, <code>compliance_warnings</code>.</td><td><span class="tag extend">extend cols</span></td></tr>
+      <tr><td><code>Lead</code></td><td><code>subscriber</code> + account <code>audience_contact</code> — email, name, source, <code>consent</code> (status/text/confirmed_at), unsubscribed/bounced. Mostly present.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>LeadList</code></td><td><strong>new table</strong> <code>lead_list</code> — name, <code>source_type</code>, <code>total_leads</code>, <code>eligible_leads</code>, <code>consent_confirmed</code>; a membership join to <code>subscriber</code>.</td><td><span class="tag new">new table</span></td></tr>
+      <tr><td><code>EmailSend</code></td><td><code>scheduled_send</code> — per lead × step; status enum, provider_message_id, timestamps, error. Present.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>EmailEvent</code></td><td><code>analytics_event</code> — the single append-only stream (page_view, form_submit, email_sent, open, click, bounce, unsubscribe, enrollment). Present.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><code>FollowUpRule</code></td><td><strong>new table</strong> <code>follow_up_rule</code> — trigger (after_previous / opened_not_clicked / clicked_not_enrolled / not_opened / not_enrolled), delay_days, step-to-send, status. (Foundation has event-triggered sequences; this makes rules first-class.)</td><td><span class="tag new">new table</span></td></tr>
+      <tr><td><code>MarketingPatch</code></td><td><code>marketing_action</code> — the gate ledger already models staged reversible ops + before-snapshot + risk + approval. The PRD's patch <em>is</em> a staged action.</td><td><span class="tag exists">exists</span></td></tr>
+      <tr><td><em>SenderIdentity</em></td><td><strong>new table</strong> <code>sender_identity</code> — from-name, from-email, reply-to, verification status (MVP: one platform default; per-creator domains later).</td><td><span class="tag new">new table</span></td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Migrations &amp; RLS ship for human review</strong> and apply only after sign-off; types regenerate into <code>lib/database.types.ts</code> after. New tables carry <code>course_id</code> + <code>private.is_course_author(course_id)</code> policies; <code>lead_list</code>/<code>follow_up_rule</code>/<code>sender_identity</code> are author-only.</p>
+
+  <h3>Sending infrastructure (our scheduler; Resend only moves bytes)</h3>
+  <div class="flow">
+    <div class="node accent"><div class="t">Approve</div><div class="s">gate · human yes</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">enrollment</div><div class="s">lead × sequence · next-due</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="t">scheduler tick</div><div class="s">claims due → outbox</div></div>
+    <div class="arrow">→</div>
+    <div class="node warn"><div class="t">suppress?</div><div class="s">unsub/bounce → skip</div></div>
+    <div class="arrow">→</div>
+    <div class="node ok"><div class="t">provider.send</div><div class="s">mock or Resend</div></div>
+    <div class="arrow">→</div>
+    <div class="node accent"><div class="t">events</div><div class="s">sent · delivered · open · click</div></div>
+  </div>
+  <ul style="font-size:13px">
+    <li><strong>Provider-agnostic <code>EmailProvider</code> interface</strong> (send / sendBatch, message-id tracking, webhooks, bounce/complaint, custom unsubscribe). Mock is deterministic; <code>ResendEmailProvider</code> is the only file importing the Resend SDK, selected when <code>RESEND_API_KEY</code> is set.</li>
+    <li><strong>Sender identity</strong> — MVP sends from the platform's verified domain (<code>RESEND_FROM</code>); the <code>sender_identity</code> record is the seam for per-creator SPF/DKIM/DMARC verification later. A <code>reply-to</code> is always set.</li>
+    <li><strong>Queue = the <code>scheduled_send</code> outbox.</strong> The tick route claims due <code>pending</code> rows, respects rate limits, retries transient failures, stops on pause, skips suppressed, and is idempotent via unique <code>(touch_id, subscriber_id)</code>.</li>
+    <li><strong>Unsubscribe &amp; suppression</strong> — every marketing email carries a one-click unsubscribe + <code>List-Unsubscribe</code> header; opt-out marks the lead, suppresses future sends, and records the event. Transactional email (receipts) stays separate from marketing.</li>
+  </ul>
+
+  <h3>Follow-up automation (approved rules only)</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:200px">Trigger</th><th>Fires when</th><th>Typical action</th></tr></thead>
+    <tbody>
+      <tr><td><code>after_previous_email</code></td><td>X days after the previous step sent.</td><td>Advance the drip to the next step.</td></tr>
+      <tr><td><code>opened_not_clicked</code></td><td>Opened a touch but didn't click within the window.</td><td>Resend a single-link nudge.</td></tr>
+      <tr><td><code>clicked_not_enrolled</code></td><td>Clicked the course page but didn't enroll.</td><td>Send an objection/FAQ follow-up.</td></tr>
+      <tr><td><code>not_opened</code></td><td>No open of a touch within the window.</td><td>Resend with a fresh subject.</td></tr>
+      <tr><td><code>not_enrolled</code></td><td>Sequence completed, no enrollment.</td><td>Offer/final-CTA re-engagement.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>Stops are absolute:</strong> every rule halts on <code>unsubscribe</code>, <code>bounce</code>, or <code>enroll</code>. Rules are approved <em>with</em> the campaign; the agent may not add or mutate a live rule outside the approved set. Not in MVP: branching workflows, multi-channel follow-up, real-time behavioral automation beyond these triggers, reply classification.</p>
+
+  <h3>Analytics taxonomy &amp; the “real data only” rule</h3>
+  <p>One append-only table, <code>analytics_event</code>, carries every measurable moment; the dashboard aggregates it, the reducer folds it into subscriber status, and <code>getCampaignAnalytics</code> serves it to the agent. Provider engagement events (delivered/open/click/bounce/complaint) arrive via Resend webhooks in production and are simulated deterministically in mock.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:180px">Event</th><th>Emitted when</th><th>Drives</th></tr></thead>
+    <tbody>
+      <tr><td><code>page_view</code> / <code>form_submit</code></td><td>Public page render / lead form submit.</td><td>Top of funnel; creates a <code>lead</code>.</td></tr>
+      <tr><td><code>email_sent</code> / <code>delivered</code></td><td>Provider accepts / delivers a send.</td><td>Send accounting; idempotency proof.</td></tr>
+      <tr><td><code>email_open</code> / <code>email_click</code></td><td>Open pixel / tracked link.</td><td>→ <code>engaged</code>; arms follow-up triggers.</td></tr>
+      <tr><td><code>email_bounce</code> / <code>email_unsubscribe</code> / <code>spam_complaint</code></td><td>Hard bounce / opt-out / complaint.</td><td>→ terminal suppressed states; guardrail metrics.</td></tr>
+      <tr><td><code>enrollment</code></td><td>Lead enrolls in the course.</td><td>→ <code>enrolled</code>; bottom of funnel.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="font-size:13px"><strong>The rule:</strong> a metric with no underlying events renders <code>Not available yet</code>, never <code>0%</code> dressed as data. Revenue/conversion metrics stay <code>N/A</code> until checkout data exists. The Analytics Interpreter must not overclaim causality from small samples.</p>
+
+  <h3>Safety, compliance &amp; the required footer</h3>
+  <div class="grid g2">
+    <div>
+      <h4 style="margin-top:0">The AI cannot</h4>
+      <ul style="font-size:13px">
+        <li>Send to an unapproved or non-consented list, or add scraped/purchased contacts.</li>
+        <li>Ignore unsubscribe/suppression status, or send unapproved content.</li>
+        <li>Make guaranteed-outcome claims, use fake urgency, or invent false scarcity.</li>
+        <li>Hide marketing intent, or change a live campaign outside the approved rules.</li>
+      </ul>
+    </div>
+    <div>
+      <h4 style="margin-top:0">Every marketing email includes</h4>
+      <ul style="font-size:13px">
+        <li>Sender / creator name and a clear reason the recipient is receiving it.</li>
+        <li>A working one-click unsubscribe (+ <code>List-Unsubscribe</code> header).</li>
+        <li>A mailing address / compliant business-identity field.</li>
+        <li>WiseSel attribution where required.</li>
+      </ul>
+    </div>
+  </div>
+  <p style="font-size:13px"><strong>Pre-launch compliance checks (Screen 6):</strong> lead-source risk · consent status · missing unsubscribe · spammy language · misleading subjects · unsupported claims · aggressive frequency · broken CTA URLs · missing sender identity · missing approval. Blocking findings set <code>compliance_status: "blocked"</code> and disable launch.</p>
+
+  <h3>Edge cases (must-handle)</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:280px">Situation</th><th>Behavior</th></tr></thead>
+    <tbody>
+      <tr><td>No course title</td><td>Block launch until the course has a title.</td></tr>
+      <tr><td>No landing page / CTA URL required but missing</td><td>Allow draft generation; block launch if a required CTA URL is missing or unresolved.</td></tr>
+      <tr><td>Lead list has no consent confirmation</td><td>Block launch; the list is ineligible until confirmed.</td></tr>
+      <tr><td>List contains unsubscribed / bounced leads</td><td>Exclude them automatically from eligible count and sends.</td></tr>
+      <tr><td>Creator edits an approved email</td><td>Return the campaign to <em>In&nbsp;Review</em>; re-require compliance + approval for future sends.</td></tr>
+      <tr><td>Campaign paused mid-sequence, then resumed</td><td>Pause stops future queued sends; resume continues only unsent steps.</td></tr>
+      <tr><td>Provider webhook fails / duplicate webhook</td><td>Retry processing + log; idempotency key dedupes duplicate events.</td></tr>
+      <tr><td>Lead clicks after unsubscribing</td><td>Record the click if valid, but send no further emails.</td></tr>
+      <tr><td>Creator asks AI to email a scraped list / use fake urgency</td><td>Refuse; explain; suggest a consented list / truthful urgency.</td></tr>
+      <tr><td>High bounce rate / spam complaints</td><td>Pause or flag the campaign at threshold; surface a guardrail warning.</td></tr>
+      <tr><td>Broken CTA URL at review</td><td>Block launch until fixed.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Mock → real swap (build the loop before integrations exist)</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Interface</th><th>Mock (first)</th><th>Real (later, same contract)</th></tr></thead>
+    <tbody>
+      <tr><td><code>EmailProvider</code></td><td>Deterministic send → emits synthetic <code>email_sent</code>/delivered/open/click (no <code>Math.random</code>); records calls for tests.</td><td><code>ResendEmailProvider</code> + React Email; real webhooks for open/click/bounce/complaint. Selected by <code>RESEND_API_KEY</code>.</td></tr>
+      <tr><td><code>Scheduler</code></td><td>The <code>scheduled_send</code> outbox + a manual <code>POST /api/marketing/scheduler/tick</code>.</td><td>pg_cron / hosted cron hitting the <em>same</em> tick route. No code change above the route.</td></tr>
+      <tr><td><code>ModelClient</code></td><td>The studio's deterministic mock model (<code>getCalls()</code>) for headless loop tests.</td><td>The existing OpenAI Responses client — already in production for the Content Agent.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Phased delivery &amp; acceptance</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:54px">Phase</th><th style="width:210px">Ships</th><th>Acceptance (must pass)</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1</strong><br/><span class="tag">foundation</span></td><td>Marketing tab + dashboard + campaigns/leads/analytics shells; campaign + email-step model (extend existing tables); campaign list.</td><td>Open Marketing from a course; create a campaign; see it in the list with a lifecycle status. <em>(Foundation spines already green — ~157 checks.)</em></td></tr>
+      <tr><td><strong>2</strong><br/><span class="tag">AI builder</span></td><td>Course analysis; goal selection; 4-email generation; editable cards; regenerate; variants; compliance review; save/approve states.</td><td>Pick a goal → AI drafts 4 grounded emails as staged drafts → edit/regenerate a step → compliance runs → approve steps. Nothing sent.</td></tr>
+      <tr><td><strong>3</strong><br/><span class="tag">chat layer</span></td><td>Marketing Chat; campaign-context load; 26-tool calling; MarketingPatch preview + accept/reject/revise; chat regeneration/editing.</td><td>“Make email 2 concise” → a before/after patch → Accept selected persists; Reject restores byte-for-byte. AI never mutates directly.</td></tr>
+      <tr><td><strong>4</strong><br/><span class="tag">leads</span></td><td>Manual import + consent confirmation; interest signup form; lead lists; consent status; unsubscribe/suppression model.</td><td>Import with the consent box → confirmed leads become eligible; a public signup creates a lead; unconfirmed/suppressed leads can't be emailed.</td></tr>
+      <tr><td><strong>5</strong><br/><span class="tag">sending</span></td><td>Sender identity; schedule (now/drip/scheduled); queue; drip execution; retry; pause/resume/cancel; idempotent sends. <em>(Scheduler/outbox already shipped.)</em></td><td>Approve → schedule → tick → mock sends fire on cadence → status advances → pause halts future sends → resume continues only unsent.</td></tr>
+      <tr><td><strong>6</strong><br/><span class="tag">tracking</span></td><td>Provider webhooks; open/click/bounce/unsubscribe tracking; campaign + per-email analytics; lead activity; AI interpretation.</td><td>Sends produce real events → dashboard funnel + per-email breakdown reflect them → the Interpreter cites real numbers → missing metrics read “Not available yet.”</td></tr>
+      <tr><td><strong>7</strong><br/><span class="tag">drafts</span></td><td>Social / forum / discount draft generators — copy/export only.</td><td>Generate platform-specific copy; copy/export works; <strong>nothing auto-posts</strong>.</td></tr>
+      <tr><td><strong>8</strong><br/><span class="tag">later</span></td><td><em>Future:</em> real A/B testing, experiment groups, statistical winners, advanced segmentation, send-time tests.</td><td>Out of MVP — schema seams reserved; explicitly not built now.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================== 5. UX / ACCEPTANCE ===================== -->
+<section id="ux">
+  <p class="sec-eyebrow">05 — User Experience (Acceptance)</p>
+  <h2>Self-acceptance stories — the core flows that must pass.</h2>
+  <p class="lead-p">Each story is written from the actor's perspective and tied to concrete on-screen actions. This is core-flow acceptance, not exhaustive QA. Creator stories run in Marketing Studio; the lead story runs on the public page.</p>
+
+  <div class="story">
+    <div class="sh"><span class="sn">1</span><span class="stt">Generate a full campaign from the course</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I finished my course; I want a complete, editable launch — not a blank email tab.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open <b>Marketing</b> → <b>Create campaign</b> → pick goal “Launch this course” → choose a consented list → <b>Generate</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">A <b>4-email sequence</b> (Welcome+Problem → Solution → Objection → Offer) appears as <b>staged drafts</b> with subjects, previews, bodies, CTAs, timing, and follow-up rules — grounded in my syllabus. Nothing is sent.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">2</span><span class="stt">Edit an email via chat and accept the patch</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to revise copy by asking, and see exactly what changes before it sticks.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>In the assistant, type “Make email 2 more concise and warmer” → review the <b>before/after patch</b> → <b>Accept</b> (or Reject).</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">A <code>MarketingPatch</code> shows the affected email + any compliance warnings; <b>Accept</b> persists it; <b>Reject</b> restores the prior text exactly. The AI never edited state directly.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">3</span><span class="stt">Consent gates a lead list and a launch</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to add contacts safely and never email people who didn't opt in.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Open <b>Leads</b> → paste emails → try to skip the consent box (blocked) → check <b>“I confirm…”</b> → import → attach the list to the campaign.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">Import requires the consent confirmation; confirmed leads become <b>eligible</b>, unconfirmed/suppressed ones don't. A list without confirmed consent <b>blocks launch</b> with a clear reason.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">4</span><span class="stt">Approve, schedule, and let it send autonomously</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I want to email my list on a schedule — but I must be the one who says “go.”</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Pass compliance → choose <b>Drip · every 2 days</b> → <b>Approve &amp; launch</b> in the gate.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">Only after approval does sending begin; status advances to <b>Sending → Active</b> and the scheduler drips each email on cadence. <b>Cancel</b> in the gate leaves the list untouched. The agent paused until I decided.</p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">5</span><span class="stt">Unsubscribe is honored; analytics stay real</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>(Lead) I want out in one click; (Creator) I want the numbers to be true.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>A lead clicks <b>unsubscribe</b> in an email → the creator opens <b>Analytics</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The lead is marked <code>unsubscribed</code>, suppressed from all future sends, and future queued sends to them are cancelled. The dashboard shows real sent/open/click counts; metrics without data read <b>“Not available yet.”</b></p></div>
+    </div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">6</span><span class="stt">Compliance catches a risky email before launch</span></div>
+    <div class="sb">
+      <div class="cell"><div class="cl">User need</div><p>I don't want to send something spammy or over-promised by accident.</p></div>
+      <div class="cell"><div class="cl">Flow</div><p>Ask the agent for “more urgency” with a fake deadline → run <b>Compliance &amp; Trust review</b>.</p></div>
+      <div class="cell"><div class="cl">Expected result</div><p class="pass">The reviewer <b>refuses fake scarcity</b> and flags it as blocking; <b>Fix with AI</b> rewrites it to truthful urgency. Launch stays disabled while a blocking finding exists.</p></div>
+    </div>
+  </div>
+
+  <div class="callout ok"><div class="lbl">Definition of done — Autonomous Email Marketing Agent v1</div>
+  <p style="margin-bottom:0">A creator opens Marketing Studio, picks a goal and a consented lead list, and gets a grounded <b>4-email campaign</b> as staged, editable drafts; revises it by card or chat with every AI change staged as a rejectable <code>MarketingPatch</code>; passes a compliance review that blocks fake urgency / broken CTAs / non-consented lists; <b>approves once</b> and lets WiseSel <b>send and follow up automatically</b> on schedule — suppressing every unsubscribe and bounce — while one event stream drives real analytics and the assistant's next suggestion. All provider keys server-only, the whole loop running on mock providers, real Resend + cron swapping in by a single env var with <b>no contract changes</b>. Social/forum/offers are draft-only; A/B is variants-only; no scraped/purchased outreach; no send without a human's yes.</p></div>
+</section>
+
+</main>
+
+<footer>
+  WiseSel* · Autonomous Email Marketing Agent PRD · Marketing Studio (Web) + Public signup/unsubscribe · Draft for review · 2026-07-02 — design tokens sourced from <code>app/globals.css</code> (warm-editorial: paper #faf7f1 · stone ink · amber→orange gradient · Fraunces display). Builds on the shipped Marketing Assistant foundation (9-table schema · reversibility gate · one event stream · scheduler/outbox · mock→Resend swap). Funnel/list numbers in §4 are illustrative prototype data; production metrics are <code>N/A</code> until instrumented.
+</footer>
+
+</div>
+</body>
+</html>

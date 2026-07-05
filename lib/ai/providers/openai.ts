@@ -8,6 +8,7 @@
  * this process.
  */
 
+import { createRequire } from "node:module";
 import OpenAI from "openai";
 import type {
   ModelClient,
@@ -33,6 +34,71 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 /** Whether the server is configured to talk to OpenAI. */
 export function isOpenAIConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
+}
+
+/**
+ * The proxy URL the OpenAI client should tunnel through, or "" for a DIRECT
+ * connection. An EXPLICIT `OPENAI_PROXY_URL` wins; otherwise the conventional
+ * `HTTPS_PROXY`/`HTTP_PROXY` (what a local Clash/VPN sets) is honored.
+ *
+ * Why this exists: Node's built-in `fetch` (undici) — which the OpenAI SDK uses —
+ * does NOT read `HTTPS_PROXY`, so on a machine where `api.openai.com` is only
+ * reachable via a local proxy the SDK connects DIRECTLY, the socket never
+ * establishes, and it dies at the OS TCP-connect timeout (~75s on macOS:
+ * `net.inet.tcp.keepinit`). That is the "agent times out at ~76s" bug.
+ *
+ * PRODUCTION is unaffected: it sets no proxy env, so this returns "" and the
+ * client connects directly exactly as before.
+ */
+export function resolveProxyUrl(): string {
+  return (
+    process.env.OPENAI_PROXY_URL ||
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    ""
+  );
+}
+
+/**
+ * Build the proxy transport for `proxyUrl` — undici's `fetch` PLUS a `ProxyAgent`
+ * dispatcher — or null if `undici` isn't installed. Both MUST come from the same
+ * undici package: the OpenAI SDK's bundled fetch rejects a foreign dispatcher
+ * ("Connection error … incompatible with the fetch implementation"), so we pass
+ * undici's own `fetch` alongside the dispatcher (per the SDK's own guidance).
+ *
+ * The ProxyAgent gets explicit SOCKET timeouts (`connectTimeout` / `headersTimeout`
+ * / `bodyTimeout`) so a stuck tunnel or a silently-dropped response can't sit open
+ * for minutes. Set generously above the client timeout so a legitimately long
+ * reasoning call isn't cut, but finite so a dead socket dies.
+ *
+ * Loaded via `createRequire` with a NON-LITERAL specifier so the Next bundler
+ * never tries to resolve `undici` at build time — it's a devDependency, only
+ * needed where a proxy env is set (local dev behind Clash); production never
+ * reaches this (no proxy env) and never needs the package.
+ */
+function makeProxyTransport(
+  proxyUrl: string,
+  timeouts: { connectMs: number; socketCeilingMs: number }
+): { fetch: unknown; dispatcher: unknown } | null {
+  try {
+    const req = createRequire(import.meta.url);
+    const specifier = "undici"; // variable defeats bundler static analysis
+    const { fetch, ProxyAgent } = req(specifier) as {
+      fetch: unknown;
+      ProxyAgent: new (opts: unknown) => unknown;
+    };
+    const dispatcher = new ProxyAgent({
+      uri: proxyUrl,
+      connect: { timeout: timeouts.connectMs },
+      headersTimeout: timeouts.socketCeilingMs,
+      bodyTimeout: timeouts.socketCeilingMs,
+    });
+    return { fetch, dispatcher };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -71,7 +137,55 @@ export function createOpenAIModelClient(): ModelClient {
 
   const maxRetries = Number(process.env.OPENAI_MAX_RETRIES) || DEFAULT_MAX_RETRIES;
   const timeout = Number(process.env.OPENAI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  const client = new OpenAI({ apiKey, maxRetries, timeout });
+  // Socket-level backstop for the proxied transport: the connect timeout cuts a
+  // stuck tunnel; the headers/body ceiling cuts a dead response. Set above the
+  // client timeout so a real long call isn't preempted, finite so a dead socket
+  // can't hang for minutes.
+  const undiciConnectMs = Number(process.env.OPENAI_UNDICI_CONNECT_TIMEOUT_MS) || 30_000;
+  const undiciSocketCeilingMs = Number(process.env.OPENAI_UNDICI_TIMEOUT_MS) || 210_000;
+
+  // Route through a proxy ONLY when one is configured. Scoped to THIS client via
+  // its own undici fetch + dispatcher, so Supabase and every other fetch in the
+  // process keep their direct connection — we never touch the global dispatcher.
+  // No proxy env ⇒ no custom transport ⇒ direct connection (production default).
+  const proxyUrl = resolveProxyUrl();
+  let proxied = false;
+  const clientOpts: ConstructorParameters<typeof OpenAI>[0] = { apiKey, maxRetries, timeout };
+  if (proxyUrl) {
+    const transport = makeProxyTransport(proxyUrl, {
+      connectMs: undiciConnectMs,
+      socketCeilingMs: undiciSocketCeilingMs,
+    });
+    if (transport) {
+      clientOpts.fetch = transport.fetch as never;
+      clientOpts.fetchOptions = { dispatcher: transport.dispatcher } as never;
+      proxied = true;
+    } else {
+      console.warn(
+        JSON.stringify({
+          tag: "openai_proxy_unavailable",
+          proxyUrl,
+          message:
+            "A proxy is configured (OPENAI_PROXY_URL/HTTPS_PROXY) but the 'undici' package isn't installed — the OpenAI SDK can't tunnel through it and will connect DIRECTLY (likely to time out). Run `npm i -D undici`.",
+        })
+      );
+    }
+  }
+  const client = new OpenAI(clientOpts);
+
+  // One line that states the ACTUAL transport config the SDK will use — so logs
+  // show whether the proxy is engaged and what timeout/retries are really applied
+  // (not just what we intended). Grep `openai_client_config`.
+  console.log(
+    JSON.stringify({
+      tag: "openai_client_config",
+      proxy: proxied ? "on" : "off",
+      proxyUrl: proxied ? proxyUrl : undefined,
+      transport: proxied ? "undici.fetch+ProxyAgent" : "default",
+      clientTimeoutMs: timeout,
+      maxRetries,
+    })
+  );
   const defaultModel = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
   const defaultEffort = (process.env.OPENAI_REASONING_EFFORT ?? DEFAULT_EFFORT) as
     | "minimal"
