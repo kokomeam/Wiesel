@@ -74,7 +74,8 @@ original `Marketing-Assistant-Creator-Studio-Web.html`). Per-phase detail in
 | `lib/marketing/language.ts` | Course-language detection (script-based) + brief override + localized footer strings (8 locales, English fallback) |
 | `lib/marketing/campaignLifecycle.ts` | The launch checklist PREDICATE + approved-audience snapshot |
 | `lib/marketing/email/llmGenerate.ts` | LLM-grounded sequence copy (course + brief + voice profile + accept/reject ledger signal → structured output; falls back to the deterministic blueprint templates when no model) |
-| `lib/marketing/tools/campaignLifecycle.ts` | list/brief/approve-step/approve-campaign/launch/cancel/pause/resume/checklist/analyst tools |
+| `lib/marketing/tools/campaignLifecycle.ts` | list/brief/approve-step/approve-campaign/launch/cancel/pause/resume/checklist/analyst tools. Pause/resume/cancel are CAMPAIGN-WIDE (every sequence — matching the guardrail auto-pause; pre-2026-07-06 they only touched the primary sequence); summaries state the held/stopped send count; resume clears `config.autoPauseReason` |
+| `lib/marketing/tools/email.ts` → `pause_sequence`/`resume_sequence` | Sequence-level hold/continue (reversible, no card). Resume is REFUSED while the parent campaign is paused/cancelled — the scheduler keys off sequence status, so this guard is what stops "campaign paused but emails going out" |
 | `lib/marketing/tools/compliance.ts` | `review_campaign_compliance` — blocking findings (consent, sender+mailing address, CTA resolution, merge-var fallbacks, fake urgency/guaranteed outcomes) + advisory (quality scores, tone, cadence) |
 | `lib/marketing/tools/leads.ts` | Lead lists, consent-gated import (exact confirmation text required), segments/profile reads, `send_consent_confirmation` (irreversible, rate-limited once per contact) |
 | `lib/marketing/tools/senderIdentity.ts` | Sender identity CRUD (mailing address REQUIRED — footer law), campaign attachment, sending schedule / send window |
@@ -86,6 +87,14 @@ human gates; editing an approved step drops it (and the campaign) back to review
 — enforced inside `write_email_touch` itself, so no write path can bypass it.
 `launch_campaign` snapshots the eligible audience onto
 `config.approvedAudienceIds` — later opt-ins are NOT auto-added.
+
+**Stopping things (2026-07-06):** pause = reversible hold (sends stay `pending`,
+the scheduler skips non-active sequences), cancel = terminal (pending sends +
+active enrollments flipped to `cancelled`), both campaign-wide. Controls live on
+the hub campaign card, the campaign list rows, the builder header, and the
+sequences list/detail (sequence-level); the agent is prompt-taught the same
+vocabulary ("STOPPING THINGS" — prefer pause for an ambiguous "stop", cancel
+only for explicitly permanent, always say held ≠ lost).
 
 **Scheduler additions** (`lib/marketing/scheduler.ts`): sends render merge vars +
 wrap CTAs in signed click links at send time (mock and Resend byte-identical);
@@ -113,8 +122,10 @@ per campaign per tick and auto-pause with a `campaign_auto_paused` event.
 | Public ingest | `lib/marketing/ingest.ts`, `lib/supabase/admin.ts` |
 | Routes | `app/api/marketing/{ingest,agent,scheduler/tick,unsubscribe,click,consent-confirm,webhooks/resend}/route.ts` |
 | Public page | `app/p/[slug]/page.tsx`, `components/marketing-pages/*` |
-| Creator UI | `app/(app)/marketing/{layout,page,actions,campaignActions,MarketingHub,analytics,agent,email/*,leads/*,audience/*}.tsx`, `components/marketing/agent/{AgentPanel,AgentDock}.tsx` (+ `lib/marketing/agentDockStore.ts`), `components/marketing/{ApprovalCard,QuestionCard,ActivityLogEntry,AutonomySettings,ListBuilder}.tsx` |
-| Schema | `supabase/migrations/{20260618000000_marketing_assistant,20260622000000_marketing_account_tier,20260702000000_email_campaign_agent,20260703000000_marketing_autonomy}.sql` |
+| Creator UI | `app/(app)/marketing/{layout,page,actions,campaignActions,MarketingHub,analytics,agent,email/*,leads/*,audience/*,sequences/*}.tsx`, `components/marketing/agent/{AgentPanel,AgentDock}.tsx` (+ `lib/marketing/agentDockStore.ts`), `components/marketing/{ApprovalCard,QuestionCard,ActivityLogEntry,AutonomySettings,ListBuilder,CampaignCard,LifecycleControls}.tsx` |
+| Cross-surface sync | `lib/marketing/approvalSync.ts` (resolution store + BroadcastChannel), `followUpFromEvents` in `lib/marketing/agent/events.ts` — see docs/marketing-autonomy.md § Cross-surface sync |
+| Hub disclosure state | `lib/marketing/hubUiStore.ts` (zustand persist, `skipHydration`) + `components/ui/CollapsibleCard.tsx` |
+| Schema | `supabase/migrations/{20260618000000_marketing_assistant,20260622000000_marketing_account_tier,20260702000000_email_campaign_agent,20260703000000_marketing_autonomy,20260703120000_lead_list_member_update_policy,20260706000000_marketing_action_conversation}.sql` |
 
 ## Data model (17 tables, author-scoped via `private.is_course_author(course_id)` unless noted)
 
@@ -197,8 +208,9 @@ is set and blueprint templates otherwise.
 | `npm run verify:marketing:campaign` | **The campaign layer (112)** — blueprints, quality rubric, merge vars, signed tokens, localization, consent gate + double opt-in + lapse, fake-scarcity guard, compliance blocking vs advisory, edit-after-approval reset, launch checklist + audience snapshot, send windows incl. `sendWindowState`/`sendTimingSentence` + delivery-timing summaries on launch/enroll/activate, hard/soft bounce + escalation, click attribution + segments + engagement score + lead profile, pause/resume/completion, guardrail small-sample protection + ramp, voice profile revert, owner test-send auto-log |
 | `npm run verify:marketing:autonomy` | **The autonomy invariants (93)** — every non-negotiable pinned: unknown-tool fail-closed + registry drift guard, hard-deny × every mode × every policy, deny-never-executes, each auto-mode guardrail failing ALONE blocks (pure permutations + live ladder), reversible never pends in any mode, revert window (stamp/refuse/dismiss), governance language + the END-OF-RUN wrap-up contract, owner/foreign test-email routing, gate + model questions through one pause shape, answer idempotency, resume-in-same-conversation, approve double-click race, segment history from both approval paths |
 | `npm run verify:marketing:lists` | **Audience list building (31)** — filter semantics (consent × stage, suppressed always excluded), consent-confirmed-at-birth lists, zero-match fail-loud, idempotent adds, unknown-id filtering, BYTE-FOR-BYTE membership revert (composite lead_list snapshot), the import-revert regression fix, legacy row-only snapshot back-compat, staged-under-auto, the agent driving build_audience_list, and the "__other__" free-text answer messages |
+| `npm run verify:marketing:sync` | **Cross-surface sync + lifecycle controls (42, PURE — no key/DB)** — `followUpFromEvents` (delta accumulation, `assistant_message` dedupe, ordering, nested blockers, paused flag), the approvalSync store (first-writer-wins, channel broadcast/apply/no-loop, garbage rejection, follow-up rides the broadcast), and the lifecycle registry (pause/resume for campaigns AND sequences reversible, cancel irreversible + hard-denied, the prompt's STOPPING THINGS teaching). In the `npm test` chain |
 
-Full suite (2026-07-04): **398** checks green.
+Full suite (2026-07-06): **440** checks green.
 
 **Seeing the emails:** `/marketing/email` → the campaign list + builder (step
 cards, compliance, launch checklist, embedded assistant); `/marketing/leads` →

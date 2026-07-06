@@ -13,17 +13,20 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { createClient } from "@/lib/supabase/server";
 import { parseAutonomyDecision } from "@/lib/marketing/autonomy";
 import { loadAutonomySettings } from "@/lib/marketing/autonomyStore";
+import { getBlueprint } from "@/lib/marketing/blueprints";
 import { listPendingApprovals, listRecentActivity } from "@/lib/marketing/gate";
 import {
   listAuthorCourses,
   listLandingPages,
   loadCampaignForCourse,
+  loadSequencesOverview,
   selectCourseForAuthor,
 } from "@/lib/marketing/persistence";
 import { listPendingQuestions } from "@/lib/marketing/questions";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { getMarketingTool, previewMarketingAction } from "@/lib/marketing/tools";
 import type { ActivityEntryVM } from "@/components/marketing/ActivityLogEntry";
+import type { CampaignVM } from "@/components/marketing/CampaignCard";
 import type { PendingActionPayload } from "./actions";
 import { MarketingHub, type LandingPageVM, type QuestionVM } from "./MarketingHub";
 
@@ -134,12 +137,37 @@ export default async function MarketingPage({
     hasOpenAction: openTargetIds.has(p.id),
   }));
 
+  // The campaign card: status + delivery at a glance + lifecycle controls.
+  let campaignVm: CampaignVM | null = null;
+  if (campaign) {
+    const sequences = await loadSequencesOverview(supabase, campaign.id);
+    const counts = sequences
+      .flatMap((s) => s.touches)
+      .reduce((acc, t) => ({ queued: acc.queued + (t.queued ?? 0), sent: acc.sent + (t.sent ?? 0) }), {
+        queued: 0,
+        sent: 0,
+      });
+    const blueprintKey = (campaign.config as { blueprintKey?: string }).blueprintKey ?? campaign.goal;
+    const autoPause = (campaign.config as {
+      autoPauseReason?: { metric: string; value: number; threshold: number };
+    }).autoPauseReason;
+    campaignVm = {
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      goalLabel: blueprintKey ? (getBlueprint(blueprintKey)?.label ?? blueprintKey) : null,
+      queued: counts.queued,
+      sent: counts.sent,
+      sequenceCount: sequences.length,
+      autoPause: campaign.status === "paused" && autoPause ? autoPause : null,
+    };
+  }
+
   return (
     <MarketingHub
       courseId={course.id}
       courseTitle={course.title}
-      campaignName={campaign?.name ?? null}
-      campaignStatus={campaign?.status ?? null}
+      campaign={campaignVm}
       pages={pageVms}
       pending={pendingVms}
       questions={questionVms}

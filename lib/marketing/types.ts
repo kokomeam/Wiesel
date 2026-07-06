@@ -446,6 +446,9 @@ export interface MarketingActionRow {
   requestedBy: RequestedBy;
   resolvedAt: string | null;
   createdAt: string;
+  /** Agent-requested actions: the conversation the run paused in, so the
+   *  approve/deny resume lands in the SAME thread. Null on user-surface calls. */
+  conversationId: string | null;
   /** Reversible actions: one-click Revert is offered until this instant
    *  (then the revert closes, fail-closed). Null on irreversible rows. */
   revertExpiresAt: string | null;

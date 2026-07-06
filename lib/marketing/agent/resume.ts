@@ -64,6 +64,10 @@ export async function resumeAgentAfterResolution(
       courseId: p.action.courseId,
       campaignId: p.action.campaignId,
       ownerId: p.ownerId,
+      // Resume the SAME conversation the run paused in (stored on the ledger
+      // row since 20260706); legacy rows fall back to the course's most
+      // recent marketing conversation inside getOrCreateMarketingConversation.
+      conversationId: p.action.conversationId,
       userMessage: resumeMessage(p.action, p.decision, p.denialReason),
       services: p.services,
       emit: p.emit ?? (() => {}),

@@ -1324,6 +1324,28 @@ compliant footers (8 locales, `language.ts`).
   wrap-up contract ("Enqueued is NOT sent" — what happened / what's true /
   what happens next WITH timing / what awaits the creator) and the approve
   resume message demands that wrap-up.
+- **Approval sync + stop controls + hub redesign (2026-07-06, see CHANGELOG +
+  docs/marketing-autonomy.md § Cross-surface sync):** the same approval used to
+  render in chat AND hub with no invalidation — now `lib/marketing/
+  approvalSync.ts` (zustand resolution store keyed by actionId/questionId +
+  BroadcastChannel) collapses every copy on one resolution; stale clicks
+  return `alreadyResolved` (no more approve-throws/deny-lies asymmetry); the
+  approve/deny/answer server actions capture the resumed agent run
+  (`followUpFromEvents`, pure) into `ActionResult.agentFollowUp` and
+  `AgentPanel` REPLAYS it (the wrap-up used to run headless — chat went silent
+  after approvals); `marketing_action.conversation_id` (migration `20260706`)
+  makes the resume land in the paused thread deterministically. Stop controls:
+  new reversible `pause_sequence`/`resume_sequence` (resume refused under a
+  paused/cancelled campaign — scheduler keys off SEQUENCE status);
+  pause/resume/cancel campaign are campaign-WIDE now (were primary-sequence-
+  only) + resume clears `autoPauseReason`; `LifecycleControls.tsx` renders
+  them on the hub `CampaignCard`, campaign list rows, sequences list/detail;
+  prompt teaches "STOPPING THINGS" (pause for ambiguous "stop", cancel is
+  permanent + carded). Hub: one "Needs your attention" zone → work column
+  (CampaignCard + landing pages) + quiet rail (compact Explore nav; Recent
+  changes + Autonomy in `CollapsibleCard`s persisted via
+  `lib/marketing/hubUiStore.ts` skipHydration). New PURE suite
+  `verify:marketing:sync` (42, in `npm test`).
 - **Verify:** `verify:marketing` (gate 37), `:flow` (18 — ingest needs the
   service key), `:analytics` (13), `:email` (34), `:agent` (22, mock model —
   incl. the one-pause-shape `agent_blocked` for approvals AND questions),
@@ -1337,9 +1359,11 @@ compliant footers (8 locales, `language.ts`).
   governance language, question pause/resume parity, approve race, segment
   history)**, **`:lists` (31 — audience filters, byte-for-byte membership
   revert incl. the import-revert regression, legacy snapshot back-compat,
-  agent-driven list build, "__other__" answer messages)**. All self-provision
-  a throwaway live-Supabase user.
-  **398 checks green (2026-07-04).** NOTE for suites on a `fixedClock`: pass
+  agent-driven list build, "__other__" answer messages)**, **`:sync` (42,
+  PURE no-key — followUpFromEvents fold, approvalSync store/broadcast,
+  lifecycle registry + prompt-teaching invariants; in the `npm test`
+  chain)**. All others self-provision a throwaway live-Supabase user.
+  **440 checks green (2026-07-06).** NOTE for suites on a `fixedClock`: pass
   `{ nowIso: services.clock.now() }` to `rejectMarketingAction` when reverting
   staged rows — the gate stamps windows from the injected clock but reject
   defaults to wall-clock.

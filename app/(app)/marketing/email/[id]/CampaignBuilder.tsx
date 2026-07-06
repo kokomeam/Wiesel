@@ -559,10 +559,12 @@ function SenderCard({
 
 function DeliveryCard({
   campaignId,
+  campaignStatus,
   delivery,
   windowInfo,
 }: {
   campaignId: string;
+  campaignStatus: string;
   delivery: NonNullable<BuilderProps["delivery"]>;
   windowInfo: BuilderProps["sendWindowInfo"];
 }) {
@@ -586,7 +588,16 @@ function DeliveryCard({
           </div>
         ))}
       </div>
-      {windowInfo.heldNow ? (
+      {campaignStatus === "paused" ? (
+        <div className="mt-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-600" data-testid="delivery-paused">
+          <strong className="text-stone-800">Campaign paused</strong> — the {delivery.queued} queued email
+          {delivery.queued === 1 ? " is" : "s are"} held, not deleted. Nothing sends until you Resume (top of the page).
+        </div>
+      ) : campaignStatus === "cancelled" ? (
+        <div className="mt-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-600">
+          <strong className="text-stone-800">Campaign cancelled</strong> — all remaining sends were permanently stopped.
+        </div>
+      ) : windowInfo.heldNow ? (
         <div className="mt-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2 text-xs text-amber-900" data-testid="delivery-held">
           {delivery.queued} queued email{delivery.queued === 1 ? "" : "s"} {delivery.queued === 1 ? "is" : "are"} due
           but <strong>held until your send window opens</strong> ({windowInfo.description}).
@@ -598,10 +609,10 @@ function DeliveryCard({
           Next send due {new Date(delivery.nextDueAt).toLocaleString()} — it goes out inside the send window ({windowInfo.description}).
         </p>
       ) : null}
-      {windowInfo.openNow && delivery.queued > 0 && (
+      {windowInfo.openNow && delivery.queued > 0 && campaignStatus !== "paused" && campaignStatus !== "cancelled" && (
         <p className="mt-2 text-xs text-emerald-700">The send window is open now — process due sends below or wait for the scheduler.</p>
       )}
-      {delivery.queued > 0 && (
+      {delivery.queued > 0 && campaignStatus !== "paused" && campaignStatus !== "cancelled" && (
         <Button
           size="sm"
           variant="outline"
@@ -912,7 +923,7 @@ export function CampaignBuilder(props: BuilderProps) {
         {/* ── RIGHT: delivery + compliance + launch + assistant ── */}
         <div className="space-y-4">
           {launched && props.delivery && (
-            <DeliveryCard campaignId={campaign.id} delivery={props.delivery} windowInfo={props.sendWindowInfo} />
+            <DeliveryCard campaignId={campaign.id} campaignStatus={campaign.status} delivery={props.delivery} windowInfo={props.sendWindowInfo} />
           )}
 
           <div className="rounded-2xl border border-stone-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(68,48,28,0.05)]">

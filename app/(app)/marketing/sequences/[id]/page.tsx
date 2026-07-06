@@ -7,9 +7,10 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Clock, Wand2 } from "lucide-react";
+import { ArrowLeft, Clock, PauseCircle, Wand2 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
+import { SequenceLifecycleControls } from "@/components/marketing/LifecycleControls";
 import { createClient } from "@/lib/supabase/server";
 import { loadEmailSequence, loadSequenceRecipients, loadSequencesOverview } from "@/lib/marketing/persistence";
 import { renderEmailHtml } from "@/lib/marketing/email/render";
@@ -43,15 +44,28 @@ export default async function SequenceDetailPage({ params }: { params: Promise<{
           title={seq.name}
           description={`${seq.kind === "time_launch" ? "Timed launch" : "Event-triggered"} · ${seq.status} · ${recipients.length} enrolled`}
           actions={
-            <Link
-              href={`/marketing/agent?course=${seq.courseId}`}
-              className="inline-flex h-9 items-center gap-2 rounded-full border border-stone-300/80 bg-white px-4 text-sm font-medium text-stone-700 hover:border-stone-400 hover:bg-stone-50"
-            >
-              <Wand2 className="size-4" /> Edit with AI
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <SequenceLifecycleControls sequenceId={seq.id} status={seq.status} />
+              <Link
+                href={`/marketing/agent?course=${seq.courseId}`}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-stone-300/80 bg-white px-4 text-sm font-medium text-stone-700 hover:border-stone-400 hover:bg-stone-50"
+              >
+                <Wand2 className="size-4" /> Edit with AI
+              </Link>
+            </div>
           }
         />
       </div>
+
+      {seq.status === "paused" ? (
+        <div className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-600">
+          <PauseCircle className="mt-0.5 size-4 shrink-0 text-stone-400" />
+          <p>
+            <span className="font-medium text-stone-800">This sequence is paused.</span> Queued sends are held —
+            not deleted — and nothing goes out until you resume. Resuming continues exactly where it stopped.
+          </p>
+        </div>
+      ) : null}
 
       {/* Emails */}
       <section className="space-y-5">

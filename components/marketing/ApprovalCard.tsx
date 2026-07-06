@@ -26,6 +26,7 @@ import {
   type ActionResult,
   type PendingActionPayload,
 } from "@/app/(app)/marketing/actions";
+import { useApprovalSync } from "@/lib/marketing/approvalSync";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
@@ -140,29 +141,34 @@ function PreviewBlock({ preview }: { preview: Record<string, unknown> }) {
 export function ApprovalCard({ pending: initial, compact, onResult, onResolved }: ApprovalCardProps) {
   const router = useRouter();
   const [pending, setPending] = useState(initial);
-  const [resolved, setResolved] = useState<"approved" | "denied" | null>(null);
-  const [resolvedMessage, setResolvedMessage] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [busy, startTransition] = useTransition();
+  // Cross-surface sync: the SAME action can be rendered in the chat, the hub
+  // inbox, the builder… — resolving any copy resolves them all (this store is
+  // written by whichever card acted, and mirrored across tabs).
+  const external = useApprovalSync((s) => s.actions[pending.actionId]);
+  const markActionResolved = useApprovalSync((s) => s.markActionResolved);
 
   const preview = pending.preview ?? {};
   const effectLabel = typeof preview.effectLabel === "string" ? preview.effectLabel : "run it";
   const editable = (pending.editableParams ?? []).filter((p) => p !== "body");
 
-  if (resolved) {
+  if (external) {
+    const label =
+      external.decision === "approved" ? "Approved" : external.decision === "denied" ? "Rejected" : "Handled";
     return (
       <div className="flex items-start gap-2 py-1.5 text-xs text-stone-500">
-        {resolved === "approved" ? (
+        {external.decision === "approved" ? (
           <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
         ) : (
           <X className="mt-0.5 size-3.5 shrink-0 text-stone-400" />
         )}
         <span>
-          <span className="font-medium text-stone-600">{resolved === "approved" ? "Approved" : "Rejected"}</span>
+          <span className="font-medium text-stone-600">{label}</span>
           {" — "}
-          {resolvedMessage ?? pending.summary}
+          {external.message ?? pending.summary}
         </span>
       </div>
     );
@@ -173,9 +179,14 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
       const r = await approvePendingAction(pending.actionId);
       onResult?.(r);
       if (!r.error) {
-        setResolved("approved");
-        setResolvedMessage(r.message);
+        markActionResolved(pending.actionId, {
+          decision: "approved",
+          message: r.message,
+          followUp: r.agentFollowUp ?? null,
+        });
         onResolved?.("approved");
+      } else if (r.alreadyResolved) {
+        markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
       }
       router.refresh();
     });
@@ -185,9 +196,14 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
       const r = await denyPendingAction(pending.actionId, note.trim() || undefined);
       onResult?.(r);
       if (!r.error) {
-        setResolved("denied");
-        setResolvedMessage(r.message);
+        markActionResolved(pending.actionId, {
+          decision: "denied",
+          message: r.message,
+          followUp: r.agentFollowUp ?? null,
+        });
         onResolved?.("denied");
+      } else if (r.alreadyResolved) {
+        markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
       }
       router.refresh();
     });
@@ -205,6 +221,8 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
         setPending(r.pending);
         setEditing(false);
         setDraft({});
+      } else if (r.alreadyResolved) {
+        markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
       }
     });
 

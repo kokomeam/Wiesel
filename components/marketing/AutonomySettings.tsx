@@ -67,10 +67,14 @@ export function AutonomySettings({
   courseId,
   initial,
   onResult,
+  embedded = false,
 }: {
   courseId: string;
   initial: Settings;
   onResult?: (r: ActionResult) => void;
+  /** Rendered inside a CollapsibleCard (hub) — the parent owns the card frame
+   *  and the "Agent autonomy" title, so skip both here. */
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState(initial.mode);
@@ -107,16 +111,29 @@ export function AutonomySettings({
       router.refresh();
     });
 
+  const Wrapper = embedded ? "div" : "section";
   return (
-    <section className="rounded-2xl border border-stone-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(68,48,28,0.05)]" data-testid="autonomy-settings">
-      <div className="flex items-center gap-2">
-        <ShieldCheck className="size-4 text-stone-400" />
-        <h3 className="text-sm font-medium text-stone-900">Agent autonomy</h3>
-      </div>
-      <p className="mt-1 text-xs text-stone-500">
-        Governs only actions that reach real people. Drafts and edits always auto-apply with a{" "}
-        <span className="text-stone-700">revert window</span>, whatever the mode.
-      </p>
+    <Wrapper
+      className={embedded ? undefined : "rounded-2xl border border-stone-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(68,48,28,0.05)]"}
+      data-testid="autonomy-settings"
+    >
+      {!embedded ? (
+        <>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-stone-400" />
+            <h3 className="text-sm font-medium text-stone-900">Agent autonomy</h3>
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            Governs only actions that reach real people. Drafts and edits always auto-apply with a{" "}
+            <span className="text-stone-700">revert window</span>, whatever the mode.
+          </p>
+        </>
+      ) : (
+        <p className="text-xs text-stone-500">
+          Governs only actions that reach real people. Drafts and edits always auto-apply with a{" "}
+          <span className="text-stone-700">revert window</span>, whatever the mode.
+        </p>
+      )}
 
       <div className="mt-3 grid gap-2 sm:grid-cols-3">
         {MODES.map((m) => (
@@ -260,6 +277,6 @@ export function AutonomySettings({
           </Button>
         </div>
       </div>
-    </section>
+    </Wrapper>
   );
 }

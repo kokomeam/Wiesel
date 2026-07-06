@@ -1386,6 +1386,7 @@ export type Database = {
           autonomy_decision: Json | null
           before_snapshot: Json | null
           campaign_id: string | null
+          conversation_id: string | null
           course_id: string
           created_at: string
           id: string
@@ -1405,6 +1406,7 @@ export type Database = {
           autonomy_decision?: Json | null
           before_snapshot?: Json | null
           campaign_id?: string | null
+          conversation_id?: string | null
           course_id: string
           created_at?: string
           id?: string
@@ -1424,6 +1426,7 @@ export type Database = {
           autonomy_decision?: Json | null
           before_snapshot?: Json | null
           campaign_id?: string | null
+          conversation_id?: string | null
           course_id?: string
           created_at?: string
           id?: string
@@ -1439,6 +1442,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "marketing_action_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "marketing_action_campaign_id_fkey"
             columns: ["campaign_id"]

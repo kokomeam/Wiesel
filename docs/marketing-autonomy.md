@@ -178,6 +178,39 @@ the hub inbox, the campaign builder, and the leads page:
   resolved" — never a duplicate send. A failed execute releases the claim
   back to `pending` (retryable).
 
+### Cross-surface sync (2026-07-06)
+
+The same pending action (or clarifying question) can be rendered on several
+surfaces at once — chat, hub inbox, builder, leads. The DB row was always the
+single source of truth, but nothing invalidated an already-rendered copy, so
+approving on one surface left a stale, still-clickable card on the others.
+
+- **`lib/marketing/approvalSync.ts`** — an in-memory zustand store keyed by
+  `actionId`/`questionId`, mirrored across tabs via a `BroadcastChannel`.
+  Every `ApprovalCard`/`QuestionCard` subscribes by its id and collapses the
+  moment ANY surface resolves it; resolutions are first-writer-wins (a vaguer
+  "resolved elsewhere" never overwrites a concrete approved/denied). No
+  persistence — the server list is authoritative on the next load.
+- **Stale clicks tell the truth** — `approvePendingAction`/`denyPendingAction`
+  check the row's status first and return `alreadyResolved: true` ("Already
+  handled — resolved elsewhere") instead of the old asymmetry (approve threw,
+  deny silently no-op'd as success). The card collapses to a neutral
+  "Handled" line.
+- **The resume is no longer headless** — the server action captures the resumed
+  run's events (`resumeAgentAfterResolution/AfterAnswer` take `emit`), folds
+  them via the pure `followUpFromEvents` (`lib/marketing/agent/events.ts`)
+  into `ActionResult.agentFollowUp`, and the resolution carries it through
+  the sync store. The chat panel (`AgentPanel`) replays it as transcript
+  items — including a NEW approval/question card when the resumed run blocks
+  again — so the wrap-up contract ("what executed, what happens next, with
+  timing") is actually seen, even when the approval happened on the hub.
+- **Resume lands in the right thread** — `marketing_action.conversation_id`
+  (migration `20260706000000`) stores the conversation an agent-requested
+  action paused; the approval resume passes it instead of relying on
+  "most recent conversation for the course".
+
+Verified by `npm run verify:marketing:sync` (pure).
+
 ## Settings surface
 
 `components/marketing/AutonomySettings.tsx` on the Marketing hub: three mode

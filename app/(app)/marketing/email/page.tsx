@@ -1,13 +1,15 @@
 /**
  * Email Campaigns list — every campaign, its goal, blueprint, and lifecycle
  * status at a glance (Screen 2). Status pills map 1:1 to the campaign state
- * machine; "Create campaign" opens the wizard.
+ * machine; running campaigns get Pause/Resume right on the row (Cancel lives
+ * in the builder + hub card); "Create campaign" opens the wizard.
  */
 
 import Link from "next/link";
-import { ArrowLeft, Mail, Plus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Mail, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { CampaignLifecycleControls } from "@/components/marketing/LifecycleControls";
 import { createClient } from "@/lib/supabase/server";
 import { getBlueprint } from "@/lib/marketing/blueprints";
 import { selectCourseForAuthor } from "@/lib/marketing/persistence";
@@ -105,22 +107,32 @@ export default async function EmailCampaignsPage({
             const blueprintKey = (c.config as { blueprintKey?: string } | null)?.blueprintKey;
             const blueprint = blueprintKey ? getBlueprint(blueprintKey) : c.goal ? getBlueprint(c.goal) : null;
             return (
-              <Link
+              <div
                 key={c.id}
-                href={`/marketing/email/${c.id}`}
                 className="flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-all hover:border-brand-200 hover:shadow-md"
               >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-stone-900">{c.name}</p>
+                <Link href={`/marketing/email/${c.id}`} className="group min-w-0 flex-1">
+                  <p className="truncate font-medium text-stone-900 group-hover:text-brand-700">{c.name}</p>
                   <p className="mt-0.5 text-xs text-stone-500">
                     {blueprint ? `Goal · ${blueprint.label}` : c.goal ? `Goal · ${c.goal}` : "No goal set"}
                   </p>
-                </div>
+                </Link>
                 {c.compliance_status === "blocked" && <Badge tone="rose">Compliance blocked</Badge>}
                 <Badge tone={STATUS_TONE[c.status] ?? "slate"} dot>
                   {STATUS_LABEL[c.status] ?? c.status}
                 </Badge>
-              </Link>
+                {c.status === "paused" && (
+                  <span className="text-xs text-stone-400">sends held — resume any time</span>
+                )}
+                <CampaignLifecycleControls campaignId={c.id} status={c.status} showCancel={false} />
+                <Link
+                  href={`/marketing/email/${c.id}`}
+                  className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-brand-600 transition-all hover:gap-2"
+                  aria-label={`Open ${c.name}`}
+                >
+                  Open <ArrowRight className="size-3.5" />
+                </Link>
+              </div>
             );
           })}
         </div>

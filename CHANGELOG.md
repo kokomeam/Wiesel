@@ -6,6 +6,62 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — approval sync, stop controls, hub redesign, 2026-07-06
+
+Three UX defects from live usage: (1) the SAME approval rendered in the agent
+chat AND the hub inbox, and resolving one left the other stale + clickable;
+(2) pause/cancel existed only as small builder-header buttons (and not at all
+for individual sequences), so "there's no way to stop a sequence" was
+effectively true; (3) the hub stacked 9 sections / 60–100+ controls with no
+disclosure.
+
+- **Cross-surface approval/question sync** (`lib/marketing/approvalSync.ts`):
+  an in-memory zustand resolution store keyed by actionId/questionId +
+  BroadcastChannel mirroring across tabs. `ApprovalCard`/`QuestionCard`
+  subscribe by id — resolving ANY copy collapses every copy, first-writer-wins.
+  Stale clicks now tell the truth: `approvePendingAction`/`denyPendingAction`
+  return `alreadyResolved` ("Already handled — resolved elsewhere") instead of
+  the old approve-throws / deny-silently-succeeds asymmetry; the stale card
+  collapses to a neutral "Handled" line.
+- **The resume is visible now**: approve/deny/answer server actions capture the
+  resumed agent run's events (`emit` into `followUpFromEvents`, pure, in
+  `agent/events.ts`) and return them as `ActionResult.agentFollowUp`; the
+  resolution carries it through the sync store and `AgentPanel` replays it as
+  transcript items — including a NEW approval/question card when the resume
+  blocks again. Previously the resume ran headlessly and the chat went silent
+  after every approval (the wrap-up contract was persisted but never seen).
+  Migration `20260706000000`: `marketing_action.conversation_id` — the
+  approval resume lands deterministically in the SAME thread the run paused
+  in (was "most recent conversation", right only by accident).
+- **Stop controls everywhere they're expected**: new `pause_sequence` /
+  `resume_sequence` tools (reversible; resume refused while the parent
+  campaign is paused/cancelled — the scheduler keys off sequence status, so
+  that guard prevents "campaign paused but emails going out").
+  `pause_campaign`/`resume_campaign`/`cancel_campaign` are now CAMPAIGN-WIDE
+  (every sequence, matching the guardrail auto-pause — primary-only before,
+  which stranded followup sequences); summaries state the held/stopped send
+  count; resume clears `config.autoPauseReason` (the amber banner no longer
+  outlives the pause it describes). UI: `components/marketing/
+  LifecycleControls.tsx` (Pause/Resume/Cancel… — cancel renders its approval
+  card in place) on the hub campaign card, campaign list rows, sequences
+  list + detail; the builder Delivery card explains paused/cancelled states
+  and hides "Process due sends" while paused. The agent system prompt gained
+  a "STOPPING THINGS" block (prefer pause for an ambiguous "stop"; cancel is
+  permanent + always carded; held ≠ lost).
+- **Hub redesign** (`MarketingHub.tsx`): ask-bar hero → ONE "Needs your
+  attention" zone (approvals + questions, count-badged, only when nonempty) →
+  a work column (new `CampaignCard` with status/delivery/lifecycle controls +
+  landing pages as a single card) + a quiet rail (compact Explore nav — the
+  six fat engine cards became one list — then Recent changes and Agent
+  autonomy as `CollapsibleCard`s whose disclosure persists via
+  `lib/marketing/hubUiStore.ts`, zustand persist + `skipHydration`, the
+  studio uiStore pattern). `AutonomySettings` gained an `embedded` variant.
+- **Verify**: new PURE suite `npm run verify:marketing:sync` (42 — the
+  follow-up fold, the sync store incl. broadcast no-loop + garbage rejection,
+  and the lifecycle registry/prompt invariants), added to the `npm test`
+  chain; `verify:marketing:autonomy` (93) + `verify:marketing:campaign` (112)
+  re-ran green against live Supabase after the gate + lifecycle changes.
+
 ## Marketing — delivery-timing honesty (send-window visibility + agent wrap-ups), 2026-07-04
 
 From live usage: a creator launched a campaign at 23:41 local, the agent said

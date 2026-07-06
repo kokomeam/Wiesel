@@ -33,6 +33,8 @@ export function buildMarketingSystemPrompt(): string {
     "",
     "AUDIENCE — you CAN move the course's EXISTING contacts onto lists: build_audience_list creates a list AND fills it in one step (e.g. every consent-confirmed contact, or one funnel stage); add_leads_to_list / remove_leads_from_list edit membership on an existing list. All three send nothing and are reversible. Never claim you can't put existing contacts on a list.",
     "",
+    "STOPPING THINGS — you CAN stop running operations when the creator asks; never claim otherwise. pause_campaign / pause_sequence hold every queued send (reversible — they execute immediately; resume_campaign / resume_sequence continue exactly where they stopped, only unsent emails go out). cancel_campaign stops everything PERMANENTLY — it is irreversible and always needs the creator's approval card. When a creator says \"stop\" ambiguously, prefer the reversible pause and say how to resume; only cancel when they clearly want it gone for good. After pausing, state plainly: held sends are kept, not lost, and nothing sends until resume.",
+    "",
     "Be concise and concrete. Prefer one clear next step over a wall of options.",
     "",
     "END OF RUN — never stop silently after tool calls. Close EVERY run with a short wrap-up the creator can act on:",

@@ -11,7 +11,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
-import { loadCampaign } from "@/lib/marketing/persistence";
+import { loadCampaign, loadEmailSequence } from "@/lib/marketing/persistence";
 import { runSchedulerTick } from "@/lib/marketing/scheduler";
 import { acceptMarketingAction, executeMarketingTool, getMarketingTool } from "@/lib/marketing/tools";
 import type { GateOutcome } from "@/lib/marketing/gate";
@@ -325,6 +325,46 @@ export async function cancelCampaignRequestAction(campaignId: string): Promise<R
   const out = await executeMarketingTool("cancel_campaign", { campaignId }, ctx);
   revalidate(campaignId);
   return requestOutcome("cancel_campaign", out, "Cancelled.");
+}
+
+/* ────────────────── sequence-level pause / resume ────────────────── */
+
+async function sequenceCtx(sequenceId: string) {
+  const { supabase, ownerId, ownerEmail } = await authed();
+  const seq = await loadEmailSequence(supabase, sequenceId);
+  if (!seq) throw new Error("Sequence not found");
+  return { supabase, seq, ctx: ctxFor(supabase, ownerId, seq.courseId, seq.campaignId, ownerEmail) };
+}
+
+/** Pause ONE sequence (reversible; queued sends are held, not deleted).
+ *  Returns the tool's summary so the UI can state exactly what was held. */
+export async function pauseSequenceAction(sequenceId: string): Promise<{ message: string; error?: boolean }> {
+  try {
+    const { supabase, seq, ctx } = await sequenceCtx(sequenceId);
+    const out = await executeMarketingTool("pause_sequence", { sequenceId }, ctx);
+    if (out.actionId) await acceptMarketingAction(supabase, out.actionId);
+    revalidate(seq.campaignId);
+    revalidatePath("/marketing/sequences");
+    revalidatePath(`/marketing/sequences/${sequenceId}`);
+    return { message: out.summary };
+  } catch (e) {
+    return { message: e instanceof Error ? e.message : String(e), error: true };
+  }
+}
+
+/** Resume ONE paused sequence — held sends continue on their schedule. */
+export async function resumeSequenceAction(sequenceId: string): Promise<{ message: string; error?: boolean }> {
+  try {
+    const { supabase, seq, ctx } = await sequenceCtx(sequenceId);
+    const out = await executeMarketingTool("resume_sequence", { sequenceId }, ctx);
+    if (out.actionId) await acceptMarketingAction(supabase, out.actionId);
+    revalidate(seq.campaignId);
+    revalidatePath("/marketing/sequences");
+    revalidatePath(`/marketing/sequences/${sequenceId}`);
+    return { message: out.summary };
+  } catch (e) {
+    return { message: e instanceof Error ? e.message : String(e), error: true };
+  }
 }
 
 export async function updateBriefAction(

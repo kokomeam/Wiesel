@@ -101,6 +101,7 @@ function actionRowToDomain(row: ActionRow): MarketingActionRow {
     requestedBy: row.requested_by as "user" | "agent",
     resolvedAt: row.resolved_at,
     createdAt: row.created_at,
+    conversationId: row.conversation_id ?? null,
     revertExpiresAt: row.revert_expires_at,
     autonomyDecision: row.autonomy_decision ?? null,
   };
@@ -134,6 +135,7 @@ async function insertAction(
       target_ref: (fields.target as unknown as Json) ?? null,
       summary: fields.summary,
       requested_by: ctx.requestedBy,
+      conversation_id: ctx.conversationId ?? null,
       revert_expires_at: fields.revertExpiresAt ?? null,
       autonomy_decision: (fields.autonomyDecision as unknown as Json) ?? null,
       resolved_at: fields.resolvedAt ?? null,

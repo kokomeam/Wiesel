@@ -55,43 +55,46 @@ export function ActivityLogEntry({ entry, onResult }: { entry: ActivityEntryVM; 
       router.refresh();
     });
 
+  // Stacked layout (label+actions row, then the summary) so the row works in
+  // the hub's narrow rail as well as a wide column — the old one-line flex
+  // squeezed the summary to a word per line beside the buttons.
   return (
-    <div className="flex items-start gap-2.5 border-b border-stone-100 py-2 last:border-b-0">
-      <span className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">
-        {entry.actionKind.replace(/_/g, " ")}
-      </span>
-      <p className={cn("min-w-0 flex-1 text-xs text-stone-500")}>
+    <div className="border-b border-stone-100 py-2 last:border-b-0">
+      <div className="flex items-center gap-2.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">
+          {entry.actionKind.replace(/_/g, " ")}
+          {entry.requestedBy === "agent" && !entry.autoExecuted ? " · agent" : ""}
+        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {entry.autoExecuted ? <Badge tone="sky">auto · policy</Badge> : null}
+          {busy ? <Loader2 className="size-3 animate-spin text-stone-400" /> : null}
+          {!entry.autoExecuted && entry.canRevert ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => run("revert")}
+              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs text-stone-500 hover:bg-stone-900/[0.06] hover:text-stone-800"
+              title={entry.revertWindowLabel ?? undefined}
+            >
+              <Undo2 className="size-3" /> Revert{entry.revertWindowLabel ? ` · ${entry.revertWindowLabel}` : ""}
+            </button>
+          ) : null}
+          {!entry.autoExecuted ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => run("dismiss")}
+              className="rounded-full px-2 py-0.5 text-xs text-stone-400 hover:bg-stone-900/[0.06] hover:text-stone-600"
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <p className={cn("mt-1 text-xs leading-relaxed text-stone-500")}>
         {entry.summary}
-        {entry.requestedBy === "agent" && !entry.autoExecuted ? (
-          <span className="text-stone-400"> · agent</span>
-        ) : null}
         {entry.autoReason ? <span className="block text-[11px] text-stone-400">{entry.autoReason}</span> : null}
       </p>
-      <div className="flex shrink-0 items-center gap-1.5">
-        {entry.autoExecuted ? <Badge tone="sky">auto · policy</Badge> : null}
-        {busy ? <Loader2 className="size-3 animate-spin text-stone-400" /> : null}
-        {!entry.autoExecuted && entry.canRevert ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => run("revert")}
-            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs text-stone-500 hover:bg-stone-900/[0.06] hover:text-stone-800"
-            title={entry.revertWindowLabel ?? undefined}
-          >
-            <Undo2 className="size-3" /> Revert{entry.revertWindowLabel ? ` · ${entry.revertWindowLabel}` : ""}
-          </button>
-        ) : null}
-        {!entry.autoExecuted ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => run("dismiss")}
-            className="rounded-full px-2 py-0.5 text-xs text-stone-400 hover:bg-stone-900/[0.06] hover:text-stone-600"
-          >
-            Dismiss
-          </button>
-        ) : null}
-      </div>
     </div>
   );
 }

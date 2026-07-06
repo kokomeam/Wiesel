@@ -18,6 +18,7 @@ import {
   type ActionResult,
   type PendingActionPayload,
 } from "@/app/(app)/marketing/actions";
+import { useApprovalSync } from "@/lib/marketing/approvalSync";
 import { ApprovalCard } from "@/components/marketing/ApprovalCard";
 import { cn } from "@/lib/cn";
 
@@ -42,10 +43,12 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
   const [freeText, setFreeText] = useState("");
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
-  const [answered, setAnswered] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
   const [followUp, setFollowUp] = useState<PendingActionPayload | null>(null);
   const [busy, startTransition] = useTransition();
+  // Cross-surface sync — answering here collapses the same question in the
+  // chat/hub (and vice versa), exactly like ApprovalCard.
+  const external = useApprovalSync((s) => s.questions[questionId]);
+  const markQuestionResolved = useApprovalSync((s) => s.markQuestionResolved);
 
   // A gate-raised question on the creator's own action resolves into the
   // real approval card — render it in place.
@@ -53,13 +56,14 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
     return <ApprovalCard pending={followUp} compact={compact} onResult={onResult} />;
   }
 
-  if (dismissed) {
-    return <div className="py-1.5 text-xs text-stone-400">Question dismissed.</div>;
-  }
-  if (answered) {
+  if (external) {
+    if (external.outcome === "dismissed") {
+      return <div className="py-1.5 text-xs text-stone-400">Question dismissed.</div>;
+    }
     return (
       <div className="py-1.5 text-xs text-stone-500">
-        <span className="font-medium text-stone-600">Answered</span> — {answered}
+        <span className="font-medium text-stone-600">{external.outcome === "answered" ? "Answered" : "Handled"}</span>
+        {external.label ? <> — {external.label}</> : <> — resolved elsewhere.</>}
       </div>
     );
   }
@@ -73,8 +77,14 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
       onResult?.(r);
       if (!r.error) {
         if (r.pending) setFollowUp(r.pending);
-        setAnswered(label);
+        markQuestionResolved(questionId, {
+          outcome: "answered",
+          label,
+          followUp: r.agentFollowUp ?? null,
+        });
         onAnswered?.(value);
+      } else if (r.alreadyResolved) {
+        markQuestionResolved(questionId, { outcome: "resolved", label: null, followUp: null });
       }
       router.refresh();
     });
@@ -83,7 +93,7 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
     startTransition(async () => {
       const r = await dismissQuestionAction(questionId);
       onResult?.(r);
-      if (!r.error) setDismissed(true);
+      if (!r.error) markQuestionResolved(questionId, { outcome: "dismissed", label: null, followUp: null });
       router.refresh();
     });
 

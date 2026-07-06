@@ -11,7 +11,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUp, Loader2, Sparkles } from "lucide-react";
-import { decodeSSE } from "@/lib/marketing/agent/events";
+import { decodeSSE, type AgentFollowUp } from "@/lib/marketing/agent/events";
+import { useApprovalSync } from "@/lib/marketing/approvalSync";
 import type { QuestionSpec } from "@/lib/marketing/questions";
 import type { PendingActionPayload } from "@/app/(app)/marketing/actions";
 import { ApprovalCard } from "@/components/marketing/ApprovalCard";
@@ -52,6 +53,11 @@ export function AgentPanel({
   const convoRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const seedingRef = useRef(false);
+  /** Blockers this transcript rendered ("a:{actionId}" / "q:{questionId}") —
+   *  when one resolves (here, on the hub, or in another tab) with an agent
+   *  follow-up, the follow-up is replayed into the transcript exactly once. */
+  const renderedBlockersRef = useRef(new Set<string>());
+  const consumedFollowUpsRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!seed || streaming || seedingRef.current) return;
@@ -69,6 +75,61 @@ export function AgentPanel({
     setItems((prev) => [...prev, item]);
     queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
   }
+
+  /** Translate a resumed run into transcript items; nested blockers (the
+   *  resume paused again) render live cards and register for THEIR follow-up. */
+  function replayFollowUp(followUp: AgentFollowUp) {
+    if (followUp.conversationId && !convoRef.current) convoRef.current = followUp.conversationId;
+    const additions: Item[] = [];
+    for (const f of followUp.items) {
+      if (f.kind === "observation") additions.push({ kind: "observation", text: f.text });
+      else if (f.kind === "assistant") additions.push({ kind: "assistant", text: f.text });
+      else if (f.kind === "tool") additions.push({ kind: "tool", tool: f.tool, summary: f.summary, status: f.status });
+      else if (f.kind === "error") additions.push({ kind: "error", text: f.text });
+      else if (f.kind === "approval") {
+        renderedBlockersRef.current.add(`a:${f.actionId}`);
+        additions.push({
+          kind: "approval",
+          pending: {
+            actionId: f.actionId,
+            toolName: f.tool,
+            summary: f.summary,
+            preview: f.preview,
+            editableParams: null,
+            requestedBy: "agent",
+          },
+        });
+      } else if (f.kind === "question") {
+        renderedBlockersRef.current.add(`q:${f.questionId}`);
+        additions.push({ kind: "question", questionId: f.questionId, question: f.question });
+      }
+    }
+    if (additions.length) {
+      setItems((prev) => [...prev, ...additions]);
+      queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
+    }
+  }
+
+  // Watch the cross-surface sync store: whichever surface resolves a blocker
+  // this transcript shows, the agent's continuation appears HERE (previously
+  // the resume ran headlessly and the chat went silent after an approval).
+  useEffect(() => {
+    const consume = (state: ReturnType<typeof useApprovalSync.getState>) => {
+      for (const key of renderedBlockersRef.current) {
+        if (consumedFollowUpsRef.current.has(key)) continue;
+        const followUp = key.startsWith("a:")
+          ? state.actions[key.slice(2)]?.followUp
+          : state.questions[key.slice(2)]?.followUp;
+        if (followUp) {
+          consumedFollowUpsRef.current.add(key);
+          replayFollowUp(followUp);
+        }
+      }
+    };
+    consume(useApprovalSync.getState());
+    return useApprovalSync.subscribe(consume);
+    // replayFollowUp closes over setState + refs only — safe to run once.
+  }, []);
   function appendAssistant(delta: string) {
     setItems((prev) => {
       const last = prev[prev.length - 1];
@@ -122,6 +183,7 @@ export function AgentPanel({
             });
           else if (ev.type === "agent_blocked") {
             if (ev.kind === "approval" && ev.actionId) {
+              renderedBlockersRef.current.add(`a:${ev.actionId}`);
               push({
                 kind: "approval",
                 pending: {
@@ -134,6 +196,7 @@ export function AgentPanel({
                 },
               });
             } else if (ev.kind === "question" && ev.questionId && ev.question) {
+              renderedBlockersRef.current.add(`q:${ev.questionId}`);
               push({ kind: "question", questionId: ev.questionId, question: ev.question });
             }
           } else if (ev.type === "error") push({ kind: "error", text: ev.message });

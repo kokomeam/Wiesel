@@ -5,6 +5,8 @@
  *     generate_email_sequence — draft a timed launch sequence from the course
  *     generate_followup       — draft an event-triggered behavioral followup
  *     write_email_touch       — author/replace one touch (snapshots the sequence)
+ *     pause_sequence          — hold ONE active sequence's queued sends
+ *     resume_sequence         — continue a paused sequence's held sends
  *   IRREVERSIBLE (approval-gated; outward-facing):
  *     activate_sequence          — make a draft sequence live (+ enroll current
  *                                  subscribers for a timed launch)
@@ -541,6 +543,84 @@ const activateSequence = defineMarketingTool({
   },
 });
 
+/* ─────────────────── reversible: pause / resume ONE sequence ───────────────
+ * The campaign-level pause_campaign/resume_campaign stop everything; these
+ * stop ONE sequence (e.g. hold the behavioral followup while the launch
+ * sequence keeps sending). The scheduler skips any sequence that isn't
+ * `active`, so held sends stay `pending` — nothing is deleted. */
+
+async function countPendingSequenceSends(ctx: MarketingToolContext, sequenceId: string): Promise<number> {
+  const { count } = await ctx.supabase
+    .from("scheduled_send")
+    .select("id", { count: "exact", head: true })
+    .eq("sequence_id", sequenceId)
+    .eq("status", "pending");
+  return count ?? 0;
+}
+
+const pauseSequence = defineMarketingTool({
+  name: "pause_sequence",
+  description:
+    "Pause ONE active sequence — its queued sends are HELD (not deleted) until it's resumed. Reversible. Use pause_campaign to stop the whole campaign.",
+  params: z.object({ sequenceId: z.string().min(1) }),
+  reversibility: "reversible",
+  actionKind: "pause_sequence",
+  existingTarget(args) {
+    return { entity: "email_sequence", id: args.sequenceId };
+  },
+  async execute(args, ctx) {
+    const seq = await loadEmailSequence(ctx.supabase, args.sequenceId);
+    if (!seq) throw new MarketingToolError(`Sequence ${args.sequenceId} not found`);
+    if (seq.status !== "active") {
+      throw new MarketingToolError(`"${seq.name}" is ${seq.status} — only an active sequence can be paused.`);
+    }
+    await ctx.supabase.from("email_sequence").update({ status: "paused" }).eq("id", seq.id);
+    const queued = await countPendingSequenceSends(ctx, seq.id);
+    return {
+      summary: `Paused "${seq.name}" — ${queued} queued send(s) are held until you resume. Nothing is lost.`,
+      data: { heldSends: queued },
+      target: { entity: "email_sequence", id: seq.id },
+    };
+  },
+});
+
+const resumeSequence = defineMarketingTool({
+  name: "resume_sequence",
+  description:
+    "Resume ONE paused sequence — held sends continue on their schedule. Refused while its campaign is paused/cancelled (resume the campaign instead).",
+  params: z.object({ sequenceId: z.string().min(1) }),
+  reversibility: "reversible",
+  actionKind: "resume_sequence",
+  existingTarget(args) {
+    return { entity: "email_sequence", id: args.sequenceId };
+  },
+  async execute(args, ctx) {
+    const seq = await loadEmailSequence(ctx.supabase, args.sequenceId);
+    if (!seq) throw new MarketingToolError(`Sequence ${args.sequenceId} not found`);
+    if (seq.status !== "paused") {
+      throw new MarketingToolError(`"${seq.name}" is ${seq.status} — only a paused sequence can be resumed.`);
+    }
+    // A sequence must not quietly out-run its own campaign's pause/cancel —
+    // the scheduler keys off SEQUENCE status, so this guard is the only thing
+    // preventing "campaign says paused but emails go out".
+    const campaign = await loadCampaign(ctx.supabase, seq.campaignId);
+    if (campaign && (campaign.status === "paused" || campaign.status === "cancelled")) {
+      throw new MarketingToolError(
+        `The campaign "${campaign.name}" is ${campaign.status} — ${
+          campaign.status === "paused" ? "resume the campaign instead (resume_campaign)" : "a cancelled campaign cannot send again"
+        }.`
+      );
+    }
+    await ctx.supabase.from("email_sequence").update({ status: "active" }).eq("id", seq.id);
+    const queued = await countPendingSequenceSends(ctx, seq.id);
+    return {
+      summary: `Resumed "${seq.name}" — ${queued} held send(s) continue on their schedule.`,
+      data: { resumedSends: queued },
+      target: { entity: "email_sequence", id: seq.id },
+    };
+  },
+});
+
 const enrollSegmentInSequence = defineMarketingTool({
   name: "enroll_segment_in_sequence",
   description:
@@ -705,6 +785,8 @@ export const emailTools = [
   deleteEmailStep,
   generateFollowupTool,
   writeEmailTouch,
+  pauseSequence,
+  resumeSequence,
   activateSequence,
   enrollSegmentInSequence,
   sendBroadcastTool,

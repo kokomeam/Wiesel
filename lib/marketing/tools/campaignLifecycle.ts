@@ -30,6 +30,27 @@ async function primarySequenceId(ctx: MarketingToolContext, campaignId: string):
   return data?.id ?? null;
 }
 
+/** ALL of a campaign's sequence ids — pause/resume/cancel must cover every
+ *  sequence (the guardrail auto-pause already pauses all of them; the manual
+ *  controls previously touched only the primary one, stranding the rest). */
+async function campaignSequenceIds(ctx: MarketingToolContext, campaignId: string): Promise<string[]> {
+  const { data } = await ctx.supabase.from("email_sequence").select("id").eq("campaign_id", campaignId);
+  return (data ?? []).map((s) => s.id);
+}
+
+/** Queued (still-pending) sends across the given sequences — surfaced in
+ *  pause/cancel summaries so the creator knows exactly what's being held or
+ *  stopped. */
+async function countPendingSends(ctx: MarketingToolContext, sequenceIds: string[]): Promise<number> {
+  if (sequenceIds.length === 0) return 0;
+  const { count } = await ctx.supabase
+    .from("scheduled_send")
+    .select("id", { count: "exact", head: true })
+    .in("sequence_id", sequenceIds)
+    .eq("status", "pending");
+  return count ?? 0;
+}
+
 /* ─────────────────────────── read: list campaigns ────────────────────────── */
 
 const listMarketingCampaigns = defineMarketingTool({
@@ -218,28 +239,36 @@ const launchCampaign = defineMarketingTool({
 
 const cancelCampaign = defineMarketingTool({
   name: "cancel_campaign",
-  description: "Terminally cancel the campaign — stops all future sends. Irreversible — requires approval.",
+  description:
+    "Terminally cancel the campaign — permanently stops every queued send and enrollment, across ALL its sequences. Irreversible — requires approval (use pause_campaign for a stop you can undo).",
   params: z.object({ campaignId: z.string().min(1) }),
   reversibility: "irreversible",
   actionKind: "cancel_campaign",
   async execute(args, ctx) {
     const campaign = await loadCampaign(ctx.supabase, args.campaignId);
     if (!campaign) throw new MarketingToolError(`Campaign ${args.campaignId} not found`);
+    const seqIds = await campaignSequenceIds(ctx, args.campaignId);
+    const queued = await countPendingSends(ctx, seqIds);
     if (!ctx.approved) {
       return {
-        summary: `Cancel "${campaign.name}" — all future queued sends will stop permanently.`,
+        summary: `Cancel "${campaign.name}" — ${queued} queued send(s) will stop permanently. This cannot be undone (pause instead to keep the option of resuming).`,
         target: { entity: "campaign", id: campaign.id },
-        approvalPreview: { name: campaign.name, effectLabel: "cancel campaign" },
+        approvalPreview: { name: campaign.name, queuedSends: queued, effectLabel: "cancel campaign" },
       };
     }
-    const seqId = await primarySequenceId(ctx, args.campaignId);
-    if (seqId) {
-      await ctx.supabase.from("email_sequence").update({ status: "paused" }).eq("id", seqId);
-      await ctx.supabase.from("sequence_enrollment").update({ status: "cancelled" }).eq("sequence_id", seqId).eq("status", "active");
-      await ctx.supabase.from("scheduled_send").update({ status: "cancelled" }).eq("sequence_id", seqId).eq("status", "pending");
+    // Cancel covers EVERY sequence of the campaign (the old primary-only sweep
+    // left secondary sequences — e.g. a behavioral followup — still sending).
+    if (seqIds.length) {
+      await ctx.supabase.from("email_sequence").update({ status: "paused" }).in("id", seqIds);
+      await ctx.supabase.from("sequence_enrollment").update({ status: "cancelled" }).in("sequence_id", seqIds).eq("status", "active");
+      await ctx.supabase.from("scheduled_send").update({ status: "cancelled" }).in("sequence_id", seqIds).eq("status", "pending");
     }
     await ctx.supabase.from("marketing_campaign").update({ status: "cancelled" }).eq("id", args.campaignId);
-    return { summary: `Cancelled "${campaign.name}".`, target: { entity: "campaign", id: campaign.id } };
+    return {
+      summary: `Cancelled "${campaign.name}" — ${queued} queued send(s) stopped permanently.`,
+      data: { cancelledSends: queued },
+      target: { entity: "campaign", id: campaign.id },
+    };
   },
 });
 
@@ -247,7 +276,8 @@ const cancelCampaign = defineMarketingTool({
 
 const pauseCampaign = defineMarketingTool({
   name: "pause_campaign",
-  description: "Pause an active campaign — stops future queued sends without cancelling it. Reversible control.",
+  description:
+    "Pause an active campaign — every queued send is HELD (not deleted) until the campaign is resumed. Reversible: resume_campaign continues where it stopped.",
   params: z.object({ campaignId: z.string().min(1) }),
   reversibility: "reversible",
   actionKind: "pause_campaign",
@@ -257,16 +287,26 @@ const pauseCampaign = defineMarketingTool({
   async execute(args, ctx) {
     const campaign = await loadCampaign(ctx.supabase, args.campaignId);
     if (!campaign) throw new MarketingToolError(`Campaign ${args.campaignId} not found`);
-    const seqId = await primarySequenceId(ctx, args.campaignId);
-    if (seqId) await ctx.supabase.from("email_sequence").update({ status: "paused" }).eq("id", seqId);
+    const seqIds = await campaignSequenceIds(ctx, args.campaignId);
+    const queued = await countPendingSends(ctx, seqIds);
+    // Pause covers EVERY active sequence (matching the guardrail auto-pause);
+    // drafts stay drafts. Sends stay `pending` — the scheduler skips non-active
+    // sequences, so they're held, not lost.
+    if (seqIds.length) {
+      await ctx.supabase.from("email_sequence").update({ status: "paused" }).in("id", seqIds).eq("status", "active");
+    }
     await ctx.supabase.from("marketing_campaign").update({ status: "paused" }).eq("id", args.campaignId);
-    return { summary: `Paused "${campaign.name}".`, target: { entity: "campaign", id: campaign.id } };
+    return {
+      summary: `Paused "${campaign.name}" — ${queued} queued send(s) are held until you resume. Nothing is lost.`,
+      data: { heldSends: queued },
+      target: { entity: "campaign", id: campaign.id },
+    };
   },
 });
 
 const resumeCampaign = defineMarketingTool({
   name: "resume_campaign",
-  description: "Resume a paused campaign — only unsent steps continue. Reversible control.",
+  description: "Resume a paused campaign — held sends continue on their schedule; only unsent steps go out. Reversible control.",
   params: z.object({ campaignId: z.string().min(1) }),
   reversibility: "reversible",
   actionKind: "resume_campaign",
@@ -276,10 +316,26 @@ const resumeCampaign = defineMarketingTool({
   async execute(args, ctx) {
     const campaign = await loadCampaign(ctx.supabase, args.campaignId);
     if (!campaign) throw new MarketingToolError(`Campaign ${args.campaignId} not found`);
-    const seqId = await primarySequenceId(ctx, args.campaignId);
-    if (seqId) await ctx.supabase.from("email_sequence").update({ status: "active" }).eq("id", seqId);
-    await ctx.supabase.from("marketing_campaign").update({ status: "active" }).eq("id", args.campaignId);
-    return { summary: `Resumed "${campaign.name}".`, target: { entity: "campaign", id: campaign.id } };
+    const seqIds = await campaignSequenceIds(ctx, args.campaignId);
+    // Reactivate every PAUSED sequence (a guardrail auto-pause pauses all of
+    // them — resuming only the primary stranded the rest), and clear the
+    // auto-pause reason so the builder's warning banner doesn't outlive the
+    // pause it describes.
+    if (seqIds.length) {
+      await ctx.supabase.from("email_sequence").update({ status: "active" }).in("id", seqIds).eq("status", "paused");
+    }
+    const restConfig = { ...(campaign.config as Record<string, unknown>) };
+    delete restConfig.autoPauseReason;
+    await ctx.supabase
+      .from("marketing_campaign")
+      .update({ status: "active", config: restConfig as unknown as Json })
+      .eq("id", args.campaignId);
+    const queued = await countPendingSends(ctx, seqIds);
+    return {
+      summary: `Resumed "${campaign.name}" — ${queued} held send(s) continue on their schedule.`,
+      data: { resumedSends: queued },
+      target: { entity: "campaign", id: campaign.id },
+    };
   },
 });
 

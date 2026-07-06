@@ -10,6 +10,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
+import { followUpFromEvents, type AgentFollowUp, type MarketingAgentEvent } from "@/lib/marketing/agent/events";
 import { resumeAgentAfterAnswer, resumeAgentAfterResolution } from "@/lib/marketing/agent/resume";
 import {
   AUTO_APPROVABLE_TOOLS,
@@ -54,8 +55,14 @@ export interface ActionResult {
   /** True when the action failed — the UI shows the message as an error
    *  instead of crashing to the framework error boundary. */
   error?: boolean;
+  /** With `error`: the failure was "someone already resolved this elsewhere"
+   *  — the card should collapse (via the sync store), not stay clickable. */
+  alreadyResolved?: boolean;
   /** Set when the action recorded a pending approval — render the card here. */
   pending?: PendingActionPayload;
+  /** Agent-requested resolutions: the resumed run's transcript, so the chat
+   *  panel can SHOW the agent's wrap-up instead of resuming headlessly. */
+  agentFollowUp?: AgentFollowUp;
 }
 
 const services = () => createMarketingServices();
@@ -247,13 +254,22 @@ export async function unpublishPageAction(courseId: string, pageId: string): Pro
 export async function approvePendingAction(actionId: string): Promise<ActionResult> {
   const { supabase, ownerId } = await authed();
   const action = await loadAction(supabase, actionId);
+  if (action && action.status !== "pending") {
+    // Resolved on another surface (or another tab won the click race) — tell
+    // the stale card to collapse instead of leaving it clickable.
+    revalidatePath("/marketing");
+    return { message: "Already handled — this request was resolved elsewhere.", error: true, alreadyResolved: true };
+  }
   try {
     await approveMarketingAction(actionId, { supabase, ownerId, services: services() });
   } catch (e) {
-    // A failed execute leaves the action PENDING (retryable after the cause is
-    // fixed) — surface the reason instead of crashing the page.
     revalidatePath("/marketing");
-    return { message: e instanceof Error ? e.message : String(e), error: true };
+    // Distinguish "someone else resolved it between our check and the atomic
+    // claim" (collapse the card) from a genuinely failed execute (the action
+    // stays PENDING and retryable after the cause is fixed).
+    const now = await loadAction(supabase, actionId);
+    const alreadyResolved = !!now && now.status !== "pending";
+    return { message: e instanceof Error ? e.message : String(e), error: true, alreadyResolved };
   }
 
   // A just-approved launch starts sending on the next scheduler heartbeat —
@@ -267,10 +283,15 @@ export async function approvePendingAction(actionId: string): Promise<ActionResu
     }
   }
 
+  // Capture the resumed run's events so the surface that approved can REPLAY
+  // the agent's wrap-up (previously the resume was headless — persisted, never
+  // shown). Still best-effort: a resume failure never breaks the approval.
+  let agentFollowUp: AgentFollowUp | undefined;
   if (action?.requestedBy === "agent" && isOpenAIConfigured()) {
     try {
       const resolved = await loadAction(supabase, actionId);
       if (resolved) {
+        const events: MarketingAgentEvent[] = [];
         await resumeAgentAfterResolution({
           supabase,
           model: createOpenAIModelClient(),
@@ -278,7 +299,9 @@ export async function approvePendingAction(actionId: string): Promise<ActionResu
           ownerId,
           action: resolved,
           decision: "approved",
+          emit: (e) => events.push(e),
         });
+        if (events.length) agentFollowUp = followUpFromEvents(events);
       }
     } catch {
       // best-effort by contract — the approval itself already succeeded
@@ -289,10 +312,10 @@ export async function approvePendingAction(actionId: string): Promise<ActionResu
   if (action?.toolName === "publish_landing_page" && action.targetRef?.id) {
     const page = await loadLandingPage(supabase, action.targetRef.id);
     if (page?.status === "published") {
-      return { message: "Approved — the page is live.", href: `/p/${page.slug}`, hrefLabel: "View live" };
+      return { message: "Approved — the page is live.", href: `/p/${page.slug}`, hrefLabel: "View live", agentFollowUp };
     }
   }
-  return { message: "Approved." };
+  return { message: "Approved.", agentFollowUp };
 }
 
 /** Deny a pending irreversible action (optional free-text reason flows into
@@ -300,6 +323,12 @@ export async function approvePendingAction(actionId: string): Promise<ActionResu
 export async function denyPendingAction(actionId: string, reason?: string): Promise<ActionResult> {
   const { supabase, ownerId } = await authed();
   const action = await loadAction(supabase, actionId);
+  if (action && action.status !== "pending") {
+    // The gate's reject is a silent no-op on resolved rows — surface the truth
+    // instead (the effect may already have run via an approval elsewhere).
+    revalidatePath("/marketing");
+    return { message: "Already handled — this request was resolved elsewhere.", error: true, alreadyResolved: true };
+  }
   try {
     await rejectMarketingAction(supabase, actionId);
   } catch (e) {
@@ -307,8 +336,10 @@ export async function denyPendingAction(actionId: string, reason?: string): Prom
     return { message: e instanceof Error ? e.message : String(e), error: true };
   }
 
+  let agentFollowUp: AgentFollowUp | undefined;
   if (action?.requestedBy === "agent" && isOpenAIConfigured()) {
     try {
+      const events: MarketingAgentEvent[] = [];
       await resumeAgentAfterResolution({
         supabase,
         model: createOpenAIModelClient(),
@@ -317,13 +348,15 @@ export async function denyPendingAction(actionId: string, reason?: string): Prom
         action,
         decision: "denied",
         denialReason: reason ?? null,
+        emit: (e) => events.push(e),
       });
+      if (events.length) agentFollowUp = followUpFromEvents(events);
     } catch {
       // best-effort by contract — the denial itself already succeeded
     }
   }
   revalidatePath("/marketing");
-  return { message: "Denied — nothing was sent or published." };
+  return { message: "Denied — nothing was sent or published.", agentFollowUp };
 }
 
 /* ───────────────────── clarifying questions (Q&A inbox) ───────────────────── */
@@ -357,7 +390,7 @@ export async function answerQuestionAction(
   const resolvedNow = await answerQuestion(supabase, questionId, answer);
   if (!resolvedNow) {
     revalidatePath("/marketing");
-    return { message: "Already answered.", error: true };
+    return { message: "Already answered elsewhere.", error: true, alreadyResolved: true };
   }
 
   // Gate-raised question for a USER-initiated call: retry the tool with the
@@ -389,8 +422,10 @@ export async function answerQuestionAction(
     }
   }
 
+  let agentFollowUp: AgentFollowUp | undefined;
   if (q.requestedBy === "agent" && isOpenAIConfigured()) {
     try {
+      const events: MarketingAgentEvent[] = [];
       await resumeAgentAfterAnswer({
         supabase,
         model: createOpenAIModelClient(),
@@ -398,13 +433,15 @@ export async function answerQuestionAction(
         ownerId,
         question: q,
         answer,
+        emit: (e) => events.push(e),
       });
+      if (events.length) agentFollowUp = followUpFromEvents(events);
     } catch {
       // best-effort by contract — the answer itself is already recorded
     }
   }
   revalidatePath("/marketing");
-  return { message: "Answered — the agent will pick it up from here." };
+  return { message: "Answered — the agent picked it up from here.", agentFollowUp };
 }
 
 /** Dismiss a pending question without answering (the agent stays paused until
@@ -431,7 +468,9 @@ export async function editPendingAction(
   const { supabase, ownerId, ownerEmail } = await authed();
   const action = await loadAction(supabase, actionId);
   if (!action) return { message: "Action not found.", error: true };
-  if (action.status !== "pending") return { message: `Action is not pending (${action.status}).`, error: true };
+  if (action.status !== "pending") {
+    return { message: "Already handled — this request was resolved elsewhere.", error: true, alreadyResolved: true };
+  }
 
   const tool = getMarketingTool(action.toolName);
   if (!tool) return { message: `Unknown tool on action: ${action.toolName}`, error: true };
