@@ -10,6 +10,8 @@
  * lessons as rows, blocks as jsonb, ISO-8601 timestamps throughout.
  */
 
+import type { DiagramContent } from "./diagram/types";
+
 /* ───────────────────────── AI metadata envelope ───────────────────────── */
 
 export interface AIMeta {
@@ -74,6 +76,21 @@ export interface ElementStyle {
   shadow?: ElementShadow;
 }
 
+/** Provenance of a positioned element. `ai` = produced by the AI pipeline
+ *  (directly, or by deterministically MATERIALIZING an AI structured layout via
+ *  lib/course/slide/materialize); `human` = inserted/authored by a person. Used
+ *  by future AI editing to avoid clobbering user-owned geometry. */
+export type ElementOrigin = "ai" | "human";
+
+/** Which aspects of an element a person has manually changed since it was
+ *  created/materialized. Set by the geometry/content reducers (patches.ts).
+ *  Lets a future AI edit patch CONTENT while preserving user-moved frames. */
+export interface ElementUserModified {
+  frame?: boolean;
+  style?: boolean;
+  content?: boolean;
+}
+
 export type ShapeKind = "rectangle" | "ellipse" | "triangle" | "line" | "arrow";
 
 /** Line/arrow endpoint geometry as FRACTIONS of the element frame (0..1):
@@ -108,6 +125,73 @@ export interface TextRun {
   marks?: TextMarks;
 }
 
+/* ───────────────────────────── Rich lists ─────────────────────────────── */
+
+/** How a list item's marker is drawn. `number`/`alpha`/`roman` are auto-counted
+ *  per contiguous run at the same level; the rest are static glyphs. `none` =
+ *  no marker (a hanging continuation line). A `markerText` on the item overrides
+ *  the auto glyph (e.g. a two-digit "01"). */
+export type ListMarkerKind =
+  | "disc"
+  | "circle"
+  | "square"
+  | "dash"
+  | "number"
+  | "alpha"
+  | "roman"
+  | "none";
+
+/**
+ * One list paragraph. FLAT model (Google-Slides / PPTX style): nesting is the
+ * integer `level`, not a child array — so indent/outdent is a one-line level
+ * change and rendering is non-recursive. `text` is the plain fallback (invariant:
+ * `text` === concat(`runs`) when runs are present), so lint/search/AI read it.
+ */
+export interface SlideListItem {
+  id: string;
+  text: string;
+  runs?: TextRun[];
+  /** 0-based indent depth. */
+  level: number;
+  /** Overrides the level/default marker for THIS item. */
+  markerKind?: ListMarkerKind;
+  /** Explicit marker glyph/label (e.g. "01"); wins over the auto-counted value. */
+  markerText?: string;
+  /** Marker color, independent of the text color. */
+  markerColor?: string;
+  textColor?: string;
+}
+
+/** Per-indent-level defaults (index = level). */
+export interface SlideListLevelStyle {
+  markerKind?: ListMarkerKind;
+  markerColor?: string;
+  textColor?: string;
+  fontSize?: number;
+  lineHeight?: number;
+  /** Extra indent (px) for this level; overrides the default step. */
+  indent?: number;
+  hangingIndent?: number;
+}
+
+/** A rich list: the editable + materialized representation of `bullet_list`.
+ *  Carried alongside the element's plain `items: string[]` (the fallback), so
+ *  old decks (items only) keep working and lint/AI read plain text unchanged. */
+export interface SlideListContent {
+  items: SlideListItem[];
+  defaultMarkerKind: ListMarkerKind;
+  /** First number for `number`/`alpha`/`roman` runs (default 1). */
+  startNumber?: number;
+  markerColor?: string;
+  textColor?: string;
+  /** Indexed by level. */
+  levelStyles?: SlideListLevelStyle[];
+  /** Uniform gap (px) between paragraphs; overrides the renderer's spacing
+   *  heuristic. A text box that became a list sets a small value so plain lines
+   *  flow like normal text. */
+  paragraphSpacing?: number;
+}
+
 export interface SlideElementBase {
   id: string;
   /** Logical canvas coordinates (1280×720 space). */
@@ -128,6 +212,15 @@ export interface SlideElementBase {
    * UNGROUP_ELEMENTS / normalizeGroups in patches.ts.
    */
   groupPath?: string[];
+  /** Optional stable semantic slot id stamped when an element is MATERIALIZED
+   *  from a structured layout (e.g. "title", "body", "image.main",
+   *  "card.1.title"). Lets a future AI edit address "the bullet list" by role
+   *  instead of coordinates. Absent on hand-inserted elements. */
+  role?: string;
+  /** Where this element came from (see ElementOrigin). Absent = legacy/unknown. */
+  origin?: ElementOrigin;
+  /** Per-aspect record of manual user edits (see ElementUserModified). */
+  userModified?: ElementUserModified;
   style: ElementStyle;
   ai: AIMeta;
 }
@@ -141,9 +234,9 @@ export interface ImageCrop {
 
 export type SlideElement = SlideElementBase &
   (
-    | { type: "text"; text: string; runs?: TextRun[] }
+    | { type: "text"; text: string; runs?: TextRun[]; list?: SlideListContent }
     | { type: "heading"; text: string; runs?: TextRun[] }
-    | { type: "bullet_list"; items: string[] }
+    | { type: "bullet_list"; items: string[]; list?: SlideListContent }
     | { type: "code_block"; code: string; language: string }
     | {
         type: "image";
@@ -440,6 +533,109 @@ export interface ComparisonMatrixContent {
   decor?: DecorLevel;
 }
 
+/** A renderer-owned IMAGE slide — a generated (or human-uploaded) educational
+ *  ILLUSTRATION for a concept no diagram type fits (a historical scene, a
+ *  biological structure, an evocative concept image). The image lives at a stored
+ *  URL (Supabase course-assets — never a blob/data URL); alt text is REQUIRED.
+ *  The AI creates these through `add_image` (which generates + stores the image),
+ *  never by hand-authoring a URL. Accuracy-critical figures stay programmatic
+ *  diagrams — an illustration is never trusted for exact labels/values. */
+export interface IllustrationContent {
+  /** Public URL of the stored image. Empty string = pending / awaiting upload. */
+  imageUrl: string;
+  /** Required alt text (accessibility + AI grounding). */
+  alt: string;
+  /** Optional slide title shown above the image. */
+  title?: RichText;
+  /** Optional caption under the image — what the learner should notice. */
+  caption?: RichText;
+  /** Optional 0–4 supporting points shown beside the image. */
+  points?: RichText[];
+  /** Provenance (review / export): an AI-generated image vs a human upload. */
+  source?: "ai_generated" | "upload";
+  /** Storage path within the bucket (for later cleanup / re-fetch). */
+  storagePath?: string;
+}
+
+/* ── Image LAYOUTS (the two purpose-built generated-image slides that replace the
+ *    full-bleed `illustration` for new authoring). Like `illustration`, the image
+ *    lives at a stored URL supplied by `add_image` (never hand-authored) and alt
+ *    text is REQUIRED; the AI fills the typed TEXT slots, the renderer owns all
+ *    arrangement (image box AR, numbering, dividers, footer). `intentHash` freezes
+ *    the asset: it's the hash of the visual intent the image was generated from, so
+ *    an unrelated text edit never silently regenerates a different picture. */
+
+/** A PENDING image-generation request stored on the slide while the image is being
+ *  produced off the agent's critical path. `add_image` enqueues this with
+ *  `imageUrl:""` (the renderer shows the placeholder); a generation endpoint reads it,
+ *  produces the image, sets `imageUrl`/`storagePath`, and clears `pendingGen`. Carries
+ *  exactly what the prompt builder + verification need (no model call to re-derive). */
+export interface ImagePendingGen {
+  status: "pending" | "failed";
+  visualWeight: "reference" | "supporting";
+  prompt: string;
+  subject?: string;
+  requiredLabels?: string[];
+  axes?: { x?: string; y?: string };
+  annotations?: string[];
+  alt: string;
+}
+
+/** One annotation in `image_reference`: a bold label + a one-line description that
+ *  points at a detail shown in the image. */
+export interface ImageAnnotation {
+  label: RichText;
+  description: RichText;
+}
+
+/** One numbered concept card in `image_reference`'s bottom row (renderer numbers
+ *  them 01/02/03). */
+export interface ImageConceptCard {
+  title: RichText;
+  description: RichText;
+}
+
+/** HERO image layout — the image IS the subject; annotations point at details in
+ *  it and numbered concept cards summarize the takeaways. Landscape 3:2 image. */
+export interface ImageReferenceContent {
+  /** Public URL of the stored image. Empty string = pending. */
+  imageUrl: string;
+  /** Required alt text (accessibility + AI grounding). */
+  alt: string;
+  eyebrow?: RichText;
+  title: RichText;
+  /** 0–4 annotation points referencing the image. */
+  annotations?: ImageAnnotation[];
+  /** 0–3 numbered concept cards (renderer owns the 01/02/03 numbering). */
+  cards?: ImageConceptCard[];
+  source?: "ai_generated" | "upload";
+  storagePath?: string;
+  /** Hash of the visual intent this image was generated from (freeze-on-accept). */
+  intentHash?: string;
+  /** Set while the image is being generated off the critical path (imageUrl ""). */
+  pendingGen?: ImagePendingGen;
+}
+
+/** SUPPORTING image layout — the image aids understanding; the teaching lives in
+ *  the left column (lead + bullets) and the image sits right. Square 1:1 image. */
+export interface ImageSupportingContent {
+  imageUrl: string;
+  alt: string;
+  eyebrow?: RichText;
+  title: RichText;
+  /** One lead sentence under the title. */
+  lead?: RichText;
+  /** 0–4 supporting bullets. */
+  bullets?: RichText[];
+  /** Optional caption under the image. */
+  caption?: RichText;
+  source?: "ai_generated" | "upload";
+  storagePath?: string;
+  intentHash?: string;
+  /** Set while the image is being generated off the critical path (imageUrl ""). */
+  pendingGen?: ImagePendingGen;
+}
+
 /** A renderer-owned structured slide: a typed content payload that a dedicated
  *  component draws (it owns arrangement / arrows / reflow). When set on a slide
  *  it is the source of truth and the freeform `elements` are ignored. */
@@ -453,7 +649,17 @@ export type SlideTemplate =
   | { layoutId: "outline_list"; content: OutlineListContent }
   | { layoutId: "prose"; content: ProseContent }
   | { layoutId: "comparison_columns"; content: ComparisonColumnsContent }
-  | { layoutId: "comparison_matrix"; content: ComparisonMatrixContent };
+  | { layoutId: "comparison_matrix"; content: ComparisonMatrixContent }
+  /** A programmatic teaching VISUAL — a typed diagram the renderer draws as crisp
+   *  SVG (accurate by construction, accessible, exportable). See lib/course/diagram. */
+  | { layoutId: "diagram"; content: DiagramContent }
+  /** A generated / uploaded educational IMAGE (alt-text required). Legacy — kept
+   *  for back-compat rendering; new authoring uses image_reference/_supporting. */
+  | { layoutId: "illustration"; content: IllustrationContent }
+  /** HERO generated-image layout (image is the subject + annotations + cards). */
+  | { layoutId: "image_reference"; content: ImageReferenceContent }
+  /** SUPPORTING generated-image layout (lead + bullets + square image). */
+  | { layoutId: "image_supporting"; content: ImageSupportingContent };
 
 export type StructuredLayoutId = SlideTemplate["layoutId"];
 
@@ -469,6 +675,11 @@ export interface Slide {
   /** When present, this is a renderer-owned structured slide (see SlideTemplate)
    *  and `elements` are not rendered. */
   template?: SlideTemplate;
+  /** Ambient themed decoration drawn behind the slide. `"structured"` keeps the
+   *  corner glows + dot-grid after a structured slide is ejected to editable
+   *  elements (the glows bleed off-canvas, so they can't be elements). Set by
+   *  materialize-on-eject; absent on plain freeform slides. */
+  backdrop?: "structured";
   speakerNotes?: string;
   order: number;
   ai: {
@@ -486,6 +697,8 @@ export interface Slide {
 
 export type BlockType =
   | "slide_deck"
+  | "imported_deck"
+  | "video"
   | "lecture_text"
   | "quiz"
   | "homework"
@@ -504,6 +717,47 @@ export interface BaseBlock {
 export interface SlideDeckBlock extends BaseBlock {
   type: "slide_deck";
   slides: Slide[];
+}
+
+/* ── Imported decks (PPT / PPTX / PDF) ── */
+
+/** Where an imported deck originated. `upload` is live; the others are
+ *  schema-ready for a future Google Drive / OneDrive picker (not implemented). */
+export type DeckImportSourceType = "upload" | "google_drive" | "onedrive";
+
+/** Processing lifecycle of an imported deck. `uploaded` → `processing` → `ready`
+ *  | `failed`; a retry/replace re-enters `processing`. The source of truth is the
+ *  `deck_imports` row — this status is mirrored onto the block for instant render
+ *  and last-known offline display. */
+export type DeckImportStatus = "uploaded" | "processing" | "ready" | "failed";
+
+/**
+ * A presentation the educator imported rather than authored natively. It is a
+ * user-facing "slide deck" but NOT an editable SlideElement deck: the original
+ * file is stored privately, rendered to per-page preview images by a worker, and
+ * shown in a rail viewer. The block content is a DENORMALIZED snapshot keyed by
+ * `deckImportId` (→ the `deck_imports` table); it deliberately carries NO storage
+ * paths (those stay server-side and are only ever handed out as signed URLs).
+ */
+export interface ImportedDeckBlock extends BaseBlock {
+  type: "imported_deck";
+  /** FK to the `deck_imports` row — authoritative for status, pages, storage. */
+  deckImportId: string;
+  sourceType: DeckImportSourceType;
+  /** Original (sanitized) file name, e.g. "Intro to Genetics.pptx". */
+  originalFileName: string;
+  originalMimeType: string;
+  /** Bytes of the original upload (for the UI's file chip). */
+  originalFileSize: number;
+  /** Mirror of `deck_imports.status` so the block renders the right card at once. */
+  status: DeckImportStatus;
+  /** Rendered page count once ready. */
+  pageCount?: number;
+  /** Human-friendly failure summary when `status === "failed"`. */
+  error?: string;
+  /** ISO timestamps mirrored from the row (display only). */
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type LectureTone = "beginner" | "concise" | "detailed" | "socratic";
@@ -627,8 +881,152 @@ export interface ResourceBlock extends BaseBlock {
   links: { id: string; label: string; url: string; note?: string }[];
 }
 
+/* ── Video lessons (educator-recorded / uploaded, backed by Mux) ──────────── */
+
+/** Video hosting provider. Only Mux is implemented, but the field keeps the
+ *  block provider-agnostic so a second provider drops in behind the same seam. */
+export type VideoProviderId = "mux";
+
+/**
+ * Lifecycle of a video block's asset, mirrored from the `video_assets` row for
+ * instant render + offline display (the row is the source of truth, exactly like
+ * `imported_deck` mirrors `deck_imports.status`).
+ *   empty      — no recording/upload yet (the block was just added)
+ *   uploading  — the recorded/selected file is being sent to Mux
+ *   processing — Mux is ingesting / encoding the asset
+ *   ready      — a playback id exists; the video is playable
+ *   failed     — upload or Mux processing errored (see `errorMessage`)
+ */
+export type VideoAssetStatus = "empty" | "uploading" | "processing" | "ready" | "failed";
+
+/** The three recording modes the UI exposes (deliberately just three). */
+export type VideoRecordingMode = "screen_camera" | "camera_only" | "screen_only";
+
+/** How the captured tracks are composited into the final single video. */
+export type VideoLayout = "screen_with_camera_bubble" | "camera_full" | "screen_full";
+
+/** Corner the webcam bubble sits in for `screen_with_camera_bubble`. */
+export type CameraBubblePosition =
+  | "bottom-right"
+  | "bottom-left"
+  | "top-right"
+  | "top-left";
+
+/**
+ * Denormalized snapshot of the Mux asset stored ON the block. Only IDs +
+ * metadata + status live here — NEVER raw video bytes (those live in Mux). The
+ * authoritative record is the `video_assets` row referenced by `videoAssetId`;
+ * this snapshot is what a fresh load renders before the live view resolves.
+ */
+export interface VideoAssetSnapshot {
+  provider: VideoProviderId;
+  status: VideoAssetStatus;
+  /** FK-free reference to the `video_assets` row (source of truth). */
+  videoAssetId?: string;
+  /** Mux direct-upload id (present from the moment an upload is created). */
+  uploadId?: string;
+  /** Mux asset id (present once Mux creates the asset from the upload). */
+  assetId?: string;
+  /** Mux playback id — the only id the browser needs to play the video. */
+  playbackId?: string;
+  /** Video length in seconds (from Mux once ready). */
+  durationSeconds?: number;
+  /** Aspect ratio string from Mux, e.g. "16:9". */
+  aspectRatio?: string;
+  /** Cached poster/thumbnail URL (derived from the playback id). */
+  thumbnailUrl?: string;
+  /** ISO timestamps mirrored from the row (display only). */
+  createdAt?: string;
+  updatedAt?: string;
+  /** Human-friendly failure summary when `status === "failed"`. */
+  errorMessage?: string;
+}
+
+/** How the video was (or will be) recorded. Persisted so a re-record keeps the
+ *  educator's last choices, and so export/analysis can reason about layout. */
+export interface VideoRecordingConfig {
+  mode?: VideoRecordingMode;
+  layout?: VideoLayout;
+  cameraBubblePosition?: CameraBubblePosition;
+  includeMic?: boolean;
+}
+
+/** Non-destructive trim. Both are offsets in seconds from the start of the
+ *  source; playback clamps to [trimStartSeconds, trimEndSeconds]. Absent = play
+ *  the whole video. Invariant (validated in the editor): 0 ≤ start < end ≤ duration. */
+export interface VideoTrim {
+  trimStartSeconds?: number;
+  trimEndSeconds?: number;
+}
+
+/** Educator-facing playback preferences. `showTranscript` now toggles whether
+ *  captions render on the player by default (real, once a caption track exists);
+ *  `showChapters` remains an extension point ("Coming later"). */
+export interface VideoLessonSettings {
+  showControls: boolean;
+  allowDownload: boolean;
+  showTranscript: boolean;
+  showChapters: boolean;
+}
+
+/**
+ * Lifecycle of the video's captions (Mux auto-generated by default). Kept to the
+ * four states the editor surfaces:
+ *   none       — no caption track requested/exists
+ *   generating — requested; Mux is transcribing (asynchronous, does NOT block playback)
+ *   ready      — a caption track is available
+ *   failed     — generation errored (see `error`)
+ */
+export type VideoCaptionStatus = "none" | "generating" | "ready" | "failed";
+
+/** Where a caption track came from. `uploaded` is an extension point (educator
+ *  re-uploads a corrected/translated WebVTT track); only `generated` today. */
+export type VideoCaptionSource = "generated" | "uploaded";
+
+/**
+ * Denormalized caption METADATA stored on the block (the heavy transcript text
+ * itself lives on the authoritative `video_assets` row + rides in the live view —
+ * it is deliberately NOT persisted into the course document to keep it lean).
+ * Written via the validated UPDATE_VIDEO_LESSON patch as status flows back from
+ * Mux (polling / webhook). Extension points left clean: manual correction, a
+ * re-uploaded track, translations (multiple tracks), transcript-based editing.
+ */
+export interface VideoCaptions {
+  status: VideoCaptionStatus;
+  /** Mux text-track id (the id in the WebVTT URL). */
+  trackId?: string;
+  /** Human label, e.g. "English (auto)". */
+  trackName?: string;
+  /** BCP-47-ish language code Mux uses, e.g. "en". */
+  languageCode?: string;
+  source?: VideoCaptionSource;
+  /** Failure summary when `status === "failed"`. */
+  error?: string;
+  /** ISO timestamp the caption metadata last changed (display only). */
+  updatedAt?: string;
+}
+
+/**
+ * A first-class lesson block whose content is a single recorded/uploaded video,
+ * hosted by Mux. Educator-side only for now (no student playback surface yet).
+ * The block carries IDs + metadata + trim; the bytes live in Mux, and the
+ * `video_assets` row is the authoritative status record.
+ */
+export interface VideoLessonBlock extends BaseBlock {
+  type: "video";
+  description?: string;
+  asset: VideoAssetSnapshot;
+  recording: VideoRecordingConfig;
+  edit: VideoTrim;
+  settings: VideoLessonSettings;
+  /** Caption/transcript metadata (Mux auto-generated). Absent = never requested. */
+  captions?: VideoCaptions;
+}
+
 export type LessonBlock =
   | SlideDeckBlock
+  | ImportedDeckBlock
+  | VideoLessonBlock
   | LectureTextBlock
   | QuizBlock
   | HomeworkBlock

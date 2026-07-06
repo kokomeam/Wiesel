@@ -36,7 +36,7 @@ export function IntroHero() {
             {...entrance(!!reduce, 0)}
             className="font-mono text-[11px] uppercase tracking-[0.28em] text-orange-600"
           >
-            WiseSel* — the course studio
+            WiseSel — the course studio
           </motion.p>
 
           <motion.h1

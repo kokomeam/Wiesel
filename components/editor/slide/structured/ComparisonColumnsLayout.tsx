@@ -103,8 +103,8 @@ function ColumnView({
   }
 
   return (
-    <Card style={{ flex: 1, display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", minWidth: 0 }}>
-      <div style={{ height: 6, background: color }} aria-hidden />
+    <Card style={{ flex: 1, display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", minWidth: 0, alignSelf: "stretch" }}>
+      <div style={{ height: 6, background: color, flex: "0 0 6px" }} aria-hidden />
       <div style={{ padding: 26, display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <div className="flex items-center" style={{ gap: 12, marginBottom: 18 }}>
           {option.icon ? <IconBadge sticker={option.icon} accent={color} size={36} /> : <LetterChip index={index} color={color} />}
@@ -153,16 +153,14 @@ export function ComparisonColumnsLayout({ content, ctx }: { content: ComparisonC
   const options = content.options;
   const twoUp = options.length === 2;
   const footer = content.footer;
-  const bodyBottom = footer ? 118 : 52;
 
+  // Flow column: header (auto) → columns (grow + stretch to the taller) → footer
+  // (auto). Columns share the available height and grow with content — no clipping.
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0 flex flex-col" style={{ padding: "52px 64px 40px" }}>
       <ComparisonHeader eyebrow={content.eyebrow} title={content.title} subtitle={content.subtitle} ctx={ctx} />
 
-      <div
-        className="absolute flex items-stretch"
-        style={{ left: 64, right: 64, top: content.subtitle?.text || ctx.interactive ? 218 : 188, bottom: bodyBottom, gap: twoUp ? 0 : 26 }}
-      >
+      <div className="flex flex-1 items-stretch" style={{ gap: twoUp ? 0 : 26, minHeight: 0 }}>
         {options.map((opt, i) => (
           <Fragment key={i}>
             {twoUp && i === 1 && <VsDivider ctx={ctx} />}

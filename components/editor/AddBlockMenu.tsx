@@ -22,15 +22,18 @@ import {
   NotebookText,
   Plus,
   Presentation,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { addBlockPatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
 import type { BlockType } from "@/lib/course/types";
+import { AddSlideDeckChoice } from "./lesson/AddSlideDeckChoice";
 import { useEscapeToClose } from "./QualityHintBadge";
 
 const options: { type: BlockType; label: string; hint: string; icon: typeof Plus }[] = [
   { type: "slide_deck", label: "Slide deck", hint: "Visual presentation", icon: Presentation },
+  { type: "video", label: "Video lesson", hint: "Record or upload", icon: Video },
   { type: "lecture_text", label: "Lecture text", hint: "Written explanation", icon: AlignLeft },
   { type: "quiz", label: "Knowledge check", hint: "Check understanding", icon: ListChecks },
   { type: "homework", label: "Practice exercise", hint: "Self-paced practice", icon: NotebookText },
@@ -40,7 +43,7 @@ const options: { type: BlockType; label: string; hint: string; icon: typeof Plus
 ];
 
 const MENU_W = 240; // matches w-60
-const MENU_H_EST = 320; // ~7 options; only used to choose the flip direction
+const MENU_H_EST = 368; // ~8 options; only used to choose the flip direction
 
 type MenuPos = { left: number; top?: number; bottom?: number };
 
@@ -54,14 +57,21 @@ export function AddBlockMenu({
   variant: "between" | "end";
 }) {
   const [open, setOpen] = useState(false);
+  const [deckChooserOpen, setDeckChooserOpen] = useState(false);
   const [pos, setPos] = useState<MenuPos | null>(null);
   const apply = useEditorStore((s) => s.apply);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEscapeToClose(open, () => setOpen(false));
 
   function add(type: BlockType) {
-    apply(addBlockPatch(lessonId, type, atIndex), "human");
     setOpen(false);
+    // "Slide deck" opens a secondary chooser (create native vs. import a file);
+    // every other block type inserts directly.
+    if (type === "slide_deck") {
+      setDeckChooserOpen(true);
+      return;
+    }
+    apply(addBlockPatch(lessonId, type, atIndex), "human");
   }
 
   // Measure the trigger and choose the menu's anchor in the click handler
@@ -127,6 +137,15 @@ export function AddBlockMenu({
       document.body
     );
 
+  const deckChooser = (
+    <AddSlideDeckChoice
+      open={deckChooserOpen}
+      lessonId={lessonId}
+      atIndex={atIndex}
+      onClose={() => setDeckChooserOpen(false)}
+    />
+  );
+
   if (variant === "between") {
     return (
       <div className="group/add relative flex h-5 items-center justify-center">
@@ -144,6 +163,7 @@ export function AddBlockMenu({
           <Plus className="size-3" />
         </button>
         {menu}
+        {deckChooser}
       </div>
     );
   }
@@ -160,6 +180,7 @@ export function AddBlockMenu({
         Add block
       </button>
       {menu}
+      {deckChooser}
     </div>
   );
 }

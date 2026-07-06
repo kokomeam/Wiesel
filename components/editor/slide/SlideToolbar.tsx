@@ -31,10 +31,12 @@ import {
   LayoutTemplate,
   Lightbulb,
   List,
+  ListOrdered,
   Lock,
   LockOpen,
   PaintBucket,
   Palette,
+  PencilRuler,
   Shapes,
   Smile,
   Sparkles,
@@ -56,10 +58,20 @@ import {
   groupElementsPatch,
   moveElementPatch,
   reorderElementPatch,
+  setElementListPatch,
+  setSlideContentPatch,
   styleElementPatch,
   ungroupElementsPatch,
   updateElementPatch,
 } from "@/lib/course/commands";
+import {
+  effectiveMarkerKind,
+  listFromElement,
+  setListMarker,
+  shiftAllLevels,
+  textToList,
+} from "@/lib/course/slide/list";
+import { canMaterializeSlide, materializeSlide } from "@/lib/course/slide/materialize";
 import { alignedX, alignedY } from "@/lib/course/slide/geometry";
 import {
   alignToSelectionMoves,
@@ -103,6 +115,8 @@ type PopoverKey =
   | "arrange"
   | "shapes"
   | "stickers"
+  | "eject"
+  | "list"
   | null;
 
 function ToolButton({
@@ -206,6 +220,7 @@ export function SlideToolbar({
 }) {
   const apply = useEditorStore((s) => s.apply);
   const applyMany = useEditorStore((s) => s.applyMany);
+  const select = useEditorStore((s) => s.select);
   const selection = useEditorStore((s) => s.selection);
   const openImageDialog = useUIStore((s) => s.openImageDialog);
   const zoom = useUIStore((s) => s.zoom);
@@ -255,6 +270,29 @@ export function SlideToolbar({
   }
 
   const textish = isTextish(selectedEl);
+  const listEl =
+    selectedEl?.type === "bullet_list" || (selectedEl?.type === "text" && selectedEl.list)
+      ? selectedEl
+      : undefined;
+  const listContent = listEl ? listFromElement(listEl) : null;
+  const allMarker = (kind: "disc" | "number") =>
+    !!listContent && listContent.items.length > 0 && listContent.items.every((it) => effectiveMarkerKind(listContent, it) === kind);
+
+  /** Quick toolbar toggle (also ⌘⇧8 / ⌘⇧7 in the editor): make the whole text/
+   *  list element a bullet / numbered list, or turn it off if already that kind. */
+  function toggleListMarker(kind: "disc" | "number") {
+    if (!selectedEl) return;
+    if (selectedEl.type === "text" && !selectedEl.list) {
+      const all = new Set(selectedEl.text.split("\n").map((_, i) => i));
+      apply(setElementListPatch(block.id, slide.id, selectedEl, textToList(selectedEl.text, selectedEl.runs, all, kind)), "human");
+      return;
+    }
+    if (listEl) {
+      const content = listFromElement(listEl);
+      apply(setElementListPatch(block.id, slide.id, listEl, setListMarker(content, allMarker(kind) ? "none" : kind)), "human");
+    }
+  }
+
   const theme = findTheme(slide.style.theme.id);
   const slideSelection = {
     kind: "slide",
@@ -262,6 +300,22 @@ export function SlideToolbar({
     blockId: block.id,
     lessonId,
   } as const;
+
+  // Structured (renderer-owned) slide → offer "Edit freely": materialize the
+  // layout into editable elements through the validated SET_SLIDE_CONTENT patch.
+  const isTemplate = !!slide.template;
+  const canEject = canMaterializeSlide(slide);
+
+  function editFreely() {
+    const elements = materializeSlide(slide);
+    if (!elements) return;
+    // Keep the ambient structured backdrop (glow/dots) behind the elements.
+    apply(setSlideContentPatch(block.id, slide.id, slide.template?.layoutId ?? slide.layout, elements, "structured"), "human");
+    // Land on the now-freeform slide so the canvas + element tools are live.
+    select({ kind: "slide", id: slide.id, blockId: block.id, lessonId });
+    setPopover(null);
+    useUIStore.getState().showFlash("Slide is now freely editable");
+  }
 
   function styleSelected(style: Parameters<typeof styleElementPatch>[3]) {
     if (!selectedEl) return;
@@ -302,7 +356,96 @@ export function SlideToolbar({
       : theme.fontFamily;
 
   let popoverContent: ReactNode = null;
-  if (popover === "layout") {
+  if (popover === "list" && listEl) {
+    const content = listFromElement(listEl);
+    const markers: { kind: Parameters<typeof setListMarker>[1]; glyph: string; label: string }[] = [
+      { kind: "disc", glyph: "•", label: "Bullet" },
+      { kind: "circle", glyph: "○", label: "Circle" },
+      { kind: "dash", glyph: "—", label: "Dash" },
+      { kind: "square", glyph: "▪", label: "Square" },
+      { kind: "number", glyph: "1.", label: "Numbered" },
+      { kind: "none", glyph: "·", label: "None" },
+    ];
+    popoverContent = (
+      <div className="w-60">
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-stone-400">List style</p>
+        <div className="grid grid-cols-3 gap-1.5">
+          {markers.map((m) => (
+            <button
+              key={m.kind}
+              type="button"
+              {...toolAttrs({ tool: `list-marker-${m.kind}`, action: "UPDATE_SLIDE_ELEMENT", targetType: "slide_element", label: `${m.label} list` })}
+              onClick={() => {
+                apply(setElementListPatch(block.id, slide.id, listEl, setListMarker(content, m.kind)), "human");
+                setPopover(null);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors",
+                content.defaultMarkerKind === m.kind ? "bg-brand-50 text-brand-700" : "bg-stone-50 text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <span className="w-4 text-center font-mono">{m.glyph}</span>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="mb-2 mt-3 text-[11px] font-semibold uppercase tracking-wide text-stone-400">Indent (whole list)</p>
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            type="button"
+            {...toolAttrs({ tool: "list-outdent", action: "UPDATE_SLIDE_ELEMENT", targetType: "slide_element", label: "Outdent the list" })}
+            onClick={() => apply(setElementListPatch(block.id, slide.id, listEl, shiftAllLevels(content, -1)), "human")}
+            className="rounded-lg bg-stone-50 px-2 py-1.5 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            ⇤ Outdent
+          </button>
+          <button
+            type="button"
+            {...toolAttrs({ tool: "list-indent", action: "UPDATE_SLIDE_ELEMENT", targetType: "slide_element", label: "Indent the list" })}
+            onClick={() => apply(setElementListPatch(block.id, slide.id, listEl, shiftAllLevels(content, 1)), "human")}
+            className="rounded-lg bg-stone-50 px-2 py-1.5 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            Indent ⇥
+          </button>
+        </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-stone-400">
+          Tip: while editing, Tab / Shift+Tab indents a single line and Enter adds a bullet.
+        </p>
+      </div>
+    );
+  } else if (popover === "eject") {
+    popoverContent = (
+      <div className="w-72">
+        <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-stone-800">
+          <PencilRuler className="size-4 text-brand-600" />
+          Edit freely
+        </p>
+        <p className="mb-3 text-xs leading-relaxed text-stone-500">
+          This unlocks moving and resizing every object on the slide. Future AI
+          layout regeneration may no longer preserve the original template
+          exactly.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setPopover(null)}
+            className="rounded-full px-3 py-1.5 text-xs font-medium text-stone-500 transition-colors hover:bg-stone-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-ai-tool="edit-freely-confirm"
+            data-ai-action="SET_SLIDE_CONTENT"
+            onClick={editFreely}
+            className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700"
+          >
+            Edit freely
+          </button>
+        </div>
+      </div>
+    );
+  } else if (popover === "layout") {
     popoverContent = (
       <LayoutPicker slide={slide} blockId={block.id} onApplied={() => setPopover(null)} />
     );
@@ -684,6 +827,35 @@ export function SlideToolbar({
         data-ai-component="slide-toolbar"
         className="flex flex-wrap items-center gap-0.5 rounded-xl border border-stone-200/80 bg-white/95 px-1.5 py-1 shadow-[0_2px_10px_rgba(16,24,40,0.06)] backdrop-blur"
       >
+        {/* Edit freely — only for a renderer-owned structured slide. */}
+        {isTemplate && (
+          <>
+            <button
+              type="button"
+              title={
+                canEject
+                  ? "Edit freely — make every object movable and resizable"
+                  : "Free editing for this layout is coming soon"
+              }
+              disabled={!canEject}
+              data-ai-tool="edit-freely"
+              data-ai-action="SET_SLIDE_CONTENT"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => togglePopover("eject")}
+              className={cn(
+                "flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40",
+                popover === "eject"
+                  ? "bg-brand-600 text-white"
+                  : "bg-brand-50 text-brand-700 hover:bg-brand-100"
+              )}
+            >
+              <PencilRuler className="size-3.5 shrink-0" />
+              Edit freely
+            </button>
+            <Divider />
+          </>
+        )}
+
         {/* Insert */}
         {insertTools.map(({ type, icon, label }) => (
           <ToolButton
@@ -843,6 +1015,39 @@ export function SlideToolbar({
           active={popover === "vAlign"}
           onClick={() => togglePopover("vAlign")}
         />
+        {textish && (
+          <>
+            <ToolButton
+              icon={List}
+              label="Bulleted list (⌘⇧8)"
+              tool="toggle-bullet-list"
+              action="UPDATE_SLIDE_ELEMENT"
+              targetType="slide_element"
+              active={allMarker("disc")}
+              onClick={() => toggleListMarker("disc")}
+            />
+            <ToolButton
+              icon={ListOrdered}
+              label="Numbered list (⌘⇧7)"
+              tool="toggle-numbered-list"
+              action="UPDATE_SLIDE_ELEMENT"
+              targetType="slide_element"
+              active={allMarker("number")}
+              onClick={() => toggleListMarker("number")}
+            />
+          </>
+        )}
+        {listEl && (
+          <ToolButton
+            icon={ChevronDown}
+            label="More list styles — markers & indent"
+            tool="open-list-style"
+            action="UPDATE_SLIDE_ELEMENT"
+            targetType="slide_element"
+            active={popover === "list"}
+            onClick={() => togglePopover("list")}
+          />
+        )}
 
         <Divider />
 

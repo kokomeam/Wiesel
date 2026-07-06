@@ -1,11 +1,11 @@
 # WiseSel
 
-The AI co-pilot for educators — turn raw expertise into engaging, monetizable, pedagogically sound courses. This repo is the **front-end skeleton**: a clean, minimal, industry-grade SaaS shell with working navigation and temporary mock data, ready to wire to a backend.
+The AI co-pilot for educators — turn raw expertise into engaging, monetizable, pedagogically sound courses. (Formerly "CourseGen Pro" — the product was renamed to **WiseSel**; the GitHub repo slug may still read `coursegen-pro`.)
 
 ## Stack
 
 - **Next.js 16** (App Router) + **React 19** + **TypeScript**
-- **Tailwind CSS v4** (design tokens in `app/globals.css`, brand = violet)
+- **Tailwind CSS v4** (design tokens in `app/globals.css`, brand = warm orange)
 - **lucide-react** icons
 - Dependency-free SVG charts (`components/charts`)
 

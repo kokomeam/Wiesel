@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { DiagramContentStorageSchema } from "./diagram/schemas";
 import type {
   AIMeta,
   CourseDocument,
@@ -27,6 +28,9 @@ import type {
   Slide,
   SlideBackground,
   SlideElement,
+  SlideListContent,
+  SlideListItem,
+  SlideListLevelStyle,
   SlideStyle,
   SlideTemplate,
   SlideThemeRef,
@@ -108,6 +112,18 @@ const elementBaseShape = {
   locked: z.boolean().optional(),
   visible: z.boolean().optional(),
   groupPath: z.array(z.string()).optional(),
+  // Additive provenance for materialize-on-eject (see types.ts). Optional so
+  // every pre-existing slide validates unchanged; Zod would otherwise strip
+  // these keys off a materialized element on the SET_SLIDE_CONTENT boundary.
+  role: z.string().optional(),
+  origin: z.enum(["ai", "human"]).optional(),
+  userModified: z
+    .object({
+      frame: z.boolean().optional(),
+      style: z.boolean().optional(),
+      content: z.boolean().optional(),
+    })
+    .optional(),
   style: ElementStyleSchema,
   ai: AIMetaSchema,
 };
@@ -144,12 +160,56 @@ export const TextRunSchema = z.object({
   marks: TextMarksSchema.optional(),
 });
 
+export const ListMarkerKindSchema = z.enum([
+  "disc",
+  "circle",
+  "square",
+  "dash",
+  "number",
+  "alpha",
+  "roman",
+  "none",
+]);
+
+export const SlideListItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  runs: z.array(TextRunSchema).optional(),
+  level: z.number().int().min(0),
+  markerKind: ListMarkerKindSchema.optional(),
+  markerText: z.string().optional(),
+  markerColor: z.string().optional(),
+  textColor: z.string().optional(),
+}) satisfies z.ZodType<SlideListItem>;
+
+export const SlideListLevelStyleSchema = z.object({
+  markerKind: ListMarkerKindSchema.optional(),
+  markerColor: z.string().optional(),
+  textColor: z.string().optional(),
+  fontSize: z.number().positive().optional(),
+  lineHeight: z.number().positive().optional(),
+  indent: z.number().optional(),
+  hangingIndent: z.number().optional(),
+}) satisfies z.ZodType<SlideListLevelStyle>;
+
+export const SlideListContentSchema = z.object({
+  items: z.array(SlideListItemSchema),
+  defaultMarkerKind: ListMarkerKindSchema,
+  startNumber: z.number().int().optional(),
+  markerColor: z.string().optional(),
+  textColor: z.string().optional(),
+  levelStyles: z.array(SlideListLevelStyleSchema).optional(),
+  paragraphSpacing: z.number().optional(),
+}) satisfies z.ZodType<SlideListContent>;
+
 export const SlideElementSchema = z.discriminatedUnion("type", [
   z.object({
     ...elementBaseShape,
     type: z.literal("text"),
     text: z.string(),
     runs: z.array(TextRunSchema).optional(),
+    // Optional list layer: lines toggled to bullets/numbers inside a text box.
+    list: SlideListContentSchema.optional(),
   }),
   z.object({
     ...elementBaseShape,
@@ -161,6 +221,9 @@ export const SlideElementSchema = z.discriminatedUnion("type", [
     ...elementBaseShape,
     type: z.literal("bullet_list"),
     items: z.array(z.string()),
+    // Optional rich layer (markers / nesting / per-item runs + colors). Absent
+    // on legacy decks — `items` is the plain fallback the renderer normalizes.
+    list: SlideListContentSchema.optional(),
   }),
   z.object({
     ...elementBaseShape,
@@ -282,6 +345,17 @@ const ComparisonFooterStorageSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("summary"), text: RichTextSchema }),
   z.object({ kind: z.literal("similarities"), points: z.array(RichTextSchema) }),
 ]);
+/** Permissive storage for the pending-image-generation marker on an image slide. */
+const PendingGenStorageSchema = z.object({
+  status: z.enum(["pending", "failed"]),
+  visualWeight: z.enum(["reference", "supporting"]),
+  prompt: z.string(),
+  subject: z.string().optional(),
+  requiredLabels: z.array(z.string()).optional(),
+  axes: z.object({ x: z.string().optional(), y: z.string().optional() }).optional(),
+  annotations: z.array(z.string()).optional(),
+  alt: z.string(),
+});
 
 export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
   z.object({
@@ -406,6 +480,53 @@ export const SlideTemplateSchema = z.discriminatedUnion("layoutId", [
       decor: DecorLevelSchema.optional(),
     }),
   }),
+  z.object({
+    layoutId: z.literal("diagram"),
+    content: DiagramContentStorageSchema,
+  }),
+  z.object({
+    layoutId: z.literal("illustration"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      title: RichTextSchema.optional(),
+      caption: RichTextSchema.optional(),
+      points: z.array(RichTextSchema).optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("image_reference"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      annotations: z.array(z.object({ label: RichTextSchema, description: RichTextSchema })).optional(),
+      cards: z.array(z.object({ title: RichTextSchema, description: RichTextSchema })).optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
+      intentHash: z.string().optional(),
+      pendingGen: PendingGenStorageSchema.optional(),
+    }),
+  }),
+  z.object({
+    layoutId: z.literal("image_supporting"),
+    content: z.object({
+      imageUrl: z.string(),
+      alt: z.string(),
+      eyebrow: RichTextSchema.optional(),
+      title: RichTextSchema,
+      lead: RichTextSchema.optional(),
+      bullets: z.array(RichTextSchema).optional(),
+      caption: RichTextSchema.optional(),
+      source: z.enum(["ai_generated", "upload"]).optional(),
+      storagePath: z.string().optional(),
+      intentHash: z.string().optional(),
+      pendingGen: PendingGenStorageSchema.optional(),
+    }),
+  }),
 ]) satisfies z.ZodType<SlideTemplate>;
 
 export const SlideSchema = z.object({
@@ -416,6 +537,7 @@ export const SlideSchema = z.object({
   style: SlideStyleSchema,
   elements: z.array(SlideElementSchema),
   template: SlideTemplateSchema.optional(),
+  backdrop: z.literal("structured").optional(),
   speakerNotes: z.string().optional(),
   order: z.number().int(),
   ai: z.object({
@@ -451,7 +573,10 @@ export const LayoutPlaceholderSchema = z.object({
 
 /* ───────────────────────────── Blocks ─────────────────────────────────── */
 
-const baseBlockShape = {
+/** Shared block envelope fields. Exported so the publish snapshot schema
+ *  (lib/course/publish/schemas.ts) can build its answer-key-stripped quiz
+ *  block without duplicating the shape. */
+export const baseBlockShape = {
   id: z.string(),
   title: z.string().optional(),
   order: z.number().int(),
@@ -535,6 +660,70 @@ export const LessonBlockSchema = z.discriminatedUnion("type", [
     ...baseBlockShape,
     type: z.literal("slide_deck"),
     slides: z.array(SlideSchema),
+  }),
+  z.object({
+    ...baseBlockShape,
+    type: z.literal("imported_deck"),
+    deckImportId: z.string(),
+    sourceType: z.enum(["upload", "google_drive", "onedrive"]),
+    originalFileName: z.string(),
+    originalMimeType: z.string(),
+    originalFileSize: z.number().int().nonnegative(),
+    status: z.enum(["uploaded", "processing", "ready", "failed"]),
+    pageCount: z.number().int().nonnegative().optional(),
+    error: z.string().optional(),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  }),
+  z.object({
+    ...baseBlockShape,
+    type: z.literal("video"),
+    description: z.string().optional(),
+    asset: z.object({
+      provider: z.literal("mux"),
+      status: z.enum(["empty", "uploading", "processing", "ready", "failed"]),
+      videoAssetId: z.string().optional(),
+      uploadId: z.string().optional(),
+      assetId: z.string().optional(),
+      playbackId: z.string().optional(),
+      durationSeconds: z.number().nonnegative().optional(),
+      aspectRatio: z.string().optional(),
+      thumbnailUrl: z.string().optional(),
+      createdAt: z.string().optional(),
+      updatedAt: z.string().optional(),
+      errorMessage: z.string().optional(),
+    }),
+    recording: z.object({
+      mode: z.enum(["screen_camera", "camera_only", "screen_only"]).optional(),
+      layout: z
+        .enum(["screen_with_camera_bubble", "camera_full", "screen_full"])
+        .optional(),
+      cameraBubblePosition: z
+        .enum(["bottom-right", "bottom-left", "top-right", "top-left"])
+        .optional(),
+      includeMic: z.boolean().optional(),
+    }),
+    edit: z.object({
+      trimStartSeconds: z.number().nonnegative().optional(),
+      trimEndSeconds: z.number().nonnegative().optional(),
+    }),
+    settings: z.object({
+      showControls: z.boolean(),
+      allowDownload: z.boolean(),
+      showTranscript: z.boolean(),
+      showChapters: z.boolean(),
+    }),
+    captions: z
+      .object({
+        status: z.enum(["none", "generating", "ready", "failed"]),
+        trackId: z.string().optional(),
+        trackName: z.string().optional(),
+        languageCode: z.string().optional(),
+        source: z.enum(["generated", "uploaded"]).optional(),
+        error: z.string().optional(),
+        updatedAt: z.string().optional(),
+      })
+      .optional(),
   }),
   z.object({
     ...baseBlockShape,

@@ -22,11 +22,12 @@ export function ConceptExampleLayout({ content, ctx }: { content: ConceptExample
   const dotted = body.kind === "paragraphs";
 
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0 flex flex-col" style={{ padding: "64px 80px 44px" }}>
+      <div className="flex flex-1 items-stretch" style={{ minHeight: 0, gap: 4 }}>
       {/* ── Left: the concept / rule */}
       <div
-        className="absolute flex flex-col justify-center"
-        style={{ left: 80, top: 120, width: 504, bottom: hasFootnote ? 150 : 120, overflow: "hidden" }}
+        className="flex flex-col justify-center"
+        style={{ flex: "1 1 0", minWidth: 0 }}
       >
         {(ctx.interactive || content.concept.badge) && (
           <div style={{ marginBottom: 18 }}>
@@ -60,8 +61,8 @@ export function ConceptExampleLayout({ content, ctx }: { content: ConceptExample
 
       {/* ── Connector: "in practice" */}
       <div
-        className="absolute flex flex-col items-center justify-center"
-        style={{ left: 588, width: 96, top: 120, bottom: hasFootnote ? 150 : 120, gap: 10 }}
+        className="flex flex-col items-center justify-center"
+        style={{ flex: "0 0 96px", gap: 10 }}
         aria-hidden
       >
         <span
@@ -84,19 +85,17 @@ export function ConceptExampleLayout({ content, ctx }: { content: ConceptExample
         </span>
       </div>
 
-      {/* ── Right: the worked example */}
+      {/* ── Right: the worked example (grows to fit; stretches to match the row) */}
       <Card
         style={{
-          position: "absolute",
-          left: 688,
-          right: 80,
-          top: 120,
-          bottom: hasFootnote ? 128 : 96,
+          flex: "1 1 0",
+          minWidth: 0,
+          alignSelf: "stretch",
           padding: 28,
           display: "flex",
           flexDirection: "column",
+          justifyContent: "center",
           background: minimal ? "#ffffff" : withAlpha(ctx.accent, 0.04),
-          overflow: "hidden",
         }}
       >
         {(ctx.interactive || content.example.badge) && (
@@ -162,15 +161,15 @@ export function ConceptExampleLayout({ content, ctx }: { content: ConceptExample
           </div>
         )}
       </Card>
+      </div>
 
-      {/* ── Footnote callout */}
+      {/* ── Footnote callout (flow child at the bottom) */}
       {hasFootnote && (
         <div
-          className="absolute flex items-center"
+          className="flex items-center"
           style={{
-            left: 80,
-            right: 80,
-            bottom: 48,
+            flex: "0 0 auto",
+            marginTop: 22,
             gap: 12,
             padding: "12px 18px",
             borderRadius: 14,

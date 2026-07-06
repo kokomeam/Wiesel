@@ -11,6 +11,7 @@ import {
   createBlock,
   createElement,
   createExercise,
+  createImportedDeckBlock,
   createLesson,
   createModule,
   createQuestion,
@@ -21,12 +22,15 @@ import {
 } from "./factories";
 import type { CoursePatch, StyleTarget, TextTarget } from "./patches";
 import { SLIDE_H } from "./slide/geometry";
+import { flattenToItems } from "./slide/list";
 import type { LayoutPlaceholder } from "./slide/layouts";
 import type {
   BlockType,
   CourseDocument,
   CourseLevel,
   CoursePlan,
+  DeckImportSourceType,
+  DeckImportStatus,
   QuestionKind,
   QuizQuestion,
   QuizSettings,
@@ -36,6 +40,7 @@ import type {
   SlideBackground,
   SlideElement,
   SlideElementType,
+  SlideListContent,
   SlideThemeId,
   SlideTemplate,
 } from "./types";
@@ -68,12 +73,13 @@ export function deleteLessonPatch(lessonId: string): CoursePatch {
 export function addBlockPatch(
   lessonId: string,
   type: BlockType,
-  atIndex?: number
+  atIndex?: number,
+  opts?: { emptySlideDeck?: boolean }
 ): CoursePatch {
   return {
     action: "ADD_BLOCK",
     lessonId,
-    block: createBlock(type, atIndex ?? 0),
+    block: createBlock(type, atIndex ?? 0, opts),
     atIndex,
   };
 }
@@ -88,6 +94,68 @@ export function reorderBlockPatch(
   toIndex: number
 ): CoursePatch {
   return { action: "REORDER_BLOCK", lessonId, blockId, toIndex };
+}
+
+/* ───────────────────────────── imported decks ─────────────────────────── */
+
+/** Insert an imported-deck block built from an upload result. The block `id`
+ *  must be the SAME id sent to the upload route, so `deck_imports.block_id`
+ *  references it. */
+export function addImportedDeckBlockPatch(
+  lessonId: string,
+  args: {
+    id: string;
+    deckImportId: string;
+    title: string;
+    sourceType: DeckImportSourceType;
+    originalFileName: string;
+    originalMimeType: string;
+    originalFileSize: number;
+    status?: DeckImportStatus;
+    pageCount?: number;
+    createdAt?: string;
+    updatedAt?: string;
+  },
+  atIndex?: number
+): CoursePatch {
+  return {
+    action: "ADD_BLOCK",
+    lessonId,
+    block: createImportedDeckBlock({ ...args, order: atIndex ?? 0 }),
+    atIndex,
+  };
+}
+
+/** Patch an imported-deck block's denormalized snapshot (status, pageCount,
+ *  error, title …) as the worker's progress flows back, or on retry/replace. */
+export function updateImportedDeckPatch(
+  blockId: string,
+  patch: {
+    title?: string;
+    deckImportId?: string;
+    sourceType?: DeckImportSourceType;
+    originalFileName?: string;
+    originalMimeType?: string;
+    originalFileSize?: number;
+    status?: DeckImportStatus;
+    pageCount?: number | null;
+    error?: string | null;
+    updatedAt?: string;
+  }
+): CoursePatch {
+  return { action: "UPDATE_IMPORTED_DECK", blockId, patch };
+}
+
+/* ───────────────────────────── video lessons ──────────────────────────── */
+
+/** Patch a video block's snapshot/config — the asset status as it flows back
+ *  from Mux, the recording config, the trim edit, description, or settings. Only
+ *  the provided sub-objects/fields change (null clears an optional field). */
+export function updateVideoLessonPatch(
+  blockId: string,
+  patch: Extract<CoursePatch, { action: "UPDATE_VIDEO_LESSON" }>["patch"]
+): CoursePatch {
+  return { action: "UPDATE_VIDEO_LESSON", blockId, patch };
 }
 
 export function updateTextPatch(target: TextTarget, value: string): CoursePatch {
@@ -323,6 +391,23 @@ export function addStickerPatch(
   };
 }
 
+/**
+ * Replace a slide's layout + elements in one validated op (id / order /
+ * background / speaker-notes preserved; any structured `template` is dropped).
+ * This is the "Edit freely" / materialize-on-eject commit: pass the elements
+ * produced by `materializeSlide`, which turns the structured layout into the
+ * editable freeform canvas.
+ */
+export function setSlideContentPatch(
+  blockId: string,
+  slideId: string,
+  layout: string,
+  elements: SlideElement[],
+  backdrop?: "structured"
+): CoursePatch {
+  return { action: "SET_SLIDE_CONTENT", blockId, slideId, layout, elements, backdrop };
+}
+
 /** Convert a slide into (or replace) a renderer-owned structured layout. */
 export function setSlideTemplatePatch(
   blockId: string,
@@ -349,6 +434,30 @@ export function updateElementPatch(
   updates: Extract<CoursePatch, { action: "UPDATE_SLIDE_ELEMENT" }>["updates"]
 ): CoursePatch {
   return { action: "UPDATE_SLIDE_ELEMENT", blockId, slideId, elementId, updates };
+}
+
+/** Commit a rich list onto a bullet_list element (keeps the `items` plain
+ *  fallback in sync). The renderer/editor/materializer all go through this. */
+export function setListContentPatch(
+  blockId: string,
+  slideId: string,
+  elementId: string,
+  list: SlideListContent
+): CoursePatch {
+  return updateElementPatch(blockId, slideId, elementId, { list, items: flattenToItems(list) });
+}
+
+/** Commit a rich list onto ANY list-capable element, picking the right plain
+ *  fallback: `items` for a bullet_list, `text` (reducer-derived) for a text box. */
+export function setElementListPatch(
+  blockId: string,
+  slideId: string,
+  el: SlideElement,
+  list: SlideListContent
+): CoursePatch {
+  return el.type === "bullet_list"
+    ? updateElementPatch(blockId, slideId, el.id, { list, items: flattenToItems(list) })
+    : updateElementPatch(blockId, slideId, el.id, { list });
 }
 
 /**

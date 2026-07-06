@@ -12,11 +12,18 @@
  */
 
 import { z } from "zod";
+import { findDiagramTemplate } from "../diagram/catalog";
+import { DiagramContentInputSchema } from "../diagram/schemas";
+import type { DiagramContent } from "../diagram/types";
 import type {
   CodeWalkthroughContent,
   ComparisonColumnsContent,
   ComparisonMatrixContent,
   ConceptExampleContent,
+  IllustrationContent,
+  ImagePendingGen,
+  ImageReferenceContent,
+  ImageSupportingContent,
   KeyConceptContent,
   MetricsContent,
   OutlineListContent,
@@ -66,6 +73,19 @@ export const LIMITS = {
   proseTitle: 60,
   proseBody: 700,
   prosePoint: 120,
+  // ── illustration (a generated/uploaded image slide)
+  illTitle: 60,
+  illAlt: 320,
+  illCaption: 180,
+  illPoint: 120,
+  // ── image_reference / image_supporting (the two generated-image layouts)
+  imgTitle: 56,
+  imgLead: 160,
+  annLabel: 28,
+  annDesc: 84,
+  cardTitle: 28,
+  cardBody: 92,
+  imgBullet: 120,
   // ── comparison (shared header + columnar + matrix). Caps lean GENEROUS/soft:
   //    tight caps cause reshape churn; the renderer reflows, it doesn't clip.
   cmpEyebrow: 24,
@@ -98,18 +118,24 @@ const aiMarkBool = z.boolean().nullish().transform((v) => v ?? undefined);
 const aiMarkColor = z.string().nullish().transform((v) => v ?? undefined);
 const AiTextRunSchema = z.object({
   text: z.string(),
+  // The agent uses `marks: null` to mean "no inline formatting". Accept that null
+  // (not just absent) and normalize it to absent — so a fully-authored run is never
+  // hard-rejected on `marks: expected object, received null`.
   marks: z
     .object({ bold: aiMarkBool, italic: aiMarkBool, underline: aiMarkBool, color: aiMarkColor })
-    .optional(),
+    .nullish()
+    .transform((v) => v ?? undefined),
 });
 
 /** A strict rich-text slot: caps the PLAIN text and documents the limit for the
- *  model. Optional `runs` carry emphasis; the renderer reads `.text` for layout. */
+ *  model. Optional `runs` carry emphasis; the renderer reads `.text` for layout.
+ *  `runs` accepts NULL (the agent's "no formatting") + absent, normalized to absent
+ *  — a null `runs` must never reject a slide whose `text` is fully present. */
 function rich(max: number, hint: string) {
   return z
     .object({
       text: z.string().min(1).max(max, `Keep this ≤ ${max} characters (≈ tight). Shorten it.`),
-      runs: z.array(AiTextRunSchema).optional(),
+      runs: z.array(AiTextRunSchema).nullish().transform((v) => v ?? undefined),
     })
     .describe(hint);
 }
@@ -298,6 +324,87 @@ export const ProseContentSchema = z.object({
     .describe("Optional 0–5 key takeaways."),
 }) satisfies z.ZodType<ProseContent>;
 
+/** Illustration (image) slide. NOTE: this layout is authored by the `add_image`
+ *  tool (it generates + stores the image and supplies `imageUrl`), NOT by the
+ *  hand-authored structured-slide union — so the model can never invent a URL.
+ *  The schema validates the stored/edited content + the inspector. */
+export const IllustrationContentSchema = z.object({
+  imageUrl: z.string().describe("Public URL of the stored image (set by add_image / upload)."),
+  alt: z.string().min(1).max(LIMITS.illAlt, `Alt text ≤ ${LIMITS.illAlt} characters.`).describe("Required alt text describing the image."),
+  title: rich(LIMITS.illTitle, "Optional title above the image.").optional(),
+  caption: rich(LIMITS.illCaption, "Optional caption: what the learner should notice.").optional(),
+  points: z.array(rich(LIMITS.illPoint, "An optional supporting point beside the image.")).max(4).optional(),
+  source: z.enum(["ai_generated", "upload"]).optional(),
+  storagePath: z.string().optional(),
+}) satisfies z.ZodType<IllustrationContent>;
+
+/* ── Image LAYOUTS. Authored by `add_image` (it generates + stores the image and
+ *    supplies imageUrl/source/storagePath/intentHash), so — like illustration —
+ *    they are NOT in StructuredTemplateInputSchema (the model can't invent a URL).
+ *    These strict schemas cap the TEXT slots the model fills + drive the clamp the
+ *    tool runs before saving. ── */
+
+const ImageAnnotationSchema = z.object({
+  label: rich(LIMITS.annLabel, "Bold annotation label: ≤ ~4 words; names a detail shown in the image."),
+  description: rich(LIMITS.annDesc, "One-line description of that detail."),
+});
+
+const ImageConceptCardSchema = z.object({
+  title: rich(LIMITS.cardTitle, "Concept card title: ≤ ~4 words (the renderer numbers it 01/02/03)."),
+  description: rich(LIMITS.cardBody, "Two-line description of the concept."),
+});
+
+/** Tool-built (never model-authored) pending-generation marker — no length caps. */
+const PendingGenSchema = z.object({
+  status: z.enum(["pending", "failed"]),
+  visualWeight: z.enum(["reference", "supporting"]),
+  prompt: z.string(),
+  subject: z.string().optional(),
+  requiredLabels: z.array(z.string()).optional(),
+  axes: z.object({ x: z.string().optional(), y: z.string().optional() }).optional(),
+  annotations: z.array(z.string()).optional(),
+  alt: z.string(),
+}) satisfies z.ZodType<ImagePendingGen>;
+
+export const ImageReferenceContentSchema = z.object({
+  imageUrl: z.string().describe("Public URL of the generated image (supplied by add_image)."),
+  alt: z.string().min(1).max(LIMITS.illAlt, `Alt text ≤ ${LIMITS.illAlt} characters.`).describe("Required alt text describing the image."),
+  eyebrow: rich(LIMITS.eyebrow, "Short kicker above the title, e.g. 'Concept overview'.").optional(),
+  title: rich(LIMITS.imgTitle, "Slide title: ≤ ~9 words."),
+  annotations: z
+    .array(ImageAnnotationSchema)
+    .max(4)
+    .optional()
+    .describe("0–4 annotation points referencing details in the image (bold label + one line)."),
+  cards: z
+    .array(ImageConceptCardSchema)
+    .max(3)
+    .optional()
+    .describe("0–3 numbered concept cards across the bottom (renderer owns 01/02/03)."),
+  source: z.enum(["ai_generated", "upload"]).optional(),
+  storagePath: z.string().optional(),
+  intentHash: z.string().optional(),
+  pendingGen: PendingGenSchema.optional(),
+}) satisfies z.ZodType<ImageReferenceContent>;
+
+export const ImageSupportingContentSchema = z.object({
+  imageUrl: z.string().describe("Public URL of the generated image (supplied by add_image)."),
+  alt: z.string().min(1).max(LIMITS.illAlt, `Alt text ≤ ${LIMITS.illAlt} characters.`).describe("Required alt text describing the image."),
+  eyebrow: rich(LIMITS.eyebrow, "Short kicker above the title, e.g. 'Lesson 1'.").optional(),
+  title: rich(LIMITS.imgTitle, "Slide title: ≤ ~9 words."),
+  lead: rich(LIMITS.imgLead, "One lead sentence framing the topic.").optional(),
+  bullets: z
+    .array(rich(LIMITS.imgBullet, "A supporting bullet — a full clause."))
+    .max(4)
+    .optional()
+    .describe("0–4 supporting bullets."),
+  caption: rich(LIMITS.illCaption, "Optional caption under the image: what to notice.").optional(),
+  source: z.enum(["ai_generated", "upload"]).optional(),
+  storagePath: z.string().optional(),
+  intentHash: z.string().optional(),
+  pendingGen: PendingGenSchema.optional(),
+}) satisfies z.ZodType<ImageSupportingContent>;
+
 /* ── comparison layouts (contrast 2–3 options). Option colors, letter badges,
       the VS divider, row striping, and footer icon/tint are renderer-owned —
       NONE of them appear here, so the model can never request them. ── */
@@ -408,6 +515,7 @@ export const StructuredTemplateInputSchema = z.discriminatedUnion("layoutId", [
   z.object({ layoutId: z.literal("prose"), content: ProseContentSchema }),
   z.object({ layoutId: z.literal("comparison_columns"), content: ComparisonColumnsContentSchema }),
   z.object({ layoutId: z.literal("comparison_matrix"), content: ComparisonMatrixContentSchema }),
+  z.object({ layoutId: z.literal("diagram"), content: DiagramContentInputSchema }),
 ]);
 
 /* ───────────────────────────── Registry ───────────────────────────────── */
@@ -421,6 +529,16 @@ export interface StructuredLayoutDef {
   schema: z.ZodTypeAny;
   /** Example content for the manual picker / seeding. */
   seed: () => SlideTemplate;
+  /** Text capacity — how many key points this layout holds before content-first
+   *  planning SPILLS to a continuation slide (drives `layoutPointCapacity` →
+   *  `splitOverflowingSpecs`). Absent ⇒ the global default. `slots` documents the
+   *  per-slot caps for the planner; `captionOptional` notes whether a caption slot
+   *  exists. */
+  capacity?: {
+    maxPoints: number;
+    captionOptional?: boolean;
+    slots?: Record<string, { max: number; charsPerLine?: number }>;
+  };
 }
 
 const t = (text: string): RichText => ({ text });
@@ -719,6 +837,133 @@ export const STRUCTURED_LAYOUTS: StructuredLayoutDef[] = [
       },
     }),
   },
+  {
+    id: "diagram",
+    name: "Diagram / graph",
+    description:
+      "A programmatic teaching VISUAL the renderer draws as crisp SVG — a supply & demand / price-control graph, or a coordinate plot (a function, distribution, or regression). Accurate by construction; pick a diagram.kind (or an add_diagram templateId). Any OTHER visual is a generated image (image_reference / image_supporting).",
+    ai: {
+      bestFor: [
+        "a supply & demand / price-control graph",
+        "a function, distribution, or regression plot (coordinate_plot)",
+      ],
+      avoidWhen: [
+        "any other diagram type — use a generated image (image_reference/image_supporting)",
+        "a decorative picture",
+        "content a text/table/code slide conveys more accurately",
+      ],
+    },
+    schema: DiagramContentInputSchema,
+    seed: (): SlideTemplate => ({
+      layoutId: "diagram",
+      content: {
+        title: t("Market equilibrium"),
+        caption: t("Price settles where the upward-sloping supply curve meets the downward-sloping demand curve — the equilibrium point E."),
+        spec: {
+          role: "graph",
+          pedagogicalPurpose: "Show how the equilibrium price and quantity arise where supply meets demand.",
+          altText:
+            "A supply and demand graph with an upward-sloping supply curve and a downward-sloping demand curve intersecting at equilibrium point E, with dashed guides to P* on the price axis and Q* on the quantity axis.",
+          requiredElements: ["upward-sloping supply curve", "downward-sloping demand curve", "labeled price/quantity axes", "equilibrium point"],
+          placement: "center",
+          source: "programmatic",
+          mustBeAccurate: true,
+          reason: "Supply and demand is conventionally taught with intersecting curves and a labeled equilibrium.",
+        },
+        diagram: findDiagramTemplate("supply_demand_equilibrium")!.seed(),
+      } satisfies DiagramContent,
+    }),
+  },
+  {
+    id: "illustration",
+    name: "Illustration (image)",
+    description:
+      "An educational IMAGE — generated by the AI (add_image) or uploaded — with required alt text, an optional title, caption, and supporting points. For a concept a picture conveys better than text when NO diagram type fits (a historical scene, a biological structure, a real-world analogy). Never for accuracy-critical figures — those are programmatic diagrams.",
+    ai: {
+      bestFor: ["a concept image", "a historical / real-world scene", "a biological or physical structure", "an evocative analogy picture"],
+      avoidWhen: ["anything accuracy-critical (use a diagram)", "a chart / graph / labeled figure", "decorative-only filler", "content text conveys precisely"],
+    },
+    schema: IllustrationContentSchema,
+    seed: (): SlideTemplate => ({
+      layoutId: "illustration",
+      content: {
+        imageUrl: "",
+        alt: "An educational illustration relevant to the lesson.",
+        title: t("Illustration"),
+        caption: t("A short caption explaining what the image shows and why it matters."),
+        source: "upload",
+      } satisfies IllustrationContent,
+    }),
+  },
+  {
+    id: "image_reference",
+    name: "Image · reference (hero)",
+    description:
+      "A large landscape teaching image as the subject, with annotation points referencing details in it and numbered concept cards below. The image is generated by add_image; you fill the title, annotations, and cards.",
+    ai: {
+      bestFor: ["the image IS the subject", "a labeled figure/diagram a learner studies", "an overview a picture anchors"],
+      avoidWhen: ["anything accuracy-critical (use a diagram)", "a pure text point (use prose)", "authored by add_image — NOT the batch tool"],
+    },
+    schema: ImageReferenceContentSchema,
+    capacity: {
+      maxPoints: 7,
+      captionOptional: false,
+      slots: { annotations: { max: 4, charsPerLine: LIMITS.annDesc }, cards: { max: 3, charsPerLine: LIMITS.cardBody } },
+    },
+    seed: (): SlideTemplate => ({
+      layoutId: "image_reference",
+      content: {
+        imageUrl: "",
+        alt: "An educational illustration relevant to the lesson.",
+        eyebrow: t("Concept overview"),
+        title: t("Understanding the big picture"),
+        annotations: [
+          { label: t("Key focus"), description: t("Highlights the central idea of the concept.") },
+          { label: t("Core elements"), description: t("Points to the essential components.") },
+          { label: t("Important patterns"), description: t("Shows trends and relationships at a glance.") },
+        ],
+        cards: [
+          { title: t("Understand the foundations"), description: t("Build a solid understanding of the key concepts and how they connect.") },
+          { title: t("See how it works"), description: t("Explore the relationships and processes that drive outcomes.") },
+          { title: t("Apply the insight"), description: t("Use the understanding to make better decisions.") },
+        ],
+        source: "upload",
+      } satisfies ImageReferenceContent,
+    }),
+  },
+  {
+    id: "image_supporting",
+    name: "Image · supporting",
+    description:
+      "Teaching text on the left (lead + bullets) beside a square supporting image on the right, with an optional caption. The image is generated by add_image; you fill the title, lead, bullets, and caption.",
+    ai: {
+      bestFor: ["an image that AIDS understanding", "a concept where fine image detail doesn't matter", "text-led teaching with a supporting picture"],
+      avoidWhen: ["the image is the subject (use image_reference)", "anything accuracy-critical (use a diagram)", "authored by add_image — NOT the batch tool"],
+    },
+    schema: ImageSupportingContentSchema,
+    capacity: {
+      maxPoints: 4,
+      captionOptional: true,
+      slots: { bullets: { max: 4, charsPerLine: LIMITS.imgBullet } },
+    },
+    seed: (): SlideTemplate => ({
+      layoutId: "image_supporting",
+      content: {
+        imageUrl: "",
+        alt: "An educational illustration relevant to the lesson.",
+        eyebrow: t("Lesson 1"),
+        title: t("Why context matters"),
+        lead: t("Understanding the surrounding context helps us make sense of information and avoid misinterpretation."),
+        bullets: [
+          t("Shows how context shapes meaning."),
+          t("Highlights the factors that influence interpretation."),
+          t("Illustrates surface understanding vs deeper insight."),
+        ],
+        caption: t("Context shapes how we interpret information and informs better decisions."),
+        source: "upload",
+      } satisfies ImageSupportingContent,
+    }),
+  },
 ];
 
 export const STRUCTURED_LAYOUT_IDS = STRUCTURED_LAYOUTS.map((l) => l.id) as [
@@ -746,6 +991,24 @@ export function findStructuredLayout(id: string): StructuredLayoutDef | undefine
   return STRUCTURED_LAYOUTS.find((l) => l.id === id);
 }
 
+/** Global default key-point capacity (the fallback for layouts without explicit
+ *  `capacity`). Mirrors AI_MAX_POINTS_PER_SLIDE in lib/ai/outline.ts. */
+export const DEFAULT_LAYOUT_POINT_CAPACITY = Math.max(3, Number(process.env.AI_MAX_POINTS_PER_SLIDE) || 6);
+
+/** How many key points a layout holds before content-first planning spills to a
+ *  continuation slide. Reads the registry's `capacity.maxPoints`, else the default. */
+export function layoutPointCapacity(layoutId: string): number {
+  return findStructuredLayout(layoutId)?.capacity?.maxPoints ?? DEFAULT_LAYOUT_POINT_CAPACITY;
+}
+
+/** Layout ids the PLANNER may choose — every structured layout EXCEPT the legacy
+ *  `illustration` (retired from the AI surface; kept only for back-compat
+ *  rendering). The two image_* layouts ARE included. */
+export const PLANNABLE_LAYOUT_IDS = STRUCTURED_LAYOUT_IDS.filter((id) => id !== "illustration") as [
+  StructuredLayoutId,
+  ...StructuredLayoutId[],
+];
+
 export function isStructuredLayoutId(id: string): id is StructuredLayoutId {
   return STRUCTURED_LAYOUTS.some((l) => l.id === id);
 }
@@ -768,9 +1031,10 @@ export function validateStructuredContent(layoutId: string, content: unknown): s
   });
 }
 
-/** Compact AI catalog: id + when-to-use + slot summary. */
+/** Compact AI catalog: id + when-to-use + slot summary. EXCLUDES the retired
+ *  `illustration` layout so neither the planner nor GENERATE ever offers it. */
 export function structuredLayoutCatalog() {
-  return STRUCTURED_LAYOUTS.map((l) => ({
+  return STRUCTURED_LAYOUTS.filter((l) => l.id !== "illustration").map((l) => ({
     id: l.id,
     name: l.name,
     description: l.description,

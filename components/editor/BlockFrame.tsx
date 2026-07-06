@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
   Dumbbell,
+  FileStack,
   Lightbulb,
   Link2,
   ListChecks,
@@ -20,19 +21,23 @@ import {
   Presentation,
   Sparkles,
   Trash2,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import { deleteBlockPatch, reorderBlockPatch, updateBlockTitlePatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
-import { usePendingChangeSetId } from "@/lib/editor/agentStore";
+import { usePendingChangeSetId, usePendingEvidence } from "@/lib/editor/agentStore";
 import type { BlockType, LessonBlock, QualityHint } from "@/lib/course/types";
+import { EvidenceCard, parseEvidence } from "./agent/EvidenceCard";
 import { useAgentStream } from "./agent/useAgentStream";
 import { InlineText } from "./InlineText";
 import { QualityHintBadge } from "./QualityHintBadge";
 
 const blockIcon: Record<BlockType, typeof Presentation> = {
   slide_deck: Presentation,
+  imported_deck: FileStack,
+  video: Video,
   lecture_text: AlignLeft,
   quiz: ListChecks,
   homework: NotebookText,
@@ -43,6 +48,8 @@ const blockIcon: Record<BlockType, typeof Presentation> = {
 
 const blockTypeLabel: Record<BlockType, string> = {
   slide_deck: "Slide deck",
+  imported_deck: "Imported deck",
+  video: "Video lesson",
   lecture_text: "Lecture",
   quiz: "Knowledge check",
   homework: "Practice exercise",
@@ -57,6 +64,7 @@ export function BlockFrame({
   index,
   blockCount,
   hints = [],
+  onDelete,
   children,
 }: {
   block: LessonBlock;
@@ -64,14 +72,21 @@ export function BlockFrame({
   index: number;
   blockCount: number;
   hints?: QualityHint[];
+  /** Override the default block delete (e.g. imported decks also clean up their
+   *  storage + deck_imports row before removing the block). */
+  onDelete?: () => void;
   children: ReactNode;
 }) {
   const selection = useEditorStore((s) => s.selection);
   const select = useEditorStore((s) => s.select);
   const apply = useEditorStore((s) => s.apply);
   const pendingChangeSetId = usePendingChangeSetId(block.id);
+  const pendingEvidence = usePendingEvidence(block.id);
   const { resolve } = useAgentStream();
   const pending = Boolean(pendingChangeSetId);
+  // The maintenance run's evidence card — WHY this change is proposed, shown
+  // above the content, before Accept/Reject.
+  const evidence = pending ? parseEvidence(pendingEvidence) : null;
 
   const selected =
     (selection.kind === "block" && selection.id === block.id) ||
@@ -204,7 +219,8 @@ export function BlockFrame({
             aria-label="Delete block"
             onClick={(e) => {
               e.stopPropagation();
-              apply(deleteBlockPatch(lessonId, block.id), "human");
+              if (onDelete) onDelete();
+              else apply(deleteBlockPatch(lessonId, block.id), "human");
             }}
             className="grid size-7 place-items-center rounded-lg text-stone-400 transition-colors hover:bg-rose-50 hover:text-rose-600"
           >
@@ -212,6 +228,11 @@ export function BlockFrame({
           </button>
         </div>
       </header>
+      {evidence ? (
+        <div className="px-5 pt-3">
+          <EvidenceCard evidence={evidence} />
+        </div>
+      ) : null}
       <div className="px-5 pb-5 pt-3">{children}</div>
     </section>
   );

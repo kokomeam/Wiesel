@@ -19,50 +19,91 @@
  * import cycle: phases → agentLoop, never the reverse.
  */
 
+import { addBlockPatch, deleteBlockPatch } from "@/lib/course/commands";
 import { createLesson, createModule } from "@/lib/course/factories";
-import { applyCoursePatch } from "@/lib/course/patches";
+import { applyCoursePatch, type CoursePatch } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
-import type { CourseDocument, SlideDeckBlock } from "@/lib/course/types";
+import type { CourseDocument, LessonBlock, SlideDeckBlock } from "@/lib/course/types";
+import { AUX_SYSTEM_PROMPT, auxContentResponseFormat, auxRequest, parseAuxContent } from "./auxContent";
+import { buildHomeworkBlock, buildQuizBlock } from "./tools/blockBuilders";
 import {
   logModelCall,
   loopContext,
-  reconcileAndStage,
+  reconcileDoc,
   runConversationLoop,
+  stageChangeSet,
+  stageStructureChangeSet,
   type AgentRunParams,
   type LoopContext,
   type LoopContextSource,
   type LoopResult,
   type PhaseUsage,
 } from "./agentLoop";
+import { buildOutlineSnapshot, serializeOutlineSnapshot } from "./courseStructure/outlineSnapshot";
+import { executeStructurePlan } from "./courseStructure/structureTools";
+import { parseStructurePlan, structurePlanResponseFormat, STRUCTURE_PLAN_SYSTEM_PROMPT } from "./courseStructure/structurePlan";
+import { detectSignals, validateStructurePlan } from "./courseStructure/structureValidation";
+import type { CourseStructurePlan, GenerateContentBrief } from "./courseStructure/types";
 import { courseContextLines } from "./context";
 import { computePlanCoverage, templateTextLength, THIN_SLIDE_CHARS } from "./generationState";
 import { editHistoryPolicy } from "./historyPolicy";
 import { saveUserMessage } from "./conversations";
 import type { PlanOutline } from "./events";
 import { classifyIntent } from "./intent";
-import type { FinishReason, JsonSchema, ModelTurnResult } from "./modelClient";
+import { lintLessonGeneration, type LintWarning } from "./lintGeneration";
+import { runMaintenanceTurn } from "./maintenance";
+import { runLightReview, shouldRunLightReview, type ReviewSuggestion } from "./lightReview";
 import {
-  coerceModuleOutline,
+  AI_GENERATE_MAX_OUTPUT_TOKENS,
+  AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+  AI_LESSON_RETRY_BACKOFF_MS,
+  AI_LIGHT_REVIEW,
+  AI_PHASE_MODELS,
+  AI_PLAN_MAX_RETRIES,
+  AI_PLAN_STREAMING,
+  AI_PLAN_TIMEOUT_MS,
+  AI_USE_BACKGROUND_FOR_PLANS,
+  AI_VALIDATION,
+} from "./modelConfig";
+import type { FinishReason, JsonSchema, ModelErrorKind, ModelTurnResult, ReasoningEffort } from "./modelClient";
+import {
+  coerceModuleSkeleton,
   coerceOutline,
-  moduleLessonToOutline,
-  MODULE_PLAN_SYSTEM_PROMPT,
-  moduleOutlineResponseFormat,
+  ensureLessonArc,
+  lessonBriefToPlanRequest,
+  lessonDepthShortfall,
+  MODULE_FALLBACK_SYSTEM_PROMPT,
+  MODULE_SKELETON_SYSTEM_PROMPT,
+  moduleFallbackResponseFormat,
+  moduleSkeletonResponseFormat,
   outlinePromptFragment,
   outlineResponseFormat,
   planLayoutCatalogText,
+  renderVisualDirective,
+  slideRequiresVisual,
   PLAN_SYSTEM_PROMPT,
-  validateModuleOutline,
+  validateModuleFallback,
+  validateModuleSkeleton,
   validateOutline,
+  type LessonBrief,
   type LessonOutline,
-  type ModuleOutline,
+  type ModuleSkeleton,
+  type PlannedSlide,
 } from "./outline";
+import {
+  hasModelRepairableFailure,
+  placeholderRepairPatches,
+  pruneEmptyDeckPatches,
+  validateLessonGeneration,
+  validationSummaryLine,
+  type ValidationReport,
+} from "./validation";
 
 /** PLAN runs at high reasoning effort; give it headroom so reasoning tokens
  *  can't starve the structured JSON (the 16k default could be consumed entirely
  *  by reasoning → an empty/incomplete response → a silent "invalid" failure). */
 const PLAN_MAX_OUTPUT_TOKENS = 32000;
-import { loadCourseDoc } from "./serverPersistence";
-import { AI_PHASE_MODELS } from "./modelConfig";
+import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
 
 function addUsage(a: PhaseUsage, u: ModelTurnResult["usage"]): PhaseUsage {
   return {
@@ -113,80 +154,202 @@ function logPhase(
   );
 }
 
-/** A structured-output PLAN turn (effort high, large output budget) with ONE
- *  validate→repair re-ask. Suppresses the raw-JSON deltas; logs the `plan` phase.
- *  On failure logs the REAL cause (finishReason, tokens, raw head) and returns
- *  the last finishReason so the caller can give an accurate message. */
+/** What kind of plan a call is producing — distinguishes the compact module
+ *  skeleton, its ultra-lean fallback, and the (rich) lesson plans in the logs. */
+type PlanType = "lesson" | "lesson_rich" | "module_skeleton" | "module_fallback" | "structure";
+
+/** The OUTCOME category of a plan call — kept SEPARATE so a transport timeout is
+ *  never logged/messaged as a JSON/schema problem (the core mis-report we're
+ *  fixing). `ok` = a usable plan; the rest are failure categories. */
+type PlanErrorType = ModelErrorKind | "schema_error" | "ok";
+
+interface PlanCallOpts<T> {
+  planType: PlanType;
+  model: string;
+  effort: ReasoningEffort;
+  /** Optional depth/quality gate on a VALID outline → a re-ask reason, or null. */
+  postValidate?: (outline: T) => string | null;
+  /** Run in OpenAI background mode (poll instead of holding a long connection). */
+  background?: boolean;
+  /** Output-token budget for this plan call. Lesson plans pass a SMALL budget
+   *  (structurally caps the reasoning spiral); the module skeleton keeps the
+   *  larger default. Falls back to PLAN_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number;
+  /** Per-lesson / fallback progress label for the `phase` event. */
+  detail?: string;
+}
+
+interface PlanResult<T> {
+  outline: T | null;
+  finishReason: FinishReason;
+  providerError?: string;
+  errorType: PlanErrorType;
+}
+
+/**
+ * A structured-output PLAN call (NON-STREAMING — a plan needs reliability, not
+ * token streaming; optional background mode for long ones) with ONE validate→
+ * repair / deepen re-ask. Cleanly separates failure modes: a TRANSPORT error
+ * (timeout/connection — empty output) is NEVER parsed as "invalid JSON"; a model
+ * that returned text but didn't validate is `schema_error`. Logs `agent_plan_request`
+ * before the call and `agent_plan_fail` (with the error category) on failure.
+ */
 async function runStructuredPlan<T>(
   c: LoopContext,
   system: string,
   contextMessage: string,
   responseFormat: { name: string; schema: JsonSchema },
   validate: (raw: string) => { outline?: T; errors: string[] },
-  userMessage: string
-): Promise<{ outline: T | null; finishReason: FinishReason }> {
-  c.emit({ type: "phase", phase: "plan" });
+  userMessage: string,
+  opts: PlanCallOpts<T>
+): Promise<PlanResult<T>> {
+  c.emit({ type: "phase", phase: "plan", detail: opts.detail });
   const t0 = Date.now();
-  let usage: PhaseUsage = ZERO_USAGE;
-  const turn = { tools: [], effort: AI_PHASE_MODELS.plan.effort, model: AI_PHASE_MODELS.plan.model, responseFormat, maxOutputTokens: PLAN_MAX_OUTPUT_TOKENS, signal: c.signal };
-  // Static system + tools cache; the variable course context rides in input.
   const ctx = { role: "developer" as const, content: contextMessage };
+  const schemaChars = JSON.stringify(responseFormat.schema).length;
+  const inputChars = system.length + contextMessage.length + userMessage.length;
+  const planMaxOutputTokens = opts.maxOutputTokens ?? PLAN_MAX_OUTPUT_TOKENS;
+  const turn = {
+    tools: [],
+    effort: opts.effort,
+    model: opts.model,
+    responseFormat,
+    maxOutputTokens: planMaxOutputTokens,
+    timeoutMs: AI_PLAN_TIMEOUT_MS,
+    // STREAM (default): keeps the proxy connection active so an idle socket isn't
+    // dropped mid-reasoning (the cause of every plan death in the logs). Background
+    // mode, when enabled, still takes precedence in the provider.
+    stream: AI_PLAN_STREAMING,
+    background: opts.background,
+    maxRetries: AI_PLAN_MAX_RETRIES, // don't retry a dead socket 5×
+    signal: c.signal,
+  };
 
-  // PLAN bypasses runConversationLoop, so count its calls against the shared run
-  // budget + emit the same per-call line here (the 1–2 PLAN calls won't exhaust
-  // the budget, but they must subtract from what GENERATE sees).
+  // Instrument BEFORE the call so a hang/timeout still leaves a record of WHAT was
+  // attempted (model/effort/timeout/sizes/mode) — the diagnostic the old logs lacked.
+  console.log(
+    JSON.stringify({
+      tag: "agent_plan_request",
+      planType: opts.planType,
+      model: opts.model,
+      effort: opts.effort,
+      timeoutMs: AI_PLAN_TIMEOUT_MS,
+      approxInputChars: inputChars,
+      approxSchemaChars: schemaChars,
+      maxOutputTokens: planMaxOutputTokens,
+      maxRetries: AI_PLAN_MAX_RETRIES,
+      background: !!opts.background,
+      streaming: AI_PLAN_STREAMING,
+      courseId: c.courseId,
+      lessonId: c.lessonId,
+    })
+  );
+
+  let usage: PhaseUsage = ZERO_USAGE;
+  let providerError: string | undefined;
+  let providerErrorKind: ModelErrorKind | undefined;
+  const onPlanEvent = (ev: { type: string; message?: string; kind?: ModelErrorKind }) => {
+    if (ev.type === "error" && ev.message) {
+      providerError = ev.message;
+      providerErrorKind = ev.kind;
+    }
+  };
+
   if (c.callBudget) c.callBudget.remaining -= 1;
-  let res = await c.model.runTurn({ system, input: [ctx, { role: "user", content: userMessage }], ...turn }, () => {});
-  logModelCall("plan", AI_PHASE_MODELS.plan.model, 0, res.usage);
+  let res = await c.model.runTurn({ system, input: [ctx, { role: "user", content: userMessage }], ...turn }, onPlanEvent);
+  logModelCall(opts.planType, opts.model, 0, res.usage);
   usage = addUsage(usage, res.usage);
-  let { outline, errors } = validate(res.text);
+  // CACHING visibility: the stable system prefix (prompt + catalog + course context)
+  // should hit the prompt cache on lessons 2..N of a module — confirm cachedTokens>0.
+  console.log(
+    JSON.stringify({
+      tag: "agent_plan_usage",
+      planType: opts.planType,
+      inputTokens: res.usage?.inputTokens ?? 0,
+      cachedTokens: res.usage?.cachedTokens ?? 0,
+      outputTokens: res.usage?.outputTokens ?? 0,
+      reasoningTokens: res.usage?.reasoningTokens ?? 0,
+      lessonId: c.lessonId,
+    })
+  );
 
-  if (!outline) {
+  // Parse ONLY when the call actually returned. A transport error → empty text;
+  // running validate on "" yields a misleading "not valid JSON" — so skip it.
+  let outline: T | undefined;
+  let errors: string[] = [];
+  if (res.finishReason !== "error") ({ outline, errors } = validate(res.text));
+
+  // ONE re-ask — to fix invalid output OR deepen a thin valid plan. NEVER after a
+  // transport error (it just burns a second timeout).
+  const reask =
+    res.finishReason === "error"
+      ? null
+      : !outline
+        ? `That output was invalid: ${errors.join("; ")}. Return ONLY a corrected object.`
+        : opts.postValidate
+          ? opts.postValidate(outline)
+          : null;
+  if (reask) {
+    const prev = outline;
     if (c.callBudget) c.callBudget.remaining -= 1;
     res = await c.model.runTurn(
       {
         system,
-        input: [
-          ctx,
-          { role: "user", content: userMessage },
-          { role: "assistant", content: res.text },
-          { role: "user", content: `That outline was invalid: ${errors.join("; ")}. Return ONLY a corrected outline object.` },
-        ],
+        input: [ctx, { role: "user", content: userMessage }, { role: "assistant", content: res.text }, { role: "user", content: reask }],
         ...turn,
       },
-      () => {}
+      onPlanEvent
     );
-    logModelCall("plan", AI_PHASE_MODELS.plan.model, 1, res.usage);
+    logModelCall(opts.planType, opts.model, 1, res.usage);
     usage = addUsage(usage, res.usage);
-    ({ outline, errors } = validate(res.text));
+    const r2 = res.finishReason !== "error" ? validate(res.text) : { outline: undefined, errors };
+    outline = r2.outline ?? prev; // keep a previously-valid plan if the re-ask broke
+    errors = r2.errors;
   }
 
-  logPhase(c, "plan", AI_PHASE_MODELS.plan.model, AI_PHASE_MODELS.plan.effort, usage, 0, Date.now() - t0);
+  const latencyMs = Date.now() - t0;
+  logPhase(c, "plan", opts.model, opts.effort, usage, 0, latencyMs);
+
+  const errorType: PlanErrorType = outline
+    ? "ok"
+    : res.finishReason === "error"
+      ? res.errorKind ?? providerErrorKind ?? "transport"
+      : "schema_error";
+
   if (!outline) {
-    // Surface the REAL cause instead of a generic "invalid outline".
     console.log(
       JSON.stringify({
         tag: "agent_plan_fail",
+        planType: opts.planType,
+        errorType, // transport_timeout | model_error | transport | schema_error — SEPARATED
         finishReason: res.finishReason,
-        reasoningTokens: res.usage?.reasoningTokens,
-        outputTokens: res.usage?.outputTokens,
+        providerError,
+        latencyMs,
         rawLength: res.text.length,
-        rawHead: res.text.slice(0, 300),
-        errors,
+        rawHead: res.text.slice(0, 200),
+        // schemaErrors only meaningful for schema_error (NOT a transport timeout)
+        schemaErrors: errorType === "schema_error" ? errors : undefined,
         courseId: c.courseId,
         lessonId: c.lessonId,
       })
     );
   }
-  return { outline: outline ?? null, finishReason: res.finishReason };
+  return { outline: outline ?? null, finishReason: res.finishReason, providerError, errorType };
 }
 
-/** A user-facing message for a PLAN that produced no usable outline, accurate to
- *  WHY (cut off vs service error vs malformed) rather than always "invalid". */
-function planFailureMessage(finishReason: FinishReason, kind: "lesson" | "module"): string {
+/** A user-facing message for a failed PLAN, categorized by error type so a TIMEOUT
+ *  reads differently from a malformed plan (and never as "invalid JSON"). */
+function planFailureMessage(errorType: PlanErrorType, kind: "lesson" | "module", providerError?: string): string {
   const what = kind === "module" ? "module plan" : "lesson outline";
-  if (finishReason === "incomplete") return `The ${what} got cut off before it finished — try again, or narrow the request.`;
-  if (finishReason === "error") return `The AI service hit an error while planning the ${what} — please try again.`;
+  if (errorType === "transport_timeout") {
+    return kind === "module"
+      ? "Module planning timed out before the model returned a plan. Try a smaller module request (fewer lessons), or break it into separate lessons."
+      : `The ${what} timed out before the model returned anything — try again, or narrow the request.`;
+  }
+  if (errorType === "model_error" || errorType === "transport") {
+    const reason = providerError ? ` (${providerError.slice(0, 160)})` : "";
+    return `The AI service hit an error while planning the ${what}${reason} — please try again.`;
+  }
   return `I couldn't produce a valid ${what} — try rephrasing the request.`;
 }
 
@@ -234,69 +397,555 @@ function serializeLessonDecks(doc: CourseDocument, lessonId: string): string {
   return JSON.stringify(lean);
 }
 
-/** GENERATE one lesson's deck through the layered loop (effort medium). Mutates
- *  + returns the shared doc; finalize is the caller's job (deferFinalize). */
+/** The first slide_deck block id in a lesson, or null. */
+function firstDeckId(doc: CourseDocument, lessonId: string): string | null {
+  const lesson = findLesson(doc, lessonId)?.lesson;
+  return lesson?.blocks.find((b) => b.type === "slide_deck")?.id ?? null;
+}
+
+/** Apply a list of patches to a doc in place-ish, returning the new doc + whether
+ *  anything applied. (The pipeline mutates an in-memory doc; the loop owns the
+ *  reconcile.) */
+function applyAll(doc: CourseDocument, patches: CoursePatch[]): { doc: CourseDocument; applied: boolean } {
+  let d = doc;
+  let applied = false;
+  for (const p of patches) {
+    const r = applyCoursePatch(d, p, nowIso());
+    if (r.ok) {
+      d = r.doc;
+      applied = true;
+    }
+  }
+  return { doc: d, applied };
+}
+
+interface LessonGenResult extends LoopResult {
+  /** The deck the model authored into (pre-created empty if the lesson had none). */
+  deckBlockId: string | null;
+  /** True if this call created the empty deck (a mutation even if the loop added nothing). */
+  deckPreCreated: boolean;
+}
+
+/** Generous per-turn cap for a coverage-DRIVEN authoring loop, scaled to the plan.
+ *  The driver stops the moment coverage is complete (or stalls via the no-progress
+ *  guard), so this is only the runaway ceiling — a bigger plan gets more room. */
+function coverageMaxTurns(plannedSlideCount: number): number {
+  return Math.min(32, Math.max(16, plannedSlideCount + 8));
+}
+
+/** Per-turn cap for a coverage-driven REPAIR round, scaled to how much is still
+ *  owed (a round that must rebuild 7 specs gets more room than one fixing 1). */
+function repairMaxTurns(remainingSpecCount: number): number {
+  return Math.min(24, Math.max(8, remainingSpecCount * 2 + 4));
+}
+
+/** GENERATE one lesson's deck through the layered loop (effort medium). PRE-CREATES
+ *  an EMPTY deck if the lesson has none (so the model authors real structured slides
+ *  into it and never seeds a "Section title" placeholder), then threads that
+ *  deckBlockId into the loop. Mutates + returns the shared doc; finalize is the
+ *  caller's job (deferFinalize). */
 async function generateLesson(
   c: LoopContext,
   lessonId: string,
   doc: CourseDocument,
-  baseline: CourseDocument,
   outline: LessonOutline,
   detail?: string
-): Promise<LoopResult> {
+): Promise<LessonGenResult> {
   const lc: LoopContext = { ...c, lessonId };
+
+  let workingDoc = doc;
+  let deckBlockId = firstDeckId(workingDoc, lessonId);
+  let deckPreCreated = false;
+  if (!deckBlockId) {
+    const patch = addBlockPatch(lessonId, "slide_deck", undefined, { emptySlideDeck: true });
+    const res = applyCoursePatch(workingDoc, patch, nowIso());
+    if (res.ok && patch.action === "ADD_BLOCK") {
+      workingDoc = res.doc;
+      deckBlockId = patch.block.id;
+      deckPreCreated = true;
+    }
+  }
+
   c.emit({ type: "phase", phase: "generate", detail });
   const t = Date.now();
-  const r = await runConversationLoop(lc, doc, baseline, false, {
+  const r = await runConversationLoop(lc, workingDoc, workingDoc, false, {
     effort: AI_PHASE_MODELS.generate.effort,
     model: AI_PHASE_MODELS.generate.model,
     layered: true,
     outline,
+    deckBlockId: deckBlockId ?? undefined,
     deferFinalize: true,
     generateTools: true,
+    driveToCoverage: true,
+    // ITEM 4: chase SLIDE coverage only — quiz/homework are authored concurrently
+    // by authorAuxBlocks, so the slide loop must not nudge for them.
+    coverageSlidesOnly: true,
+    // SCOPED: build the input from system + the full plan + generation-state + this
+    // run's tool I/O — never the conversation transcript (so the plan can't be lost).
+    scopedInput: true,
+    maxTurns: coverageMaxTurns(outline.slides.length),
+    maxOutputTokens: AI_GENERATE_MAX_OUTPUT_TOKENS,
     callLabel: "generate",
   });
   logPhase(lc, "generate", AI_PHASE_MODELS.generate.model, AI_PHASE_MODELS.generate.effort, r.usage, r.toolCalls, Date.now() - t, true, r.turns);
   logThinSlides(lc, r.doc, lessonId);
   const coverage = computePlanCoverage(r.doc, lessonId, outline);
   console.log(JSON.stringify({ tag: "agent_plan_coverage", lessonId, ...coverage }));
-  return r;
+  return { ...r, deckBlockId: firstDeckId(r.doc, lessonId) ?? deckBlockId, deckPreCreated };
 }
 
-/** Single-lesson pipeline: GENERATE → (optional CRITIQUE) → one change-set.
- *  `startDoc` is the live doc; baseline is captured here. CRITIQUE is gated by
- *  `AI_PHASE_MODELS.critique.enabled` (OFF by default — testing/free tier): when
- *  disabled the deck ships straight from GENERATE with the SAME single reconcile +
- *  one reviewable change-set. PLAN + the user are the primary critics; AI review
- *  is a premium add-on. */
-async function runGenerateThenCritique(c: LoopContext, startDoc: CourseDocument, outline: LessonOutline): Promise<void> {
-  const baseline = structuredClone(startDoc);
+/** DECISION B — author the lesson's quiz/homework as ONE structured call, run
+ *  CONCURRENTLY with slide authoring (they depend only on the PLAN, not the slide
+ *  narrative). Returns the built blocks; BEST-EFFORT — empty on any failure. The
+ *  caller retries this ONCE on a required-but-missing block (deterministic, same
+ *  structured builders); model-repair NEVER authors aux. Does NOT touch the DB. The
+ *  `attempt` ordinal (1 = concurrent, 2 = retry) rides in the instrumentation so a
+ *  reviewer can watch how often the retry fires + confirm the call stays off the
+ *  critical path. Pinned to AI_PHASE_MODELS.aux (low effort — a mechanical fill). */
+async function authorAuxBlocks(c: LoopContext, outline: LessonOutline, attempt = 1): Promise<LessonBlock[]> {
+  if (!outline.quizPlan && !outline.homeworkPlan) return [];
+  const t = Date.now();
+  const logAux = (res: ModelTurnResult | null, blocks: LessonBlock[]) =>
+    console.log(
+      JSON.stringify({
+        tag: "agent_aux",
+        lessonId: c.lessonId,
+        attempt,
+        model: AI_PHASE_MODELS.aux.model,
+        effort: AI_PHASE_MODELS.aux.effort,
+        quiz: blocks.some((b) => b.type === "quiz"),
+        homework: blocks.some((b) => b.type === "homework"),
+        finishReason: res?.finishReason ?? "exception",
+        inputTokens: res?.usage?.inputTokens ?? 0,
+        outputTokens: res?.usage?.outputTokens ?? 0,
+        reasoningTokens: res?.usage?.reasoningTokens ?? 0,
+        cachedTokens: res?.usage?.cachedTokens ?? 0,
+        latencyMs: Date.now() - t,
+      })
+    );
+  try {
+    if (c.callBudget) c.callBudget.remaining -= 1;
+    const res = await c.model.runTurn(
+      {
+        system: AUX_SYSTEM_PROMPT,
+        input: [{ role: "user", content: auxRequest(outline) }],
+        tools: [],
+        responseFormat: auxContentResponseFormat(),
+        stream: false,
+        effort: AI_PHASE_MODELS.aux.effort,
+        model: AI_PHASE_MODELS.aux.model,
+        maxOutputTokens: 6000,
+        signal: c.signal,
+      },
+      () => {}
+    );
+    if (res.finishReason === "error") {
+      logAux(res, []);
+      return [];
+    }
+    const parsed = parseAuxContent(res.text);
+    if (!parsed) {
+      logAux(res, []);
+      return [];
+    }
+    const blocks: LessonBlock[] = [];
+    if (parsed.quiz && outline.quizPlan && parsed.quiz.questions.length) {
+      blocks.push(buildQuizBlock({ title: parsed.quiz.title, questions: parsed.quiz.questions }));
+    }
+    if (parsed.homework && outline.homeworkPlan && parsed.homework.exercises.length) {
+      blocks.push(
+        buildHomeworkBlock({
+          title: parsed.homework.title,
+          instructions: parsed.homework.instructions,
+          deliverableType: parsed.homework.deliverableType,
+          exercises: parsed.homework.exercises,
+          rubric: parsed.homework.rubric,
+        })
+      );
+    }
+    logAux(res, blocks);
+    return blocks;
+  } catch {
+    logAux(null, []);
+    return [];
+  }
+}
 
-  const gen = await generateLesson(c, c.lessonId, startDoc, baseline, outline);
+/** Dedup-by-type merge: add each aux block to `lessonId` only when no block of that
+ *  type already exists. PURE — returns a new doc (or the SAME reference if nothing
+ *  merged, so callers can detect a no-op by identity). Quiz/homework are independent
+ *  block types (own ids, no slide cross-refs), so grafting them never disturbs slides. */
+function mergeAuxBlocks(doc: CourseDocument, lessonId: string, blocks: LessonBlock[]): CourseDocument {
+  for (const block of blocks) {
+    const lesson = findLesson(doc, lessonId)?.lesson;
+    if (lesson && !lesson.blocks.some((b) => b.type === block.type)) {
+      const r = applyCoursePatch(doc, { action: "ADD_BLOCK", lessonId, block }, nowIso());
+      if (r.ok) doc = r.doc;
+    }
+  }
+  return doc;
+}
 
-  if (!AI_PHASE_MODELS.critique.enabled) {
-    // Skip CRITIQUE — finalize from GENERATE (one reconcile, one change-set).
-    c.emit({ type: "phase", phase: "critique_skipped", reason: "disabled_by_config" });
-    if (gen.docMutated) await reconcileAndStage(c, gen.doc, baseline, gen.lastAssistantMessageId);
-    c.emit({ type: "assistant_message", content: gen.assistantText });
-    c.emit({ type: "done" });
-    return;
+/** The quiz/homework blocks currently on a lesson — used to graft concurrently-authored
+ *  aux from the (pre-generate) aux doc onto the generated doc. */
+function collectAuxBlocks(doc: CourseDocument, lessonId: string): LessonBlock[] {
+  return (findLesson(doc, lessonId)?.lesson?.blocks ?? []).filter(
+    (b) => b.type === "quiz" || b.type === "homework"
+  );
+}
+
+/** Which required aux blocks the plan asked for but the doc still lacks. */
+function auxStillMissing(doc: CourseDocument, lessonId: string, outline: LessonOutline): ("quiz" | "homework")[] {
+  const blocks = findLesson(doc, lessonId)?.lesson?.blocks ?? [];
+  const missing: ("quiz" | "homework")[] = [];
+  if (outline.quizPlan && !blocks.some((b) => b.type === "quiz")) missing.push("quiz");
+  if (outline.homeworkPlan && !blocks.some((b) => b.type === "homework")) missing.push("homework");
+  return missing;
+}
+
+/**
+ * DECISION B — the ONE aux author, shared by the single-lesson AND module paths. Authors
+ * the lesson's quiz/homework (concurrent producer; `authorAuxBlocks` reads only `outline`,
+ * never the slides), merges them into `doc` (dedup-by-type), and on a required-but-missing
+ * block retries the DETERMINISTIC author ONCE with a short backoff — never a model-repair
+ * pass. A still-unrecovered gap logs `agent_aux_unrecovered` (loud, greppable) and ships
+ * the slides anyway. Returns the doc with aux merged. Safe to run CONCURRENTLY with slide
+ * generation: the caller grafts the returned aux onto the generated doc (collectAuxBlocks +
+ * mergeAuxBlocks). The per-lesson context (`lc`) makes the `agent_aux` log carry the right
+ * lessonId on both paths.
+ */
+async function authorAndMergeAux(
+  c: LoopContext,
+  lessonId: string,
+  doc: CourseDocument,
+  outline: LessonOutline
+): Promise<CourseDocument> {
+  const lc: LoopContext = { ...c, lessonId };
+  doc = mergeAuxBlocks(doc, lessonId, await authorAuxBlocks(lc, outline));
+  let missing = auxStillMissing(doc, lessonId, outline);
+  if (missing.length && !c.signal?.aborted) {
+    await delay(AI_LESSON_RETRY_BACKOFF_MS, c.signal);
+    if (!c.signal?.aborted) {
+      doc = mergeAuxBlocks(doc, lessonId, await authorAuxBlocks(lc, outline, 2));
+      missing = auxStillMissing(doc, lessonId, outline);
+    }
+  }
+  if (missing.length) {
+    console.log(JSON.stringify({ tag: "agent_aux_unrecovered", lessonId, missing }));
+  }
+  return doc;
+}
+
+/** A focused brief for ONE missing slide spec the repair pass must build. */
+function renderSpecBrief(s: PlannedSlide): string {
+  const cover = s.keyPoints.length ? ` cover: ${s.keyPoints.map((p) => `• ${p}`).join("  ")}` : "";
+  const exact = s.notes ? ` exact: ${s.notes}` : "";
+  const visual = slideRequiresVisual(s) ? ` VISUAL REQUIRED: ${renderVisualDirective(s)}.` : "";
+  return `  - [${s.id} · ${s.role} · layout=${s.layout}] ${s.title} — ${s.teachingGoal}.${cover}${exact}${visual}`;
+}
+
+/** The narrow REPAIR instruction: list ONLY the hard failures so the model fixes
+ *  exactly those (and leaves correct slides alone). Appended to the context. */
+function buildRepairInstruction(outline: LessonOutline, report: ValidationReport, deckBlockId: string | null): string {
+  const byId = new Map(outline.slides.map((s) => [s.id, s]));
+  const lines: string[] = [
+    "REPAIR PASS — the generated lesson does NOT yet satisfy the approved plan. Fix ONLY the problems below; do NOT rewrite slides that are already correct.",
+  ];
+  if (report.missingSpecIds.length) {
+    lines.push(
+      `MISSING PLANNED SLIDES — build EACH of these into deck ${deckBlockId ?? "(the lesson's slide deck)"} with add_structured_slides_batch, stamping its slideSpecId:`
+    );
+    for (const id of report.missingSpecIds) {
+      const s = byId.get(id);
+      if (s) lines.push(renderSpecBrief(s));
+    }
+  }
+  if (report.duplicateSpecIds.length) {
+    lines.push(
+      `DUPLICATE SLIDES: spec(s) ${report.duplicateSpecIds.join(", ")} appear on more than one slide. Keep the best one; repurpose the other to a missing spec.`
+    );
+  }
+  // DECISION B: repair NEVER authors quiz/homework — those tools left the GENERATE/REPAIR
+  // surface and aux is owned by the concurrent author + its deterministic retry
+  // (runLessonPipeline). validation no longer reports a missing quiz/homework as a
+  // repairable failure, so `report.requiredBlocksMissing` is always empty here.
+  if (report.missingRequiredVisualSpecIds.length) {
+    lines.push(
+      "MISSING REQUIRED VISUALS — these slides exist but the plan REQUIRED a visual they lack. Add the diagram with set_diagram (to convert the existing slide) or add_diagram, preferring a templateId so accuracy-critical diagrams are correct by construction:"
+    );
+    for (const id of report.missingRequiredVisualSpecIds) {
+      const s = byId.get(id);
+      if (s) lines.push(`  - [${s.id}] ${s.title}: ${s.visualIntent?.expectedVisualType ?? s.visualIntent?.role}${s.visualIntent?.reason ? ` — ${s.visualIntent.reason}` : ""}.`);
+    }
+  }
+  lines.push("Build exactly what's listed, then stop.");
+  return lines.join("\n");
+}
+
+interface RepairOutcome {
+  doc: CourseDocument;
+  mutated: boolean;
+  lastMsgId: string | null;
+  report: ValidationReport;
+}
+
+/**
+ * VALIDATE → REPAIR for one lesson (the correctness gate that replaces critique).
+ * Validates against the plan; deterministically strips placeholder/empty slides;
+ * runs up to N targeted model-repair rounds for what only the model can fix
+ * (missing planned slides, a missing required quiz/homework, duplicates),
+ * re-validating each round. Emits calm progress + a final `validation` event, and
+ * a `checkpoint` if the contract still isn't met (so a short deck is never
+ * presented as complete). Returns the repaired doc — staging is the caller's job.
+ */
+async function validateAndRepairLesson(
+  c: LoopContext,
+  lessonId: string,
+  doc: CourseDocument,
+  outline: LessonOutline,
+  opts: { deckBlockId: string | null; checkpointed: boolean; detail?: string }
+): Promise<RepairOutcome> {
+  const lc: LoopContext = { ...c, lessonId };
+  let working = doc;
+  let mutated = false;
+  let lastMsgId: string | null = null;
+  let deckBlockId = opts.deckBlockId;
+  const budgetOut = () => !!c.callBudget && c.callBudget.remaining <= 0;
+
+  c.emit({ type: "phase", phase: "validate", detail: opts.detail });
+  let report = validateLessonGeneration(working, lessonId, outline, { checkpointed: opts.checkpointed });
+  let placeholdersRemoved = 0;
+  let repaired = false;
+  // A user Stop (abort) ends repair promptly — no point spending passes that the
+  // aborted signal will just break out of. Flush-on-exit still stages what's built.
+  const stopRepair = () => budgetOut() || !!c.signal?.aborted;
+
+  if (!report.ok) {
+    // 1. DETERMINISTIC: strip placeholder + empty slides (and junk decks). No model.
+    const det = placeholderRepairPatches(working, lessonId, report);
+    if (det.length) {
+      placeholdersRemoved = report.placeholderSlideIds.length + report.emptySlideIds.length;
+      const r = applyAll(working, det);
+      working = r.doc;
+      mutated = mutated || r.applied;
+      report = validateLessonGeneration(working, lessonId, outline, { checkpointed: opts.checkpointed });
+    }
+
+    // 2. TARGETED MODEL REPAIR for what's left, up to maxRepairPasses rounds.
+    if (AI_VALIDATION.repairHardFailures && hasModelRepairableFailure(report)) {
+      c.emit({
+        type: "validation",
+        ok: false,
+        message: `${validationSummaryLine(report)} Repairing…`,
+        missingSlides: report.missingSpecIds.length,
+        placeholdersRemoved,
+        repaired: false,
+      });
+      let pass = 0;
+      while (!report.ok && hasModelRepairableFailure(report) && pass < AI_VALIDATION.maxRepairPasses && !stopRepair()) {
+        // Ensure a deck exists to author into (deterministic repair may have dropped a junk one).
+        deckBlockId = report.deckBlockId ?? deckBlockId ?? firstDeckId(working, lessonId);
+        if (!deckBlockId) {
+          const patch = addBlockPatch(lessonId, "slide_deck", undefined, { emptySlideDeck: true });
+          const r = applyCoursePatch(working, patch, nowIso());
+          if (r.ok && patch.action === "ADD_BLOCK") {
+            working = r.doc;
+            deckBlockId = patch.block.id;
+            mutated = true;
+          }
+        }
+
+        c.emit({ type: "phase", phase: "repair", detail: opts.detail });
+        const t = Date.now();
+        const rr = await runConversationLoop(lc, working, working, false, {
+          effort: AI_PHASE_MODELS.repair.effort,
+          model: AI_PHASE_MODELS.repair.model,
+          layered: true,
+          outline,
+          deckBlockId: deckBlockId ?? undefined,
+          extraInstruction: buildRepairInstruction(outline, report, deckBlockId),
+          deferFinalize: true,
+          generateTools: true,
+          driveToCoverage: true,
+          // SCOPED: same as GENERATE — system + plan + state + this run's I/O only.
+          scopedInput: true,
+          maxTurns: repairMaxTurns(report.missingSpecIds.length),
+          maxOutputTokens: AI_GENERATE_MAX_OUTPUT_TOKENS,
+          callLabel: "repair",
+        });
+        working = rr.doc;
+        mutated = mutated || rr.docMutated;
+        lastMsgId = rr.lastAssistantMessageId ?? lastMsgId;
+        repaired = true;
+        logPhase(lc, "repair", AI_PHASE_MODELS.repair.model, AI_PHASE_MODELS.repair.effort, rr.usage, rr.toolCalls, Date.now() - t, true, rr.turns);
+
+        // The model could leave a stray placeholder (e.g. a second deck) — strip again.
+        const interim = validateLessonGeneration(working, lessonId, outline, {});
+        const det2 = placeholderRepairPatches(working, lessonId, interim);
+        if (det2.length) {
+          placeholdersRemoved += interim.placeholderSlideIds.length + interim.emptySlideIds.length;
+          const r = applyAll(working, det2);
+          working = r.doc;
+          mutated = mutated || r.applied;
+        }
+        // Persist this repair round incrementally so the DB reflects each pass (live
+        // render + never lose the round's work if the next pass dies / is aborted).
+        if (rr.docMutated) await reconcileDoc(lc, working);
+        // Re-check the contract after this repair round (its own validate phase).
+        c.emit({ type: "phase", phase: "validate", detail: opts.detail });
+        report = validateLessonGeneration(working, lessonId, outline, { checkpointed: opts.checkpointed || budgetOut() });
+        pass++;
+      }
+    }
   }
 
-  // CRITIQUE — one bounded fresh-eyes pass, deck handed in as data.
+  c.emit({
+    type: "validation",
+    ok: report.ok,
+    message: report.ok ? "Final validation passed." : validationSummaryLine(report),
+    missingSlides: report.missingSpecIds.length,
+    placeholdersRemoved,
+    repaired,
+    incomplete: !report.ok,
+  });
+  if (!report.ok) {
+    // Don't present an unmet contract as complete — say exactly what remains.
+    const tail = report.budgetExhausted ? " (ran out of step budget — ask me to continue)." : ".";
+    c.emit({
+      type: "checkpoint",
+      reason: `Couldn't fully satisfy the plan: ${validationSummaryLine(report)}${tail}`,
+      completedSteps: report.coverage.coveredSlideSpecs,
+    });
+  }
+
+  return { doc: working, mutated, lastMsgId, report };
+}
+
+/** Deterministic lint (always) + the OPTIONAL one-call light review (gated). Emits
+ *  a single `quality_report` of soft, optional suggestions — never blocks staging. */
+async function runLintAndReview(c: LoopContext, doc: CourseDocument, lessonId: string, outline: LessonOutline): Promise<void> {
+  const warnings = lintLessonGeneration(doc, lessonId, outline);
+  let suggestions: ReviewSuggestion[] = [];
+  if (shouldRunLightReview(warnings) && (!c.callBudget || c.callBudget.remaining > 0)) {
+    c.emit({ type: "phase", phase: "review" });
+    const t = Date.now();
+    suggestions = await runLightReview(c, doc, lessonId, outline, warnings);
+    logPhase(c, "review", AI_LIGHT_REVIEW.model, AI_LIGHT_REVIEW.effort, ZERO_USAGE, 0, Date.now() - t);
+  }
+  if (warnings.length || suggestions.length) {
+    c.emit({
+      type: "quality_report",
+      warnings: warnings.map((w) => ({ code: w.code, message: w.message, slideId: w.slideId })),
+      suggestions,
+    });
+  }
+}
+
+/**
+ * Single-lesson pipeline (the spec's shape): PLAN → GENERATE → VALIDATE/REPAIR →
+ * (optional LIGHT REVIEW) → STAGE CHANGE-SET. The legacy CRITIQUE pass runs only
+ * when explicitly enabled (off by default — superseded by validate/repair). The
+ * whole run reconciles ONCE and stages one reviewable change-set.
+ */
+async function runLessonPipeline(c: LoopContext, startDoc: CourseDocument, outline: LessonOutline): Promise<void> {
+  const baseline = structuredClone(startDoc);
+  c.baselineDoc ??= baseline; // run-start anchor for scoped reconciles
+  let doc = startDoc;
+  let mutated = false;
+  let lastMsgId: string | null = null;
+  let finalized = false;
+
+  // FLUSH-ON-EXIT: reconcile + stage whatever's built, on ANY termination (done /
+  // abort / token cap / turn cap / no-progress / error). Idempotent (guarded) so a
+  // clean finish and the finally block don't double-stage. Partial work is NEVER lost.
+  const finalize = async () => {
+    if (finalized) return;
+    finalized = true;
+    // Never stage a deck left with zero slides (generation produced nothing).
+    const pruned = applyAll(doc, pruneEmptyDeckPatches(doc, c.lessonId));
+    doc = pruned.doc;
+    mutated = mutated || pruned.applied;
+    if (mutated) {
+      await reconcileDoc(c, doc);
+      await stageChangeSet(c, doc, baseline, lastMsgId);
+    }
+  };
+
+  try {
+    // DECISION B: author slides and quiz/homework CONCURRENTLY. The slide loop drives to
+    // SLIDE coverage only (coverageSlidesOnly); authorAndMergeAux (the ONE shared aux
+    // author, identical on the module path) reads only the outline, so it runs off the
+    // critical path against the pre-generate doc. We then graft its aux onto gen.doc with
+    // the SAME dedup-by-type merge (aux and slides are independent block types).
+    const [gen, auxDoc] = await Promise.all([
+      generateLesson(c, c.lessonId, startDoc, outline),
+      authorAndMergeAux(c, c.lessonId, startDoc, outline),
+    ]);
+    doc = gen.doc;
+    mutated = gen.docMutated || gen.deckPreCreated;
+    lastMsgId = gen.lastAssistantMessageId;
+    const withAux = mergeAuxBlocks(doc, c.lessonId, collectAuxBlocks(auxDoc, c.lessonId));
+    if (withAux !== doc) {
+      doc = withAux;
+      mutated = true;
+    }
+
+    // Persist generation immediately so the DB has the deck before validate/repair
+    // (so an abort/crash mid-repair still leaves the generated slides).
+    if (mutated) await reconcileDoc(c, doc);
+
+    // LEGACY CRITIQUE — off by default; validate/repair supersedes it.
+    if (AI_PHASE_MODELS.critique.enabled) {
+      const crit = await runLegacyCritique(c, doc, baseline, outline);
+      doc = crit.doc;
+      mutated = mutated || crit.docMutated;
+      lastMsgId = crit.lastAssistantMessageId ?? lastMsgId;
+    }
+
+    // VALIDATE / REPAIR — the correctness gate (on by default).
+    if (AI_VALIDATION.validateGeneration) {
+      const vr = await validateAndRepairLesson(c, c.lessonId, doc, outline, {
+        deckBlockId: gen.deckBlockId,
+        checkpointed: gen.checkpointed,
+      });
+      doc = vr.doc;
+      mutated = mutated || vr.mutated;
+      lastMsgId = vr.lastMsgId ?? lastMsgId;
+    }
+
+    await finalize(); // STAGE once on the happy path.
+
+    // OPTIONAL light review (soft suggestions) — after staging, never blocking.
+    await runLintAndReview(c, doc, c.lessonId, outline);
+
+    c.emit({ type: "assistant_message", content: gen.assistantText });
+    c.emit({ type: "done" });
+  } finally {
+    await finalize(); // flush partial work on an abort / thrown error.
+  }
+}
+
+/** The legacy CRITIQUE pass (deck-as-data, one bounded edit pass). Only invoked
+ *  when AI_CRITIQUE_ENABLED — kept for parity; the default path uses validate/repair. */
+async function runLegacyCritique(
+  c: LoopContext,
+  doc: CourseDocument,
+  baseline: CourseDocument,
+  outline: LessonOutline
+): Promise<LoopResult> {
   c.emit({ type: "phase", phase: "critique" });
   const tC = Date.now();
   const critiqueSystem = [
     CRITIQUE_SYSTEM_PROMPT,
     "",
-    ...courseContextLines(gen.doc, c.lessonId),
+    ...courseContextLines(doc, c.lessonId),
     "",
     outlinePromptFragment(outline),
     "",
     "DECK UNDER REVIEW (as data — target edits by blockId/slideId):",
-    serializeLessonDecks(gen.doc, c.lessonId),
+    serializeLessonDecks(doc, c.lessonId),
   ].join("\n");
-  const crit: LoopResult = await runConversationLoop(c, gen.doc, baseline, false, {
+  const crit = await runConversationLoop(c, doc, baseline, false, {
     effort: AI_PHASE_MODELS.critique.effort,
     model: AI_PHASE_MODELS.critique.model,
     maxTurns: 4,
@@ -306,25 +955,150 @@ async function runGenerateThenCritique(c: LoopContext, startDoc: CourseDocument,
     callLabel: "critique",
   });
   logPhase(c, "critique", AI_PHASE_MODELS.critique.model, AI_PHASE_MODELS.critique.effort, crit.usage, crit.toolCalls, Date.now() - tC, true, crit.turns);
-
-  // Finalize ONCE: one reconcile + one change-set spanning generate + critique.
-  const doc = crit.doc;
-  const mutated = gen.docMutated || crit.docMutated;
-  const lastMsgId = crit.lastAssistantMessageId ?? gen.lastAssistantMessageId;
-  if (mutated) await reconcileAndStage(c, doc, baseline, lastMsgId);
-  c.emit({ type: "assistant_message", content: crit.assistantText || gen.assistantText });
-  c.emit({ type: "done" });
+  return crit;
 }
 
-/** Module pipeline: create the module + its lessons, GENERATE each lesson's deck
- *  (layered, NO critique — a deliberate cost trade-off for big builds), then ONE
- *  reconcile + ONE change-set spanning the whole module. */
-async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, outline: ModuleOutline): Promise<void> {
-  const baseline = structuredClone(startDoc);
-  let doc = startDoc;
+/**
+ * Plan the COMPACT module SKELETON (lean schema, low effort, non-streaming). If it
+ * times out / transport-fails, retry ONCE with the ULTRA-LEAN fallback (always in
+ * background mode — the held connection is exactly what just dropped). A schema
+ * error is NOT retried (the model answered, just malformed). The skeleton is the
+ * approval artifact; each lesson's RICH contract is planned LAZILY at gen time.
+ */
+async function runModuleSkeletonPlan(
+  c: LoopContext,
+  doc: CourseDocument,
+  userMessage: string
+): Promise<{ skeleton: ModuleSkeleton | null; errorType: PlanErrorType; providerError?: string }> {
+  const context = courseContextLines(doc, c.lessonId).join("\n");
+  const skeletonSystem = [MODULE_SKELETON_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
 
-  // Create the module + lessons structurally (in-memory), capturing real ids.
-  const mod = createModule(outline.moduleTitle, doc.modules.length);
+  const primary = await runStructuredPlan<ModuleSkeleton>(
+    c,
+    skeletonSystem,
+    context,
+    moduleSkeletonResponseFormat(),
+    (raw) => { const r = validateModuleSkeleton(raw); return { outline: r.skeleton, errors: r.errors }; },
+    userMessage,
+    {
+      planType: "module_skeleton",
+      model: AI_PHASE_MODELS.modulePlan.model,
+      effort: AI_PHASE_MODELS.modulePlan.effort,
+      background: AI_USE_BACKGROUND_FOR_PLANS,
+    }
+  );
+  if (primary.outline) return { skeleton: primary.outline, errorType: "ok", providerError: primary.providerError };
+
+  // Only fall back on a TRANSPORT failure (timeout/connection) — a schema_error
+  // means the model answered but malformed, and a smaller schema won't help.
+  const transport = primary.errorType === "transport_timeout" || primary.errorType === "transport";
+  if (!transport) return { skeleton: null, errorType: primary.errorType, providerError: primary.providerError };
+
+  const fallback = await runStructuredPlan<ModuleSkeleton>(
+    c,
+    MODULE_FALLBACK_SYSTEM_PROMPT,
+    context,
+    moduleFallbackResponseFormat(),
+    (raw) => { const r = validateModuleFallback(raw); return { outline: r.skeleton, errors: r.errors }; },
+    userMessage,
+    {
+      planType: "module_fallback",
+      model: AI_PHASE_MODELS.modulePlan.model,
+      effort: "low",
+      background: true, // the held connection just timed out — poll instead
+      detail: "quick plan",
+    }
+  );
+  if (fallback.outline) return { skeleton: fallback.outline, errorType: "ok", providerError: fallback.providerError };
+  return { skeleton: null, errorType: fallback.errorType, providerError: fallback.providerError ?? primary.providerError };
+}
+
+/** Plan ONE lesson's RICH contract lazily (the full lesson PLAN, seeded from the
+ *  brief). Single lesson → small + fast (medium effort, bounded output budget). A
+ *  transport failure here is surfaced via `errorType` so the module loop can retry
+ *  the lesson once before skipping it (resumability). */
+async function runRichLessonPlan(
+  c: LoopContext,
+  lessonId: string,
+  brief: LessonBrief,
+  moduleTitle: string,
+  doc: CourseDocument,
+  detail: string
+): Promise<{ outline: LessonOutline | null; errorType: PlanErrorType }> {
+  const lc: LoopContext = { ...c, lessonId };
+  // CACHING: the system stays STATIC (role + catalogs only — byte-identical across
+  // every call, the cacheable prefix); course+lesson context rides in the developer
+  // message, course-level FIRST (stable) then the lesson (variable) so the prefix is
+  // maximally shared across a module's lessons.
+  const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
+  const context = courseContextLines(doc, lessonId).join("\n");
+  const r = await runStructuredPlan<LessonOutline>(lc, system, context, outlineResponseFormat(), validateOutline, lessonBriefToPlanRequest(brief, moduleTitle), {
+    planType: "lesson_rich",
+    // Module-path lesson plan: LOW effort (it does NOT re-ask on thin — see below —
+    // so the thin-plan risk that keeps the standalone plan at medium is absent here).
+    model: AI_PHASE_MODELS.moduleLessonPlan.model,
+    effort: AI_PHASE_MODELS.moduleLessonPlan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+    detail,
+    // No depth-floor re-ask — the brief's slide range already sets the size, and a
+    // second call per lesson would multiply latency across the module.
+  });
+  // Guarantee the titled-opener + recap-closer arc before generation.
+  return { outline: r.outline ? ensureLessonArc(r.outline) : null, errorType: r.errorType };
+}
+
+/** True for a TRANSPORT failure category (timeout / connection drop) — the ONLY
+ *  kind the module loop retries a lesson for (a schema/model error won't fix on a
+ *  blind retry). */
+function isTransportError(errorType: PlanErrorType): boolean {
+  return errorType === "transport_timeout" || errorType === "transport";
+}
+
+/** Resolve the lesson plan after the SDK abort, then sleep (abortable). */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted || ms <= 0) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+/** Plan one lesson's rich contract, retrying ONCE with backoff on a transport
+ *  failure (a transient proxy blip shouldn't cost the whole lesson). Returns null
+ *  only after the retry also fails (or on a non-transport error) → skip + surface. */
+async function runRichLessonPlanResilient(
+  c: LoopContext,
+  lessonId: string,
+  brief: LessonBrief,
+  moduleTitle: string,
+  doc: CourseDocument,
+  detail: string
+): Promise<LessonOutline | null> {
+  const first = await runRichLessonPlan(c, lessonId, brief, moduleTitle, doc, detail);
+  if (first.outline) return first.outline;
+  if (!isTransportError(first.errorType) || c.signal?.aborted) return null;
+  console.log(JSON.stringify({ tag: "agent_lesson_retry", lessonId, brief: brief.title, errorType: first.errorType }));
+  await delay(AI_LESSON_RETRY_BACKOFF_MS, c.signal);
+  if (c.signal?.aborted) return null;
+  const second = await runRichLessonPlan(c, lessonId, brief, moduleTitle, doc, `${detail} — retry`);
+  return second.outline;
+}
+
+/**
+ * Module pipeline (lazy): create the module + lessons from the approved SKELETON,
+ * then for EACH lesson — RICH lesson plan → GENERATE → VALIDATE/REPAIR — so no
+ * single call has to plan the whole module. A lesson whose rich plan fails is
+ * SKIPPED and reported; the rest still build. ONE reconcile + ONE change-set;
+ * lint aggregated; a checkpoint lists any lessons still needing content.
+ */
+async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, skeleton: ModuleSkeleton): Promise<void> {
+  let doc = startDoc;
+  // Run-start anchor for scoped reconciles: BEFORE the new module is created, so the
+  // scaffold persist + every per-lesson reconcile scope to the new module's subtree
+  // only (never pre-existing modules the user might delete mid-build).
+  c.baselineDoc ??= structuredClone(startDoc);
+
+  const mod = createModule(skeleton.moduleTitle, doc.modules.length);
   const addMod = applyCoursePatch(doc, { action: "ADD_MODULE", module: mod }, nowIso());
   if (!addMod.ok) {
     c.emit({ type: "error", message: `Couldn't create the module: ${addMod.error}` });
@@ -333,35 +1107,121 @@ async function runGenerateModule(c: LoopContext, startDoc: CourseDocument, outli
   }
   doc = addMod.doc;
 
-  const lessonIds: string[] = [];
-  for (let i = 0; i < outline.lessons.length; i++) {
-    const l = outline.lessons[i];
-    const lesson = createLesson(l.title, i);
-    lesson.objective = l.objective;
+  // Create lessons up front from the briefs (title + objective); content is lazy.
+  const lessons: { id: string; brief: LessonBrief }[] = [];
+  for (let i = 0; i < skeleton.lessons.length; i++) {
+    const brief = skeleton.lessons[i];
+    const lesson = createLesson(brief.title, i);
+    lesson.objective = brief.objective;
     const res = applyCoursePatch(doc, { action: "ADD_LESSON", moduleId: mod.id, lesson }, nowIso());
     if (!res.ok) continue;
     doc = res.doc;
-    lessonIds.push(lesson.id);
+    lessons.push({ id: lesson.id, brief });
   }
 
-  // GENERATE each lesson's deck (layered, no critique). Thread the shared doc.
-  let mutated = false;
+  // Persist the module + lesson SCAFFOLD immediately, so the module exists in the
+  // DB the moment it's planned — even if every lesson's content later fails/aborts.
+  // (This is the core fix for "the run spun for 10 min and the module has no data".)
+  await reconcileDoc(c, doc);
+
+  const baseline = structuredClone(doc); // the ONE change-set diffs against the scaffold
   let lastMsgId: string | null = null;
-  const n = lessonIds.length;
-  for (let i = 0; i < n; i++) {
-    // The run's shared budget is spent — stop here rather than spawning a loop
-    // per remaining lesson that would each just trip the guard + checkpoint.
-    if (c.callBudget && c.callBudget.remaining <= 0) break;
-    const l = outline.lessons[i];
-    const r = await generateLesson(c, lessonIds[i], doc, baseline, moduleLessonToOutline(l), `${l.title} (${i + 1}/${n})`);
-    doc = r.doc;
-    mutated = mutated || r.docMutated;
-    lastMsgId = r.lastAssistantMessageId ?? lastMsgId;
+  const allWarnings: LintWarning[] = [];
+  const skipped: string[] = [];
+  const n = lessons.length;
+  let built = 0;
+  let finalized = false;
+
+  // FLUSH-ON-EXIT: persist + stage everything built, as ONE change-set, on ANY exit
+  // (completion / abort / budget / turn cap / error). Guarded so the happy path and
+  // the `finally` don't double-stage. Each lesson is ALSO reconciled to the DB as it
+  // completes (above), so a hard crash still leaves the built lessons persisted.
+  const finalize = async () => {
+    if (finalized) return;
+    finalized = true;
+    for (const { id } of lessons) {
+      const pr = applyAll(doc, pruneEmptyDeckPatches(doc, id));
+      doc = pr.doc;
+    }
+    await reconcileDoc(c, doc);
+    await stageChangeSet(c, doc, baseline, lastMsgId);
+  };
+
+  try {
+    for (let i = 0; i < n; i++) {
+      // User stopped (abort) or out of run budget — record the rest + stop. Flush
+      // (in `finally`) still persists + stages everything built so far.
+      if (c.signal?.aborted || (c.callBudget && c.callBudget.remaining <= 0)) {
+        skipped.push(...lessons.slice(i).map((l) => l.brief.title));
+        break;
+      }
+      const { id, brief } = lessons[i];
+      const detail = `${brief.title} (${i + 1}/${n})`;
+
+      // 1. RICH per-lesson plan (lazy), retried ONCE with backoff on a transport
+      //    failure. Only after the retry also fails is the lesson skipped + surfaced
+      //    — a single lesson's death never kills the module (prior lessons are
+      //    already flushed; the remaining ones still build).
+      const outline = await runRichLessonPlanResilient(c, id, brief, skeleton.moduleTitle, doc, detail);
+      if (!outline) {
+        skipped.push(brief.title);
+        continue;
+      }
+
+      // 2. GENERATE + AUX (concurrent) → 3. VALIDATE/REPAIR. authorAndMergeAux is the
+      //    SAME shared aux author as the single-lesson path; it reads only the outline
+      //    (never the slides), so it runs CONCURRENTLY with generateLesson off this
+      //    lesson's critical path — no serialize point added to the loop (which is the
+      //    lesson-parallelism surface). We graft the concurrently-authored aux onto
+      //    gen.doc via the same dedup-by-type merge BEFORE validate/reconcile, so the
+      //    quiz/homework persists WITH this lesson (not into a later one).
+      const [gen, auxDoc] = await Promise.all([
+        generateLesson(c, id, doc, outline, detail),
+        authorAndMergeAux(c, id, doc, outline),
+      ]);
+      doc = mergeAuxBlocks(gen.doc, id, collectAuxBlocks(auxDoc, id));
+      lastMsgId = gen.lastAssistantMessageId ?? lastMsgId;
+
+      if (AI_VALIDATION.validateGeneration) {
+        const vr = await validateAndRepairLesson(c, id, doc, outline, {
+          deckBlockId: gen.deckBlockId,
+          checkpointed: gen.checkpointed,
+          detail,
+        });
+        doc = vr.doc;
+        lastMsgId = vr.lastMsgId ?? lastMsgId;
+      }
+      const pruned = applyAll(doc, pruneEmptyDeckPatches(doc, id));
+      doc = pruned.doc;
+      allWarnings.push(...lintLessonGeneration(doc, id, outline).map((w) => ({ ...w, message: `${brief.title}: ${w.message}` })));
+      built++;
+      // Persist this lesson's content now so it survives a later abort/crash mid-module.
+      await reconcileDoc(c, doc);
+    }
+    await finalize(); // STAGE once on the happy path.
+  } finally {
+    await finalize(); // flush-on-exit (abort / thrown error)
   }
 
-  // Finalize ONCE across module creation + every lesson's deck.
-  if (mutated || addMod.ok) await reconcileAndStage(c, doc, baseline, lastMsgId);
-  c.emit({ type: "assistant_message", content: `Built "${outline.moduleTitle}" — ${n} lesson${n === 1 ? "" : "s"}, each with a deck. Review the changes when you're ready.` });
+  if (allWarnings.length) {
+    c.emit({
+      type: "quality_report",
+      warnings: allWarnings.map((w) => ({ code: w.code, message: w.message, slideId: w.slideId })),
+      suggestions: [],
+    });
+  }
+
+  if (skipped.length) {
+    c.emit({
+      type: "checkpoint",
+      reason: `Built ${built} of ${n} lesson${n === 1 ? "" : "s"} in "${skeleton.moduleTitle}". Still need content: ${skipped.join(", ")}. Ask me to continue and I'll finish them.`,
+      completedSteps: built,
+    });
+  }
+  c.emit({
+    type: "assistant_message",
+    content: `Built "${skeleton.moduleTitle}" — ${built} of ${n} lesson${n === 1 ? "" : "s"}${skipped.length ? ` (${skipped.length} still to do)` : ""}. Review the changes when you're ready.`,
+  });
   c.emit({ type: "done" });
 }
 
@@ -378,17 +1238,28 @@ export async function runGenerateLessonTurn(
     return;
   }
   const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n"); // static → cacheable
-  const context = courseContextLines(doc, c.lessonId).join("\n"); // variable → input
-  const { outline, finishReason } = await runStructuredPlan(c, system, context, outlineResponseFormat(), validateOutline, p.userMessage);
+  const context = courseContextLines(doc, c.lessonId).join("\n"); // course-first, lesson last
+  // The depth floor: a normal (non-micro) lesson that came back too thin gets ONE
+  // re-ask to deepen it — the PLAN-time half of the 3-slide fix.
+  const { outline, errorType, providerError } = await runStructuredPlan(c, system, context, outlineResponseFormat(), validateOutline, p.userMessage, {
+    planType: "lesson",
+    model: AI_PHASE_MODELS.plan.model,
+    effort: AI_PHASE_MODELS.plan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+    postValidate: lessonDepthShortfall,
+  });
   if (!outline) {
-    c.emit({ type: "error", message: planFailureMessage(finishReason, "lesson") });
+    c.emit({ type: "error", message: planFailureMessage(errorType, "lesson", providerError) });
     c.emit({ type: "done" });
     return;
   }
+  // Guarantee the titled-opener + recap-closer arc (post depth-floor) before the
+  // user approves, so the plan they see — and the deck built — opens + closes right.
+  const arced = ensureLessonArc(outline);
   if (p.autoApprove) {
-    await runGenerateThenCritique(c, doc, outline);
+    await runLessonPipeline(c, doc, arced);
   } else {
-    c.emit({ type: "plan_outline", plan: { kind: "lesson", lessonId: p.lessonId, outline } });
+    c.emit({ type: "plan_outline", plan: { kind: "lesson", lessonId: p.lessonId, outline: arced } });
     c.emit({ type: "done" });
   }
 }
@@ -405,20 +1276,276 @@ export async function runGenerateModuleTurn(
     c.emit({ type: "done" });
     return;
   }
-  const system = [MODULE_PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n"); // static → cacheable
-  const context = courseContextLines(doc, c.lessonId).join("\n"); // variable → input
-  const { outline, finishReason } = await runStructuredPlan(c, system, context, moduleOutlineResponseFormat(), validateModuleOutline, p.userMessage);
-  if (!outline) {
-    c.emit({ type: "error", message: planFailureMessage(finishReason, "module") });
+  // FIRST call = the compact skeleton (with an ultra-lean fallback on timeout).
+  // The rich per-lesson contracts are planned LAZILY, after approval, per lesson.
+  const { skeleton, errorType, providerError } = await runModuleSkeletonPlan(c, doc, p.userMessage);
+  if (!skeleton) {
+    c.emit({ type: "error", message: planFailureMessage(errorType, "module", providerError) });
     c.emit({ type: "done" });
     return;
   }
   if (p.autoApprove) {
-    await runGenerateModule(c, doc, outline);
+    await runGenerateModule(c, doc, skeleton);
   } else {
-    c.emit({ type: "plan_outline", plan: { kind: "module", outline } });
+    c.emit({ type: "plan_outline", plan: { kind: "module", skeleton } });
     c.emit({ type: "done" });
   }
+}
+
+/* ───────────────────────── Course Structure agent ────────────────────────── */
+
+/** A user-facing message for a failed STRUCTURE plan, categorized by error type so
+ *  a timeout never reads as "invalid JSON". */
+function structurePlanFailureMessage(errorType: PlanErrorType, providerError?: string): string {
+  if (errorType === "transport_timeout") return "Planning that change timed out before the model responded — please try again.";
+  if (errorType === "model_error" || errorType === "transport") {
+    const reason = providerError ? ` (${providerError.slice(0, 160)})` : "";
+    return `The AI service hit an error while planning the change${reason} — please try again.`;
+  }
+  return "I couldn't work out a safe set of structural changes for that — try rephrasing the request.";
+}
+
+/** The lesson-plan REQUEST for a (re)built lesson, sourced from the structure plan's
+ *  content brief (mirrors lessonBriefToPlanRequest's shape). */
+function structureBriefToPlanRequest(brief: GenerateContentBrief): string {
+  const parts = [`Plan the lesson "${brief.title}".`];
+  if (brief.objective) parts.push(`Objective: ${brief.objective}.`);
+  if (brief.contentRequest) parts.push(`Cover: ${brief.contentRequest}.`);
+  parts.push("Size it by depth — enough slides to teach it well.");
+  return parts.join(" ");
+}
+
+/** Plan ONE lesson's full outline for the structure agent's chained deck build
+ *  (the SAME PLAN machinery as runGenerateLessonTurn, seeded from a content brief).
+ *  Returns the arc-guaranteed outline, or null on a plan failure (lesson skipped). */
+async function planLessonOutlineForStructure(
+  c: LoopContext,
+  lessonId: string,
+  request: string,
+  doc: CourseDocument,
+  detail: string
+): Promise<LessonOutline | null> {
+  const lc: LoopContext = { ...c, lessonId };
+  const system = [PLAN_SYSTEM_PROMPT, "", planLayoutCatalogText()].join("\n");
+  const context = courseContextLines(doc, lessonId).join("\n");
+  const r = await runStructuredPlan<LessonOutline>(lc, system, context, outlineResponseFormat(), validateOutline, request, {
+    planType: "lesson_rich",
+    model: AI_PHASE_MODELS.moduleLessonPlan.model,
+    effort: AI_PHASE_MODELS.moduleLessonPlan.effort,
+    maxOutputTokens: AI_LESSON_PLAN_MAX_OUTPUT_TOKENS,
+    detail,
+  });
+  return r.outline ? ensureLessonArc(r.outline) : null;
+}
+
+/**
+ * The Course Structure agent: edit the course TREE accurately. PLAN (a structured
+ * CourseStructurePlan) → HARD-validate against the detected intent + a deterministic
+ * snapshot (the wrong CATEGORY of action is impossible) → execute the ops through
+ * the validated patch pipeline → persist via the FULL reconcile (the scoped agent
+ * reconcile can't delete/move/rename existing nodes) → stage a reviewable +
+ * reject-able STRUCTURE change-set → for each lesson the plan asked to (re)build,
+ * chain the existing PLAN→GENERATE deck pipeline and stage a content change-set.
+ * Ambiguous / unsafe targets become a clarification, never a guess.
+ */
+export async function runStructureAgentTurn(
+  p: AgentRunParams & { autoApprove?: boolean },
+  preloaded?: CourseDocument
+): Promise<void> {
+  const c = loopContext(p);
+  const doc0 = preloaded ?? (await loadCourseDoc(p.supabase, p.courseId));
+  if (!doc0) {
+    c.emit({ type: "error", message: "Course not found or you don't have access." });
+    c.emit({ type: "done" });
+    return;
+  }
+  // Run-start anchor: the structure change-set + scoped content reconciles diff
+  // against the pre-everything doc.
+  c.baselineDoc ??= structuredClone(doc0);
+
+  const hit = findLesson(doc0, p.lessonId);
+  const snapshot = buildOutlineSnapshot(doc0, { moduleId: hit?.module.id, lessonId: p.lessonId });
+  const signals = detectSignals(p.userMessage);
+
+  // PLAN — one structured call with ONE corrective re-ask on a FIXABLE rule violation.
+  const { outline: plan, errorType, providerError } = await runStructuredPlan<CourseStructurePlan>(
+    c,
+    STRUCTURE_PLAN_SYSTEM_PROMPT,
+    serializeOutlineSnapshot(snapshot),
+    structurePlanResponseFormat(),
+    (raw) => {
+      const r = parseStructurePlan(raw);
+      return { outline: r.plan, errors: r.errors };
+    },
+    p.userMessage,
+    {
+      planType: "structure",
+      model: AI_PHASE_MODELS.plan.model,
+      effort: "medium",
+      postValidate: (pl) => {
+        if (pl.clarification && pl.ops.length === 0) return null; // model chose to ask
+        const r = validateStructurePlan(pl, signals, snapshot, p.userMessage);
+        // Re-ask only on a fixable rule violation; an unresolved target is handled
+        // as a clarification after the call (a blind re-ask won't resolve ambiguity).
+        return r.ok || r.resolution ? null : r.errors.join("; ");
+      },
+    }
+  );
+
+  if (!plan) {
+    c.emit({ type: "error", message: structurePlanFailureMessage(errorType, providerError) });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // The model chose to ask for clarification rather than guess a target.
+  if (plan.clarification && plan.ops.length === 0 && plan.generateContentFor.length === 0) {
+    c.emit({ type: "assistant_message", content: plan.clarification });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // Final HARD validation (post re-ask). An unresolved target → clarify, never guess.
+  const v = validateStructurePlan(plan, signals, snapshot, p.userMessage);
+  if (v.resolution) {
+    const msg =
+      v.resolution.status === "ambiguous"
+        ? v.resolution.question
+        : v.resolution.status === "unsafe"
+          ? v.resolution.reason
+          : "Which lesson or module should I change?";
+    c.emit({ type: "assistant_message", content: msg });
+    c.emit({ type: "done" });
+    return;
+  }
+  if (!v.ok) {
+    c.emit({
+      type: "assistant_message",
+      content: `I held off — that wouldn't be a safe structural change: ${v.errors.join("; ")} Tell me more specifically what to change.`,
+    });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  if (plan.summary) c.emit({ type: "assistant_message", content: plan.summary });
+
+  // EXECUTE the structural ops deterministically (resolving tempRef → real ids).
+  const exec = executeStructurePlan(doc0, plan, nowIso());
+  let doc = exec.doc;
+
+  // HARD GUARD: the Structure agent must NEVER increase the module count. There is
+  // no create_module op, so this is structurally impossible — but assert it (and
+  // log it) so a regression can't silently create a duplicate module like the
+  // "Module 8: Introduction to Economics…" mis-route this layer exists to prevent.
+  console.log(
+    JSON.stringify({
+      tag: "agent_structure_turn",
+      intent: plan.intent,
+      moduleCountBefore: doc0.modules.length,
+      moduleCountAfter: doc.modules.length,
+      ops: plan.ops.map((o) => o.op),
+      createdLessons: exec.createdLessons.length,
+      generateContentFor: plan.generateContentFor.length,
+      lessonId: p.lessonId,
+      courseId: p.courseId,
+    })
+  );
+  if (doc.modules.length > doc0.modules.length) {
+    c.emit({ type: "error", message: "Internal guard: a structure edit must not create a new module. No changes were made — please rephrase." });
+    c.emit({ type: "done" });
+    return;
+  }
+
+  // PERSIST structure via the FULL reconcile — the scoped agent reconcile never
+  // deletes modules / pre-existing lessons or persists a rename/move of an existing
+  // lesson (only the human path may). A structure turn is short + creator-initiated,
+  // so the scoped-reconcile resurrection guard (for long concurrent module builds)
+  // doesn't apply.
+  if (exec.applied) {
+    const err = await reconcileCourseDoc(p.supabase, doc, p.ownerId);
+    if (err && !c.signal?.aborted) c.emit({ type: "error", message: `Some structural changes may not have saved: ${err}` });
+  }
+
+  // STAGE the structural change-set (reviewable + reject-able). Cascade block-deletes
+  // from a deleted lesson are owned by that lesson's snapshot (filtered in staging).
+  await stageStructureChangeSet(c, doc, c.baselineDoc, null);
+
+  // CHAIN: generate decks for the lessons the plan asked to (re)build.
+  const builtTitles: string[] = [];
+  const skipped: string[] = [];
+  if (plan.generateContentFor.length) {
+    const contentBaseline = structuredClone(doc);
+    let contentMutated = false;
+    let lastMsgId: string | null = null;
+    const tempRefToId = new Map(exec.createdLessons.map((l) => [l.tempRef, l.lessonId]));
+    const n = plan.generateContentFor.length;
+
+    for (let i = 0; i < n; i++) {
+      if (c.signal?.aborted || (c.callBudget && c.callBudget.remaining <= 0)) {
+        skipped.push(...plan.generateContentFor.slice(i).map((b) => b.title));
+        break;
+      }
+      const brief = plan.generateContentFor[i];
+      const lessonId = brief.tempRef ? tempRefToId.get(brief.tempRef) : (brief.lessonId ?? undefined);
+      if (!lessonId || !findLesson(doc, lessonId)) {
+        skipped.push(brief.title);
+        continue;
+      }
+      const detail = `${brief.title} (${i + 1}/${n})`;
+
+      // Replace an existing lesson's outdated deck(s) before regenerating.
+      if (brief.lessonId && brief.replaceExisting) {
+        const decks = findLesson(doc, lessonId)!.lesson.blocks.filter((b) => b.type === "slide_deck");
+        for (const d of decks) {
+          const r = applyCoursePatch(doc, deleteBlockPatch(lessonId, d.id), nowIso());
+          if (r.ok) {
+            doc = r.doc;
+            contentMutated = true;
+          }
+        }
+      }
+
+      const outline = await planLessonOutlineForStructure(c, lessonId, structureBriefToPlanRequest(brief), doc, detail);
+      if (!outline) {
+        skipped.push(brief.title);
+        continue;
+      }
+
+      const [gen, auxDoc] = await Promise.all([
+        generateLesson(c, lessonId, doc, outline, detail),
+        authorAndMergeAux(c, lessonId, doc, outline),
+      ]);
+      doc = mergeAuxBlocks(gen.doc, lessonId, collectAuxBlocks(auxDoc, lessonId));
+      contentMutated = true;
+      lastMsgId = gen.lastAssistantMessageId ?? lastMsgId;
+
+      if (AI_VALIDATION.validateGeneration) {
+        const vr = await validateAndRepairLesson(c, lessonId, doc, outline, {
+          deckBlockId: gen.deckBlockId,
+          checkpointed: gen.checkpointed,
+          detail,
+        });
+        doc = vr.doc;
+        lastMsgId = vr.lastMsgId ?? lastMsgId;
+      }
+      doc = applyAll(doc, pruneEmptyDeckPatches(doc, lessonId)).doc;
+      builtTitles.push(brief.title);
+      await reconcileDoc(c, doc); // scoped — new/touched lessons persist + live-render
+    }
+
+    if (contentMutated) {
+      await reconcileDoc(c, doc);
+      await stageChangeSet(c, doc, contentBaseline, lastMsgId);
+    }
+  }
+
+  const parts: string[] = [];
+  if (builtTitles.length) parts.push(`Built ${builtTitles.length} deck${builtTitles.length === 1 ? "" : "s"}.`);
+  if (exec.errors.length) parts.push(`Note: ${exec.errors.length} operation(s) couldn't be applied.`);
+  if (skipped.length) parts.push(`Still to build: ${skipped.join(", ")}.`);
+  if (parts.length) c.emit({ type: "assistant_message", content: parts.join(" ") });
+  if (skipped.length) c.emit({ type: "checkpoint", reason: `Some lessons still need content: ${skipped.join(", ")}. Ask me to continue.`, completedSteps: builtTitles.length });
+  c.emit({ type: "done" });
 }
 
 /** The route entrypoint: persist the user msg, classify, then branch to the
@@ -437,7 +1564,24 @@ export async function runContentAgentTurn(p: AgentRunParams & { autoApprove?: bo
   const hasDeck = !!lesson?.blocks.some((b) => b.type === "slide_deck");
   const mode = await classifyIntent(p.model, { hasDeck }, p.userMessage);
 
-  if (mode === "generate_module") {
+  // Routing observability: which mode a turn took + the module count at entry, so a
+  // mis-route ("complete module one" → a NEW module) is greppable (agent_route).
+  console.log(
+    JSON.stringify({
+      tag: "agent_route",
+      mode,
+      moduleCount: doc.modules.length,
+      msgHead: p.userMessage.slice(0, 160),
+      courseId: p.courseId,
+      lessonId: p.lessonId,
+    })
+  );
+
+  if (mode === "analyze") {
+    await runMaintenanceTurn(p, doc);
+  } else if (mode === "structure") {
+    await runStructureAgentTurn(p, doc);
+  } else if (mode === "generate_module") {
     await runGenerateModuleTurn(p, doc);
   } else if (mode === "generate_lesson") {
     await runGenerateLessonTurn(p, doc);
@@ -481,13 +1625,13 @@ export async function resumeGeneratePlan(p: GenerateResumeParams): Promise<void>
   }
 
   if (plan?.kind === "module") {
-    const { outline, errors } = coerceModuleOutline(plan.outline);
-    if (!outline) {
+    const { skeleton, errors } = coerceModuleSkeleton(plan.skeleton);
+    if (!skeleton) {
       c.emit({ type: "error", message: `That module plan was invalid (${errors[0] ?? "unknown"}); please re-run the request.` });
       c.emit({ type: "done" });
       return;
     }
-    await runGenerateModule(c, doc, outline);
+    await runGenerateModule(c, doc, skeleton);
     return;
   }
 
@@ -497,5 +1641,6 @@ export async function resumeGeneratePlan(p: GenerateResumeParams): Promise<void>
     c.emit({ type: "done" });
     return;
   }
-  await runGenerateThenCritique(c, doc, outline);
+  // Idempotent — the approved outline already carries the arc, but guarantee it.
+  await runLessonPipeline(c, doc, ensureLessonArc(outline));
 }

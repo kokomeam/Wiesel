@@ -6,6 +6,7 @@ import { PanelLeftClose, PanelLeft, Plus } from "lucide-react";
 import { mainNav, secondaryNav } from "@/lib/nav";
 import { createNewCourse } from "@/app/(app)/studio/actions";
 import { cn } from "@/lib/cn";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { NavItem } from "@/lib/nav";
@@ -71,16 +72,11 @@ export function Sidebar({
       {/* Brand */}
       <Link
         href="/"
+        aria-label="WiseSel home"
         className={cn("flex h-16 items-center gap-2.5", collapsed ? "justify-center px-0" : "px-5")}
       >
-        <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-stone-900 text-[17px] font-bold leading-none text-brand-400">
-          *
-        </div>
-        {!collapsed && (
-          <span className="text-[15px] font-semibold tracking-tight text-stone-900">
-            WiseSel<span className="text-brand-500">*</span>
-          </span>
-        )}
+        <WiseSelLogo variant="mark" className="h-8 w-auto shrink-0" />
+        {!collapsed && <WiseSelLogo variant="wordmark" className="h-[18px] w-auto" />}
       </Link>
 
       {/* New course CTA — server action (avoids prefetch-on-hover creates) */}

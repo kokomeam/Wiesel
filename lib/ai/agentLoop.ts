@@ -13,15 +13,17 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/database.types";
+import type { Database, Json } from "@/lib/database.types";
 import { applyCoursePatch, CoursePatchSchema } from "@/lib/course/patches";
 import { findLesson } from "@/lib/course/queries";
 import type { CourseDocument } from "@/lib/course/types";
 import { buildContextMessage, buildSystemPrompt } from "./context";
 import { createChangeSet } from "./changeSet";
-import { diffBlocks, type BlockChange } from "./changeSetDiff";
+import { agentTouchScope, diffBlocks, diffStructure, type BlockChange, type StructureChange } from "./changeSetDiff";
 import { buildGenerationState, serializeGenerationState, type RecentChange } from "./generationState";
-import { buildBoundedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
+import { debugAgent } from "./debugLog";
+import { AGENT_NO_PROGRESS_LIMIT } from "./modelConfig";
+import { buildBoundedAgentInput, buildScopedAgentInput, defaultHistoryPolicy, editHistoryPolicy, type HistoryPolicy } from "./historyPolicy";
 import {
   loadHistory,
   saveAssistantMessage,
@@ -32,8 +34,10 @@ import {
 import type { AgentEvent } from "./events";
 import type { ModelClient, ModelInputItem, ModelTurnResult, ReasoningEffort } from "./modelClient";
 import type { LessonOutline } from "./outline";
-import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
-import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext } from "./tools";
+import { loadCourseDoc, reconcileCourseDoc, reconcileCourseDocScoped } from "./serverPersistence";
+import { AUTHORING_TOOL_NAMES, GENERATE_TOOL_NAMES, executeTool, getToolDefinitions, type ToolContext, type VisualGenContext } from "./tools";
+import type { AnalyticsToolContext } from "./tools/types";
+import { AI_VISUALS } from "./visuals/config";
 
 type DB = SupabaseClient<Database>;
 // Per-turn step cap (one model call + its tool batch = one step). Env-overridable;
@@ -41,8 +45,15 @@ type DB = SupabaseClient<Database>;
 const MAX_TURNS = Number(process.env.AGENT_MAX_TURNS) || 16;
 // A whole agent run (PLAN + every lesson's GENERATE/CRITIQUE) shares ONE call
 // budget — the runaway ceiling, mainly for module builds (N lessons × MAX_TURNS).
-// Paired with the per-turn cap so the raise above isn't unbounded.
-const MAX_TOTAL_CALLS = Number(process.env.AGENT_MAX_TOTAL_CALLS) || 64;
+// The per-lesson coverage driver + no-progress guard now prevent per-lesson
+// runaway, so this can be generous enough that an 8-lesson module doesn't starve
+// its later lessons. Env: AGENT_MAX_TOTAL_CALLS.
+const MAX_TOTAL_CALLS = Number(process.env.AGENT_MAX_TOTAL_CALLS) || 200;
+// How many times a single plan slide spec may come back from the batch tool as
+// "couldn't build (missing content)" before the coverage driver ABANDONS it (stops
+// re-sending it and surfaces it in the checkpoint) — so one unbuildable slide can't
+// spin the loop to its turn cap. Env: AGENT_MAX_SPEC_BUILD_ATTEMPTS.
+const MAX_SPEC_BUILD_ATTEMPTS = Number(process.env.AGENT_MAX_SPEC_BUILD_ATTEMPTS) || 2;
 
 /** A mutable per-run model-call budget, shared by every phase/lesson of one agent
  *  run (passed by reference through the loop contexts). */
@@ -64,16 +75,25 @@ export function logModelCall(
   turn: number,
   usage: ModelTurnResult["usage"]
 ): void {
+  // No usage object ⇒ the provider never returned usage (almost always a TRANSPORT
+  // failure: the request died before the model ran). Logging `inputTokens: 0` then
+  // FALSELY reads as "no prompt was sent". Emit `usageAvailable: false` instead so
+  // a timeout is never mistaken for an empty/zero-token request.
+  if (!usage) {
+    console.log(JSON.stringify({ tag: "agent_call", label, turn, model, usageAvailable: false }));
+    return;
+  }
   console.log(
     JSON.stringify({
       tag: "agent_call",
       label,
       turn,
       model,
-      inputTokens: usage?.inputTokens ?? 0,
-      cachedTokens: usage?.cachedTokens ?? 0,
-      outputTokens: usage?.outputTokens ?? 0,
-      reasoningTokens: usage?.reasoningTokens ?? 0,
+      usageAvailable: true,
+      inputTokens: usage.inputTokens ?? 0,
+      cachedTokens: usage.cachedTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      reasoningTokens: usage.reasoningTokens ?? 0,
     })
   );
 }
@@ -88,6 +108,12 @@ export interface LoopOptions {
   layered?: boolean;
   /** Inject an approved outline as the authoring spec. */
   outline?: LessonOutline;
+  /** The pre-created empty slide deck to author into (named in the context so the
+   *  model never creates a second deck / a placeholder starter). */
+  deckBlockId?: string;
+  /** An extra, run-specific instruction appended to the context message — the
+   *  targeted REPAIR pass uses it to list exactly the hard failures to fix. */
+  extraInstruction?: string;
   /** Use this exact system prompt instead of building one (CRITIQUE supplies a
    *  fresh-eyes critic prompt + the deck-as-data). */
   systemOverride?: string;
@@ -108,6 +134,32 @@ export interface LoopOptions {
   /** How history is replayed each turn. Omit → the env default (bounded). Pass
    *  `{ mode: "full" }` for the byte-identical legacy full-replay behavior. */
   historyPolicy?: HistoryPolicy;
+  /** Per-call max output tokens (authoring turns get more headroom than the
+   *  provider default so high-effort reasoning doesn't starve slide content). */
+  maxOutputTokens?: number;
+  /** GENERATE/REPAIR: drive the loop to PLAN COVERAGE instead of stopping the
+   *  instant the model returns no tool calls. When specs remain the loop nudges
+   *  the model to keep building (up to maxTurns), and a no-progress guard stops a
+   *  stalled run. Requires `outline`. Off (legacy stop-when-model-stops) otherwise. */
+  driveToCoverage?: boolean;
+  /** GENERATE: track SLIDE coverage only — ignore missing quiz/homework blocks (they
+   *  are authored CONCURRENTLY by the aux call, ITEM 4), so the slide loop never
+   *  chases them. validate/repair is the safety net if the aux call produced none. */
+  coverageSlidesOnly?: boolean;
+  /** GENERATE/REPAIR: build the model input FROM SCRATCH each turn out of the
+   *  system + the full plan (in the context message) + the generation-state
+   *  summary + THIS run's tool I/O — and DON'T load the conversation transcript at
+   *  all. The plan can never be diluted/buried by cross-lesson history, and there's
+   *  nothing to compact. Requires `outline` (else there's no plan to scope to). */
+  scopedInput?: boolean;
+  /** SUBAGENTS (maintenance runs): an arbitrary tool allow-set. Takes precedence
+   *  over the generateTools/authoringOnly booleans. Never includes the
+   *  confirm-pausing destructive tools — an unattended run must not stall. */
+  allowedToolNames?: ReadonlySet<string>;
+  /** SUBAGENTS: default true. false = write NOTHING to the conversations/messages
+   *  tables (and load no history) — subagent replay lives in agent_runs.report,
+   *  and scheduled runs have no conversation at all. */
+  persist?: boolean;
 }
 
 /** Accumulated token usage across a phase's model turns (instrumentation). */
@@ -129,6 +181,9 @@ export interface LoopResult {
   /** Number of model turns the loop actually ran (instrumentation). */
   turns: number;
   paused: boolean;
+  /** The loop stopped on a budget / per-turn cap (emitted a checkpoint) rather
+   *  than because the model was done — so an unmet plan is "ran out of room". */
+  checkpointed: boolean;
 }
 
 export interface AgentRunParams {
@@ -147,6 +202,52 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Plan-coverage snapshot for the coverage driver — derived from the SAME
+ *  deterministic generation-state the bounded input already builds (no model). */
+interface CoverageProgress {
+  covered: number;
+  remaining: string[];
+  missingBlocks: string[];
+}
+
+function coverageProgress(doc: CourseDocument, lessonId: string, outline: LessonOutline, slidesOnly = false): CoverageProgress {
+  const p = buildGenerationState(doc, lessonId, { phase: "drive", outline }).planProgress;
+  return {
+    covered: p?.slideSpecsCompleted.length ?? 0,
+    remaining: p?.slideSpecsRemaining ?? [],
+    // ITEM 4: when slides-only, quiz/homework are authored concurrently → don't let
+    // the slide loop chase them.
+    missingBlocks: slidesOnly ? [] : p?.requiredBlocksMissing ?? [],
+  };
+}
+
+/** The concrete "keep going" message injected when the model stops early but the
+ *  plan isn't fully built — it names the exact specs + blocks still owed so the
+ *  model resumes building instead of ending the turn. */
+function buildContinuationNudge(prog: CoverageProgress, outline: LessonOutline, deckBlockId?: string): string {
+  const byId = new Map(outline.slides.map((s) => [s.id, s]));
+  const lines = [
+    "You stopped, but the approved plan is NOT fully built yet. Keep going — do NOT summarize, explain, or end the turn until every planned slide exists.",
+  ];
+  if (prog.remaining.length) {
+    lines.push(
+      `STILL TO BUILD (${prog.remaining.length} slide spec(s)): author the next 1–3 NOW with add_structured_slides_batch into deck ${deckBlockId ?? "(this lesson's deck)"}, stamping each slideSpecId:`
+    );
+    for (const id of prog.remaining.slice(0, 4)) {
+      const s = byId.get(id);
+      if (s) lines.push(`  - [${id} · ${s.role} · layout=${s.layout}] ${s.title} — ${s.teachingGoal}.`);
+    }
+    if (prog.remaining.length > 4) lines.push(`  …and ${prog.remaining.length - 4} more after those.`);
+  }
+  if (prog.missingBlocks.includes("quiz") && outline.quizPlan) {
+    lines.push(`Also still owed: the knowledge check — create it with write_quiz (${outline.quizPlan.questionCount} question(s)).`);
+  }
+  if (prog.missingBlocks.includes("homework") && outline.homeworkPlan) {
+    lines.push("Also still owed: the practice — create it with write_homework.");
+  }
+  return lines.join("\n");
+}
+
 /**
  * A calm, one-line version of a tool failure for the CHAT transcript. The model
  * still receives the full detail (so it can self-correct), but the user never
@@ -154,35 +255,45 @@ function nowIso(): string {
  * a message addressed to them.
  */
 function friendlyToolError(toolName: string, detail: string): string {
-  const label = TOOL_VERB[toolName] ?? "make that change";
+  const noun = TOOL_VERB[toolName]; // e.g. "diagram", "slide" — undefined for generic tools
   if (/invalid (json )?arguments|invalid input|expected /i.test(detail)) {
-    return `Had to reshape the ${label} and retry.`;
+    return noun ? `Had to adjust the ${noun} and retry.` : "Had to adjust that and retry.";
   }
   if (/not found|no access|don'?t have/i.test(detail)) {
-    return `Couldn't find what that ${label} pointed at — retrying.`;
+    return noun ? `Couldn't find what that ${noun} pointed at — retrying.` : "Couldn't find what that pointed at — retrying.";
   }
-  return `Couldn't ${label} on that pass — retrying.`;
+  return noun ? `Couldn't update the ${noun} on that pass — retrying.` : "Couldn't make that change on that pass — retrying.";
 }
 
-/** Short verb phrases for the friendly error line (kept generic on purpose). */
+/** Short NOUN phrases for the friendly error line (the thing the tool acts on). */
 const TOOL_VERB: Record<string, string> = {
-  set_structured_slide: "slide layout",
-  add_structured_slide: "slide layout",
+  set_structured_slide: "slide",
+  add_structured_slide: "slide",
+  add_structured_slides_batch: "slides",
   set_slide_layout: "slide layout",
   update_slide: "slide",
   add_slide: "slide",
+  add_diagram: "diagram",
+  set_diagram: "diagram",
+  add_image: "image",
   write_slide_deck: "slide deck",
   write_quiz: "knowledge check",
   write_homework: "practice",
   write_lecture_text: "lecture",
 };
 
-function changeSummary(changes: BlockChange[]): string {
+function changeSummary(changes: BlockChange[], structure: StructureChange[] = []): string {
   const n = (op: string) => changes.filter((c) => c.op === op).length;
   const parts: string[] = [];
-  if (n("create")) parts.push(`${n("create")} added`);
+  if (structure.length) {
+    const sn = (op: string) => structure.filter((c) => c.op === op).length;
+    if (sn("create")) parts.push(`${sn("create")} created`);
+    if (sn("update")) parts.push(`${sn("update")} renamed/moved`);
+    if (sn("delete")) parts.push(`${sn("delete")} removed`);
+  }
+  if (n("create")) parts.push(`${n("create")} block(s) added`);
   if (n("update")) parts.push(`${n("update")} updated`);
-  if (n("delete")) parts.push(`${n("delete")} removed`);
+  if (n("delete")) parts.push(`${n("delete")} block(s) removed`);
   return parts.join(", ") || "no changes";
 }
 
@@ -196,38 +307,137 @@ export interface LoopContext {
   conversationId: string;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
+  /** The doc as it existed at RUN START — set once (via `??=`) by the outermost
+   *  pipeline (runConversationLoop / runLessonPipeline / runGenerateModule). The
+   *  agent's reconcile diffs against this to write ONLY the subtree it touched, so
+   *  it can never re-insert / shield a module the user deleted mid-run. */
+  baselineDoc?: CourseDocument;
   /** The per-run model-call budget, shared across every phase/lesson of one run.
    *  Seeded by `loopContext()`; decremented per model call. */
   callBudget?: CallBudget;
+  /** Image-generation capability (built by `loopContext` when configured) — passed
+   *  into each tool's ctx so `add_image` can generate + store an illustration. */
+  visuals?: VisualGenContext;
+  /** Analytics-read capability (maintenance runs only — built once at run start
+   *  from the rollups) — passed into each tool's ctx so the Analyst's read tools
+   *  are pure lookups. Absent everywhere else; the tools ToolError without it. */
+  analytics?: AnalyticsToolContext;
 }
 
-/** Reconcile the doc to the DB ONCE and stage the net diff (vs `baselineDoc`) as
- *  one reviewable change-set. Shared by the single-turn loop and the phased
- *  pipeline (which finalizes once after CRITIQUE). The change_sets.lesson_id FK
- *  requires an existing row, so the docked lessonId is coalesced to a changed
- *  block's lesson (always persisted) or NULL. */
+/** Persist the doc to the DB (full-snapshot reconcile). IDEMPOTENT + repeatable —
+ *  the phased pipeline calls it incrementally (after each lesson / phase) so the
+ *  DB reflects progress even if a later phase dies or the run is aborted (the
+ *  "Module 5 has no data" fix). Never aborts on `c.signal`: a flush MUST complete
+ *  even when the run was just cancelled. */
+export async function reconcileDoc(c: LoopContext, doc: CourseDocument): Promise<void> {
+  // SCOPED reconcile: write only the subtree the agent touched this run (vs the
+  // run-start baseline) so a module the user deleted mid-run is never re-inserted
+  // or shielded from deletion. Fall back to the full reconcile only if the baseline
+  // wasn't set (shouldn't happen — every entrypoint sets it) so persistence is never
+  // silently skipped.
+  const err = c.baselineDoc
+    ? await reconcileCourseDocScoped(c.supabase, doc, c.ownerId, agentTouchScope(c.baselineDoc, doc))
+    : await reconcileCourseDoc(c.supabase, doc, c.ownerId);
+  if (err && !c.signal?.aborted) c.emit({ type: "error", message: `Some changes may not have saved: ${err}` });
+}
+
+/** Stage the net block diff (vs `baselineDoc`) as ONE reviewable change-set.
+ *  Returns true if a change-set was created. The change_sets.lesson_id FK requires
+ *  an existing row, so the docked lessonId is coalesced to a changed block's lesson
+ *  (always persisted) or NULL. Does NOT reconcile — call `reconcileDoc` first. */
+export async function stageChangeSet(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null
+): Promise<boolean> {
+  return !!(await stageChanges(c, doc, baselineDoc, lastAssistantMessageId, false));
+}
+
+/** Stage BOTH the structural diff (module/lesson create/rename/move/delete) AND any
+ *  block diff (vs `baselineDoc`) as ONE reviewable change-set — so a structure turn
+ *  (and any content it generated in the same pass) is atomically reject-able. Used
+ *  by the Course Structure agent. */
+export async function stageStructureChangeSet(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null
+): Promise<boolean> {
+  return !!(await stageChanges(c, doc, baselineDoc, lastAssistantMessageId, true));
+}
+
+/** Maintenance runs: stage a per-finding change-set whose EVERY item carries the
+ *  finding's evidence (the review UI renders it as the evidence card). Optional
+ *  trailing param — every existing staging path is byte-identical. */
+export async function stageChangeSetWithEvidence(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null,
+  evidence: Json
+): Promise<{ changeSetId: string; count: number } | null> {
+  return stageChanges(c, doc, baselineDoc, lastAssistantMessageId, false, evidence);
+}
+
+/** Shared staging: diff blocks (always) + structure (when `withStructure`), build a
+ *  human summary, coalesce the change_sets.lesson_id FK to a real row, and emit the
+ *  change_set event with the structural count for the grouped review UI. */
+async function stageChanges(
+  c: LoopContext,
+  doc: CourseDocument,
+  baselineDoc: CourseDocument,
+  lastAssistantMessageId: string | null,
+  withStructure: boolean,
+  evidence?: Json
+): Promise<{ changeSetId: string; count: number } | null> {
+  let blocks = diffBlocks(baselineDoc, doc);
+  const structure: StructureChange[] = withStructure ? diffStructure(baselineDoc, doc) : [];
+  if (structure.length) {
+    // A structurally CREATED or DELETED lesson owns its blocks via its node snapshot,
+    // and a created/deleted MODULE owns ALL its lessons' blocks. Don't ALSO stage those
+    // blocks as items — that would double-count (and duplicate them on a delete-revert).
+    const ownedLessonIds = new Set<string>();
+    for (const s of structure) {
+      if (s.op === "update") continue;
+      if (s.nodeType === "lesson") ownedLessonIds.add(s.nodeId);
+      else if (s.nodeType === "module") {
+        const snap = s.op === "delete" ? s.before : s.after;
+        if (snap && snap.kind === "module") for (const l of snap.module.lessons) ownedLessonIds.add(l.id);
+      }
+    }
+    if (ownedLessonIds.size) blocks = blocks.filter((b) => !ownedLessonIds.has(b.lessonId));
+  }
+  if (blocks.length === 0 && structure.length === 0) return null;
+  const summary = changeSummary(blocks, structure);
+  // The change_sets.lesson_id FK requires an existing lesson row. Prefer the docked
+  // lesson, else any changed/created lesson that's persisted, else NULL.
+  const structuralLessonId = structure.find((s) => s.nodeType === "lesson" && s.op !== "delete")?.nodeId;
+  const stagedLessonId = findLesson(doc, c.lessonId)
+    ? c.lessonId
+    : (blocks.find((ch) => ch.lessonId)?.lessonId ?? (structuralLessonId && findLesson(doc, structuralLessonId) ? structuralLessonId : null));
+  const cs = await createChangeSet(
+    c.supabase,
+    // Subagent/scheduled contexts carry a placeholder "" conversationId
+    // (persist:false) — coalesce to null for the uuid FK.
+    { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId || null, messageId: lastAssistantMessageId, summary, evidence },
+    { blocks, structure }
+  );
+  if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary, structuralCount: structure.length, evidence: evidence ?? undefined });
+  return cs;
+}
+
+/** Reconcile the doc to the DB and stage the net diff as one change-set. Shared by
+ *  the single-turn loop (which finalizes here). The phased pipeline uses the split
+ *  `reconcileDoc` + `stageChangeSet` for incremental persistence + flush-on-exit. */
 export async function reconcileAndStage(
   c: LoopContext,
   doc: CourseDocument,
   baselineDoc: CourseDocument,
   lastAssistantMessageId: string | null
 ): Promise<void> {
-  const err = await reconcileCourseDoc(c.supabase, doc, c.ownerId);
-  if (err) c.emit({ type: "error", message: `Some changes may not have saved: ${err}` });
-
-  const changes = diffBlocks(baselineDoc, doc);
-  if (changes.length > 0) {
-    const summary = changeSummary(changes);
-    const stagedLessonId = findLesson(doc, c.lessonId)
-      ? c.lessonId
-      : (changes.find((ch) => ch.lessonId)?.lessonId ?? null);
-    const cs = await createChangeSet(
-      c.supabase,
-      { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId, messageId: lastAssistantMessageId, summary },
-      changes
-    );
-    if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary });
-  }
+  await reconcileDoc(c, doc);
+  await stageChangeSet(c, doc, baselineDoc, lastAssistantMessageId);
 }
 
 /**
@@ -249,21 +459,49 @@ export async function runConversationLoop(
   options: LoopOptions = {}
 ): Promise<LoopResult> {
   let doc = startDoc;
+  // Anchor the run-start baseline for scoped reconciles (no-op if an outer pipeline
+  // already set it — the OUTERMOST run start is the one we want; repair/generate
+  // sub-loops inherit it so they stay scoped to what THIS run touched).
+  c.baselineDoc ??= structuredClone(startDoc);
   // STATIC system (cacheable) + the VARIABLE course/lesson/outline as a leading
   // developer message — so the big static prefix + tools cache across calls.
   const system = options.systemOverride ?? buildSystemPrompt({ layered: options.layered });
   const contextMessage = options.systemOverride
     ? null
-    : buildContextMessage(doc, c.lessonId, { outline: options.outline });
-  const allowed = options.generateTools
-    ? GENERATE_TOOL_NAMES
-    : options.authoringOnly
-      ? AUTHORING_TOOL_NAMES
-      : null;
+    : buildContextMessage(doc, c.lessonId, {
+        outline: options.outline,
+        deckBlockId: options.deckBlockId,
+        extraInstruction: options.extraInstruction,
+      });
+  const allowed =
+    options.allowedToolNames ??
+    (options.generateTools
+      ? GENERATE_TOOL_NAMES
+      : options.authoringOnly
+        ? AUTHORING_TOOL_NAMES
+        : null);
   const tools = allowed ? getToolDefinitions().filter((t) => allowed.has(t.name)) : getToolDefinitions();
-  const history = await loadHistory(c.supabase, c.conversationId);
+  // persist:false (subagents) writes nothing to conversations/messages — replay
+  // lives in agent_runs.report — and never loads history either.
+  const persist = options.persist !== false;
+  // SCOPED (GENERATE/REPAIR): never load the conversation transcript — the plan +
+  // generation-state are the entire working context, so the (possibly 800+-message)
+  // history can't dilute the plan, and the load is skipped outright.
+  const scoped = !!options.scopedInput && !!options.outline;
+  const history = scoped || !persist ? [] : await loadHistory(c.supabase, c.conversationId);
   const policy = options.historyPolicy ?? defaultHistoryPolicy();
   const maxTurns = options.maxTurns ?? MAX_TURNS;
+  // The plan's ordered spec ids — threaded into the tool ctx so batch authoring can
+  // DETERMINISTICALLY stamp each slide with its spec id (guaranteeing coverage even
+  // if the model omits/mis-types slideSpecId). Empty when there's no plan.
+  const planSpecIds = options.outline?.slides.map((s) => s.id) ?? [];
+  // DIAGNOSTIC: spec id → its plan keyPoint count (so a slide-reject log can tell
+  // an author-ignored-a-real-brief from an empty/absent brief).
+  const planSpecPoints: Record<string, number> = {};
+  for (const s of options.outline?.slides ?? []) planSpecPoints[s.id] = s.keyPoints.length;
+  // Generous cap on the scoped generation-state summary (the plan rides in the
+  // context message; this carries the built/remaining list).
+  const scopedStateMaxChars = policy.mode === "bounded" ? policy.maxStateSummaryChars : 12000;
 
   // This run's turn-by-turn accumulation (one group per model turn = its
   // assistant text + function_call + function_call_output items). The model input
@@ -275,18 +513,55 @@ export async function runConversationLoop(
   let lastAssistantMessageId: string | null = null;
   let docMutated = initialMutated;
   let paused = false;
+  let checkpointed = false;
   const usage: PhaseUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
   let toolCallCount = 0;
   let turnsRun = 0;
 
+  // Coverage driver state (GENERATE/REPAIR). `prevCovered` seeds from the doc the
+  // loop STARTS with, so a repair pass measures NET new coverage, not absolute.
+  const driveOutline = options.driveToCoverage ? options.outline : undefined;
+  const coverageSlidesOnly = options.coverageSlidesOnly === true;
+  let prevCovered = driveOutline ? coverageProgress(doc, c.lessonId, driveOutline, coverageSlidesOnly).covered : 0;
+  let noProgressTurns = 0;
+  // Per-spec unbuildable-attempt tally + the abandoned set (FIX 2 attempt cap).
+  const specBuildFailures = new Map<string, number>();
+  const abandonedSpecs = new Set<string>();
+  // A driven GENERATE/REPAIR loop runs INSIDE the validate/repair pipeline, which
+  // owns the ONE authoritative end-of-run checkpoint — so the loop only RECORDS
+  // that it stopped short (sets `checkpointed`) without emitting a duplicate. The
+  // standalone edit/critique path (no driver) still emits its own checkpoint.
+  const stopShort = (reason: string, completedSteps: number) => {
+    if (!driveOutline) c.emit({ type: "checkpoint", reason, completedSteps });
+    checkpointed = true;
+  };
+
   for (let turn = 0; turn < maxTurns; turn++) {
     if (c.signal?.aborted) break;
 
-    // Build this turn's model input. Bounded = stable context + a compact
-    // generation-state summary + the last K tool groups (older tool I/O dropped,
-    // represented by the summary). Full = the legacy whole-transcript replay.
+    // Build this turn's model input. Scoped (GENERATE/REPAIR) = system + the full
+    // plan (context message) + generation-state + THIS run's tool I/O, no history.
+    // Bounded = stable context + a compact generation-state summary + the last K
+    // tool groups. Full = the legacy whole-transcript replay.
     let input: ModelInputItem[];
-    if (policy.mode === "bounded") {
+    if (scoped) {
+      const stateSummary = serializeGenerationState(
+        buildGenerationState(doc, c.lessonId, {
+          phase: options.callLabel ?? "loop",
+          outline: options.outline,
+          recentChanges: recentChanges.slice(-6),
+        }),
+        scopedStateMaxChars
+      );
+      const built = buildScopedAgentInput({
+        contextMessage,
+        generationStateSummary: stateSummary,
+        eventGroups,
+        maxToolResultChars: policy.mode === "bounded" ? policy.maxToolResultChars : 4000,
+      });
+      input = built.input;
+      console.log(JSON.stringify({ tag: "agent_input_scoped", phase: options.callLabel ?? "loop", turn, ...built.stats }));
+    } else if (policy.mode === "bounded") {
       const stateSummary =
         policy.includeGenerationState
           ? serializeGenerationState(
@@ -319,16 +594,12 @@ export async function runConversationLoop(
     // it's spent, stop here the same way the per-turn cap does — emit a checkpoint
     // so the user can ask to continue, then settle whatever's been built.
     if (c.callBudget && c.callBudget.remaining <= 0) {
-      c.emit({
-        type: "checkpoint",
-        reason: "Reached the overall step budget for this request. Ask me to continue if there's more to do.",
-        completedSteps: turn,
-      });
+      stopShort("Reached the overall step budget for this request. Ask me to continue if there's more to do.", turn);
       break;
     }
     if (c.callBudget) c.callBudget.remaining -= 1;
 
-    const result = await c.model.runTurn({ system, input, tools, signal: c.signal, effort: options.effort, model: options.model }, (ev) => {
+    const result = await c.model.runTurn({ system, input, tools, signal: c.signal, effort: options.effort, model: options.model, maxOutputTokens: options.maxOutputTokens }, (ev) => {
       if (ev.type === "text_delta") {
         fullAssistantText += ev.delta;
         c.emit({ type: "assistant_delta", text: ev.delta });
@@ -339,6 +610,19 @@ export async function runConversationLoop(
       }
     });
     logModelCall(options.callLabel ?? "loop", options.model ?? c.model.model, turn, result.usage);
+    // DIAGNOSTIC: per-authoring-turn finish_reason + tool-call arg sizes. A
+    // finishReason of "incomplete" (or a tool-call args length near the output cap)
+    // means the model hit max_output_tokens MID-JSON — the truncation signature that
+    // can read downstream as a parse failure or a half-built slide.
+    debugAgent("authoring_turn", {
+      phase: options.callLabel ?? "loop",
+      turn,
+      finishReason: result.finishReason,
+      outputTokens: result.usage?.outputTokens ?? null,
+      maxOutputTokens: options.maxOutputTokens ?? null,
+      textLen: result.text.length,
+      toolCalls: result.toolCalls.map((tc) => ({ name: tc.name, argsLen: tc.arguments.length })),
+    });
     turnsRun += 1;
     usage.inputTokens += result.usage?.inputTokens ?? 0;
     usage.outputTokens += result.usage?.outputTokens ?? 0;
@@ -346,10 +630,12 @@ export async function runConversationLoop(
     usage.cachedTokens += result.usage?.cachedTokens ?? 0;
     toolCallCount += result.toolCalls.length;
 
-    lastAssistantMessageId = await saveAssistantMessage(c.supabase, c.conversationId, c.courseId, {
-      text: result.text,
-      toolCalls: result.toolCalls,
-    });
+    if (persist) {
+      lastAssistantMessageId = await saveAssistantMessage(c.supabase, c.conversationId, c.courseId, {
+        text: result.text,
+        toolCalls: result.toolCalls,
+      });
+    }
     // This turn's items (assistant text + calls + outputs) accumulate here, then
     // get appended to eventGroups so the NEXT turn's bounded tail keeps them whole.
     const group: ModelInputItem[] = [];
@@ -359,8 +645,12 @@ export async function runConversationLoop(
     }
 
     if (result.finishReason === "error") break;
-    if (result.toolCalls.length === 0) break;
+    const noToolCalls = result.toolCalls.length === 0;
+    // Legacy paths (edit/critique/delete) stop the instant the model stops. The
+    // coverage driver instead checks the plan after the group settles (below).
+    if (noToolCalls && !driveOutline) break;
 
+    const docBeforeTools = doc;
     for (const call of result.toolCalls) {
       // Once paused, every remaining call in this batch gets a benign deferred
       // output so the saved turn stays a valid (every function_call answered)
@@ -370,7 +660,9 @@ export async function runConversationLoop(
           status: "deferred",
           message: "Not run — paused for a required confirmation.",
         });
-        await saveToolMessage(c.supabase, c.conversationId, c.courseId, { callId: call.callId, name: call.name, output: deferred });
+        if (persist) {
+          await saveToolMessage(c.supabase, c.conversationId, c.courseId, { callId: call.callId, name: call.name, output: deferred });
+        }
         group.push({ type: "function_call_output", callId: call.callId, output: deferred });
         continue;
       }
@@ -382,9 +674,27 @@ export async function runConversationLoop(
       let blockType: string | undefined;
 
       try {
-        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId };
+        const ctx: ToolContext = { doc, courseId: c.courseId, lessonId: c.lessonId, visuals: c.visuals, analytics: c.analytics, planSpecIds, planSpecPoints };
         const outcome = await executeTool(call.name, call.arguments, ctx);
         summary = outcome.summary;
+
+        // FIX 2 — per-spec attempt cap: the batch tool reports slides it genuinely
+        // couldn't build (missing content). Count those per spec; after
+        // MAX_SPEC_BUILD_ATTEMPTS, ABANDON the spec so the coverage driver stops
+        // re-sending it to the turn cap (it's surfaced in the checkpoint instead).
+        if (outcome.data && typeof outcome.data === "object") {
+          const failed = (outcome.data as { failed?: { slideSpecId?: string }[] }).failed;
+          if (Array.isArray(failed)) {
+            for (const f of failed) {
+              const sid = f?.slideSpecId;
+              if (typeof sid === "string" && sid.trim()) {
+                const n = (specBuildFailures.get(sid) ?? 0) + 1;
+                specBuildFailures.set(sid, n);
+                if (n >= MAX_SPEC_BUILD_ATTEMPTS) abandonedSpecs.add(sid);
+              }
+            }
+          }
+        }
 
         // DESTRUCTIVE → do NOT apply; pause and ask the user. The placeholder
         // output keeps the conversation valid; resume rewrites it.
@@ -393,6 +703,8 @@ export async function runConversationLoop(
             status: "awaiting_confirmation",
             message: `Shown the creator a dialog to confirm deleting ${outcome.confirm.label}. Paused until they decide.`,
           });
+          // persist:false loops never include confirm-pausing tools (subagent
+          // toolsets exclude them), so this branch persisting is fine as-is.
           const toolMessageId = await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
             callId: call.callId,
             name: call.name,
@@ -452,11 +764,13 @@ export async function runConversationLoop(
         outputStr = JSON.stringify({ error: detail });
       }
 
-      await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
-        callId: call.callId,
-        name: call.name,
-        output: outputStr,
-      });
+      if (persist) {
+        await saveToolMessage(c.supabase, c.conversationId, c.courseId, {
+          callId: call.callId,
+          name: call.name,
+          output: outputStr,
+        });
+      }
       group.push({ type: "function_call_output", callId: call.callId, output: outputStr });
       recentChanges.push({ turn, toolName: call.name, summary });
       c.emit({ type: "tool_result", toolCallId: call.callId, tool: call.name, ok, summary, blockId, blockType, lessonId: c.lessonId });
@@ -466,12 +780,54 @@ export async function runConversationLoop(
     eventGroups.push(group);
 
     if (paused) break;
+
+    // LIVE PERSISTENCE (driven GENERATE/REPAIR only): reconcile this turn's new
+    // slides to the DB the moment the batch lands — so the editor can render them
+    // live AND a hard stop / crash never loses more than the current turn's work
+    // (flush-on-exit then only has to stage what's already persisted). Edit/critique
+    // persist once at the end (deferFinalize), so they're byte-identical to before.
+    if (driveOutline && doc !== docBeforeTools) {
+      await reconcileDoc(c, doc);
+    }
+
+    // COVERAGE DRIVER (GENERATE/REPAIR): keep building until the plan is met,
+    // instead of stopping the instant the model emits a no-tool-call turn. A
+    // no-progress guard stops a stalled run (e.g. repeated schema failures) so it
+    // can't burn the budget spinning.
+    if (driveOutline) {
+      const prog = coverageProgress(doc, c.lessonId, driveOutline, coverageSlidesOnly);
+      // Specs abandoned after MAX_SPEC_BUILD_ATTEMPTS don't count toward "still
+      // owed" — the driver stops chasing them (they're surfaced in the checkpoint).
+      const effectiveRemaining = prog.remaining.filter((id) => !abandonedSpecs.has(id));
+      if (prog.covered > prevCovered) {
+        prevCovered = prog.covered;
+        noProgressTurns = 0;
+      } else {
+        noProgressTurns += 1;
+      }
+      const planMet = effectiveRemaining.length === 0 && prog.missingBlocks.length === 0;
+      if (planMet) {
+        // If everything still-buildable is built but some specs were abandoned as
+        // unbuildable, stop SHORT (checkpoint) — never present an unmet plan as done.
+        if (abandonedSpecs.size > 0) {
+          stopShort(`Couldn't build ${abandonedSpecs.size} planned slide(s) after ${MAX_SPEC_BUILD_ATTEMPTS} attempts (${[...abandonedSpecs].join(", ")}). Ask me to continue and I'll try them again.`, prog.covered);
+        }
+        break; // contract satisfied (or all remaining abandoned) — done
+      }
+
+      if (noProgressTurns >= AGENT_NO_PROGRESS_LIMIT) {
+        stopShort("Generation stalled before the plan was complete (no new slides over several steps). Ask me to continue and I'll finish what's left.", prog.covered);
+        break;
+      }
+      // The model stopped early but BUILDABLE specs remain — inject a concrete nudge
+      // so the NEXT turn resumes building exactly what's still owed (minus abandoned).
+      if (noToolCalls) {
+        eventGroups.push([{ role: "user", content: buildContinuationNudge({ ...prog, remaining: effectiveRemaining }, driveOutline, options.deckBlockId) }]);
+      }
+    }
+
     if (turn === maxTurns - 1) {
-      c.emit({
-        type: "checkpoint",
-        reason: "Reached the per-turn step limit. Ask me to continue if there's more to do.",
-        completedSteps: turn + 1,
-      });
+      stopShort("Reached the per-turn step limit. Ask me to continue if there's more to do.", turn + 1);
     }
   }
 
@@ -485,7 +841,7 @@ export async function runConversationLoop(
     c.emit({ type: "done" });
   }
 
-  return { doc, docMutated, lastAssistantMessageId, assistantText: fullAssistantText, usage, toolCalls: toolCallCount, turns: turnsRun, paused };
+  return { doc, docMutated, lastAssistantMessageId, assistantText: fullAssistantText, usage, toolCalls: toolCallCount, turns: turnsRun, paused, checkpointed };
 }
 
 /** The minimal fields every phase/turn entrypoint shares — lets `loopContext`
@@ -503,6 +859,17 @@ export interface LoopContextSource {
   callBudget?: CallBudget;
 }
 
+/** The image-generation availability gate for `add_image` (ENQUEUE-only now). */
+function makeVisualGenContext(p: LoopContextSource): VisualGenContext | undefined {
+  // add_image is ENQUEUE-only now (it stages a PENDING image slide; the bytes are
+  // produced off the critical path by the /api/ai/visual/generate endpoint), so this
+  // is just the availability + per-lesson-cap gate. Present only when image-gen is on
+  // AND the model client can make images; absent ⇒ add_image degrades to prose.
+  if (!AI_VISUALS.enabled || !AI_VISUALS.imageGeneration) return undefined;
+  if (!p.model.generateImage) return undefined;
+  return { maxPerLesson: AI_VISUALS.maxPerLesson };
+}
+
 export function loopContext(p: LoopContextSource): LoopContext {
   return {
     supabase: p.supabase,
@@ -516,15 +883,18 @@ export function loopContext(p: LoopContextSource): LoopContext {
     // One budget per agent run, shared across every phase/lesson it spawns
     // (downstream contexts spread from this one, so they share the reference).
     callBudget: p.callBudget ?? newCallBudget(),
+    visuals: makeVisualGenContext(p),
   };
 }
 
 export async function runAgentTurn(p: AgentRunParams): Promise<void> {
   await saveUserMessage(p.supabase, p.conversationId, p.courseId, p.userMessage);
 
-  const doc = await loadCourseDoc(p.supabase, p.courseId);
+  // loadCourseDoc throws on a transient read error (vs. null for a genuinely
+  // absent course) — either way we can't safely proceed, so bail gracefully.
+  const doc = await loadCourseDoc(p.supabase, p.courseId).catch(() => null);
   if (!doc) {
-    p.emit({ type: "error", message: "Course not found or you don't have access." });
+    p.emit({ type: "error", message: "Course not found, inaccessible, or failed to load. Please try again." });
     p.emit({ type: "done" });
     return;
   }
@@ -557,9 +927,12 @@ export interface AgentResumeParams {
  * even though the patch round-trips through the client.
  */
 export async function resumeAgentTurn(p: AgentResumeParams): Promise<void> {
-  let doc = await loadCourseDoc(p.supabase, p.courseId);
+  // A transient read error throws (vs. null for a genuinely absent course); either
+  // way, bail BEFORE the confirm-delete full reconcile below — proceeding on a
+  // failed/partial read would let that reconcile orphan-delete the whole course.
+  let doc = await loadCourseDoc(p.supabase, p.courseId).catch(() => null);
   if (!doc) {
-    p.emit({ type: "error", message: "Course not found or you don't have access." });
+    p.emit({ type: "error", message: "Course not found, inaccessible, or failed to load. Please try again." });
     p.emit({ type: "done" });
     return;
   }
@@ -573,6 +946,12 @@ export async function resumeAgentTurn(p: AgentResumeParams): Promise<void> {
       if (res.ok) {
         doc = res.doc;
         applied = true;
+        // Persist the deletion via the FULL reconcile — the scoped agent reconcile
+        // (used by the continuation loop below, baselined on the post-delete doc)
+        // never deletes a module / pre-existing lesson, so without this the delete
+        // would apply in memory but never reach the DB.
+        const e = await reconcileCourseDoc(p.supabase, doc, p.ownerId);
+        if (e) p.emit({ type: "error", message: `The deletion may not have saved: ${e}` });
       }
     }
   }

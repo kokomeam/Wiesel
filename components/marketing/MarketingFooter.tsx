@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { footerColumns } from "@/lib/marketing";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 
 /** Best-effort routing for footer links; placeholders fall back to "#". */
 const hrefFor: Record<string, string> = {
@@ -21,10 +22,8 @@ export function MarketingFooter() {
       <div className="mx-auto max-w-6xl px-6 py-14">
         <div className="grid grid-cols-2 gap-10 md:grid-cols-6">
           <div className="col-span-2">
-            <Link href="/" className="flex items-baseline gap-2">
-              <span className="text-[17px] font-semibold tracking-tight text-stone-900">
-                WiseSel<span className="text-orange-500">*</span>
-              </span>
+            <Link href="/" aria-label="WiseSel home" className="flex items-center gap-2.5">
+              <WiseSelLogo variant="wordmark" className="h-6 w-auto" />
               <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-stone-400">
                 for educators
               </span>

@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but DO track the secret-free template so the AI_*/OPENAI_* knobs are documented in-repo
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +41,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated visual-check screenshots (verify-materialize-visual.ts output)
+scripts/.materialize-visual/

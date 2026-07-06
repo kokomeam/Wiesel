@@ -15,6 +15,7 @@ import { altTextFor, speakerNotesFor } from "@/lib/course/ai/templates";
 import { useEditorStore } from "@/lib/course/store";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { SlideDeckBlock } from "@/lib/course/types";
+import { FlashToast } from "../FlashToast";
 import { InlineTextArea } from "../InlineText";
 import { QualityHintBadge } from "../QualityHintBadge";
 import { SlideStage } from "../slide/SlideStage";
@@ -109,6 +110,7 @@ export function SlideDeckEditor({
               hints={activeHints}
               className="absolute right-2 top-2 z-20"
             />
+            <FlashToast />
             <SlideStage
               slide={activeSlide}
               blockId={block.id}

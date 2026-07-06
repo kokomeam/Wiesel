@@ -46,7 +46,10 @@ export function defaultHistoryPolicy(): HistoryPolicy {
     keepRecentToolEvents: num(process.env.AI_KEEP_RECENT_TOOL_EVENTS, 4),
     keepRecentChatMessages: num(process.env.AI_KEEP_RECENT_CHAT_MESSAGES, 3),
     maxToolResultChars: num(process.env.AI_MAX_TOOL_RESULT_CHARS, 4000),
-    maxStateSummaryChars: num(process.env.AI_MAX_STATE_SUMMARY_CHARS, 8000),
+    // Headroom so a ~12-slide deck's built-slide listing (which tells the model
+    // what NOT to rebuild) + the remaining-spec line both survive uncapped. The
+    // plan briefs themselves ride verbatim in the context message, never here.
+    maxStateSummaryChars: num(process.env.AI_MAX_STATE_SUMMARY_CHARS, 12000),
     includeGenerationState: true,
   };
 }
@@ -122,6 +125,57 @@ export interface BoundedInputResult {
     compactedApproxChars: number;
     keptToolEvents: number;
     stateSummaryChars: number;
+  };
+}
+
+export interface ScopedInputResult {
+  input: ModelInputItem[];
+  stats: { messages: number; approxChars: number; stateSummaryChars: number; toolEvents: number };
+}
+
+/**
+ * Assemble the SCOPED model input for GENERATE / REPAIR: built FROM SCRATCH each
+ * turn out of exactly three things —
+ *   [ developer: course/lesson context + the full PLAN verbatim ]
+ *   [ developer: deterministic generation-state (built / remaining specs) ]
+ *   [ this run's own tool I/O ]            ← NOT cross-conversation history
+ * and NOTHING else. The conversation transcript (which for a module build grew to
+ * ~854 messages) is NEVER loaded, so it can never dilute or bury the plan, and
+ * there is nothing to compact/summarize — the plan rides in the context message
+ * intact, every turn. This is the fix for "the detailed plan does not survive →
+ * the author works from a thin summary → coverage reads 0".
+ *
+ * `eventGroups` is THIS run's accumulation only (one entry per model turn). A bulky
+ * read result (get_deck) is still trimmed — its content is already in the
+ * generation-state summary — but write-tool I/O (tiny id payloads) passes verbatim.
+ */
+export function buildScopedAgentInput(args: {
+  contextMessage: string | null;
+  generationStateSummary?: string;
+  eventGroups: ModelInputItem[][];
+  maxToolResultChars: number;
+}): ScopedInputResult {
+  const out: ModelInputItem[] = [];
+  if (args.contextMessage) out.push({ role: "developer", content: args.contextMessage });
+  if (args.generationStateSummary) out.push({ role: "developer", content: args.generationStateSummary });
+
+  const flat = args.eventGroups.flat();
+  const nameByCallId = new Map<string, string>();
+  for (const it of flat) if (!isRoleItem(it) && it.type === "function_call") nameByCallId.set(it.callId, it.name);
+
+  let toolEvents = 0;
+  for (const it of flat) {
+    if (!isRoleItem(it) && it.type === "function_call_output") {
+      toolEvents += 1;
+      out.push({ ...it, output: compactToolResult(nameByCallId.get(it.callId), it.output, args.maxToolResultChars) });
+    } else {
+      out.push(it);
+    }
+  }
+
+  return {
+    input: out,
+    stats: { messages: out.length, approxChars: approxChars(out), stateSummaryChars: args.generationStateSummary?.length ?? 0, toolEvents },
   };
 }
 

@@ -7,7 +7,9 @@
 import { z } from "zod";
 import { findBlock, findLesson } from "@/lib/course/queries";
 import type { LessonBlock, LessonNode } from "@/lib/course/types";
+import { buildOutlineSnapshot } from "../courseStructure/outlineSnapshot";
 import { defineTool, ToolError, type Tool } from "./types";
+import { debugAgent } from "../debugLog";
 
 /** One-line, content-aware summary of a block (for grounding without dumping
  *  the whole payload). */
@@ -36,6 +38,13 @@ export function summarizeBlock(block: LessonBlock): string {
       return `worked example — ${block.takeaway.slice(0, 120)}`;
     case "resource":
       return `${block.links.length} resource link(s)`;
+    case "imported_deck":
+      return `imported deck — ${block.originalFileName || "file"} (${block.pageCount ?? "?"} page(s), ${block.status})`;
+    case "video": {
+      const dur = block.asset.durationSeconds;
+      const mins = dur ? ` (${Math.floor(dur / 60)}:${String(Math.round(dur % 60)).padStart(2, "0")})` : "";
+      return `video lesson — ${block.recording.mode ?? "video"}${mins}, ${block.asset.status}`;
+    }
   }
 }
 
@@ -139,8 +148,46 @@ const getBlock = defineTool({
   params: z.object({ blockId: z.string() }),
   execute(args, ctx) {
     const hit = findBlock(ctx.doc, args.blockId);
-    if (!hit) throw new ToolError(`Block ${args.blockId} not found`);
+    if (!hit) {
+      // FAIL GRACEFULLY (not a throw → no retry loop): the id resolves nowhere in the
+      // doc (a made-up / stale id, e.g. when editing a half-built module). Return the
+      // current lesson's REAL blocks so the model picks a valid one in ONE step.
+      const lesson = findLesson(ctx.doc, ctx.lessonId)?.lesson;
+      const availableBlocks = (lesson?.blocks ?? []).map((b) => ({ blockId: b.id, type: b.type, title: b.title ?? null, summary: summarizeBlock(b) }));
+      debugAgent("get_block_unresolved", {
+        requestedBlockId: args.blockId,
+        currentLessonId: ctx.lessonId,
+        availableBlockIds: availableBlocks.map((b) => b.blockId),
+        reason: "not_found_in_doc",
+      });
+      return {
+        summary: `No block ${args.blockId} — listed this lesson's blocks instead`,
+        data: {
+          found: false,
+          requestedBlockId: args.blockId,
+          message: `No block with id "${args.blockId}" exists in this course. Do NOT retry the same id. Use one of the blocks listed in availableBlocks, or create what you need.`,
+          availableBlocks,
+        },
+      };
+    }
     return { summary: `Read block "${hit.block.title ?? hit.block.type}"`, data: hit.block };
+  },
+});
+
+const listCourseOutline = defineTool({
+  name: "list_course_outline",
+  description:
+    "Read the WHOLE course outline as a tree: every module and lesson with its STABLE id, the 'Module N' display label, lesson objectives, a content summary, and which lessons are EMPTY. Call this before any STRUCTURAL edit (create / delete / rename / move a lesson or module) so you act on the correct existing ids and can tell which lessons are empty.",
+  readOnly: true,
+  params: z.object({}),
+  execute(_args, ctx) {
+    const hit = findLesson(ctx.doc, ctx.lessonId);
+    const snapshot = buildOutlineSnapshot(ctx.doc, { moduleId: hit?.module.id, lessonId: ctx.lessonId });
+    const emptyCount = snapshot.modules.reduce((n, m) => n + m.lessons.filter((l) => l.isEmpty).length, 0);
+    return {
+      summary: `Read outline — ${snapshot.modules.length} module(s), ${emptyCount} empty lesson(s)`,
+      data: snapshot,
+    };
   },
 });
 
@@ -150,4 +197,5 @@ export const readTools: Tool[] = [
   listLessons,
   getLesson,
   getBlock,
+  listCourseOutline,
 ];

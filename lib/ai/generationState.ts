@@ -20,34 +20,17 @@ import type {
   SlideDeckBlock,
 } from "@/lib/course/types";
 import type { LessonOutline } from "./outline";
+import {
+  density,
+  isPlaceholderSlide,
+  slideTextLength,
+  templateTextLength as templateTextLengthLeaf,
+  THIN_SLIDE_CHARS as THIN_SLIDE_CHARS_LEAF,
+} from "./slideDiagnostics";
 
-/** A slide a structured-layout slide is "thin" below this much plain text. */
-export const THIN_SLIDE_CHARS = 120;
-/** Above this, a slide reads as dense. */
-const DENSE_SLIDE_CHARS = 420;
-
-/** Total plain-text length across a structured template's RichText slots (skips
- *  `runs`, which duplicate `.text`). Cheap proxy for "did this slide say much?". */
-export function templateTextLength(node: unknown): number {
-  if (Array.isArray(node)) return node.reduce((s: number, n) => s + templateTextLength(n), 0);
-  if (!node || typeof node !== "object") return 0;
-  const o = node as Record<string, unknown>;
-  let len = typeof o.text === "string" ? o.text.length : 0;
-  for (const [k, v] of Object.entries(o)) if (k !== "runs" && k !== "text") len += templateTextLength(v);
-  return len;
-}
-
-function slideTextLength(s: Slide): number {
-  if (s.template) return templateTextLength(s.template.content);
-  // Flat slide: sum element text.
-  return s.elements.reduce((n, e) => n + ((e as { text?: string }).text?.length ?? 0), 0);
-}
-
-function density(len: number): "low" | "medium" | "high" {
-  if (len < THIN_SLIDE_CHARS) return "low";
-  if (len > DENSE_SLIDE_CHARS) return "high";
-  return "medium";
-}
+/** Re-exported from the leaf so existing importers (phases.ts) stay unchanged. */
+export const THIN_SLIDE_CHARS = THIN_SLIDE_CHARS_LEAF;
+export const templateTextLength = templateTextLengthLeaf;
 
 export interface RecentChange {
   turn: number;
@@ -75,6 +58,16 @@ export interface GenerationState {
     slidesCreated: number;
     slideSpecsCompleted: string[];
     slideSpecsRemaining: string[];
+    /** Specs claimed by more than one slide (the model must repurpose/remove). */
+    duplicateSpecIds: string[];
+    /** Slides carrying no recognized plan spec id (extra / unstamped). */
+    slidesWithoutSpec: number;
+    /** Default-placeholder slides still present (must be removed before finalize). */
+    placeholderSlides: number;
+    /** Plan segments that still have at least one unbuilt slide spec. */
+    segmentsIncomplete: string[];
+    /** Required auxiliary blocks the plan asked for that don't exist yet. */
+    requiredBlocksMissing: string[];
   };
   currentArtifacts: {
     slideDecks: Array<{ blockId: string; title: string; slideCount: number; slides: SlideSummary[] }>;
@@ -94,7 +87,10 @@ function slideSummary(s: Slide): SlideSummary {
     title: s.title,
     layout: s.template?.layoutId ?? s.layout,
     textDensity: density(len),
-    hasVisual: s.elements.some((e) => e.type === "image" || e.type === "sticker"),
+    hasVisual:
+      s.template?.layoutId === "diagram" ||
+      s.template?.layoutId === "illustration" ||
+      s.elements.some((e) => e.type === "image" || e.type === "sticker"),
     hasSpeakerNotes: !!s.speakerNotes?.trim(),
     specId: s.ai?.specId,
   };
@@ -132,23 +128,61 @@ export function buildGenerationState(
     .map((l) => ({ blockId: l.id, title: l.title ?? "Lecture", approxWords: l.paragraphs.reduce((n, p) => n + wordCount(p.text), 0) }));
 
   const allSlides = slideDecks.flatMap((d) => d.slides);
+  // The raw slides (the summaries drop `template`/`elements` we need for the
+  // placeholder + duplicate-spec checks), keyed for the richer plan progress.
+  const rawSlides = (lesson?.blocks ?? [])
+    .filter((b): b is SlideDeckBlock => b.type === "slide_deck")
+    .flatMap((d) => d.slides);
 
   let planProgress: GenerationState["planProgress"];
   const openIssues: string[] = [];
   if (opts.outline) {
-    const builtSpecIds = new Set(allSlides.map((s) => s.specId).filter((x): x is string => !!x));
-    const slideSpecsCompleted = opts.outline.slides.map((s) => s.id).filter((id) => builtSpecIds.has(id));
-    const slideSpecsRemaining = opts.outline.slides.map((s) => s.id).filter((id) => !builtSpecIds.has(id));
+    const planned = opts.outline.slides.map((s) => s.id);
+    const plannedSet = new Set(planned);
+    // Count how many slides claim each spec id (≥2 = duplicate).
+    const specCounts = new Map<string, number>();
+    for (const s of rawSlides) {
+      const id = s.ai?.specId;
+      if (id) specCounts.set(id, (specCounts.get(id) ?? 0) + 1);
+    }
+    const builtSpecIds = new Set([...specCounts.keys()].filter((id) => plannedSet.has(id)));
+    const slideSpecsCompleted = planned.filter((id) => builtSpecIds.has(id));
+    const slideSpecsRemaining = planned.filter((id) => !builtSpecIds.has(id));
+    const duplicateSpecIds = [...specCounts.entries()]
+      .filter(([id, n]) => plannedSet.has(id) && n > 1)
+      .map(([id]) => id);
+    const slidesWithoutSpec = rawSlides.filter((s) => !s.ai?.specId || !plannedSet.has(s.ai.specId)).length;
+    const placeholderSlides = rawSlides.filter(isPlaceholderSlide).length;
+    const segmentsIncomplete = opts.outline.segments
+      .filter((seg) => seg.slideSpecIds.some((id) => slideSpecsRemaining.includes(id)))
+      .map((seg) => seg.name || seg.id);
+    // DECISION B: the GENERATE/REPAIR loops are SLIDES-ONLY. Quiz/homework are authored
+    // off the loop (a concurrent call + a deterministic retry — phases.ts
+    // authorAuxBlocks), and write_quiz/write_homework were removed from the GENERATE
+    // toolset. So this state summary must NOT tell the model "a quiz block is still
+    // missing" — that would steer it toward a tool it no longer has (the exact
+    // Unknown-tool hazard Decision B removes). Kept EMPTY: aux is never the loop's job.
+    // (The authored quiz/homework still appear in `currentArtifacts` below for context.)
+    const requiredBlocksMissing: string[] = [];
+
     planProgress = {
-      totalSlidesPlanned: opts.outline.slides.length,
+      totalSlidesPlanned: planned.length,
       slidesCreated: allSlides.length,
       slideSpecsCompleted,
       slideSpecsRemaining,
+      duplicateSpecIds,
+      slidesWithoutSpec,
+      placeholderSlides,
+      segmentsIncomplete,
+      requiredBlocksMissing,
     };
     for (const id of slideSpecsRemaining) {
       const spec = opts.outline.slides.find((s) => s.id === id);
-      if (spec) openIssues.push(`slide spec ${id} ("${spec.title || spec.teachingGoal}") not yet built`);
+      if (spec) openIssues.push(`BUILD slide spec ${id} ("${spec.title || spec.teachingGoal}") — not yet built`);
     }
+    if (placeholderSlides > 0) openIssues.push(`${placeholderSlides} default placeholder slide(s) must be removed`);
+    for (const id of duplicateSpecIds) openIssues.push(`spec ${id} is claimed by >1 slide — keep one, repurpose the other`);
+    for (const b of requiredBlocksMissing) openIssues.push(`the plan requires a ${b} block — not yet created`);
   }
   for (const d of slideDecks) {
     for (const s of d.slides) {
@@ -208,9 +242,16 @@ export function serializeGenerationState(state: GenerationState, maxChars: numbe
   if (state.planProgress) {
     const p = state.planProgress;
     lines.push(
-      `Plan: ${p.slideSpecsCompleted.length}/${p.totalSlidesPlanned} planned slides built (${p.slidesCreated} slide(s) total).` +
-        (p.slideSpecsRemaining.length ? ` Remaining specs: ${p.slideSpecsRemaining.join(", ")}.` : " All planned specs built.")
+      `Plan coverage: ${p.slideSpecsCompleted.length}/${p.totalSlidesPlanned} planned slides built (${p.slidesCreated} slide(s) total).` +
+        (p.slideSpecsRemaining.length
+          ? ` STILL TO BUILD (use these exact slideSpecIds): ${p.slideSpecsRemaining.join(", ")}.`
+          : " All planned specs built.")
     );
+    if (p.segmentsIncomplete.length) lines.push(`Segments not finished: ${p.segmentsIncomplete.join("; ")}.`);
+    if (p.duplicateSpecIds.length) lines.push(`Duplicate specs (>1 slide each): ${p.duplicateSpecIds.join(", ")} — keep one, repurpose the other.`);
+    if (p.placeholderSlides > 0) lines.push(`Placeholder slides present: ${p.placeholderSlides} — these get removed automatically; author real slides.`);
+    if (p.slidesWithoutSpec > 0) lines.push(`Slides with no plan spec id: ${p.slidesWithoutSpec} — stamp each generated slide with its slideSpecId.`);
+    if (p.requiredBlocksMissing.length) lines.push(`Required blocks still missing: ${p.requiredBlocksMissing.join(", ")}.`);
   }
 
   if (a.slideDecks.length) {

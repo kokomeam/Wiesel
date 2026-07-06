@@ -10,8 +10,46 @@
  */
 
 import type { z } from "zod";
+import type { CourseAnalytics, SnapshotMaps } from "@/lib/analytics/dashboard";
 import type { CoursePatch } from "@/lib/course/patches";
 import type { CourseDocument } from "@/lib/course/types";
+
+/** The image-generation CAPABILITY signal for `add_image`. Present only when image
+ *  generation is configured (an image-capable model client + image-gen enabled);
+ *  absent ⇒ `add_image` degrades to prose. `add_image` is ENQUEUE-only now (it stages
+ *  a pending image slide) — the bytes are produced off the critical path by the
+ *  generation endpoint — so this only carries the per-lesson cap, not a generate fn. */
+export interface VisualGenContext {
+  /** Max image slides per lesson — the tool enforces it against the live deck. */
+  maxPerLesson: number;
+}
+
+/** One learner's compact profile for the Analyst/Comms subagents — built lazily
+ *  (and memoized) by the maintenance run's loader closure. */
+export interface LearnerProfileJson {
+  userId: string;
+  displayName: string;
+  enrolledAt: string;
+  enrollmentStatus: string;
+  progressPct: number;
+  completedLessons: number;
+  totalLessons: number;
+  lastActivityAt: string | null;
+  flags: string[];
+  /** Recent quiz outcomes, newest first (capped). */
+  recentAttempts: { blockId: string; attempt: number; scorePct: number; at: string }[];
+}
+
+/** The analytics-read CAPABILITY (maintenance runs only) — the `visuals`
+ *  precedent: everything pre-loaded once at run start so the six analytics read
+ *  tools are pure lookups; only the per-learner profile is a lazy (memoized)
+ *  closure over the run's Supabase client. Tools ToolError when this is absent,
+ *  so exposing them elsewhere is harmless. */
+export interface AnalyticsToolContext {
+  data: CourseAnalytics;
+  maps: SnapshotMaps;
+  loadLearnerProfile(userId: string): Promise<LearnerProfileJson | null>;
+}
 
 /** What a tool sees when it runs. `doc` is the CURRENT document (the loop keeps
  *  it in sync after each applied mutation). `lessonId` is the lesson the agent
@@ -20,6 +58,19 @@ export interface ToolContext {
   doc: CourseDocument;
   courseId: string;
   lessonId: string;
+  /** Image-generation capability (injected by the loop for the GENERATE phase). */
+  visuals?: VisualGenContext;
+  /** Analytics-read capability (injected only for maintenance runs). */
+  analytics?: AnalyticsToolContext;
+  /** The approved plan's ORDERED slide-spec ids (GENERATE/REPAIR only). Lets batch
+   *  authoring deterministically stamp each new slide with its spec id — so coverage
+   *  matches even when the model omits or mistypes slideSpecId. Empty/absent on the
+   *  edit path (no plan). */
+  planSpecIds?: string[];
+  /** DIAGNOSTIC ONLY: spec id → its plan keyPoint count. Lets a slide-reject log say
+   *  whether the plan spec it was fulfilling actually had real points (author ignored
+   *  a real brief) vs. an empty/absent brief. Never affects behavior. */
+  planSpecPoints?: Record<string, number>;
 }
 
 /** A tool's result. Read tools set `data`; write tools set `patches` (applied +
@@ -48,6 +99,15 @@ export interface Tool<P extends z.ZodTypeAny = z.ZodTypeAny> {
    *  generates the strict JSON schema the model is constrained by. */
   params: P;
   readOnly?: boolean;
+  /**
+   * Skip the loop's strict `params.safeParse` gate and hand `execute` the raw
+   * parsed JSON instead. The model-facing JSON schema is STILL generated from
+   * `params` (so the model sees the full shape) — but a single malformed entry no
+   * longer rejects the whole call. The tool MUST then validate defensively and
+   * apply what it can (partial success). Used by `add_structured_slides_batch` so
+   * one over-long slot doesn't drop a whole segment.
+   */
+  lenientArgs?: boolean;
   execute(args: z.infer<P>, ctx: ToolContext): ToolOutcome | Promise<ToolOutcome>;
 }
 

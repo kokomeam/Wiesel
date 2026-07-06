@@ -73,7 +73,7 @@ export function ProcessLayout({ content, ctx }: { content: ProcessContent; ctx: 
                 ctx={ctx}
                 placeholder="One supporting sentence"
                 className="block"
-                style={{ color: ctx.muted, fontSize: 16, lineHeight: 1.45, overflow: "hidden" }}
+                style={{ color: ctx.muted, fontSize: 16, lineHeight: 1.45 }}
               />
             </Card>
             {i < steps.length - 1 && (

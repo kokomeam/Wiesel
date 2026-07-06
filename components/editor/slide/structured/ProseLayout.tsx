@@ -13,7 +13,7 @@ import { EditableText, Eyebrow, withAlpha, type StructuredCtx } from "./common";
 export function ProseLayout({ content, ctx }: { content: ProseContent; ctx: StructuredCtx }) {
   const points = content.points ?? [];
   return (
-    <div className="absolute inset-0 flex flex-col" style={{ padding: "56px 80px", overflow: "hidden" }}>
+    <div className="absolute inset-0 flex flex-col" style={{ padding: "56px 76px 64px" }}>
       <Eyebrow value={content.eyebrow} path={["eyebrow"]} ctx={ctx} />
       <EditableText
         value={content.title}

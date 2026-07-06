@@ -6,6 +6,7 @@
  */
 
 import type { LandingPage } from "@/lib/marketing/types";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 import { resolveDesign } from "./design";
 import { LeadCaptureForm } from "./LeadCaptureForm";
 import { PageViewBeacon } from "./PageViewBeacon";
@@ -52,7 +53,7 @@ export function LandingRenderer({ page, preview = false }: { page: LandingPage; 
       <footer className="border-t border-line">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-8 text-xs text-stone-400">
           <span>{page.title}</span>
-          <span className="[font-family:var(--font-display)] text-sm text-stone-500">WiseSel</span>
+          <WiseSelLogo variant="wordmark" className="h-4 w-auto opacity-70" />
         </div>
       </footer>
     </div>

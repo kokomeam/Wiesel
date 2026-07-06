@@ -77,7 +77,7 @@ function walkStrict(node: unknown, errs: string[], path = "$") {
 async function main() {
   console.log("\n# Tool definitions (strict schemas)");
   const defs = getToolDefinitions();
-  const expected = ["get_course_context","list_modules","list_lessons","get_lesson","get_block","create_module","create_lesson","create_block","delete_block","delete_module","delete_lesson","reorder_blocks","write_slide_deck","write_quiz","write_homework","write_lecture_text","get_deck","get_slide","add_slide","update_slide","set_slide_layout","reorder_slides","delete_slide","add_structured_slide","add_structured_slides_batch","set_structured_slide","set_text_style","add_sticker"];
+  const expected = ["get_course_context","list_modules","list_lessons","get_lesson","get_block","list_course_outline","create_module","create_lesson","create_block","delete_block","delete_module","delete_lesson","rename_lesson","move_lesson","reorder_blocks","write_slide_deck","write_quiz","write_homework","write_lecture_text","get_deck","get_slide","add_slide","update_slide","set_slide_layout","reorder_slides","delete_slide","add_structured_slide","add_structured_slides_batch","set_structured_slide","set_text_style","add_sticker","add_diagram","set_diagram","add_image","set_image_text","get_course_health_summary","get_lesson_funnel","get_question_item_stats","get_slide_dwell_outliers","get_struggling_learners","get_learner_profile"];
   check(`all ${expected.length} tools registered`, defs.length === expected.length && expected.every((n) => defs.some((d) => d.name === n)), `got ${defs.map((d) => d.name).join(",")}`);
   for (const d of defs) {
     const errs: string[] = [];
@@ -267,10 +267,14 @@ async function main() {
     try { await executeTool("write_quiz", JSON.stringify({ questions: "nope" }), ctx); }
     catch (e) { threw = e instanceof ToolError; }
     check("invalid args → ToolError", threw);
-    let threw2 = false;
-    try { await executeTool("get_block", JSON.stringify({ blockId: "does-not-exist" }), ctx); }
-    catch (e) { threw2 = e instanceof ToolError; }
-    check("missing block → ToolError", threw2);
+    // get_block on a missing id now FAILS GRACEFULLY (returns found:false + the
+    // lesson's real blocks) instead of throwing into a retry loop — the half-built-
+    // module reference-resolution fix. (A truly invalid SHAPE still ToolErrors.)
+    let gbThrew = false;
+    let gbData: { found?: boolean } | null = null;
+    try { gbData = (await executeTool("get_block", JSON.stringify({ blockId: "does-not-exist" }), ctx)).data as { found?: boolean }; }
+    catch (e) { gbThrew = e instanceof ToolError; }
+    check("missing block → graceful found:false (NOT a throw/retry loop)", !gbThrew && gbData?.found === false);
   }
 
   console.log("\n# change-set diff (create / update / delete)");

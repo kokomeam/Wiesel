@@ -38,6 +38,25 @@ export async function saveCourseDoc(
 }
 
 /**
+ * Immediately persist a structural delete (a module / lesson row; cascade removes
+ * its children). Used when a delete is confirmed DURING an agent run: autosave is
+ * paused then (`agentRunActive`), so without this the delete never reaches the DB
+ * and the next `liveSync` reload repaints the still-present row — the "deleted
+ * module reappears" bug. Direct + awaited; RLS scopes it to the signed-in author.
+ */
+export async function deleteModuleNow(courseId: string, moduleId: string): Promise<string | null> {
+  const supabase = createClient();
+  const { error } = await supabase.from("modules").delete().eq("id", moduleId).eq("course_id", courseId);
+  return error?.message ?? null;
+}
+
+export async function deleteLessonNow(courseId: string, lessonId: string): Promise<string | null> {
+  const supabase = createClient();
+  const { error } = await supabase.from("lessons").delete().eq("id", lessonId).eq("course_id", courseId);
+  return error?.message ?? null;
+}
+
+/**
  * Autosave hook: mounts in the studio shell, watches the document, and
  * debounce-saves changes. Coalesces edits made during an in-flight save so
  * the latest state always wins, and reports progress via the store's
@@ -48,6 +67,10 @@ export function useCoursePersistence(ownerId: string) {
   const courseId = useEditorStore((s) => s.courseId);
   const setSaveStatus = useEditorStore((s) => s.setSaveStatus);
   const autosaveSuspended = useEditorStore((s) => s.autosaveSuspended);
+  // While an AI agent run streams, the agent persists its own edits server-side and
+  // the editor re-syncs from the DB (live render). A competing browser full-snapshot
+  // would race that reconcile (and can transiently orphan rows), so autosave pauses.
+  const agentRunActive = useEditorStore((s) => s.agentRunActive);
 
   // One browser client for the editor's lifetime (lazy, render-safe).
   const [supabase] = useState(() => createClient());
@@ -59,14 +82,15 @@ export function useCoursePersistence(ownerId: string) {
   // Skip the first doc value after hydrate — it's the loaded state, not an edit.
   const primed = useRef(false);
 
-  // The moment autosave is suspended (a Reject in progress), cancel the pending
-  // timer AND abort any in-flight save so a stale write can't clobber the revert.
+  // The moment autosave is suspended (a Reject in progress, OR an agent run),
+  // cancel the pending timer AND abort any in-flight save so a stale browser write
+  // can't clobber the revert / race the agent's server-side reconcile.
   useEffect(() => {
-    if (autosaveSuspended) {
+    if (autosaveSuspended || agentRunActive) {
       if (timer.current) clearTimeout(timer.current);
       controller.current?.abort();
     }
-  }, [autosaveSuspended]);
+  }, [autosaveSuspended, agentRunActive]);
 
   useEffect(() => {
     if (!courseId) return;
@@ -75,11 +99,12 @@ export function useCoursePersistence(ownerId: string) {
       return;
     }
     const store = useEditorStore.getState();
-    if (store.autosaveSuspended) return; // paused (Reject)
+    if (store.autosaveSuspended || store.agentRunActive) return; // paused (Reject / agent run)
     if (store.consumeAutosaveSkip()) return; // the reverted doc — already server state
 
     async function flush(next: CourseDocument, attempt = 0) {
-      if (useEditorStore.getState().autosaveSuspended) return;
+      const st = useEditorStore.getState();
+      if (st.autosaveSuspended || st.agentRunActive) return;
       saving.current = true;
       setSaveStatus("saving");
       const ctrl = new AbortController();
@@ -106,7 +131,8 @@ export function useCoursePersistence(ownerId: string) {
       if (error) {
         // Transient fetch failures lose work if dropped — retry with backoff
         // before surfacing, so a blip doesn't silently eat the edit.
-        if (attempt < MAX_RETRIES && !useEditorStore.getState().autosaveSuspended) {
+        const cur = useEditorStore.getState();
+        if (attempt < MAX_RETRIES && !cur.autosaveSuspended && !cur.agentRunActive) {
           setTimeout(() => void flush(next, attempt + 1), 600 * (attempt + 1));
           return;
         }
@@ -119,7 +145,8 @@ export function useCoursePersistence(ownerId: string) {
 
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      if (useEditorStore.getState().autosaveSuspended) return;
+      const st = useEditorStore.getState();
+      if (st.autosaveSuspended || st.agentRunActive) return;
       if (saving.current) {
         pending.current = doc; // coalesce — flushed when the current save ends
       } else {
@@ -130,5 +157,5 @@ export function useCoursePersistence(ownerId: string) {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [doc, courseId, ownerId, setSaveStatus, supabase]);
+  }, [doc, courseId, ownerId, setSaveStatus, supabase, agentRunActive]);
 }

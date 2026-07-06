@@ -45,9 +45,13 @@ async function loadSubscriber(supabase: DB, id: string): Promise<SubscriberLite 
     .select("id,email,name,status,campaign_id")
     .eq("id", id)
     .maybeSingle();
-  return data
-    ? { id: data.id, email: data.email, name: data.name, status: data.status as SubscriberStatus, campaign_id: data.campaign_id }
-    : null;
+  // campaign_id became NULLABLE with course-level contacts (migration
+  // 20260702120000; the live DB already has it) — a subscriber without a
+  // campaign can't ride the campaign scheduler, so treat it like a missing
+  // subscriber rather than faking an id into analytics. Keep `name` for the
+  // firstName merge-var personalization used downstream.
+  if (!data || !data.campaign_id) return null;
+  return { id: data.id, email: data.email, name: data.name, status: data.status as SubscriberStatus, campaign_id: data.campaign_id };
 }
 
 async function emitEvent(

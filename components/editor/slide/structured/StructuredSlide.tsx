@@ -11,36 +11,22 @@ import { aiAttrs } from "@/lib/course/aiAttributes";
 import { findTheme } from "@/lib/course/slide/themes";
 import { useEditorStore } from "@/lib/course/store";
 import type { Slide } from "@/lib/course/types";
-import { withAlpha, type StructuredCtx } from "./common";
+import { type StructuredCtx } from "./common";
+import { StructuredBackdrop } from "./StructuredBackdrop";
 import { CodeWalkthroughLayout } from "./CodeWalkthroughLayout";
 import { ComparisonColumnsLayout } from "./ComparisonColumnsLayout";
 import { ComparisonMatrixLayout } from "./ComparisonMatrixLayout";
 import { ConceptExampleLayout } from "./ConceptExampleLayout";
+import { DiagramLayout } from "./DiagramLayout";
+import { IllustrationLayout } from "./IllustrationLayout";
+import { ImageReferenceLayout } from "./ImageReferenceLayout";
+import { ImageSupportingLayout } from "./ImageSupportingLayout";
 import { KeyConceptLayout } from "./KeyConceptLayout";
 import { MetricsLayout } from "./MetricsLayout";
 import { OutlineListLayout } from "./OutlineListLayout";
 import { ProcessLayout } from "./ProcessLayout";
 import { ProseLayout } from "./ProseLayout";
 import { SectionBreakLayout } from "./SectionBreakLayout";
-
-function StructuredBackdrop({ accent }: { accent: string }) {
-  return (
-    <div aria-hidden className="absolute inset-0 overflow-hidden">
-      <div
-        className="absolute"
-        style={{ right: -130, top: -150, width: 470, height: 470, borderRadius: "50%", background: `radial-gradient(circle at 32% 32%, ${withAlpha(accent, 0.16)}, transparent 70%)` }}
-      />
-      <div
-        className="absolute"
-        style={{ left: -130, bottom: -170, width: 430, height: 430, borderRadius: "50%", background: `radial-gradient(circle at 60% 40%, ${withAlpha(accent, 0.09)}, transparent 70%)` }}
-      />
-      <div
-        className="absolute"
-        style={{ right: 60, top: 66, width: 118, height: 80, opacity: 0.55, backgroundImage: `radial-gradient(${withAlpha(accent, 0.5)} 1.4px, transparent 1.4px)`, backgroundSize: "18px 18px" }}
-      />
-    </div>
-  );
-}
 
 export function StructuredSlide({
   slide,
@@ -102,6 +88,10 @@ export function StructuredSlide({
       {template.layoutId === "prose" && <ProseLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "comparison_columns" && <ComparisonColumnsLayout content={template.content} ctx={ctx} />}
       {template.layoutId === "comparison_matrix" && <ComparisonMatrixLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "diagram" && <DiagramLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "illustration" && <IllustrationLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "image_reference" && <ImageReferenceLayout content={template.content} ctx={ctx} />}
+      {template.layoutId === "image_supporting" && <ImageSupportingLayout content={template.content} ctx={ctx} />}
     </div>
   );
 }

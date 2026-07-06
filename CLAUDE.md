@@ -1,5 +1,11 @@
 # CLAUDE.md — WiseSel (handoff)
 
+> **Naming (2026-07-02):** the product/brand was renamed **CourseGen Pro → WiseSel**
+> (logo assets in `public/brand/`, placed via `components/brand/WiseSelLogo.tsx`).
+> The GitHub repo slug (`kokomeam/coursegen-pro`) and the Obsidian vault folder
+> (`Personal/Projects/CourseGen Pro/`) are unchanged infra/filesystem names — keep
+> those literal where they appear. Everywhere else, the product is WiseSel.
+
 > **Obsidian scoping note:** This is a **personal project**, separate from the
 > internship. Its vault notes live under `Personal/Projects/WiseSel/`
 > (`PRD.md` / `References/` / `Log.md`). NEVER write to `Work/`, `Work/Daily Logs/`,
@@ -35,12 +41,14 @@ from Postgres (or auto-creates an empty one), autosaves every edit, and is
 gated behind sign-in. The **docked AI agent** authors slide decks, knowledge
 checks, homework, and lecture text by calling tools that mutate the course
 through the SAME validated CoursePatch pipeline the UI uses, streams its work,
-and stages every change for review (highlight → Accept/Reject). The **other
-in-app pages** (dashboard, analytics, marketplace, exports, marketing,
-settings) are still **presentational placeholders backed by `lib/data.ts` mock
-data**. The legacy inline command bar (`AICommandBar` → `requestAIPatches` in
-`lib/course/ai/mockClient.ts`) remains a deterministic mock and is secondary to
-the real agent panel; Publish/Export buttons remain non-functional.
+and stages every change for review (highlight → Accept/Reject). **Publishing
+(M1) and the student runtime + real marketplace (M2) are LIVE** — see their
+sections below. The **remaining in-app pages** (dashboard, analytics, exports,
+marketing, settings) are still **presentational placeholders backed by
+`lib/data.ts` mock data**. The legacy inline command bar (`AICommandBar` →
+`requestAIPatches` in `lib/course/ai/mockClient.ts`) remains a deterministic
+mock and is secondary to the real agent panel; Export buttons remain
+non-functional (Publish is real).
 
 ## Stack
 
@@ -79,8 +87,8 @@ and put reusable primitives in `components/ui/`.
   preserved** (RotatingText word-swap hero, BackgroundPaths lines, HeroPreview
   self-assembling demo, full section lineup) but **re-skinned to the warm
   orange identity** (components/marketing/* recolored violet→orange, serif
-  headings, mono eyebrows, typographic `WiseSel*` wordmark replacing the
-  Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
+  headings, mono eyebrows, the `WiseSel` logo (`components/brand/WiseSelLogo.tsx`)
+  replacing the Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
   collapse to the hamburger below `lg` (the mono links don't fit at md).
   `components/ui/background-paths.tsx` default tint is now `text-orange-400`.
 - `/dashboard` — creator dashboard (moved here from `/` when the landing took root)
@@ -165,10 +173,16 @@ and put reusable primitives in `components/ui/`.
   persist across reload).
 - `/api/ai/component-manifest` — JSON manifest of component types + allowed
   patch actions for AI agents.
-- `/marketing`, `/analytics`, `/exports`, `/marketplace`, `/settings` — in-app
+- `/marketplace` — REAL since Milestone 2: live public publications + the
+  caller's "My learning" (one tab); cards open `/learn/{slug}`.
+- `/learn/[slug]` + `/learn/[slug]/[lessonId]` — the PUBLIC learner runtime
+  (route group `app/(learn)/`, own minimal shell) — see the Student learning
+  runtime section.
+- `/marketing`, `/analytics`, `/exports`, `/settings` — in-app placeholder
   pages under `app/(app)/` sharing the Sidebar+Topbar shell in `app/(app)/layout.tsx`.
-- `/login` — email/password auth (Supabase). `app/(app)/layout.tsx` +
-  `lib/supabase/middleware.ts` redirect signed-out visitors here.
+- `/login` — email/password auth (Supabase); honors `?redirectTo=`.
+  `app/(app)/layout.tsx` + `lib/supabase/middleware.ts` redirect signed-out
+  visitors here (`/learn/*` stays public).
 
 ## Supabase (auth + persistence)
 
@@ -195,7 +209,380 @@ and put reusable primitives in `components/ui/`.
   trip "Failed to fetch"). Autosave failures auto-retry (2× backoff) before
   `saveStatus("error")`.
 
+## Publishing — immutable snapshots (Milestone 1, 2026-07-02)
+
+Courses go live as **immutable, versioned snapshots**; the draft stays freely
+editable and learners never see it. Everything lives in `lib/course/publish/*`
+(Zod-first — types INFERRED from schemas, unlike lib/course/schemas.ts).
+
+- **Tables (migration `20260702020000` + `20260702020100`):**
+  `course_publications` (course_id + `version` unique; `slug` + `previous_slugs`
+  [redirect-safe renames]; `snapshot` jsonb; `visibility` public|unlisted; `status`
+  live|unpublished; `content_hash`; `linter_report`; partial unique indexes = ONE
+  live row per course AND per slug) · `quiz_answer_keys` (PK publication_id+block_id;
+  **RLS enabled, ZERO policies — server-only**, not even the author's client can
+  read it; grading will use the service role) · `enrollments` (course-level, unique
+  (course_id,user_id), status active|dropped|completed + `comms_opt_out`; student
+  owns the row, owner reads; insert requires `private.has_live_publication`).
+  **Immutability is enforced in the DB**: a BEFORE UPDATE trigger rejects any change
+  to snapshot/version/hash/report/published_at/created_by (status/visibility/slug
+  stay mutable). There is **NO insert policy** — the only writer is the SECURITY
+  DEFINER **`publish_course` RPC** (the one transaction: verify author → lock course
+  row → bump version → retire previous live → insert publication + keys → mirror
+  `courses.status`). `courses.visibility` deliberately stays `private` so the OLD
+  published+public draft-table read path never opens; students read snapshots only.
+- **Snapshot invariants:** node ids (module/lesson/block/slide/question) are the
+  draft row ids, preserved verbatim — progress/analytics/agent evidence stay
+  joinable across versions. Quiz `correctChoiceId(s)`/`correctAnswer`/
+  `expectedAnswer`/`acceptedAnswers`/`explanation` are STRIPPED into the keys table;
+  the published-quiz Zod schema is **strict** (an unstripped question fails parse)
+  and `findAnswerKeyLeaks` deep-scans before every publish. No volatile metadata in
+  the snapshot; `content_hash` = WebCrypto sha256 over sorted-key
+  {snapshot, answerKeys} (`hash.ts` is isomorphic — the studio computes the SAME
+  hash client-side for the live "unpublished draft changes" chip).
+- **Pre-flight (`preflight.ts`, pure):** ERRORS block (untitled, no content,
+  ungradable quiz question); WARNINGS are overridable with an explicit
+  acknowledgement (empty module/lesson/quiz, pending/failed AI images, unprocessed
+  imported decks / videos, per-slide `lintSlide` findings as `SLIDE_*`). The report
+  persists to `linter_report` at publish time.
+- **Flow:** `/api/publish` (GET status+preflight+diff · POST publish · PATCH
+  unpublish/restore/set_slug/set_visibility) on the user-scoped client; service
+  layer = `service.ts` (shared with the integration test). Republish inherits the
+  slug and bumps the version; an IDENTICAL republish (same hash) is a no-op, not a
+  version bump. Slug: first publish slugifies the title + suffixes against live
+  slugs ("one live publication per slug" — deliberately NOT a globally-unique
+  column, so v2 can reuse v1's slug); renames append to `previous_slugs`. Studio UI
+  = `PublishPanel` (real since M1) + the header Publish button opens it.
+- **Tests:** `npm run verify:publish` (59 pure — slug/hash/snapshot-strip/preflight/
+  diff) and `npm run verify:publish:int` (50 vs live Supabase — the full RLS matrix
+  incl. answer-key invisibility for every client role, DB immutability, draft-edit
+  independence [byte-for-byte], version retirement, unlisted link-possession,
+  enrollment gating, slug collision/rename/redirect).
+- **Not yet (later milestones):** analytics events (every event will carry
+  publication_id + version), rollups, dashboards, maintenance agent. (The
+  `/learn/*` runtime + server-side grading shipped in Milestone 2 — next
+  section.)
+
+## Student learning runtime — `/learn/*` (Milestone 2, 2026-07-02)
+
+Learners consume LIVE snapshots only; everything server-trusted. Core =
+`lib/learn/*` (Zod-first) + `app/(learn)/learn/[slug]{,/[lessonId]}` +
+`app/api/learn/*`.
+
+- **Tables (migrations `20260702030000` + `030100` + `040000`):** `learn_progress`
+  (unique (user,course,lesson); server-computed `status`/`pct` + `progress_state`
+  jsonb {viewedSlides, videoPct, viewedBlocks, markedComplete}; **RLS: select
+  own-or-author, ZERO client write policies** — /api/learn/progress with the
+  service role is the only writer, using **optimistic locking** (updated_at guard
+  + retry-merge; a plain upsert lost concurrent slide reports) while the client
+  serializes its POSTs) · `quiz_attempts`/`question_responses` (M3's exact column
+  contract + denormalized course_id; `question_id` is TEXT — question ids are
+  jsonb short ids, not row UUIDs; student reads own, author reads, **no client
+  inserts**; attempt_number is per (user, block) ACROSS versions, unique-indexed,
+  max+1 with one retry; only ANSWERED questions get response rows) ·
+  `homework_submissions` (student INSERTs under RLS [own user_id +
+  `private.is_enrolled` + publication∈course]; a BEFORE UPDATE trigger makes
+  review `status` the only mutable column — author can't rewrite content, student
+  can't self-review; files go to course-assets under the student's own
+  `{uid}/homework/…` via the EXISTING per-user storage policies) · definer read
+  RPCs `marketplace_listings()` + `my_learning()` (jsonb count aggregation,
+  authenticated-only, card metadata never snapshots).
+- **Grading** (`lib/learn/grading.ts`, pure; orchestrated by `quizService.ts`):
+  the ONLY place responses meet `quiz_answer_keys` (admin client). mc = id equal;
+  ms = exact SET equality; tf = boolean; sa = trim/lowercase/collapse-whitespace
+  match vs expected+accepted. Kind mismatch = answered-but-wrong; unanswered =
+  wrong; unknown ids ignored; maxScore = key count. Returns correctness +
+  authored explanations, **never the correct answer**. Author submits = graded
+  PREVIEW, nothing recorded. "Grade what they saw": the publication is fetched
+  by id (admin) so a mid-session republish doesn't break submission; access is
+  checked against the COURSE.
+- **Completion rule** (`lib/learn/completion.ts`, pure, fixed + documented):
+  complete = all slides of every deck viewed + every imported deck paged to the
+  end + every video ≥90% + every quiz ≥1 attempt. Unready media (video/deck not
+  "ready" in the snapshot) and empty decks/quizzes are NOT trackable — a broken
+  asset can never strand a lesson. No trackables ⇒ explicit "Mark complete"
+  (server rejects it for trackable lessons). Slide/viewed sets are INTERSECTED
+  with the snapshot. Course complete = every lesson ⇒ enrollment flips to
+  `completed` (upgrade-only; republish never downgrades). pct = mean of unit
+  fractions, capped at 99 until truly complete.
+- **Pages:** new PUBLIC route group `app/(learn)/` (own minimal shell; middleware
+  leaves /learn open; unauth lesson access bounces to `/login?redirectTo=…`).
+  Landing = outline + enroll CTA (`EnrollButton` → /api/learn/enroll, RLS does
+  the gating) + progress/Continue (`lib/learn/summary.ts` — note: for enrolled
+  users `summary.continueLessonId` is authoritative; null means DONE, don't
+  fall back to lesson 1) + author-preview card; renamed slugs redirect via
+  `previous_slugs`; unknown-vs-unlisted-anon share the 404 (indistinguishable by
+  design). Player renders every block READ-ONLY (`components/learn/*`):
+  **SlideStage `mode="thumbnail"`** (the existing read-only path — global
+  zustand store, no provider needed), `VideoPreviewPlayer` (pure; captions
+  overlay; new ADDITIVE `onProgressPct` prop reports window-relative position),
+  a learner deck viewer over `/api/learn/deck/[id]` (admin-signed page URLs,
+  gated on enrollment AND the deck being IN the live snapshot), `LearnQuiz`
+  (unlimited attempts), `LearnHomework` (text + files to own storage folder +
+  past submissions w/ review status), read-only lecture/example/exercise/
+  resource. Learner media rides through `lib/learn/media.ts` (ADMIN client —
+  video rows/deck pages are author-only under RLS; callers MUST gate first).
+- **Marketplace** (`app/(app)/marketplace`) is REAL: live public publications
+  (via the RPC) + a "My learning" section in the same tab; cards link to the
+  /learn landing (which doubles as the enroll confirmation/preview screen). The
+  old `lib/data.ts` listings survive ONLY for the marketing page's decorative
+  peek. **Creator review:** `SubmissionsCard` on the Publish step +
+  `/api/learn/submissions` (GET author-scoped w/ profile names + public file
+  URLs · PATCH mark reviewed — the trigger backs it).
+- **Tests:** `npm run verify:learn` (55 pure — grading/completion/merge/summary/
+  clamps/contracts), `npm run verify:learn:int` (61 vs live Supabase — happy
+  path incl. republish resilience + attempt-number continuity + enrollment
+  flip, the full stranger/enrolled/owner RLS matrix incl. no-client-writes and
+  the review-only trigger, RPCs, unlisted gating, storage paths, and the
+  concurrent-slide-reports lost-update regression), `npm run verify:learn:browser`
+  (15 — Playwright over the real UI: enroll → slides → graded quiz →
+  homework → completion → My learning → submissions review; needs the dev
+  server running).
+- **Not yet (deliberate):** learner-facing video poll while an MP4 is still
+  `preparing` (the card explains instead), deck viewer in the browser suite
+  (needs the import worker). (Analytics events SHIPPED in M3 — next section.)
+
+## Analytics — event pipeline + creator dashboard (Milestones 3+4, 2026-07-03)
+
+Learner behaviour telemetry end-to-end: an append-only event stream, nightly
+SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
+(Zod-first, pure modules) + migration `20260702050000_analytics_events.sql`.
+
+- **Contract** (`lib/analytics/events.ts`): 9-type discriminated union
+  (lesson_started, slide_viewed{slideId,dwellMs}, video_progress{quartile},
+  video_completed, quiz_started, quiz_submitted{attemptId},
+  homework_submitted, lesson_completed, session_heartbeat) — every event
+  carries publicationId/version/courseId/lessonId + a uuid `clientEventId`
+  (idempotency) + clientTs. **camelCase on the wire** (matches /api/learn),
+  `mapEventToColumns` → the snake row. Batch ≤100.
+- **HYBRID emission (the trust split):** the browser emits ENGAGEMENT events
+  only; the AUTHORITATIVE events are SERVER-emitted from the existing writers
+  (`lib/analytics/serverEmit.ts`, admin client, never throws): quiz_submitted
+  in quizService keyed by the ATTEMPT id, homework_submitted in the homework
+  route keyed by the submission id, lesson_completed in progressService on the
+  completed FLIP keyed by the learn_progress row id — stable-uuid keys make
+  re-emits no-ops, and tab-close can't lose them. `ProgressContext` carries
+  `version` now. No dashboard number depends solely on a client event (funnel
+  completion cross-checks learn_progress; quiz stats read quiz_attempts).
+- **Client SDK**: `lib/analytics/client.ts` (`createAnalyticsQueue` —
+  injectable fetch/timers; 10s interval flush; `keepalive:true` POSTs; failed
+  batch re-queued w/ exponential backoff; 4xx = dropped [poisoned batch];
+  ≤100-event chunks; 500-event offline cap) + `lib/analytics/dwell.ts`
+  (`SlideDwellTracker` — injectable clock/visibility, accrues VISIBLE time
+  only) + `components/learn/AnalyticsProvider.tsx` (owns DOM wiring:
+  interval + visibilitychange→hidden flush + pagehide flush + 60s
+  visible-only heartbeat; `enabled=false` for author previews → track() is a
+  no-op). Wired: LearnLessonView (lesson_started), LearnSlideDeck (per-slide
+  dwell), LearnVideo (25/50/75 quartile crossings + completed at
+  VIDEO_COMPLETE_PCT), LearnQuiz (quiz_started on mount).
+- **Ingest** `POST /api/analytics/ingest` (Node): requireUser + Zod batch +
+  best-effort per-instance rate limit → the SECURITY DEFINER
+  **`ingest_learning_events(jsonb)` RPC**. ⚠ **Hard-won:** Postgres applies
+  the SELECT policy to `INSERT … ON CONFLICT` rows (the conflict check must
+  see the row) — students read NONE by design, so a client-side RLS upsert
+  can NEVER be idempotent here. The RPC pins user_id to auth.uid() (forged
+  ids are ignored, not trusted), enforces enrolled-or-author + every
+  publication belongs to its claimed course, inserts
+  `on conflict (client_event_id) do nothing`, returns the accepted count.
+  The table's insert policy stays as defense-in-depth for direct inserts.
+- **Tables/RLS**: `learning_events` (append-only; UNIQUE client_event_id;
+  indexes (course,server_ts) / (user,course,server_ts) / (pub,lesson); insert
+  policy as above; select = course author ONLY — students read none; no
+  update/delete). Rollups (`rollup_lesson_funnel`, `rollup_question_stats`,
+  `rollup_slide_dwell`, `rollup_video_retention`, `learner_flags`) keyed by
+  (course_id, publication_id, version) — republishes never mix; author-select
+  RLS, zero client writes (definer functions are the writers).
+- **Rollup functions**: `private.recompute_course_analytics(cid)` per
+  publication — funnel (started = ANY event ∪ learn_progress≠not_started
+  [pre-instrumentation backfill, keeps completed ⊆ started]; completed =
+  learn_progress='completed' OR lesson_completed event; `lag()` dropoff_pct),
+  slide dwell (`percentile_cont(0.5|0.9)`; labels via `mode() within group` —
+  **min()/max() don't exist for uuid**), question stats (one attempt = one
+  respondent; total = # correct; **point-biserial in SQL**:
+  `((m1−m0)/stddev_pop(total))·√(p(1−p))`; answer_distribution buckets =
+  choiceId | text | 'true'/'false' | sorted choiceIds joined '+'; the KEY's
+  bucket resolved from quiz_answer_keys AT ROLLUP TIME into `key_value` so
+  the dashboard never touches the admin client; null for short_answer),
+  video retention (distinct users per quartile; video_completed ⇒ q4),
+  learner_flags (inactive: enrolled-active + coalesce(max(last_activity),
+  enrolled_at) < now()−7d; repeated failure: ≥2 attempts <60% on one block —
+  detail = {quizzes:[{blockId,failedAttempts,lastScorePct}]}).
+  `public.refresh_course_analytics(cid)` = author-gated manual refresh (the
+  dashboard's "Refresh data"); `private.refresh_all_course_analytics()` runs
+  nightly via **pg_cron** (`0 3 * * *`, extension created in-migration).
+- **Threshold single-source rule:** raw stats live ONLY in SQL (dashboard
+  never recomputes); item-analysis flag thresholds live ONLY in
+  `lib/analytics/flags.ts` (red: pct_correct<40 & n≥20 · distractor ≥2× key ·
+  discrimination <0.1 · dwell skim/stall vs the publication's median-of-
+  medians); the stuck-queue constants (7d/2/0.60) unavoidably exist in BOTH —
+  `verify-analytics.ts` regex-asserts the migration still encodes the TS
+  values, so drift trips CI. `lib/analytics/stats.ts` = pure percentile_cont
+  + pointBiserial mirrors, golden-tested against the SQL.
+- **Dashboard** `/studio/[courseId]/analytics` (+ `learners/[learnerId]`),
+  server components; author-gated (explicit 404 + RLS backstop); reads
+  rollups + `course_analytics_overview(cid)` / `course_roster(cid)` (definer
+  RPCs — roster joins auth.users.email + profiles + flags; both author-gated
+  + anon-revoked). Four `?tab=` tabs (server-rendered, deep-linkable):
+  Overview / Content health / Learners / Stuck queue (disabled "Draft
+  follow-up" + tooltip until the outreach milestone). Learner detail: progress
+  map, native-`<details>` attempt history w/ per-question responses, PAGINATED
+  raw-event timeline (the ONE raw-event read, on the (user,course,server_ts)
+  index), heartbeat-derived time, flags. Empty states everywhere; chart
+  callsites guard empty arrays (AreaChart/BarChart `Math.max(...[])`).
+  Components in `components/studio/analytics/*`; data access in
+  `lib/analytics/dashboard.ts` (incl. `buildSnapshotMaps` for id→title lookups
+  + `bucketLabel` choice-text rendering).
+- **Entry points**: `/analytics` = a real course picker now (was mock);
+  CourseGallery card icon + editor top-bar "Analytics" link; flagged rows
+  deep-link `/studio?course=&lesson=&block=` → `DeepLinkFocus` in
+  `StudioLoader` (post-hydration: openLesson + select block +
+  scrollIntoView via `[data-ai-id]`; stale ids degrade to a no-op).
+- **Tests**: `npm run verify:analytics` (57 pure) + `npm run
+  verify:analytics:int` (55 vs live Supabase) — see CHANGELOG for the full
+  matrices. The learn suites re-ran green after the server-emit touches.
+- **Not yet (deliberate):** wiring "Draft follow-up" (later milestone / M7
+  triggers read `learner_flags`), Mux Data / video heatmaps beyond quartiles,
+  a persistent-quota rate limiter (in-memory per-instance is documented as
+  best-effort), event-driven rollup freshness (nightly + manual is the
+  contract; the dashboard shows "refreshed X ago").
+
+## Maintenance agent + learner comms (Milestones 5+6, 2026-07-03)
+
+> Full design: **`docs/agent-architecture.md`** (orchestrator/subagents/budgets/
+> triggers/safety rails) — read it before touching `lib/ai/maintenance.ts`,
+> `lib/ai/subagent.ts`, or `lib/comms/*`. Companions: `docs/publishing.md`,
+> `docs/analytics-events.md`.
+
+- **Subagent primitive** (`lib/ai/subagent.ts`): `runSubagent` = the existing
+  loop with `LoopOptions.allowedToolNames` (arbitrary allow-set) +
+  `persist:false` (NOTHING in conversations/messages — replay lives in
+  `agent_runs.report`) + a one-shot strict-JSON verdict (`runStructuredCall`,
+  the intent.ts pattern — `runStructuredPlan` stays private to phases).
+  **`withSemaphore(model)` caps concurrent model calls at 2 globally**
+  (`MAINTENANCE_MAX_CONCURRENT_MODEL_CALLS`); ONE shared CallBudget
+  (`MAINTENANCE_MAX_CALLS` 40) + token budget (`MAINTENANCE_MAX_TOKENS` 300k)
+  per run; graceful truncation (last call → partial verdict; skipped findings
+  stay open). Loop hooks are ADDITIVE — existing callers byte-identical.
+- **`analyze` = the 5th intent** (regex checked FIRST; classifier bullet added).
+  `parseAnalysisScope` narrows "module 3"/"lesson 2"/quoted titles to lesson
+  ids. Routing: `runContentAgentTurn` → `runMaintenanceTurn` (maintenance.ts).
+- **Analytics read tools ×6** (`lib/ai/tools/analytics.ts`) via
+  **`ToolContext.analytics`** (capability injection, the `visuals` precedent):
+  rollups + `SnapshotMaps` pre-loaded ONCE at run start + a memoized
+  `loadLearnerProfile` closure — tools are pure lookups, compact capped JSON,
+  **no learner emails in prompts**. Sets: `ANALYST_TOOL_NAMES` (analytics +
+  content reads so evidence can quote question wording),
+  `REMEDIATION_TOOL_NAMES` (= AUTHORING + 2 reads; NEVER the confirm-pausing
+  deletes — unattended runs must not stall).
+- **Orchestrator** (`lib/ai/maintenance.ts` + pure `maintenanceSchema.ts`):
+  Analyst (loop) → `InsightReportSchema` → `dedupeAndPrioritize` (adopts OPEN
+  threshold findings by dedupe key — Analyst wins but takes the filed row's id;
+  severity desc; **fan-out cap 5**) → persist to `agent_findings` → dispatch
+  **Remediation SEQUENTIALLY over the shared draft doc** (doc-race-free;
+  concurrency lives in the semaphore) ∥ **Comms concurrently** (drafts
+  `learner_messages` rows; deterministic template fallback; NEVER sends) →
+  settle `agent_runs` (report + budget_used). Findings lifecycle
+  open→proposed→accepted|dismissed — the change-set Accept/Reject route
+  transitions them. ⚠ staging coalesces the subagents' placeholder `""`
+  conversationId to null (uuid FK).
+- **Evidence** (the core product moment): `stageChangeSetWithEvidence` stamps
+  the finding's evidence on EVERY `change_set_items` row; it rides
+  `getPendingBlocks` + the `change_set` event (live) + realtime; rendered by
+  `components/editor/agent/EvidenceCard.tsx` in BlockFrame's pending chrome
+  (above Accept/Reject) + the AgentPanel findings list.
+- **Triggers**: chat (SSE, one additive `maintenance` AgentEvent member) ·
+  scheduled (weekly pg_cron `0 4 * * 1` QUEUES `agent_runs` in-DB for courses
+  w/ a publication + enrollment; **`POST /api/ai/maintenance/cron`** w/
+  `Authorization: Bearer CRON_SECRET` drains ONE run per invocation, admin
+  client + real OpenAI client — the `course_roster`/`course_analytics_overview`
+  RPCs allow `service_role` for this) · threshold
+  (`private.file_threshold_findings` after every rollup recompute — one OPEN
+  finding per question, reasons aggregated, deduped by a partial unique index
+  on `(course_id, dedupe_key) where status='open'`; studio header "N findings"
+  badge via StudioLoader → agentStore.openFindings; AgentPanel "Review flagged
+  issues" chip sends a canned analyze message that adopts them).
+- **M6 `lib/comms/*`** — STANDALONE seam (the marketing branch's email suite is
+  unmerged; these mirror its patterns at different paths — don't unify until
+  the branches merge). **Resend via `fetch`, NO SDK (runtime deps stay 14)**;
+  From-address pinned to RESEND_FROM ("<creator> via WiseSel <addr>");
+  HMAC opt-out tokens purpose-prefixed `wisesel.comms-optout.v1` over
+  `MARKETING_TOKEN_SECRET` (never cross-usable with marketing's tokens);
+  EmailBody block renderer w/ compliant footer; templates ×3.
+  **`service.approveAndSend` is the ONLY caller of `provider.send` in the
+  repo** (grep-able invariant) — it re-checks `enrollments.comms_opt_out` AT
+  SEND TIME (opted-out → `{ok:false, reason:"opted_out"}`, row STAYS draft;
+  `failed` is for provider errors only) and resolves the recipient server-side
+  (auth.admin). `learner_messages` = draft|approved|sent|failed, author-only
+  RLS. `/api/comms/opt-out`: GET renders a CONFIRM page (never flips on GET —
+  link prefetchers), POST verifies the token + flips. **No auto-send path
+  exists — not even behind a flag**; the orchestrator/cron never import the
+  seam. UI: MessageComposer + DraftList (AgentPanel "Messages to review"),
+  StuckQueueTab's "Draft follow-up" WIRED (deterministic template prefill, no
+  model call; disabled+tooltip when opted out), learner-detail audit list.
+- **Tables** (migration `20260703000000`): `agent_runs` (course_id, quoted
+  `"trigger"` chat|scheduled|threshold — reserved word, quote it in raw SQL —
+  status queued|running|completed|failed, scope/budget_used/report jsonb),
+  `agent_findings` (run_id nullable = threshold-filed unadopted; dedupe_key;
+  finding jsonb; change_set_id), `change_set_items.evidence jsonb` (nullable,
+  additive), `learner_messages`. All author-only RLS; cron/opt-out use admin.
+- **Tests**: `npm run verify:maintenance` (35 pure — the ≤2-in-flight semaphore
+  assertion, truncation, dedupe/adoption/cap-5, analyze routing, scope, tool
+  shapes) · `verify:maintenance:int` (25 vs live Supabase + the mock model —
+  the FULL acceptance: `seedFixture` [deliberately-bad quiz: 36% correct @
+  n=41, distractor 3× the key, discrimination .05] → scheduled run → ≥1
+  evidence-annotated proposal → Accept applies to the draft → Reject restores
+  BYTE-FOR-BYTE → budgets ≤ cap → rails: no publication writes, no enrollment
+  mutation, ZERO sends) · `verify:comms` (27 pure) · `verify:comms:int` (20 —
+  draft→edit→approve→send + **opt-out enforced at the seam** + the opt-out
+  route token flow + RLS). `npm run seed:fixtures` seeds a demo fixture.
+  **`npm test`** chains every pure suite (~900 checks). ⚠ PostgREST multi-row
+  inserts unify columns across rows (missing keys → explicit nulls) — seed
+  scripts must carry not-null columns on EVERY row.
+- **Env**: `NEXT_PUBLIC_SITE_URL` + `CRON_SECRET` (new, in .env.local +
+  .env.example), `RESEND_API_KEY`/`RESEND_FROM`/`MARKETING_TOKEN_SECRET`
+  (already present), optional `COMMS_PROVIDER=mock` + `MAINTENANCE_*` budgets.
+
 ## AI Content Agent (OpenAI) — `lib/ai/*` (2026-06-15)
+
+> **Prompt single-source-of-truth (2026-06-25):** diagram-vs-image routing is stated
+> ONCE — `VISUAL_ROUTING_RULE` (`context.ts`, referenced by `ROLE_AND_RULES` +
+> `GENERATE_TEACHING_BAR`) for the prose, and `renderVisualDirective(slide)`
+> (`outline.ts`, exported) for the per-slide directive (used by BOTH
+> `outlinePromptFragment` AND `phases.ts:renderSpecBrief`). This killed the stale
+> 7-cut-kind `add_diagram` lists + the "no AI-generated images" contradiction that
+> a prior visual change had left in the GENERATE/edit/repair prompts. Also: the
+> GENERATE one-batch instruction now agrees across `GENERATE_TEACHING_BAR` +
+> `outlinePromptFragment` (was "one segment per turn" vs "one batch" — a speed
+> contradiction); and `SlideSpecSchema.notes` is nullable (coerce `null→""`).
+> When changing visual routing, edit those TWO symbols — nothing else re-proses it.
+>
+> **Perf + correctness pass (2026-06-25):** (0) image model pinned to the dated
+> snapshot `gpt-image-2-2026-04-21` (`DEFAULT_IMAGE_MODEL` + `.env.local`). (1)
+> Lesson-plan cost cut: `LessonOutlineSchema` descriptions trimmed (global
+> principles live once in `PLAN_SYSTEM_PROMPT`, not per field) — strict-JSON schema
+> **9514→7430 chars**; per-slide `speakerNotesGoal` moved to a single **lesson-level**
+> field (GENERATE derives per-slide notes); the **module-path** per-lesson plan
+> (`runRichLessonPlan`) now runs **LOW** effort via `AI_PHASE_MODELS.moduleLessonPlan`
+> (it doesn't re-ask on thin, so the medium guard is unneeded there) while the
+> standalone single-lesson plan stays MEDIUM. (2) Plan calls log `agent_plan_usage`
+> with `cachedTokens`; the plan request was confirmed already correctly ordered
+> (static system prefix → course-then-lesson context) — `cachedTokens:0` is TTL
+> eviction across the slow pipeline, mitigated by these speedups, NOT an ordering bug.
+> (3) **Images off the critical path:** `add_image` is now **ENQUEUE-only** — it stages
+> a PENDING image slide (`imageUrl:""` + a `pendingGen` spec on the content) and
+> returns immediately; a new Node endpoint **`app/api/ai/visual/generate/route.ts`**
+> (reusing `lib/ai/visuals/generateAndStore.ts` = the shared gen→verify→regen→store
+> flow) produces the bytes on demand, driven by the client hook
+> **`lib/editor/useVisualJobs.ts`** (idle-only, sequential, re-syncs via `liveSync`).
+> `VISUAL_WEIGHT` now also pins `quality` (supporting `low` / reference `high`) +
+> `thinking` (reference only; the gpt-image-2 `thinking` param is gated behind
+> `AI_IMAGE_THINKING_ENABLED` pending field confirmation); `openai_image`/`_inspect`
+> log `latencyMs`. (4) **Quiz/homework off the per-lesson hot path:** authored by a
+> single CONCURRENT structured call (`authorAuxBlocks` + `lib/ai/auxContent.ts`,
+> routed in the mock by `responseFormat` name so the deterministic test stays
+> stable), merged before the one reconcile/stage; the slide loop drives
+> **`coverageSlidesOnly`**. Verify: `verify:ai`/`verify:visuals`/`verify:slides`/
+> `verify:ai:int` all green.
 
 The first real AI: a Cursor-style chat docked beside the lesson editor. Built
 **provider-agnostic** — the agent loop, tools, streaming, and change-tracking
@@ -208,8 +595,18 @@ never import a provider SDK.
   `OPENAI_MAX_OUTPUT_TOKENS`). `providers/mock.ts` is a deterministic client for
   tests / the no-key path (records each call's params via `getCalls()`).
   **MODEL + `reasoning.effort` are PER CALL** (2026-06-17): `ModelTurnParams.model`
-  + `.effort` override the env default — PLAN/CRITIQUE `gpt-5.5`/high, GENERATE
-  `gpt-5.4-mini`/medium (high-volume → cheap), classifier `gpt-5.4-mini`/minimal;
+  + `.effort` override the env default. Central config = `lib/ai/modelConfig.ts`:
+  every phase defaults to `gpt-5.4-mini` — PLAN high · **GENERATE medium**
+  (2026-06-26 — was high; the plan is a binding contract so generation is a structured
+  fill, not open-ended creativity; `AI_GENERATE_MAX_OUTPUT_TOKENS` 24k) · REPAIR medium ·
+  EDIT medium · LIGHT REVIEW medium (off by default) · CRITIQUE off by default (legacy) ·
+  classifier **low** (NOT `minimal` — gpt-5.4-mini rejects it: accepts
+  none/low/medium/high/xhigh); each env-overridable (`AI_PLAN_MODEL`/`AI_PLAN_EFFORT`/
+  …/`AI_CLASSIFIER_EFFORT`). The correctness gate is its own config block:
+  `AI_VALIDATION` (`AI_VALIDATE_GENERATION`/`AI_REPAIR_HARD_FAILURES`/`AI_MAX_REPAIR_PASSES`,
+  default ON), `AI_LESSON_FLOORS` (`AI_MIN_NORMAL_/TECHNICAL_LESSON_SLIDES`),
+  `AI_LIGHT_REVIEW` (`AI_LIGHT_REVIEW_ENABLED`/`_ON_LINT_THRESHOLD`/`_LINT_THRESHOLD`/
+  `_MODEL`/`_EFFORT`). No premium `gpt-5.5` by default anywhere.
   `agent_phase` logs the per-call `{model, effort}`. `ModelTurnParams.responseFormat`
   forces a strict json_schema turn; `usage.{reasoningTokens,cachedTokens}` surfaced.
   **Prompt caching (2026-06-17):** the STABLE prefix must be byte-identical + FIRST.
@@ -223,51 +620,132 @@ never import a provider SDK.
   `message` items' `output_text` parts (`messageTextFromOutput`); give the call a
   generous `maxOutputTokens` (PLAN uses 32000) so reasoning tokens don't starve
   it. Strict mode STRIPS `min/max/minItems/maxItems` (`schema.ts`), so never
-  hard-reject the parse on them — `coerceOutline`/`coerceModuleOutline` clamp
+  hard-reject the parse on them — `coerceOutline`/`coerceModuleSkeleton` clamp
   counts, limits stay as `.describe()`/prompt guidance.
-- **Phased content pipeline (2026-06-16):** content generation runs ONE agent
-  through a plan→generate(→critique) pipeline with **per-call effort**; small edits
-  keep the single-turn loop. **3-way auto-routing** (`lib/ai/intent.ts`
-  `classifyIntent`: regex short-circuits + minimal-effort 3-mode classifier):
-  - **`generate_module`** → module PLAN (`ModuleOutlineSchema` = ordered lessons,
-    each with its slide outline, effort high) → ONE approval card → create module +
-    lessons → GENERATE each lesson (layered, effort medium). **Module builds SKIP
-    CRITIQUE** (deliberate cost trade-off, 2026-06-16). Routing (fixed 2026-06-17):
-    a module build that NAMES its lessons routes to `generate_module`; only
-    "add a lesson TO module X" (`LESSON_INTO_MODULE`) diverts to `generate_lesson`.
+  **Plan calls are NON-STREAMING (2026-06-19):** a plan needs reliability, not
+  token streaming — `ModelTurnParams.stream:false` uses `responses.create`. Optional
+  `background:true` (CREATE + POLL, no long-held idle connection) gated by
+  `AI_USE_BACKGROUND_FOR_PLANS` / used automatically by the module fallback. Errors
+  are CATEGORIZED (`ModelErrorKind` + `classifyError`): a transport **timeout** is
+  NEVER parsed as "invalid JSON". Every plan call logs `agent_plan_request`
+  (planType/model/effort/timeoutMs/input+schema chars/maxTokens/background); a
+  failure logs `agent_plan_fail` with `errorType` = `transport_timeout` |
+  `model_error` | `transport` | `schema_error`.
+- **Phased content pipeline (2026-06-16; VALIDATE/REPAIR added 2026-06-18):**
+  content generation runs ONE agent through **PLAN → GENERATE → VALIDATE/REPAIR →
+  (optional LIGHT REVIEW) → STAGE** with **per-call effort**; small edits keep the
+  single-turn loop. The plan is a **contract**; correctness is enforced by code,
+  not a model critique (the heavy CRITIQUE pass is OFF by default — see below).
+  **3-way auto-routing** (`lib/ai/intent.ts` `classifyIntent`: regex short-circuits
+  + low-effort 3-mode classifier):
+  - **`generate_module`** (REDESIGNED 2026-06-19 — the old whole-module plan timed
+    out) → a COMPACT **module SKELETON** (`ModuleSkeletonSchema`: a lesson MAP —
+    title/objective/rationale/skills/slide-range/blocks per lesson, **NO per-slide
+    content**; low effort, ~2.8 KB schema → returns in seconds) → ONE approval card
+    → create module + lessons → **for EACH lesson: a LAZY RICH lesson plan**
+    (`runRichLessonPlan`, full `LessonOutlineSchema`, high effort, one small lesson)
+    → GENERATE (medium) → **VALIDATE/REPAIR**. A lesson whose rich plan fails is
+    SKIPPED + checkpointed (the rest still build). If the skeleton call
+    transport-fails, an **ultra-lean FALLBACK** (`ModuleFallbackSchema`, background
+    mode) retries once (`runModuleSkeletonPlan`). No light review (kept cheap; lint
+    aggregated into one `quality_report`). Routing: a module build that NAMES its
+    lessons routes here; only "add a lesson TO module X" (`LESSON_INTO_MODULE`)
+    diverts to `generate_lesson`.
   - **`generate_lesson`** → lesson PLAN (`LessonOutlineSchema`) → approve → GENERATE
-    (medium) → **CRITIQUE** (one bounded fresh-eyes pass, deck-as-data, high).
-  - **`edit`** → the single-turn loop, but **LAYERED** (teaching bar + layout guide)
-    so any content it creates still meets the bar — no plan gate, stays fast. The
-    delete-resume loop is layered too; **no un-layered content path remains**.
-  PLAN uses structured output (`lib/ai/outline.ts`, validate→repair); the outline
-  is **transient** (round-trips client→server, never persisted). An **auto-approve**
-  toggle (OFF by default, honored server-side) skips the pause. GENERATE layers via
-  `buildSystemPrompt(doc, lessonId, {layered, outline})`; the edit path runs
-  **`authoringOnly`** (`AUTHORING_TOOL_NAMES`, no structural/destructive) while
-  GENERATE/CRITIQUE run the narrower **`generateTools`** (`GENERATE_TOOL_NAMES`:
-  reads + structured slide tools + create_block + write_quiz/homework/lecture —
-  **no `write_slide_deck`/flat slide ops**, so generation MUST honor the plan's
-  structured layout and can't downgrade to a flat tip/text deck; 2026-06-17). The
-  outline carries a per-slide `keyPoints` content brief GENERATE expands; the
-  teaching bar bans skeletal slides (a `agent_thin_slides` log flags under-fill).
-  The whole run reconciles once → ONE change-set.
-  **Known hazard:** the agent's server reconcile and the browser autosave both
-  full-snapshot the same course with no coordination (can transiently orphan rows →
-  a `lessons_module_id_fkey`); follow-up = pause autosave during a run / scoped reconcile. Orchestration in `lib/ai/phases.ts`
+    (medium) → **VALIDATE/REPAIR** → optional **LIGHT REVIEW**.
+  - **`edit`** → the single-turn loop, LAYERED (teaching bar + layout guide); no
+    plan gate, no validate — stays fast. The delete-resume loop is layered too.
+  **PLAN is the contract** (`lib/ai/outline.ts`): each slide spec carries a `role`
+  (hook/worked_example/common_mistake/conceptual_check/…) + `kind` (core|enrichment);
+  the lesson carries `microLesson`. **CONTENT-FIRST (Method 1, 2026-06-23):** the
+  slide spec is ordered + prompted so the model FINALIZES the slide's `keyPoints` (its
+  real content) BEFORE choosing the `layout` that fits them (and varies layout across
+  the deck) — not layout-first. If a slide's points overflow one card it SPLITS at plan
+  time (never truncates): a **continuation** (`continuationOf` links to the parent;
+  `normalizeContinuations` stamps a " (cont.)" title + drops points repeated verbatim
+  from the parent, preserving every unique point) or a **sub-topic split** (two distinct
+  descriptive titles). A continuation is its own spec → counts toward coverage;
+  `isContinuationSlide` + the "(cont.)" title are the cue. Slide-count guidance (micro 3–4 only on request ·
+  normal 6–10 · technical 7–12 · complex 9–14) + a **depth floor**
+  (`lessonDepthShortfall`, `AI_MIN_NORMAL_/TECHNICAL_LESSON_SLIDES`) that re-asks
+  ONCE for a too-thin non-micro plan (via `runStructuredPlan`'s `postValidate` hook,
+  reusing the single repair-call slot; a valid-but-thin plan is never lost). The
+  outline is **transient** (round-trips client→server, never persisted). An
+  **auto-approve** toggle (OFF by default) skips the pause.
+  **GENERATE** runs the narrow **`generateTools`** (`GENERATE_TOOL_NAMES`: the slide-
+  inspection reads + structured slide tools + create_block + write_quiz/homework/
+  lecture — **no `write_slide_deck`/flat slide ops**, and as of 2026-06-22 **no
+  `get_course_context`/`list_modules`/`list_lessons`/`get_lesson`** either: the
+  course/lesson/plan/authored set already ride in the context + generation-state, so
+  GENERATE/REPAIR can't burn turns re-reading them). It **pre-creates an EMPTY deck**
+  and threads its `deckBlockId` into the context (`buildContextMessage`), so the model
+  authors real slides into a known deck and **never seeds a placeholder**.
+  `add_structured_slides_batch` takes a **nullable** `deckBlockId` resolving to the
+  lesson's deck, and **CLAMPS-not-rejects** (2026-06-22): each slide's over-length
+  slots are auto-shortened to their cap server-side (`clampStructuredTemplate`,
+  schema-driven via Zod `too_big` issues) and the slide is SAVED with its specId — a
+  formatting overflow never bounces back, so coverage closes; only a slide MISSING
+  required content (unclampable) comes back. (The single-slide `add_structured_slide`/
+  `set_structured_slide` tools stay strict.) The edit path runs `authoringOnly`
+  (`AUTHORING_TOOL_NAMES`). The outline's per-slide `keyPoints` brief
+  is expanded; the teaching bar frames the plan as a binding contract + bans skeletal
+  slides (`agent_thin_slides` log).
+  **VALIDATE/REPAIR** (`lib/ai/validation.ts` pure + `slideDiagnostics.ts` leaf):
+  after GENERATE, check the doc vs the plan — every spec built, no placeholder/empty
+  slide, no duplicate primary spec, required quiz/homework present, deck not short,
+  budget not exhausted. Hard failures are repaired DETERMINISTICALLY first (strip
+  placeholder/empty slides, drop junk/empty decks — no model) then a NARROW model
+  pass handed ONLY the missing spec briefs + missing blocks (`buildRepairInstruction`,
+  via `LoopOptions.extraInstruction`), re-validating up to `AI_MAX_REPAIR_PASSES`. If
+  still unmet → **checkpoint** with exactly what remains (never staged as complete;
+  `LoopResult.checkpointed` = budget vs done). `generationState` now also tracks
+  remaining/duplicate/placeholder/no-spec/incomplete-segment/missing-block so bounded
+  history can't forget the contract.
+  **LINT + LIGHT REVIEW** (`lib/ai/lintGeneration.ts` pure, `lib/ai/lightReview.ts`):
+  after hard validation passes, a no-model linter emits SOFT warnings; an OPTIONAL
+  **one-call** review (no tool loop, no regen, gpt-5.4-mini/medium, OFF by default,
+  fires only when lint ≥ `AI_LIGHT_REVIEW_LINT_THRESHOLD`) adds ≤3 suggestions.
+  Neither blocks staging. The whole run stages ONE change-set, but now via
+  **flush-on-exit** (2026-06-22): the pipeline reconciles the doc to the DB
+  INCREMENTALLY (the driven loop persists each authored batch the turn it lands;
+  each lesson persists as it completes; a module's scaffold persists the instant it's
+  planned) and stages the change-set in a guarded `finalize()` that runs on EVERY
+  termination — completion, token cap, turn cap, no-progress guard, **user Stop
+  (abort)**, or a thrown error — so partial work is NEVER discarded (the "module
+  spun 10 min, persisted nothing" fix). `reconcileAndStage` is split into a
+  repeatable `reconcileDoc` + a one-shot `stageChangeSet`.
+  **Autosave coordination (the former hazard, now fixed):** the editor store's
+  `agentRunActive` flag PAUSES the browser autosave for a run's duration (so the
+  agent's server reconcile and a browser full-snapshot can't race + orphan rows),
+  and a debounced `scheduleLiveSync` (`lib/editor/liveSync.ts`) re-loads the doc via
+  `syncLiveDoc` (no full re-hydrate) so the deck renders LIVE as it's built; a
+  Supabase Realtime sub on `change_set_items` (`useChangeSetRealtime`, migration
+  `20260622010000`) drives the same re-sync (degrades gracefully if unpublished).
+  Orchestration in `lib/ai/phases.ts`
   (`runContentAgentTurn`/`runGenerateLessonTurn`/`runGenerateModuleTurn`/
-  `runGenerateThenCritique`/`runGenerateModule`/`resumeGeneratePlan`); approval
-  resolved by `app/api/ai/agent/plan/route.ts`. The review is a **prominent modal**
-  (`components/editor/agent/AgentPlanHost.tsx`, mounted at the shell level, renders
-  lesson vs module) + a sidebar PLAN/GENERATE/CRITIQUE badge
-  (`agentStore.phase`/`pendingOutline`/`autoApprovePlan`). Per-phase
-  `console.log({tag:"agent_phase", layered, effort, tokens, latencyMs,…})`.
+  `runModuleSkeletonPlan`/`runRichLessonPlan`/`runLessonPipeline`/`validateAndRepairLesson`/
+  `runGenerateModule`/`resumeGeneratePlan`; legacy `runLegacyCritique` gated by
+  `AI_CRITIQUE_ENABLED`, off); approval resolved
+  by `app/api/ai/agent/plan/route.ts`. The review is a **prominent modal**
+  (`components/editor/agent/AgentPlanHost.tsx`) + a sidebar phase badge + a calm
+  `validation` line + a `quality_report` "Quality suggestions" card
+  (`agentStore.phase`/`validation`/`qualityReport`/`pendingOutline`/`autoApprovePlan`).
+  Per-phase `console.log({tag:"agent_phase", layered, effort, tokens, latencyMs,…})`;
+  per-lesson `agent_plan_coverage`.
 - **Loop:** `lib/ai/agentLoop.ts` — per turn: persist user msg → load doc +
   replayed history → stream a model turn → execute each tool call (validate args
   → apply CoursePatches to the in-memory doc → stream `tool_result`) → feed
-  output back → repeat until no tool calls (cap 12, with a `checkpoint`). Then
+  output back → repeat (cap `AGENT_MAX_TURNS`, with a `checkpoint`). Then
   reconcile the doc to the DB ONCE and stage the net block diff as one
   change-set.
+  **Coverage driver (2026-06-22):** GENERATE/REPAIR pass `driveToCoverage` — the
+  loop no longer stops the instant the model returns a no-tool-call turn; while
+  plan specs remain it injects a concrete "STILL TO BUILD …" nudge
+  (`buildContinuationNudge`) and keeps building (turns scaled to the plan via
+  `coverageMaxTurns`/`repairMaxTurns`), with a no-progress guard
+  (`AGENT_NO_PROGRESS_LIMIT`) stopping a stalled run. Driven loops DON'T emit
+  their own checkpoint (`stopShort` only records it) — the validate/repair
+  pipeline owns the ONE final checkpoint. This is the fix for the "3-of-10 deck".
 - **Tools = the ops layer:** `lib/ai/tools/*`. Read (get_course_context /
   list_modules / list_lessons / get_lesson / get_block), structural
   (create_module/lesson/block, delete_block, reorder_blocks), and content
@@ -307,24 +785,43 @@ never import a provider SDK.
   `CourseEditorShell` (collapsible `agentPanel` PanelKey), studio server-loads
   pending blocks → `StudioLoader` → `agentStore.hydratePending`.
 - **Env:** set `OPENAI_API_KEY` (required) in `.env.local`; optional
-  `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS`.
-  **Proxy (2026-07-03):** the OpenAI SDK's bundled fetch IGNORES `HTTPS_PROXY`,
-  so on this machine (OpenAI reachable only via local Clash) it connected
-  DIRECTLY and every agent call — studio content agent AND marketing agent —
-  died at the transport timeout (~75–89s,
-  `{"tag":"openai_error","message":"Request timed out."}`). The provider now
-  builds a CLIENT-SCOPED undici `fetch`+`ProxyAgent` transport when
-  `OPENAI_PROXY_URL`/`HTTPS_PROXY` is set (ported from the sibling App repo;
-  global dispatcher untouched — Supabase stays direct; production sets no proxy
-  env ⇒ direct as before; undici is a devDependency loaded via non-literal
-  `createRequire` so the bundler never resolves it). Diagnose with
-  `npm run smoke:openai`; grep `openai_client_config` in server logs to see
-  whether the proxy engaged.
-- **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts`, no key) and
-  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — 47
-  checks incl. the phased lesson + MODULE plan→approve→generate pipeline, per-call
-  effort + layered system-prompt asserted via the mock's `getCalls()`, and the
-  3-way classifier routing).
+  `OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` / `OPENAI_MAX_OUTPUT_TOKENS` /
+  `OPENAI_TIMEOUT_MS` (client default 120s) / `OPENAI_MAX_RETRIES`.
+- **Transport / proxy (2026-06-19):** the OpenAI SDK's bundled undici `fetch`
+  **ignores `HTTPS_PROXY`**, so on a proxy-only machine (e.g. Clash `:7890`) it
+  connects DIRECTLY, the socket never establishes, and it dies at the OS TCP-connect
+  timeout (**~75s** on macOS = `net.inet.tcp.keepinit`) → a `transport_timeout` that
+  was mis-blamed on "slow module planning". `createOpenAIModelClient` now reads
+  `OPENAI_PROXY_URL` (else `HTTPS_PROXY`/`HTTP_PROXY`) and, when set, routes through a
+  proxy **scoped to the OpenAI client** (`new OpenAI({ fetch, fetchOptions:{ dispatcher:
+  new ProxyAgent(url) } })` — undici's fetch + dispatcher MUST be from the same undici;
+  global dispatcher untouched so Supabase stays direct). **No proxy env ⇒ direct
+  connection (production unchanged).** `undici` is a **devDependency** (runtime deps stay
+  14), `require`d via a variable-specifier `createRequire` so the bundler never resolves
+  it at build (prod never needs it). Logs `openai_client_config {proxy,transport,…}`.
+  Diagnose with `npm run smoke:openai` (`scripts/smoke-openai.ts`): Phase A = no-proxy
+  reproduction (~75s), Phase B/C = proxied success (1–3s, incl. structured + background);
+  `SMOKE_SKIP_A=1` skips the slow part. Background mode (poll loop) is env-tunable via
+  `AI_BACKGROUND_POLL_TIMEOUT_MS` / `AI_BACKGROUND_POLL_INTERVAL_MS`.
+- **Tests:** `npm run verify:ai` (tools/schema/patch + the outline PLAN schema/parse/extraction guard `verify-outline.ts` + bounded-history `verify-bounded.ts` + the **VALIDATE/REPAIR/LINT** suite `verify-validation.ts` — placeholder detection, every hard-failure class, deterministic repair, the PLAN depth floor, lint + light-review trigger; all no-key) and
+  `npm run verify:ai:int` (full loop vs live Supabase via the mock provider — **113**
+  checks incl. the phased lesson pipeline, the **module SKELETON → approve →
+  per-lesson rich-plan → generate → validate** flow, **skeleton-timeout →
+  background fallback**, **both-timeout → clear-message** (not "invalid JSON"),
+  per-call effort + layered system-prompt via the mock's `getCalls()`, the 3-way
+  classifier routing, clean-validate · missing-spec repair · placeholder removal ·
+  light-review-trigger paths, the **coverage driver** (a model that stops at
+  1/3 is nudged to completion), the **no-progress guard** (one pipeline checkpoint),
+  the **live AI-image path** (add_image → mock bytes → Supabase upload →
+  `illustration` slide with a real public URL), **CLAMP-not-reject** (an over-length
+  slot auto-shortens + saves → coverage closes, no repair), **flush-on-exit** (a
+  stalled run AND a simulated user-Stop both STAGE + PERSIST their partial deck), and
+  (the stretching/call-reduction pass) **diagram best-effort** (an off-slope
+  add_diagram resolves in ONE shot — no error/retry — and renders a repaired valid
+  diagram), **REPAIR at medium effort**, and the **course-level reads excluded** from
+  GENERATE (loaded once, never re-fetched)). The mock can inject a transport error
+  (`MockTurn.error`), a deterministic `generateImage`, and (via a thin runTurn wrapper)
+  an abort mid-run.
   Slide-vocabulary suites (no key): `npm run verify:slides` (stickers + font
   tokens + all 8 structured layouts incl. near-max overflow + the structured
   agent tools) and `npm run verify:reject` (atomic byte-for-byte revert, incl. a
@@ -343,8 +840,20 @@ never import a provider SDK.
   — `SlideStage` branches on `template`, the `LayoutPicker` "Structured" section
   + `StructuredContentEditor` edit them. AI tools: `add_structured_slide` /
   `set_structured_slide` / `set_text_style` / `add_sticker`
-  (`lib/ai/tools/structuredSlides.ts`); the strict schema's `.max()` IS the
-  validate→repair guard. **Reject is atomic** (`revertChangeSet`).
+  (`lib/ai/tools/structuredSlides.ts`); the strict schema's `.max()` no longer
+  REJECTS — it CLAMPS (auto-shortens + saves; `clampStructuredTemplate`), so no slide
+  is ever bounced for fit. **Reject is atomic** (`revertChangeSet`).
+  **STRETCHING (Gamma-style, within the fixed 16:9 frame, 2026-06-22):** the clip-prone
+  renderers (`concept_example`, `comparison_columns`/`_matrix`, `outline_list`, `prose`,
+  `code_walkthrough`) were rebuilt from absolute boxes with `overflow:hidden` into FLOW
+  layouts — a flex column (header → growing body → footer); columns grow independently +
+  stretch to the taller; the matrix grid uses `auto` rows; `outline_list` flows; code
+  font scales to line count. No text container clips (only the horizontal break-word
+  guard remains). `SlideStage` is still a fixed 1280×720 canvas, so concise/capped
+  content fits the frame — the canvas itself was deliberately NOT made variable-height.
+  Runnable guard: `scripts/verify-stretch.ts` (SSR-renders heavy content, asserts
+  nothing is dropped + the layout flows); pixel-level no-overflow is the temporary
+  `/zz-layout-preview` + Playwright visual pass.
   **8 structured layouts:** the original four (process_steps,
   key_concept, metrics_overview, code_walkthrough_steps) PLUS **section_break**
   (chapter divider; variants standard/hero_numeral × titleStyle serif/sans;
@@ -366,6 +875,277 @@ never import a provider SDK.
   longer contain scores/passing/time/attempts/difficulty/points/due-dates (the
   fields, patches, and UI were removed 2026-06-15).
 
+## Visual pipeline — image-first overhaul (2026-06-25)
+
+> **Supersedes the diagram-centric notes below where they conflict.** Most visuals
+> are now **GPT Image generated images** (default model **`gpt-image-2`**, the latest;
+> `OPENAI_IMAGE_MODEL` overrides) rendered as clean academic **textbook
+> figures**; only **`supply_demand` + `coordinate_plot`** stay programmatic (they
+> need exact axis values). The other 7 diagram kinds (bar_chart, array_diagram,
+> tree_diagram, graph_diagram, flowchart, number_line, venn) were **retired from the
+> AI surface** (AI-surface-only — storage schema + renderers + validate/repair/
+> geometry KEPT so any already-saved diagram still loads/renders/reverts; the model
+> just can't author them). Enforced by: the strict `DiagramSpecInputSchema` union =
+> 2 kinds; `catalog.ts` filtered by kind (`AUTHORABLE_DIAGRAM_KINDS` in `repair.ts`);
+> `coerceDiagramBestEffort` returns null for a retired kind → prose/image degrade;
+> `router.ts` `ROLE_TO_KIND` keeps only `coordinate_plot` roles (the rest route to
+> images); `accuracyCriticalKind` = the 2 kinds.
+>
+> - **Two new image layouts** (mirror the `illustration` precedent — authored ONLY by
+>   `add_image`, an `imageUrl` only the tool supplies, so NOT in
+>   `StructuredTemplateInputSchema`): **`image_reference`** (hero; image IS the
+>   subject — eyebrow+title, 0–4 annotations, 0–3 numbered concept cards; 3:2
+>   1536×1024) and **`image_supporting`** (image aids the text — eyebrow+title+lead,
+>   0–4 bullets, optional caption; 1:1 1024×1024). Both: fixed-AR box + `object-fit:
+>   cover` so the image can't bleed. Renderers in `components/editor/slide/structured/
+>   {ImageReferenceLayout,ImageSupportingLayout}.tsx`; registered in
+>   `STRUCTURED_LAYOUTS` (+ new `capacity` metadata), storage `SlideTemplateSchema`,
+>   the `SlideTemplate` union, and `StructuredSlide` dispatch.
+> - **Legacy `illustration` retired from the AI side** (`PLANNABLE_LAYOUT_IDS` +
+>   `structuredLayoutCatalog()` exclude it; `add_image` never emits it). Kept only for
+>   back-compat rendering of existing slides.
+> - **`visualWeight: 'reference' | 'supporting'`** on the plan's `visualIntent` (plus a
+>   structured **`imageSpec`** {subject, requiredLabels, axes, annotations} for
+>   reference). Pinned in ONE place — **`VISUAL_WEIGHT`** in `lib/ai/visuals/config.ts`
+>   (→ layoutId + gen `size` + `background` opaque/transparent + `promptMode`).
+>   `ImageGenParams` gained `size`/`background`; `openai.ts` passes them to the GPT Image model.
+> - **Content-first split is capacity-aware:** `StructuredLayoutDef.capacity.maxPoints`
+>   + `layoutPointCapacity()` drive `splitOverflowingSpecs` (image_reference 7,
+>   image_supporting 4) — an over-full image slide spills to a `(cont.)` slide.
+> - **Prompt builder** = `lib/ai/visuals/imageIntent.ts` (PURE): a shared TEXTBOOK
+>   style preamble + per-`promptMode` spec (reference = quoted required labels/axes;
+>   supporting = looser-but-academic). `buildImagePrompt` + `imageIntentHash`.
+> - **Reference verification** (reference only, `AI_IMAGE_VERIFY_ENABLED` default on):
+>   new `ModelClient.inspectImage` (vision; `AI_VISION_MODEL` ?? gpt-5.4-mini, mock has
+>   a deterministic verdict) checks the required labels appear → regenerate ONCE →
+>   else `add_image` **prose-degrades** (coverage holds, no loop). Lives in
+>   `makeVisualGenContext` (`agentLoop.ts`).
+> - **Freeze-on-accept:** the image content carries `intentHash`; `add_image` reuses
+>   the stored asset when an existing slide for the spec has the same hash (no regen),
+>   and **`set_image_text`** edits an image slide's text WITHOUT regenerating.
+> - Tests: `npm run verify:visuals` (94) + the image path in `verify:ai:int` (122) +
+>   `verify:slides`. **Remaining manual step (deferred):** the Playwright pixel-overflow
+>   pass for the two new layouts (`/zz-layout-preview`) — not yet run.
+
+## Visual pipeline — programmatic diagrams (2026-06-20, see CHANGELOG.md)
+
+A teaching visual is a **teaching object, not decoration**. The LIVE path renders
+**programmatic diagrams**: typed deterministic data drawn as crisp SVG, so a graph
+is **accurate by construction** (a supply curve slopes up; a Dijkstra graph weights
+every edge), editable, accessible, exportable, and persisted in `blocks.content`
+with **no blob URLs**. A diagram is just an **11th structured layout** (`SlideTemplate`
+`layoutId: "diagram"`), so it reuses the SAME patch pipeline, validate→repair,
+change-set staging/reject, and picker — **no new patch actions, no new storage**.
+
+- **Model** = `lib/course/diagram/*` (pure): `types.ts` (`DiagramSpec` union of 9
+  kinds: supply_demand [+ price ceiling/floor], coordinate_plot, bar_chart,
+  array_diagram, tree_diagram, graph_diagram, flowchart, number_line, venn; plus
+  `VisualSpec` [purpose + alt text + reason] and `DiagramContent`) · `schemas.ts`
+  (STRICT AI Zod with caps + a `.superRefine` running `validateDiagram`; permissive
+  STORAGE schema; AI tree node is FIXED-DEPTH so it inlines to OpenAI-strict JSON
+  with no recursive `$ref`) · `validate.ts` (deterministic correctness — the spec's
+  named failure cases) · `catalog.ts` (19 correct named templates; whole-WORD topic
+  matching) · `geometry.ts` (tree/graph/flow layout, scales, equilibrium).
+- **Renderers** = `components/editor/slide/diagram/*` (PURE → SSR/thumbnail/export
+  safe): `svg.tsx` toolkit + `DiagramView` (9 renderers) + `structured/DiagramLayout`
+  (`role="img"` + alt text + the `data-ai-component="slide-visual"` envelope). The
+  diagram is registered in `STRUCTURED_LAYOUTS` + `StructuredTemplateInputSchema` +
+  storage `SlideTemplateSchema` + the `SlideTemplate` union; auto-exposed to picker,
+  plan catalog, and AI tools.
+- **Planning** = `lib/ai/outline.ts` `visualIntent` is now a STRUCTURED object
+  (required/role/reason/expectedVisualType/placement/priority/mustBeAccurate; tolerant
+  of a legacy string). **AI tools** = `add_diagram` / `set_diagram` (templateId
+  seeds an accurate canonical diagram). **BEST-EFFORT + REAL-DATA-ONLY, never reshape-
+  and-retry (2026-06-22):** the diagram tools are `lenientArgs` — a custom diagram is
+  parsed permissively then `coerceDiagramBestEffort` (`lib/course/diagram/repair.ts`)
+  REPAIRS the invariants on the model's OWN data (re-slope/re-sort/drop-dangling-edge/
+  drop-the-weighted-claim) and renders it iff it validates, ELSE returns `null`. It
+  **never fabricates or seeds placeholder/demo data** (the old minimal-seed / topic-
+  template fallback was a regression — a generic A/B/C chart on an econ lesson); an
+  unusable diagram **degrades to a real-text PROSE slide** built from the model's
+  title/caption (so coverage still holds, no retry). A templateId is reserved for the
+  canonical STRUCTURAL diagrams. (`bestEffortVisualTemplate` is the shared builder; a
+  `diagram` entry inside `add_structured_slides_batch` routes through it too.)
+  **Validation (2026-06-22):** `REQUIRED_VISUAL_MISSING` is now SOFT —
+  reported, but it does NOT block `ok` or trigger repair (KEEP COVERAGE, DROP FIT:
+  repair only fills a genuinely missing slide/block). **Inspector** = `DiagramEditor`.
+- **Pipeline architecture** = `lib/ai/visuals/*` — `config.ts` flags (defaults
+  2026-06-22: programmatic ON, **image-gen ON**, web OFF, validation ON;
+  `AI_VISUAL_MAX_PER_LESSON` 5), full `VisualSpec`/`VisualAsset`, the source
+  `router.ts` (programmatic → AI-generated → web → manual, by priority),
+  `imagePrompt.ts`, the `generate.ts` seam, and `storeImage.ts`. **Web sourcing
+  stays Phase 5 (OFF).**
+- **AI IMAGE GENERATION — LIVE (2026-06-22).** For a concept no programmatic
+  diagram fits (a historical scene, a biological structure, an analogy) the
+  **`add_image`** tool generates an educational illustration via
+  `ModelClient.generateImage` (gpt-image-2 default, `OPENAI_IMAGE_MODEL`, through the SAME
+  proxied OpenAI client — base64 out), **stores the bytes to the Supabase
+  `course-assets` bucket** under `{ownerId}/ai-visuals/{courseId}/…`
+  (`storeImage.ts`; public URL on the slide, NEVER a blob/data URL), and lands it
+  as a first-class **`illustration` structured layout** (registry + strict schema +
+  `IllustrationLayout.tsx` + `SlideTemplate` union + `SlideStage` dispatch). It's
+  the ONE impure tool path: a `VisualGenContext` capability injected into the tool
+  ctx by `loopContext` (present only when image-gen is on AND the client can make
+  images; absent ⇒ `add_image` ToolErrors → the model falls back to a diagram/
+  prose). `illustration` is authored ONLY by `add_image` — it's intentionally NOT
+  in the hand-authored `StructuredTemplateInputSchema`. Accuracy-critical figures
+  still go programmatic; capped per lesson (`AI_VISUAL_MAX_PER_LESSON`). The mock
+  provider has a deterministic `generateImage` so the whole generate→store→slide
+  path is tested with no key. Tests: `npm run verify:visuals` (84 checks) + the
+  live image path in `npm run verify:ai:int`.
+
+## Video lessons — educator recording/upload (Mux), 2026-07-01
+
+A first-class **`video` block** (sibling of `slide_deck` / `imported_deck`) for
+educator-recorded or uploaded lessons, hosted by **Mux**. Educator-side only (no
+student player yet). The pattern mirrors imported decks: an external asset with a
+status lifecycle, a source-of-truth row, and a denormalized snapshot on the block.
+
+- **Env:** server-only `MUX_TOKEN_ID` + `MUX_TOKEN_SECRET` (required to record/upload);
+  optional `MUX_WEBHOOK_SIGNING_SECRET` (enforces webhook signatures — without it the
+  webhook route skips verification and logs it; polling covers status either way). The
+  webhook reuses the existing privileged `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_SECRET_KEY`
+  (admin client). Optional client-safe `NEXT_PUBLIC_MUX_DATA_ENV_KEY` is a DEFERRED
+  extension point (Mux Data analytics — not wired). Optional `MUX_MP4_RESOLUTION`
+  (default **`highest`**; `720p`/…) sets the downloadable MP4 rendition the studio
+  plays. **Mux gotchas (2026-07-01 — learned the hard way, verify against a LIVE
+  asset, don't guess the shape):**
+  (1) Request MP4 via `static_renditions: [{resolution}]`, NOT the deprecated
+  `mp4_support: "standard"`. Default to **`highest`** — it renders at the source's
+  own resolution, so it's never upscale-skipped and is a VALID resolution input on
+  every tier. Do NOT use `capped-1080p` as a resolution input — it's a rendition
+  *name* Mux can emit but Mux **rejects it as a resolution input with a 400**
+  ("Invalid static rendition resolution"), which 502s create-upload. A fixed size
+  (`720p`) is SKIPPED whenever the source is smaller than it → no MP4.
+  (2) **`mp4_support` is a red herring:** the modern renditions API always reports
+  `mp4_support: "none"` even for a healthy asset with a ready `highest.mp4`. NEVER
+  gate playability on `mp4_support` — read `static_renditions.files` + each file's
+  per-file `status`. Gating on `mp4_support === "none"` was the true cause of the
+  "preview stuck on Preparing… forever" bug (a ready MP4 was being hidden).
+  **No new runtime dep** (stays 14): recording is browser-native, and playback is a
+  native `<video>` on a Mux MP4 static rendition — Mux Player / HLS are documented
+  upgrade paths, not used.
+- **Document model** (`lib/course/types.ts`): `VideoLessonBlock` = `asset`
+  (`VideoAssetSnapshot`: provider + status `empty|uploading|processing|ready|failed` +
+  Mux ids + duration/aspect/thumbnail — **never raw bytes**), `recording`
+  (mode/layout/bubble/mic), `edit` (non-destructive `trimStartSeconds`/`trimEndSeconds`),
+  `settings`. In the `BlockType` union, `LessonBlockSchema` (Zod), `factories`
+  (`createVideoLessonBlock`), `commands` (`updateVideoLessonPatch`), `manifest`. The ONLY
+  mutation path is the **`UPDATE_VIDEO_LESSON`** patch (schema + reducer in `patches.ts`;
+  null clears an optional field, sub-objects merge shallowly).
+- **Persistence:** free — the block payload rides in `blocks.content` jsonb, so
+  autosave/load/reconcile handle it unchanged. Migration `20260701010000_video_lessons`
+  only widens the `blocks.type` CHECK and adds the **`video_assets`** table (source of
+  truth for Mux status; RLS author-only via `private.is_course_author`; soft
+  `lesson_id`/`block_id`, like `deck_imports`). **No storage bucket** — Mux hosts the
+  media; recordings upload DIRECTLY to a Mux direct-upload URL (never through our server).
+- **Provider seam** (`lib/video/provider/*`): `types.ts` = the provider-agnostic
+  `VideoProvider` interface + normalized shapes; `muxClient.ts` = the ONLY file with Mux
+  HTTP (fetch + Basic auth + `node:crypto` webhook HMAC — **no Mux SDK**), normalizing
+  uploads/assets and resolving the MP4 rendition URL from `static_renditions.files`
+  (`resolveMp4` reads ONLY the files + each file's per-file `status`, NEVER
+  `mp4_support`: a READY video file → play it; still-generating → keep polling; every
+  rendition SKIPPED/errored → definitively `disabled`, never a forever-"preparing").
+  It also flags `adaptiveMp4Present` (an existing `highest` rendition). `index.ts`
+  selects the provider. Also `addMp4Rendition(assetId, resolution?)` — the self-heal
+  that adds an adaptive rendition to an existing asset that ended up with no usable
+  MP4 (only swallows an "already exists" 400; re-throws others). Server-only.
+- **Service/status/access** (`lib/video/*`, mostly PURE): `videoService.ts` (CRUD +
+  `syncVideoAssetFromMux` + row→`VideoAssetView` with derived public URLs;
+  **self-heal:** a `ready` VIDEO asset with no usable MP4 AND no adaptive rendition
+  yet re-requests a `highest` rendition once and reports `preparing` so the poll
+  fills `mp4_url` in — recovers assets stranded by the old fixed-resolution bug;
+  gated by `adaptiveMp4Present` so it can't loop),
+  `videoStatus.ts` (state machine, `reconcileMuxState` — an asset goes `ready` as
+  soon as it's playable; the MP4 rendition fills in via continued polling
+  [`isActiveVideoStatus` keeps `ready`+mp4-`preparing` active] — and `validateTrim`),
+  `videoAccess.ts`
+  (auth+ownership guards), `playbackUrls.ts` (HLS/thumbnail builders), `videoTypes.ts`
+  (row aliases + `snapshotFromView`), `recorderConfig.ts` (the 3 modes, bubble geometry,
+  formatters, file validation).
+- **Routes** (`app/api/video/*`, Node runtime, secrets server-only): `mux/create-upload`
+  (POST → row + Mux direct upload, row id = Mux passthrough), `mux/asset-status` (POST →
+  the client poll: sync from Mux + return the view), `mux/webhook` (POST → verify
+  signature → admin client → re-FETCH the asset and reconcile, immune to event-name
+  churn), `[id]` (DELETE → Mux asset + row cleanup).
+- **UI** (`components/editor/lesson/video/*`): `useVideoRecorder` (device enumeration,
+  `getUserMedia`/`getDisplayMedia`/`MediaRecorder`, **canvas compositing** of screen +
+  webcam bubble, state machine idle→setup→countdown→recording→paused→recorded, timer,
+  countdown, mic-level meter, pause/resume, and **deterministic teardown of every track**
+  on unmount — closing the modal mid-recording releases the camera/mic), `useVideoUpload`
+  (create → PUT to Mux with progress → status), `useVideoAsset` (poll while active +
+  mirror to the block). `VideoStudioModal` orchestrates mode → setup → record → review →
+  upload, plus a manage/edit screen for a ready video (trim, description, settings,
+  replace, remove). `VideoBlock` is the block card (empty / processing / ready-with-inline-
+  player / failed). Wired into `AddBlockMenu`, `BlockFrame` (icon+label), and
+  `LessonWorkspace` (`BlockBody` case + Mux-cleanup on delete). The ready card
+  distinguishes an MP4 still `preparing` (shows "Preparing high-quality preview…")
+  from one genuinely `disabled` (an honest "Preview isn't available" — never a
+  forever-loading spinner). **`VideoPreviewPlayer` presents a NON-DESTRUCTIVE trim
+  as the actual clip:** instead of native controls (which show the full source
+  timeline and just pause partway — making a trim look broken), it renders a branded
+  control bar whose scrubber / elapsed / total are all window-relative and clamps
+  playback to `[trimStart, trimEnd]`; the shown duration everywhere is the trimmed
+  length (`trimmedDurationSeconds`). The `VideoTrimEditor` still uses a full-timeline
+  native `<video>` (you WANT the whole timeline while picking start/end).
+- **Captions & transcripts — Mux auto-generated (2026-07-02):** English captions are
+  requested **by default at upload** — `new_asset_settings.inputs[0].generated_subtitles`
+  (for a direct upload the first input **omits `url`**; verified against Mux docs, do NOT
+  guess — see the video-captions memory). Generation is **asynchronous** and NEVER blocks
+  playback (Mux transcribes after ingest; the text track lands in `preparing` then
+  `ready`). Detected by BOTH the poll AND the **`video.asset.track.ready`** webhook (the
+  route re-fetches the asset + reconciles, so it's event-name-agnostic). `parseWebhookEvent`
+  routes a **track** event by `data.asset_id` (its `data.id` is the TRACK id, not the
+  asset). **On-demand path** = `POST /api/video/mux/generate-captions` → provider
+  `requestGeneratedSubtitles(assetId, audioTrackId, …)` (`POST /video/v1/assets/{id}/tracks/
+  {audioTrackId}/generate-subtitles`) for a video uploaded before captions-by-default or a
+  retry. **Caption state** = `caption_status` (`none`|`generating`|`ready`|`failed`) +
+  track id/name/language/source on `video_assets` (migration `20260702010000`); mirrored to
+  the block as `VideoLessonBlock.captions` METADATA via `UPDATE_VIDEO_LESSON` (the heavy
+  **transcript** text stays on the row + rides in the view — kept OFF the course doc to keep
+  it lean). Once a track is `ready`, `syncVideoAssetFromMux` fetches the WebVTT
+  (`https://stream.mux.com/{playbackId}/text/{trackId}.vtt`, public, no auth), derives a
+  plain transcript (`lib/video/captions.ts` `parseVtt`/`plainTextFromVtt`), and stores both
+  `transcript` + `transcript_vtt` (for future AI: summaries/chapters/quizzes/timestamped
+  help). `isActiveVideoStatus` keeps polling while captions `generating`. **Display:** NO
+  Mux Player (keeps the 14-dep invariant + the trim-aware player) — `VideoPreviewPlayer`
+  renders a **synced caption overlay** from the parsed cues with a CC toggle (respects the
+  trim window since playback time is clamped). The manage panel has a **Captions & transcript**
+  section (status + Generate/retry + read-only transcript preview). **Extension points left
+  clean:** manual correction, WebVTT export (`captionVttUrl`), re-uploaded/translated tracks
+  (`caption_source: "uploaded"`), transcript-based editing, Mux Player.
+- **Trim UI (2026-07-02):** the two start/end sliders were replaced by an Apple-Photos-style
+  **filmstrip trimmer** (`VideoTrimEditor`) — a thumbnail strip with a **double-ended
+  selection frame** whose handles you drag; dragging a handle **seeks the preview to that
+  frame** so you see where you're cutting. Thumbnails come from the Mux image API
+  (`thumbnailAt`) for a ready asset, or **canvas frame-capture** for a local pre-upload clip.
+  Commits on release (one autosave/undo step). The "Done trimming" button is now a filled
+  brand **"Save changes"** (was a ghost button that blended in). Handles use `role="slider"`
+  + arrow-key nudge; refs are synced in an effect (React 19 forbids ref writes in render).
+- **Tests:** `npm run verify:video` (153 checks, no key/DB/browser) — schema +
+  persistence round-trip, the `UPDATE_VIDEO_LESSON` reducer, status machine +
+  `reconcileMuxState`, trim validation + `trimmedDurationSeconds`/`hasTrim`, playback
+  URLs, row→view mapping, recorder config/geometry, the Mux adapter (create/get/delete
+  + webhook HMAC) via a mocked fetch, incl. **`highest` is requested**, the
+  **mp4_support:none + ready highest.mp4 → ready** regression guard, a **skipped
+  rendition → `disabled`** (not forever-preparing), a **per-file `preparing` → keep
+  polling**, `addMp4Rendition` (POSTs highest, swallows "already exists" 400 but
+  re-throws others), the **self-heal** (a ready video with no MP4 re-requests a
+  rendition; audio-only and adaptive-already-present do not — no loop), AND the whole
+  **captions surface**: `parseVtt`/`plainTextFromVtt`/`activeCaption`, `deriveCaptionFields`
+  + caption reconcile, block-captions schema/patch/round-trip, `createDirectUpload` requests
+  `generated_subtitles`, `getAsset` normalizes caption tracks + audio track id,
+  `requestGeneratedSubtitles`/`fetchCaptionVtt`, the **track.ready webhook routes by
+  `asset_id`**, and `syncVideoAssetFromMux` fetching + storing the transcript once (settled
+  captions short-circuit). React 19 note: the studio avoids setState-in-effect (screen is
+  derived; the recorder fires an `onRecordingComplete` event) and never writes refs during render.
+- **Out of scope / extension points (left clean):** the student-facing player,
+  chapters, AI summary/quiz-from-video (the stored transcript is the hook), progress
+  tracking, and Mux Data analytics (the HLS URL + `NEXT_PUBLIC_MUX_DATA_ENV_KEY` are the
+  hooks for a future Mux Player upgrade). The asset goes `ready` as soon as it's playable;
+  the MP4 static rendition (used by the native `<video>`) fills in shortly after via
+  continued polling, so the card shows the poster + "Preparing high-quality preview…" for
+  a beat before the video appears. Captions fill in independently, never blocking playback.
 ## Marketing Assistant suite (`lib/marketing/*`) — 2026-06-19
 
 The second half of the product: turn a finished course into a go-to-market
@@ -631,8 +1411,9 @@ compliant footers (8 locales, `language.ts`).
 - Typography: Geist Sans UI, Geist Mono eyebrows/labels (uppercase tracked),
   **Fraunces** (`--font-display`, loaded globally in app/layout.tsx) for page
   titles & marketing headlines via `[font-family:var(--font-display)]
-  font-light`. Brand mark = typographic `WiseSel*` (orange asterisk) — no
-  sparkle-icon logos.
+  font-light`. Brand mark = the **WiseSel** logo (real assets in `public/brand/`,
+  placed via `components/brand/WiseSelLogo.tsx` — `horizontal`/`wordmark`/`mark`/
+  `appIcon` variants) — no sparkle-icon logos.
 - Buttons are **pills** (`rounded-full`; `components/ui/Button.tsx`: primary =
   brand-gradient). Cards: `rounded-2xl`, `border-stone-200/80`, warm whisper
   shadow `[0_1px_2px_rgba(68,48,28,0.05)]`. Emerald = success semantics only.
@@ -747,7 +1528,10 @@ compliant footers (8 locales, `language.ts`).
    embedded image/path) · **renderer-owned structured layouts** (each
    `slide.template` component's arrangement must be re-derived as native PPTX
    shapes/text boxes — costs more than flat layouts) · **Shiki code** (token
-   spans → run-level colored text). The `metrics_overview` chart slot is
-   deferred to the charts-as-data workstream — do NOT fake it in export.
+   spans → run-level colored text) · **`diagram` slides** (`DiagramView` already
+   emits pure deterministic SVG → the EASIEST export: embed the SVG, or rasterize
+   to PNG; the alt text + caption carry over verbatim). The `metrics_overview`
+   chart slot is deferred to the charts-as-data workstream — do NOT fake it in
+   export.
 6. `/pricing` marketing page — the landing nav currently points Pricing at
    `/settings`, which is a known wart.

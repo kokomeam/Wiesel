@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { createClient } from "@/lib/supabase/client";
+import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 
 const inputCls =
   "w-full rounded-xl border border-stone-200 bg-white px-3.5 py-2.5 text-sm text-stone-800 placeholder:text-stone-400 outline-none transition-colors focus:border-brand-300 focus:ring-2 focus:ring-brand-200/60";
@@ -62,13 +63,13 @@ function LoginForm() {
   return (
     <main className="grid min-h-screen place-items-center bg-canvas px-6 py-12">
       <div className="w-full max-w-sm">
-        <Link href="/" className="mb-8 flex items-center justify-center gap-2.5">
-          <span className="grid size-8 place-items-center rounded-lg bg-stone-900 text-[17px] font-bold leading-none text-brand-400">
-            *
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight text-stone-900">
-            WiseSel<span className="text-brand-500">*</span>
-          </span>
+        <Link
+          href="/"
+          aria-label="WiseSel home"
+          className="mb-8 flex flex-col items-center justify-center gap-3"
+        >
+          <WiseSelLogo variant="appIcon" priority className="h-14 w-auto" />
+          <WiseSelLogo variant="wordmark" className="h-6 w-auto" />
         </Link>
 
         <div className="rounded-2xl border border-stone-200/80 bg-white p-7 shadow-[0_1px_2px_rgba(68,48,28,0.05)]">
