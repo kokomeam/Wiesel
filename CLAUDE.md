@@ -1361,9 +1361,28 @@ compliant footers (8 locales, `language.ts`).
   unresolved token) rescue to the current ctaUrl, a baked landing path
   upgrades to `/learn` once published, `{{freeLessonUrl}}`-authored buttons
   stay on the capture page; compliance validates through the same function.
-  `verify:marketing:cta` (41). ⚠ tsx does NOT auto-load .env.local — suites
-  that run the compliance tool must set NEXT_PUBLIC_SITE_URL themselves
-  (campaign suite does).
+  **A fabricated internal path is ALSO rescued now (2026-07-07, third live
+  incident — `send_broadcast` sent a real 404):** a DB query of
+  `marketing_action` showed the agent hand-writing `/courses/{id}` and
+  `/courses/{id}/preview` button hrefs — routes that don't exist anywhere in
+  the app — while its `send_test_email` calls correctly used `{{ctaUrl}}` (its
+  tool description happened to mention merge vars; `send_broadcast`'s didn't).
+  `resolveSendTimeButtonHref` now rescues ANY relative href that isn't
+  `/learn/*` or `/p/*` (the app's only two real public destinations) the same
+  way it rescues a dead href — protects every send regardless of what
+  authored the bad link. Root-cause prevention: the agent system prompt
+  (`agent/prompt.ts`) gained a "LINKING TO THE COURSE" rule — never hand-write
+  a course URL, always `{{ctaUrl}}`/`{{freeLessonUrl}}` — and
+  `send_broadcast`/`send_test_email`/`write_email_touch` descriptions repeat
+  it locally. **Approval-preview transparency**: `bodyPreviewText`
+  (`tools/email.ts`) now shows a button as `[Label → href]`, not just
+  `[Label]` — the creator can catch a wrong destination before approving (it
+  was previously invisible, same class of gap as the earlier approve-flow
+  fix). `verify:marketing:cta` (50) — incl. a full reproduction: `send_broadcast`
+  with the incident's exact fabricated href, asserting the preview shows it
+  and the mock-delivered email wraps the real `/learn/{slug}` link. ⚠ tsx does
+  NOT auto-load .env.local — suites that run the compliance tool must set
+  NEXT_PUBLIC_SITE_URL themselves (campaign suite does).
 - **Approval sync + stop controls + hub redesign (2026-07-06, see CHANGELOG +
   docs/marketing-autonomy.md § Cross-surface sync):** the same approval used to
   render in chat AND hub with no invalidation — now `lib/marketing/

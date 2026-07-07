@@ -81,6 +81,12 @@ function urlPath(url: string): string | null {
   }
 }
 
+/** The app's only public destinations a subscriber email should ever link to.
+ *  Everything else in the route map (`/dashboard`, `/studio`, `/marketplace`,
+ *  …) is a signed-in CREATOR page — a subscriber has no account, so a button
+ *  pointing there is always wrong, same as a fabricated path. */
+const KNOWN_PUBLIC_PATH_RE = /^\/(learn|p)\//;
+
 /**
  * Send-time button-href resolution — makes the SEND-time destination
  * authoritative over whatever was baked into the body at GENERATION time.
@@ -90,7 +96,12 @@ function urlPath(url: string): string | null {
  *     the HOMEPAGE (observed live);
  *   - a body generated pre-publish keeps sending list traffic to the
  *     lead-capture landing page after the course preview goes live, silently
- *     breaking the "publishing upgrades queued sends" rule above.
+ *     breaking the "publishing upgrades queued sends" rule above;
+ *   - the marketing AGENT free-authors `send_broadcast`/`send_test_email`
+ *     bodies with no template at all — observed live inventing
+ *     `/courses/{courseId}` and `/courses/{courseId}/preview` (no such route
+ *     exists ANYWHERE in the app) instead of the real `{{ctaUrl}}` token, a
+ *     404 for every recipient.
  * Rules, in order:
  *   1. a button the author/template wrote as {{freeLessonUrl}} stays on the
  *      capture page (deliberate — that's where the free-lesson offer lives);
@@ -99,7 +110,11 @@ function urlPath(url: string): string | null {
  *      rendered value passes through — compliance blocks that launch);
  *   3. a baked landing-page href (relative or absolute) upgrades to the
  *      course preview once a live publication makes ctaUrl diverge from it;
- *   4. anything else renders untouched.
+ *   4. a relative path that ISN'T one of the app's real public destinations
+ *      (`/learn/*`, `/p/*`) is treated as fabricated/wrong and rescued the
+ *      same as a dead href;
+ *   5. anything else (a genuine `/learn/*`, `/p/*`, or absolute external URL)
+ *      renders untouched.
  */
 export function resolveSendTimeButtonHref(rawHref: string, vars: MergeVarContext): string {
   const rendered = renderMergeVars(rawHref, vars);
@@ -109,6 +124,9 @@ export function resolveSendTimeButtonHref(rawHref: string, vars: MergeVarContext
   if (vars.ctaUrl && vars.freeLessonUrl && vars.ctaUrl !== vars.freeLessonUrl) {
     const landingPath = urlPath(vars.freeLessonUrl);
     if (rendered === vars.freeLessonUrl || (landingPath !== null && rendered === landingPath)) return vars.ctaUrl;
+  }
+  if (rendered.startsWith("/") && !KNOWN_PUBLIC_PATH_RE.test(rendered)) {
+    return vars.ctaUrl ?? vars.freeLessonUrl ?? rendered;
   }
   return rendered;
 }

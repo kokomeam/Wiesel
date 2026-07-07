@@ -6,6 +6,47 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — the agent hand-wrote fake course URLs (`/courses/{id}`), 2026-07-07
+
+Live incident #4 of the day: a CTA in a SENT broadcast 404'd at
+`/courses/{courseId}/preview` — a route that doesn't exist anywhere in the
+app. A DB query of `marketing_action` for this course showed the pattern
+clearly: every `send_broadcast` call the agent made had hand-written a button
+href guessing a REST-ish path from the raw course id (`/courses/{id}` and
+`/courses/{id}/preview`), while its `send_test_email` calls correctly used
+`{{ctaUrl}}` — because that tool's description happened to mention "merge
+vars." `send_broadcast`'s description never did, and nothing taught the model
+the real route map (`/learn/{slug}`, `/p/{slug}`) or that it doesn't know it.
+Worse: the approval card's body preview showed only `[Open the course]` — the
+button's actual destination was invisible, so nothing let the creator catch
+it before approving.
+
+- **Send-time rescue extended** (`resolveSendTimeButtonHref`,
+  `lib/marketing/ctaDestination.ts`): a relative href that isn't one of the
+  app's two real public destinations (`/learn/*`, `/p/*`) is now treated as
+  fabricated — same rescue-to-ctaUrl path as a dead `"#"` href. This is the
+  load-bearing fix: it protects EVERY send (broadcast, sequence, test)
+  regardless of what authored the bad link, present or future.
+- **Approval preview transparency**: `bodyPreviewText`
+  (`lib/marketing/tools/email.ts`) now renders a button as
+  `[Label → href]`, not just `[Label]` — a human reviewing the "Needs your
+  attention" card can now actually see (and reject) a wrong destination
+  before approving.
+- **Root-cause prompt fix**: the system prompt gained a "LINKING TO THE
+  COURSE" rule (`lib/marketing/agent/prompt.ts`) — the agent must use
+  `{{ctaUrl}}`/`{{freeLessonUrl}}` for any course link and never hand-write a
+  path; `send_broadcast`/`send_test_email`/`write_email_touch` tool
+  descriptions repeat the same instruction locally.
+- **Tests**: `verify:marketing:cta` 47 → **50**, including a full
+  reproduction — `send_broadcast` with the EXACT fabricated
+  `/courses/{id}/preview` href from the incident, asserting the approval
+  preview shows the raw href and the mock-delivered email wraps the real
+  `/learn/{slug}` link, never the 404 path. Pure resolution matrix also
+  covers `/dashboard` and other non-`/learn`/`/p` paths, and confirms a
+  fabricated path with NO resolvable destination still passes through
+  untouched (nothing to rescue to). `verify:marketing`,`:email`,`:campaign`,
+  `:autonomy`,`:agent` re-ran green; full build clean.
+
 ## Marketing — quoted RESEND_FROM + broadcast sender-identity gap, 2026-07-07
 
 Follow-up to the previous fix, which made the failure VISIBLE for the first

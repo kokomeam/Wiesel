@@ -129,13 +129,18 @@ function segmentQuestion(question: string, counts: Map<string, number>): Questio
   return { question, options, paramKey: "status" };
 }
 
-/** Plain-text excerpt of an email body for the inline approval preview. */
+/** Plain-text excerpt of an email body for the inline approval preview. A
+ *  button's HREF is shown alongside its label — not just the label — so the
+ *  creator can catch a wrong/fabricated destination before approving
+ *  (observed live: the agent invented "/courses/{id}" links with no such
+ *  route; the approval card showed only "[Open the cs61b course]" with the
+ *  actual destination invisible, so nothing caught it before it sent). */
 function bodyPreviewText(body: { blocks: Array<Record<string, unknown>> }): string {
   const lines: string[] = [];
   for (const b of body.blocks) {
-    if (typeof b.text === "string") lines.push(b.text);
+    if (typeof b.label === "string") lines.push(`[${b.label} → ${typeof b.href === "string" ? b.href : "?"}]`);
+    else if (typeof b.text === "string") lines.push(b.text);
     else if (Array.isArray(b.items)) lines.push(...(b.items as string[]).map((i) => `• ${i}`));
-    else if (typeof b.label === "string") lines.push(`[${b.label}]`);
   }
   const text = lines.join("\n");
   return text.length > 280 ? `${text.slice(0, 277)}…` : text;
@@ -424,7 +429,8 @@ const generateFollowupTool = defineMarketingTool({
 const writeEmailTouch = defineMarketingTool({
   name: "write_email_touch",
   description:
-    "Author or replace one email touch in a sequence (subject, preview, body). Stages as reversible (snapshots the whole sequence).",
+    "Author or replace one email touch in a sequence (subject, preview, body). Stages as reversible (snapshots the whole sequence). " +
+    "Any button that should link to the course MUST use the exact merge token {{ctaUrl}} as its href (or {{freeLessonUrl}} for the landing/free-lesson offer) — never hand-write a course URL.",
   params: z.object({
     sequenceId: z.string().min(1),
     touchId: z.string().nullable(),
@@ -670,7 +676,8 @@ const enrollSegmentInSequence = defineMarketingTool({
 const sendBroadcastTool = defineMarketingTool({
   name: "send_broadcast",
   description:
-    "Send a one-off email to a subscriber segment. Irreversible — requires approval. status: null = unspecified (the creator may be asked to choose); pass \"all\" to explicitly target everyone.",
+    "Send a one-off email to a subscriber segment. Irreversible — requires approval. status: null = unspecified (the creator may be asked to choose); pass \"all\" to explicitly target everyone. " +
+    "Any button that should link to the course MUST use the exact merge token {{ctaUrl}} as its href (or {{freeLessonUrl}} for the landing/free-lesson offer) — you do NOT know the app's real URL structure, so NEVER hand-write a path from the course id or title (there is no /courses/{id} route or similar; that link 404s for every recipient). These tokens resolve automatically to the correct, live destination at send time.",
   params: z.object({
     subject: z.string().min(1).max(120),
     body: EmailBodySchema,
@@ -720,7 +727,8 @@ const sendBroadcastTool = defineMarketingTool({
 const sendTestEmail = defineMarketingTool({
   name: "send_test_email",
   description:
-    "Send a single test email to the creator's own address — rendered through the SAME pipeline a real send uses (merge vars, click-tracked links, the compliant footer), so what you see is what a subscriber would get. Irreversible (a real send) — requires approval.",
+    "Send a single test email to the creator's own address — rendered through the SAME pipeline a real send uses (merge vars, click-tracked links, the compliant footer), so what you see is what a subscriber would get. Irreversible (a real send) — requires approval. " +
+    "Any button that should link to the course MUST use the exact merge token {{ctaUrl}} as its href (or {{freeLessonUrl}} for the landing/free-lesson offer) — never hand-write a course URL.",
   params: z.object({
     to: z.string().min(1).max(254),
     subject: z.string().min(1).max(120),

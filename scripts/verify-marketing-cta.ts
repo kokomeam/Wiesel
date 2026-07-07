@@ -41,7 +41,8 @@ import {
 } from "@/lib/marketing/ctaDestination";
 import { renderSendableEmail } from "@/lib/marketing/scheduler";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
-import { executeMarketingTool } from "@/lib/marketing/tools";
+import { createMockEmailProvider } from "@/lib/marketing/services/mock";
+import { approveMarketingAction, executeMarketingTool } from "@/lib/marketing/tools";
 import type { MarketingToolContext } from "@/lib/marketing/tools/types";
 import { publicUrl } from "@/lib/marketing/tokens";
 import { GET as clickGET } from "@/app/api/marketing/click/route";
@@ -213,6 +214,32 @@ function sendTimeHrefChecks() {
     "an external URL is untouched",
     resolveSendTimeButtonHref("https://example.com/z", both) === "https://example.com/z"
   );
+
+  console.log("\n# fabricated internal path (live incident: the agent invented /courses/{id})");
+  check(
+    'a hallucinated "/courses/{id}" path (no such route exists) is rescued to ctaUrl',
+    resolveSendTimeButtonHref("/courses/10b26d36-cc2a-41ed-b1d7-cabd2591dc9b", both) === cta
+  );
+  check(
+    'the "/preview" variant is rescued too',
+    resolveSendTimeButtonHref("/courses/10b26d36-cc2a-41ed-b1d7-cabd2591dc9b/preview", both) === cta
+  );
+  check(
+    "any other unknown relative path is rescued (not just /courses)",
+    resolveSendTimeButtonHref("/dashboard", both) === cta
+  );
+  check(
+    "with no destination at all, an unknown path still passes through (nothing to rescue TO)",
+    resolveSendTimeButtonHref("/courses/x", { ctaUrl: null, freeLessonUrl: null }) === "/courses/x"
+  );
+  check(
+    "a real /learn/* path is NEVER treated as fabricated",
+    resolveSendTimeButtonHref("/learn/course-x", both) === "/learn/course-x"
+  );
+  check(
+    "a real /p/* path is NEVER treated as fabricated",
+    resolveSendTimeButtonHref("/p/landing-y", both) === cta // upgrades via the landing-path rule, not the fabrication rescue
+  );
 }
 
 /* ───────────────────────── click route redirect ────────────────────── */
@@ -276,7 +303,8 @@ async function main() {
     status: "published",
   });
 
-  const services = createMarketingServices();
+  const mockEmail = createMockEmailProvider();
+  const services = createMarketingServices({ email: mockEmail });
   const ctx: MarketingToolContext = {
     supabase: author.client as never,
     courseId,
@@ -382,6 +410,52 @@ async function main() {
     'a baked "#" CTA is rescued to the course preview (never the homepage)',
     rescuedHref.includes(encodeURIComponent(after.ctaUrl!)),
     rescuedHref.slice(0, 140)
+  );
+
+  /* ── the live incident: send_broadcast with an agent-fabricated course URL
+     ("/courses/{id}(/preview)" — no such route exists) must deliver the real
+     course preview, not a 404, and the approval preview must show the button's
+     ACTUAL destination so a human reviewing it could catch a bad link before
+     approving ── */
+  console.log("\n# send_broadcast — a fabricated /courses/{id} link is rescued, and the preview shows it");
+  await author.client.from("subscriber").insert({
+    campaign_id: campaignId,
+    course_id: courseId,
+    email: `cta-bc-${crypto.randomUUID().slice(0, 8)}@example.com`,
+    status: "subscribed",
+  });
+  const fabricatedHref = `/courses/${courseId}/preview`;
+  const bcPreview = await executeMarketingTool(
+    "send_broadcast",
+    {
+      subject: "Direct link",
+      body: {
+        blocks: [
+          { kind: "paragraph", text: "Here's the course." },
+          { kind: "button", label: "Open the course", href: fabricatedHref },
+        ],
+      },
+      status: "all",
+    },
+    ctx
+  );
+  check(
+    "the approval preview shows the button's ACTUAL href (not just its label)",
+    typeof bcPreview.approvalPreview?.bodyPreview === "string" &&
+      (bcPreview.approvalPreview.bodyPreview as string).includes(fabricatedHref),
+    String(bcPreview.approvalPreview?.bodyPreview)
+  );
+  mockEmail.reset();
+  await approveMarketingAction(bcPreview.actionId!, { supabase: author.client as never, ownerId: author.userId, services });
+  const bcSends = mockEmail.getSends();
+  // The delivered href is click-wrapped (clickUrl encodes the real destination
+  // as its `u=` param) — same assertion shape as the earlier send-time checks.
+  const deliveredHref = bcSends.flatMap((s) => buttonHrefs(s.body))[0] ?? "";
+  check("the broadcast actually delivered", bcSends.length > 0);
+  check(
+    "the DELIVERED link wraps the real course preview, not the fabricated 404 path",
+    deliveredHref.includes(encodeURIComponent(after.ctaUrl!)) && !deliveredHref.includes(encodeURIComponent(fabricatedHref)),
+    deliveredHref
   );
 
   /* ── compliance wiring: the dashboard-URL misconfig BLOCKS the launch ── */
