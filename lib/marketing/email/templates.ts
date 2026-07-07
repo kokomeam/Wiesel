@@ -33,16 +33,16 @@ export interface SequenceDraft {
   touches: TouchDraft[];
 }
 
-function cta(landingPath: string | null, label: string) {
-  return { kind: "button" as const, label, href: landingPath ?? "#" };
+function cta(ctaPath: string | null, label: string) {
+  return { kind: "button" as const, label, href: ctaPath ?? "#" };
 }
 
 /** A timed 4-touch launch sequence: welcome → value → proof → close. */
 export function generateLaunchSequence(
   course: CourseMarketingContext,
-  opts: { landingPath?: string | null } = {}
+  opts: { ctaPath?: string | null } = {}
 ): SequenceDraft {
-  const path = opts.landingPath ?? null;
+  const path = opts.ctaPath ?? null;
   const firstOutcome = course.outcomes[0] ?? `the core ideas behind ${course.title}`;
   return {
     name: "Launch sequence",
@@ -131,9 +131,9 @@ const FRAMEWORK_OPENERS: Record<CopyFramework, (course: CourseMarketingContext, 
 export function generateBlueprintSequence(
   course: CourseMarketingContext,
   stages: BlueprintStage[],
-  opts: { landingPath?: string | null; brief?: CampaignBrief } = {}
+  opts: { ctaPath?: string | null; brief?: CampaignBrief } = {}
 ): SequenceDraft {
-  const path = opts.landingPath ?? null;
+  const path = opts.ctaPath ?? null;
   return {
     name: "Launch sequence",
     kind: "time_launch",
@@ -165,9 +165,9 @@ export function generateBlueprintSequence(
  *  a page view that didn't convert). */
 export function generateFollowup(
   course: CourseMarketingContext,
-  opts: { landingPath?: string | null; triggerEvent?: AnalyticsEventType } = {}
+  opts: { ctaPath?: string | null; triggerEvent?: AnalyticsEventType } = {}
 ): SequenceDraft {
-  const path = opts.landingPath ?? null;
+  const path = opts.ctaPath ?? null;
   const triggerEvent = opts.triggerEvent ?? "page_view";
   return {
     name: "Behavioral followup",

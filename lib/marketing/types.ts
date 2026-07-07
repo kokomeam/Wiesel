@@ -88,7 +88,24 @@ export type AnalyticsEventType =
   | "spam_complaint"
   | "consent_confirmed"
   | "campaign_auto_paused"
-  | "enrollment";
+  | "enrollment"
+  // Social Post Generator (Marketing Phase 1) — same single stream. These are
+  // marketing events, not course-consumption events; course_id carries the
+  // hub's course context. Extended TOGETHER with the DB check constraint
+  // (migration 20260706120000) per the consequential-updates rule.
+  | "social_post_batch_generated"
+  | "social_post_created"
+  | "social_post_updated"
+  | "social_post_revised_by_agent"
+  | "social_post_status_changed"
+  | "social_post_copied"
+  | "social_post_downloaded"
+  | "social_post_image_attached"
+  | "social_post_image_removed"
+  | "social_post_performance_logged"
+  | "social_post_generation_failed"
+  | "social_voice_profile_derived"
+  | "social_voice_profile_edited";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";

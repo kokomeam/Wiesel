@@ -25,6 +25,7 @@ import type { Database, Json } from "@/lib/database.types";
 import { autoPauseCampaign, evaluateCampaignGuardrails, getAuthorSendRamp } from "./guardrails";
 import { renderEmailText } from "./email/render";
 import { resolveCopyLocale } from "./language";
+import { resolveCtaDestinations, type CtaDestinations } from "./ctaDestination";
 import { renderMergeVars, type MergeVarContext } from "./mergeVars";
 import { loadCampaign, loadCourseMarketingContext, loadEmailSequence, loadSenderIdentity } from "./persistence";
 import type { MarketingServices } from "./services/types";
@@ -401,6 +402,9 @@ export async function runSchedulerTick(
     heldByWindow = 0,
     heldByRamp = 0;
   const authorRampCache = new Map<string, { remaining: number }>();
+  // CTA destinations resolved once per (course, campaign) per tick — publishing
+  // a course upgrades queued sends' {{ctaUrl}} without regenerating copy.
+  const ctaDestCache = new Map<string, CtaDestinations>();
   const guardrailCheckedCampaigns = new Set<string>();
 
   for (const s of due ?? []) {
@@ -447,12 +451,18 @@ export async function runSchedulerTick(
 
     const course = await loadCourseMarketingContext(supabase, seq.courseId);
     const sender = campaign?.senderIdentityId ? await loadSenderIdentity(supabase, campaign.senderIdentityId) : null;
+    const destKey = `${seq.courseId}:${seq.campaignId ?? ""}`;
+    let dest = ctaDestCache.get(destKey);
+    if (!dest) {
+      dest = await resolveCtaDestinations(supabase, { courseId: seq.courseId, campaignId: seq.campaignId });
+      ctaDestCache.set(destKey, dest);
+    }
     const mergeVars: MergeVarContext = {
       firstName: sub.name?.split(" ")[0] ?? null,
       courseName: course?.title ?? null,
       creatorName: sender?.fromName ?? null,
-      freeLessonUrl: null,
-      ctaUrl: null,
+      freeLessonUrl: dest.freeLessonUrl,
+      ctaUrl: dest.ctaUrl,
       offerDeadline: (campaign?.config.brief?.offerDeadlineIso as string | undefined) ?? null,
     };
 

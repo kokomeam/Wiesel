@@ -32,7 +32,7 @@
     "verify:comms": "tsx scripts/verify-comms.ts",
     "verify:comms:int": "tsx scripts/verify-comms-int.ts",
     "seed:fixtures": "tsx scripts/seed-fixture-analytics.ts",
-    "test": "npm run verify:ai && npm run verify:slides && npm run verify:publish && npm run verify:learn && npm run verify:analytics && npm run verify:maintenance && npm run verify:comms && npm run verify:video && npm run verify:reject && npm run verify:marketing:sync",
+    "test": "npm run verify:ai && npm run verify:slides && npm run verify:publish && npm run verify:learn && npm run verify:analytics && npm run verify:maintenance && npm run verify:comms && npm run verify:video && npm run verify:reject && npm run verify:marketing:sync && npm run verify:social",
     "verify:video": "tsx scripts/verify-video.ts",
     "smoke:openai": "tsx scripts/smoke-openai.ts",
     "worker:deck-imports": "tsx workers/deck-import/runWorker.ts",
@@ -49,7 +49,10 @@
     "verify:marketing:autonomy": "tsx scripts/verify-marketing-autonomy.ts",
     "verify:marketing:lists": "tsx scripts/verify-marketing-lists.ts",
     "verify:marketing:sync": "tsx scripts/verify-marketing-sync.ts",
-    "verify:marketing:sync:browser": "tsx scripts/verify-marketing-sync-browser.ts"
+    "verify:marketing:sync:browser": "tsx scripts/verify-marketing-sync-browser.ts",
+    "verify:social": "tsx scripts/verify-social.ts",
+    "verify:social:int": "tsx scripts/verify-social-int.ts",
+    "verify:marketing:cta": "tsx scripts/verify-marketing-cta.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

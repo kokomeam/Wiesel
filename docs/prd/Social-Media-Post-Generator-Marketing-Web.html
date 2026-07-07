@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Social Media Post Generator — Marketing Tab (Web) — Phase 1</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&display=swap');
+
+  :root{
+    --brand-50:#fff7ed; --brand-100:#ffedd5; --brand-200:#fed7aa; --brand-300:#fdba74;
+    --brand-400:#fb923c; --brand-500:#f97316; --brand-600:#ea580c; --brand-700:#c2410c;
+    --brand-800:#9a3412; --brand-900:#7c2d12;
+    --paper:#faf7f1; --line:#ece7de; --card:#ffffff;
+    --ink:#1c1917; --ink-soft:#44403c; --muted:#78716c; --faint:#a8a29e;
+    --emerald:#059669; --emerald-bg:#ecfdf5; --emerald-line:#a7f3d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --amber-line:#fde68a;
+    --red:#dc2626; --red-bg:#fef2f2; --red-line:#fecaca;
+    --blue:#1d4ed8; --blue-bg:#eff6ff; --blue-line:#bfdbfe;
+    --violet:#6d28d9; --violet-bg:#f5f3ff; --violet-line:#ddd6fe;
+    --gradient:linear-gradient(135deg,#f59e0b 0%,#ea580c 100%);
+    --shadow:0 1px 2px rgba(68,48,28,.05);
+    --shadow-md:0 2px 12px rgba(68,48,28,.08);
+    --display:'Fraunces',Georgia,serif;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    --mono:'Geist Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:var(--brand-700);text-decoration:none}
+  a:hover{text-decoration:underline}
+  body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(900px 420px at 88% -8%, rgba(249,115,22,.10), transparent 60%),
+               radial-gradient(700px 380px at 8% 0%, rgba(245,158,11,.07), transparent 55%)}
+  .wrap{position:relative;z-index:1}
+
+  header.top{position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);background:rgba(250,247,241,.82);border-bottom:1px solid var(--line)}
+  .top-inner{max-width:1120px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .wordmark{font-family:var(--display);font-weight:500;font-size:19px;letter-spacing:-.01em}
+  .wordmark .star{color:var(--brand-600)}
+  .top .sep{width:1px;height:22px;background:var(--line)}
+  .top .doctitle{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .top .spacer{flex:1}
+  .pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .pill.phase{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-800)}
+  .pill.ready{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+
+  .hero{max-width:1120px;margin:0 auto;padding:64px 28px 36px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand-700);margin:0 0 18px}
+  h1{font-family:var(--display);font-weight:300;font-size:clamp(34px,5vw,56px);line-height:1.04;letter-spacing:-.02em;margin:0 0 18px}
+  h1 .accent{font-weight:500;font-style:italic;color:var(--brand-700)}
+  .lede{font-size:18px;color:var(--ink-soft);max-width:840px;margin:0}
+  .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  @media(max-width:760px){.meta-grid{grid-template-columns:repeat(2,1fr)}}
+  .meta-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow)}
+  .meta-card .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .meta-card .v{font-size:14px;color:var(--ink);font-weight:500}
+
+  .toc{max-width:1120px;margin:36px auto 0;padding:0 28px}
+  .toc-inner{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:10px;display:flex;flex-wrap:wrap;gap:6px;box-shadow:var(--shadow)}
+  .toc a{display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:12px;color:var(--ink-soft);font-weight:500;font-size:14px;flex:1;min-width:180px}
+  .toc a:hover{background:var(--brand-50);text-decoration:none;color:var(--brand-800)}
+  .toc a .num{font-family:var(--mono);font-size:11px;color:var(--brand-600);border:1px solid var(--brand-200);background:#fff;border-radius:7px;padding:2px 7px}
+
+  main{max-width:1120px;margin:0 auto;padding:20px 28px 90px}
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  section:first-child{border-top:none}
+  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand-700);margin:0 0 12px}
+  h2{font-family:var(--display);font-weight:300;font-size:clamp(26px,3.4vw,36px);letter-spacing:-.015em;margin:0 0 16px;line-height:1.12}
+  h3{font-family:var(--display);font-weight:500;font-size:21px;letter-spacing:-.01em;margin:34px 0 12px}
+  h4{font-family:var(--sans);font-weight:600;font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  p{margin:0 0 14px;color:var(--ink-soft)}
+  .lead-p{font-size:16.5px;color:var(--ink-soft);max-width:860px}
+  ul,ol{margin:0 0 14px;padding-left:20px;color:var(--ink-soft)}
+  li{margin:6px 0}
+  strong{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#f5f1ea;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--brand-800)}
+
+  .callout{border:1px solid var(--line);border-left:3px solid var(--brand-500);background:#fffdfa;border-radius:12px;padding:16px 18px;margin:18px 0}
+  .callout .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);margin-bottom:6px}
+  .callout.guard{border-left-color:var(--red);background:var(--red-bg)}
+  .callout.guard .lbl{color:#b91c1c}
+  .callout.ok{border-left-color:var(--emerald);background:var(--emerald-bg)}
+  .callout.ok .lbl{color:#047857}
+  .callout.dec{border-left-color:var(--blue);background:var(--blue-bg)}
+  .callout.dec .lbl{color:#1d4ed8}
+
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:840px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+  .card h4{margin-top:0}
+  .kpi .big{font-family:var(--display);font-weight:500;font-size:28px;color:var(--brand-700);letter-spacing:-.02em}
+  .kpi .na{color:var(--faint);font-style:italic;font-family:var(--sans);font-size:13px}
+  .kk{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0 8px;border-radius:14px}
+  .tablewrap > table{margin:0}
+  table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0 8px;font-size:13.5px;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:#fbf8f3;font-weight:500}
+  tr:last-child td{border-bottom:none}
+
+  /* roadmap phase strip */
+  .phasestrip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}
+  @media(max-width:840px){.phasestrip{grid-template-columns:1fr 1fr}}
+  .phasecard{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:var(--card);box-shadow:var(--shadow)}
+  .phasecard.now{border-color:var(--brand-300);background:var(--brand-50)}
+  .phasecard .pn{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+  .phasecard.now .pn{color:var(--brand-700)}
+  .phasecard .pt{font-weight:600;font-size:13.5px;margin-bottom:4px}
+  .phasecard .pd{font-size:12px;color:var(--muted);line-height:1.45}
+
+  /* pipeline flow */
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:18px 0}
+  .fstep{flex:1;min-width:132px;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:12px 13px;box-shadow:var(--shadow);position:relative}
+  .fstep .fn{font-family:var(--mono);font-size:10px;color:var(--brand-600);border:1px solid var(--brand-200);background:var(--brand-50);border-radius:6px;padding:1px 6px;display:inline-block;margin-bottom:7px}
+  .fstep .ft{font-weight:600;font-size:12.5px;margin-bottom:3px}
+  .fstep .fd{font-size:11px;color:var(--muted);line-height:1.45}
+  .farrow{align-self:center;color:var(--brand-400);font-size:16px;flex:0 0 auto}
+  @media(max-width:840px){.farrow{display:none}}
+
+  /* state machine */
+  .states{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:16px 0}
+  .statuspill{font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:6px 13px;border-radius:999px;border:1px solid var(--line);background:#fff;white-space:nowrap}
+  .statuspill.draft{background:var(--amber-bg);border-color:var(--amber-line);color:#92400e}
+  .statuspill.ready{background:var(--blue-bg);border-color:var(--blue-line);color:var(--blue)}
+  .statuspill.planned{background:var(--violet-bg);border-color:var(--violet-line);color:var(--violet)}
+  .statuspill.posted{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .statuspill.archived{background:#f5f5f4;border-color:#e7e5e4;color:var(--muted)}
+  .sarrow{color:var(--faint);font-size:14px}
+
+  /* stage chips */
+  .stagechip{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 9px;border-radius:999px;border:1px solid}
+  .stagechip.tofu{background:var(--blue-bg);border-color:var(--blue-line);color:var(--blue)}
+  .stagechip.mofu{background:var(--violet-bg);border-color:var(--violet-line);color:var(--violet)}
+  .stagechip.bofu{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-700)}
+  .tag{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid;vertical-align:middle}
+  .tag.rev{background:var(--emerald-bg);border-color:var(--emerald-line);color:#047857}
+  .tag.fwd{background:var(--violet-bg);border-color:var(--violet-line);color:var(--violet)}
+  .tag.inf{background:var(--blue-bg);border-color:var(--blue-line);color:var(--blue)}
+
+  /* user flow rail */
+  .journey{border:1px solid var(--line);border-radius:16px;background:var(--card);box-shadow:var(--shadow);padding:18px;margin:18px 0}
+  .jstageband{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .jstage{flex:1;min-width:130px;text-align:center;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--brand-800);background:var(--brand-50);border:1px solid var(--brand-200);border-radius:999px;padding:6px 10px}
+  .jsteps{display:grid;gap:8px}
+  .jstep{display:flex;gap:12px;align-items:baseline;padding:9px 12px;border:1px solid var(--line);border-radius:11px;background:#fdfbf7}
+  .jstep .jn{font-family:var(--mono);font-size:10.5px;color:var(--brand-600);border:1px solid var(--brand-200);background:#fff;border-radius:6px;padding:1px 7px;flex:0 0 auto}
+  .jstep .jt{font-size:13px;color:var(--ink-soft)}
+  .jstep .jt b{color:var(--ink)}
+
+  /* milestones */
+  .milestones{position:relative;margin:22px 0;padding-left:26px}
+  .milestones::before{content:"";position:absolute;left:8px;top:8px;bottom:8px;width:2px;background:var(--brand-200);border-radius:2px}
+  .mile{position:relative;background:var(--card);border:1px solid var(--line);border-radius:15px;padding:17px 19px;margin-bottom:14px;box-shadow:var(--shadow)}
+  .mile::before{content:"";position:absolute;left:-24px;top:22px;width:12px;height:12px;border-radius:50%;background:var(--gradient);border:2px solid #fff;box-shadow:0 0 0 1px var(--brand-300)}
+  .mile .mh{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:7px}
+  .mile .mn{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--brand-700);background:var(--brand-50);border:1px solid var(--brand-200);border-radius:7px;padding:2px 8px}
+  .mile .mt{font-weight:600;font-size:15px}
+  .mile .md{font-size:13px;color:var(--ink-soft);margin-bottom:8px}
+  .mile .mtests{font-size:12px;color:var(--muted)}
+  .mile .mtests b{color:var(--ink-soft)}
+  .ckpt{position:relative;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#b45309;background:var(--amber-bg);border:1px dashed var(--amber-line);border-radius:999px;display:inline-block;padding:4px 14px;margin:0 0 14px}
+
+  /* screens */
+  .surface-label{display:flex;align-items:center;gap:10px;margin:34px 0 6px;font-weight:600;font-size:14px}
+  .surface-label .badge{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;background:var(--gradient);color:#fff;border-radius:999px;padding:4px 11px}
+  .scaption{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:26px 0 8px}
+  .screen{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-md)}
+  .screen .chrome{display:flex;align-items:center;gap:7px;padding:9px 14px;border-bottom:1px solid var(--line);background:#fbf8f3}
+  .screen .chrome .dot{width:9px;height:9px;border-radius:50%;background:#e7e1d6}
+  .screen .chrome .ttl{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-left:8px;letter-spacing:.04em}
+  .screen .cap{padding:12px 16px;border-top:1px solid var(--line);background:#fdfbf7;font-size:12.5px;color:var(--muted)}
+  .screen .cap b{color:var(--ink-soft)}
+  .screen .body{padding:16px}
+
+  .btn{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;border-radius:999px;padding:7px 15px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);white-space:nowrap}
+  .btn.grad{background:var(--gradient);color:#fff;border:none}
+  .btn.ghost{background:#fff}
+  .btn.sm{font-size:11px;padding:4px 11px}
+  .mini-h{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:11.5px;padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-soft);display:inline-flex;align-items:center;gap:6px}
+  .chip.on{background:var(--brand-50);border-color:var(--brand-300);color:var(--brand-800);font-weight:600}
+  .chip .cdot{width:6px;height:6px;border-radius:50%;background:var(--brand-500)}
+  .frow{display:flex;align-items:center;gap:10px;margin-bottom:9px;flex-wrap:wrap}
+  .fl{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);width:82px;flex:0 0 auto}
+  .fv{font-size:12.5px;border:1px solid var(--line);background:#fff;border-radius:9px;padding:5px 11px;color:var(--ink)}
+  .fv.sel{border-color:var(--brand-300);background:var(--brand-50);font-weight:500}
+
+  .qcard{border:1px solid var(--line);border-radius:13px;padding:12px 14px;background:#fff;margin-bottom:9px}
+  .qcard .qtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .qcard .pfl{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);border:1px solid var(--line);background:#fbf8f3;border-radius:6px;padding:2px 8px}
+  .qcard .qbody{font-size:12.5px;color:var(--ink-soft);line-height:1.5}
+  .qcard .qmeta{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:7px;display:flex;gap:12px;flex-wrap:wrap}
+  .skel{border:1px dashed var(--line);border-radius:13px;padding:12px 14px;background:#fdfbf7;margin-bottom:9px}
+  .skel .bar{height:9px;border-radius:5px;background:linear-gradient(90deg,#f0ebe2,#f7f3ec,#f0ebe2);background-size:200% 100%;animation:sh 1.4s infinite;margin-bottom:7px}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  @media (prefers-reduced-motion: reduce){.skel .bar{animation:none}}
+
+  .notice{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--blue-line);background:var(--blue-bg);border-radius:11px;padding:10px 13px;font-size:12px;color:#1e40af}
+  .toast{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:#292524;color:#fafaf9;border-radius:11px;padding:9px 14px;font-size:12px;box-shadow:var(--shadow-md)}
+  .errcard{border:1px solid var(--red-line);background:var(--red-bg);border-radius:13px;padding:13px 15px}
+  .lintline{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--amber-line);background:var(--amber-bg);border-radius:11px;padding:9px 12px;font-size:12px;color:#92400e}
+
+  .chatrow{display:flex;margin-bottom:10px}
+  .chatrow.user{justify-content:flex-end}
+  .bubble{max-width:78%;border-radius:14px;padding:10px 14px;font-size:12.5px;line-height:1.5}
+  .bubble.u{background:var(--brand-50);border:1px solid var(--brand-200);color:var(--ink)}
+  .bubble.a{background:#fff;border:1px solid var(--line);color:var(--ink-soft)}
+  .toolline{font-family:var(--mono);font-size:10.5px;color:var(--muted);background:#fbf8f3;border:1px solid var(--line);border-radius:9px;padding:6px 11px;margin:6px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .toolline .ok{color:var(--emerald)}
+
+  .story{border:1px solid var(--line);border-left:3px solid var(--brand-400);border-radius:13px;background:var(--card);padding:17px 19px;margin-bottom:14px;box-shadow:var(--shadow)}
+  .story .sh{display:flex;gap:10px;align-items:center;margin-bottom:9px;flex-wrap:wrap}
+  .story .sn{font-family:var(--mono);font-size:10.5px;color:var(--brand-600);border:1px solid var(--brand-200);background:var(--brand-50);border-radius:7px;padding:2px 8px}
+  .story .st{font-weight:600;font-size:14.5px}
+  .story .srow{display:grid;grid-template-columns:110px 1fr;gap:10px;font-size:13px;margin-bottom:7px}
+  @media(max-width:640px){.story .srow{grid-template-columns:1fr}}
+  .story .sk{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);padding-top:2px}
+  .story .sv{color:var(--ink-soft)}
+
+  footer{border-top:1px solid var(--line);padding:26px 28px 60px;max-width:1120px;margin:0 auto;font-size:12px;color:var(--faint);display:flex;gap:14px;flex-wrap:wrap}
+  @media(max-width:640px){
+    .hero{padding:44px 18px 28px}
+    main{padding:12px 18px 70px}
+    .toc{padding:0 18px}
+    .top-inner{padding:12px 18px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="top-inner">
+    <span class="wordmark">WiseSel<span class="star">✳</span></span>
+    <span class="sep"></span>
+    <span class="doctitle">Product Requirements · Social Posts</span>
+    <span class="spacer"></span>
+    <span class="pill phase">Marketing · Phase 1</span>
+    <span class="pill ready">Ready for implementation</span>
+  </div>
+</header>
+
+<div class="hero">
+  <p class="eyebrow">Product Requirements · Marketing Tab · Web</p>
+  <h1>Social Media <span class="accent">Post Generator</span></h1>
+  <p class="lede">Creators turn real course content into 1–5 platform-ready LinkedIn and Facebook posts — grounded in actual modules and outcomes, shaped by their own voice, tagged by funnel stage, planned on a manual calendar, and exported by copy/download. <strong>The creator publishes everything manually.</strong> WiseSel never connects to, schedules on, or posts to any social platform in this phase.</p>
+  <div class="meta-grid">
+    <div class="meta-card"><div class="k">Surface</div><div class="v">Web · Marketing tab (creator)</div></div>
+    <div class="meta-card"><div class="k">Scope</div><div class="v">Phase 1 of 4 — generation backbone</div></div>
+    <div class="meta-card"><div class="k">Governance</div><div class="v">Reversible-only · no approval cards</div></div>
+    <div class="meta-card"><div class="k">Depends on</div><div class="v">Marketing orchestrator · <code style="font-size:11px">runSubagent</code> · Supabase · course context retrieval</div></div>
+  </div>
+</div>
+
+<div class="toc">
+  <div class="toc-inner">
+    <a href="#purpose"><span class="num">01</span>Purpose &amp; Goals</a>
+    <a href="#competitive"><span class="num">02</span>Competitive Analysis</a>
+    <a href="#approach"><span class="num">03</span>Product Approach</a>
+    <a href="#functional"><span class="num">04</span>Functional Design</a>
+    <a href="#ux"><span class="num">05</span>User Experience</a>
+  </div>
+</div>
+
+<main>
+
+<!-- ==================== 01 PURPOSE & GOALS ==================== -->
+<section id="purpose">
+  <p class="sec-eyebrow">01 — Purpose &amp; Goals</p>
+  <h2>Turn real course content into platform-ready posts — the creator stays the publisher.</h2>
+  <p class="lead-p">WiseSel creators finish a course and then face a blank social feed. Generic AI copy tools don't know their curriculum; scheduler suites demand OAuth and platform connections before writing a single good post. Phase 1 builds the <strong>generation backbone</strong>: specific, non-generic, voice-true posts from actual course context — quality over speed (generation takes the time it needs under a hard 3-minute ceiling, streaming drafts as they validate), with zero platform APIs, zero email, zero autonomous posting.</p>
+
+  <h3>Where this sits on the roadmap</h3>
+  <div class="phasestrip">
+    <div class="phasecard now"><div class="pn">Phase 1 · this document</div><div class="pt">Generation backbone</div><div class="pd">Multi-format text-first generation, batch planning, funnel stages, voice profile, manual performance logging, copy/download export. Human posts everything manually.</div></div>
+    <div class="phasecard"><div class="pn">Phase 1.5 · later PRD</div><div class="pt">Lesson-video repurposing</div><div class="pd">Captioned, reframed shorts dropped into the same draft queue. No connectors required.</div></div>
+    <div class="phasecard"><div class="pn">Phase 3 · later PRD</div><div class="pt">Unified social API + scheduling</div><div class="pd">Publish becomes an irreversible-tier gated action via a unified social API and durable event-driven scheduling.</div></div>
+    <div class="phasecard"><div class="pn">Phase 4 · later PRD</div><div class="pt">Closed loop</div><div class="pd">Automatic engagement ingestion, per-stage generation learning, course-event-triggered proactive drafts.</div></div>
+  </div>
+  <div class="callout"><div class="lbl">Forward compatibility</div>The Phase 1 schema and event taxonomy <strong>must not foreclose Phases 1.5–4</strong>. Reserved fields (tagged <span class="tag fwd">FWD</span> throughout — e.g. <code>external_ref</code>, <code>post_type</code>, <code>performance.source</code>) are nullable, unused by Phase 1 UI, and cost nothing. They are not scope creep and not an invitation to build later-phase behavior now.</div>
+
+  <h3>Goals</h3>
+  <div class="grid g2">
+    <div class="card"><h4>1 · Grounded, quality-first generation</h4><p style="margin:0;font-size:13px">Specific, non-generic, platform-appropriate posts from real course context. Generation takes the time it needs (hard 3-minute ceiling); drafts stream in as each validates, so the wait never feels blank.</p></div>
+    <div class="card"><h4>2 · Batch planning</h4><p style="margin:0;font-size:13px">Up to 5 posts per batch with optional <code>plannedPostAt</code> times — internal planning labels only, never external scheduling.</p></div>
+    <div class="card"><h4>3 · Funnel-stage awareness</h4><p style="margin:0;font-size:13px">Every post carries a <code>funnelStage</code> (tofu / mofu / bofu); batch generation defaults to a balanced funnel mix.</p></div>
+    <div class="card"><h4>4 · Creator voice</h4><p style="margin:0;font-size:13px">A per-creator voice profile derived from course and creator context, so output sounds like the creator — not like an AI.</p></div>
+    <div class="card"><h4>5 · Cursor-like assistant integration</h4><p style="margin:0;font-size:13px">The Marketing Chat Assistant generates, inspects, revises, and manages posts through typed tools with versioned updates that never silently overwrite newer user edits.</p></div>
+    <div class="card"><h4>6 · Performance logging from day one</h4><p style="margin:0;font-size:13px">Manual metrics or one-tap qualitative rating on posted posts, so closed-loop data starts accumulating now.</p></div>
+    <div class="card"><h4>7 · Zero external surface</h4><p style="margin:0;font-size:13px">No social platform APIs, no email sending, no autonomous posting — enforced by tests, not just convention.</p></div>
+    <div class="card"><h4>8 · Production quality</h4><p style="margin:0;font-size:13px">Server-side validated generation, Zod-gated output with one repair pass, RLS-scoped persistence, full test coverage, designed empty/loading/error states.</p></div>
+  </div>
+
+  <h3>Success criteria</h3>
+  <div class="grid g4">
+    <div class="card kpi"><div class="kk">Save-without-rewrite rate</div><div class="big">≥ 80%</div><p style="font-size:12px;margin:4px 0 6px">Posts saved or exported without a full manual rewrite (proxy: edit distance on save &lt; 40% of body length, instrumented via events).</p><div class="na">Current: N/A — new feature</div></div>
+    <div class="card kpi"><div class="kk">Generation ceiling</div><div class="big">≤ 3 min</div><p style="font-size:12px;margin:4px 0 6px">Hard per-batch timeout (config), not a latency target — quality first, drafts stream as they validate. Timeout ⇒ typed error, nothing persisted, parameters kept.</p><div class="na">Current: N/A — new feature</div></div>
+    <div class="card kpi"><div class="kk">Silent overwrites</div><div class="big">0</div><p style="font-size:12px;margin:4px 0 6px">Version conflicts always surface a 409 path; no force-writes anywhere.</p><div class="na">Current: N/A — new feature</div></div>
+    <div class="card kpi"><div class="kk">Safety lint pass rate</div><div class="big">100%</div><p style="font-size:12px;margin:4px 0 6px">No fabricated claims, testimonials, or urgency in any persisted post.</p><div class="na">Current: N/A — new feature</div></div>
+  </div>
+
+  <h3>Non-goals — hard fences</h3>
+  <div class="callout guard"><div class="lbl">Out of scope · enforced by CI tests, not convention</div>
+    <ul style="margin:6px 0 0">
+      <li>No email sending, drafting-for-send, or email infrastructure of any kind.</li>
+      <li>No auto-posting, auto-scheduling, or "publish" semantics. <code>plannedPostAt</code> is a label, not a trigger.</li>
+      <li>No LinkedIn / Instagram / Facebook / TikTok / X API calls, OAuth, connectors, or platform integrations.</li>
+      <li>No AI image or video generation, image editing, brand templates, auto-resizing, or carousel rendering.</li>
+      <li>No Instagram content for now — Instagram is image-first and WiseSel has no image/video generation yet; it returns when visuals ship (Phase 1.5+). No TikTok/Reels scripts or X/Twitter threads. The platform enum is closed at 2 (LinkedIn, Facebook) for MVP.</li>
+      <li>No content-calendar automation, A/B testing, social analytics ingestion, bot engagement, or recurring background generation.</li>
+      <li>No cron or scheduler infrastructure — nothing in Phase 1 runs on a timer.</li>
+      <li>No approval cards. Every tool here is reversible; blocking approvals for reversible tools was the exact UX failure identified in the autonomy redesign. Do not reintroduce it.</li>
+    </ul>
+  </div>
+
+  <h3>Target users</h3>
+  <div class="grid g2">
+    <div class="card"><h4>Academic / curriculum builders</h4><p style="font-size:13px;margin:0 0 8px">Structured educators, competition coaches, subject-matter experts.</p><div class="chips"><span class="chip on">Tone · professional</span><span class="chip on">Tone · educational</span><span class="chip">Platform emphasis · LinkedIn</span></div></div>
+    <div class="card"><h4>Coaching / guru-style creators</h4><p style="font-size:13px;margin:0 0 8px">Personal-brand educators, community-first trainers.</p><div class="chips"><span class="chip on">Tone · founder-led</span><span class="chip on">Tone · friendly</span><span class="chip">Platform emphasis · Facebook</span></div></div>
+  </div>
+  <p style="font-size:13px">The existing <code>delivery_profile</code> field seeds these defaults only — every control remains creator-overridable.</p>
+
+  <h3>Language rules (enforced in all UI copy, tooltips, docs, and generated copy about the feature)</h3>
+  <div class="tablewrap"><table>
+    <tr><th style="width:50%">Always use</th><th>Never use</th></tr>
+    <tr>
+      <td>"planned post time" · "ready to post at" · "manual posting plan" · "content queue" · "copy when ready"</td>
+      <td>"auto-schedule" · "auto-post" · "publish automatically" · "connect account" · "bot posting"</td>
+    </tr>
+  </table></div>
+  <p style="font-size:12.5px;color:var(--muted)">A repo-wide grep test asserts the banned phrases appear nowhere in feature UI strings (acceptance №17). The manual-publish notice is one shared component, so the language stays enforceable in one place.</p>
+</section>
+
+<!-- ==================== 02 COMPETITIVE ANALYSIS ==================== -->
+<section id="competitive">
+  <p class="sec-eyebrow">02 — Competitive Analysis</p>
+  <h2>Borrow the voice-first lesson; skip the scheduler arms race.</h2>
+  <p class="lead-p">No user-supplied competitor materials exist for this requirement, so the comparison below reasons from well-known product patterns in the social-content space. <span class="tag inf">inference</span> marks claims not backed by supplied evidence. The comparison is limited to decision-relevant dimensions: entry point, content grounding, voice, publish model, and funnel awareness.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Buffer / Hootsuite <span class="tag inf">inference</span></th><th>Taplio / Hypefury <span class="tag inf">inference</span></th><th>Ocoya / Predis.ai <span class="tag inf">inference</span></th><th>Kajabi-class course platforms <span class="tag inf">inference</span></th></tr>
+    <tr><td><b>Positioning</b></td><td>Scheduler suite</td><td>AI ghostwriting for personal brands</td><td>AI social content generator</td><td>Built-in course marketing add-on</td></tr>
+    <tr><td><b>Entry point</b></td><td>Calendar first — write into slots</td><td>Inspiration feed + your past posts</td><td>Template / brand-kit picker</td><td>Course dashboard upsell</td></tr>
+    <tr><td><b>Content grounding</b></td><td>None — bring your own copy</td><td>Your posting history, viral libraries</td><td>Brand kit + generic AI</td><td>Course metadata, shallow</td></tr>
+    <tr><td><b>Creator voice</b></td><td>n/a</td><td><b>Strong</b> — trained on the creator's own posts</td><td>Weak / generic</td><td>Weak</td></tr>
+    <tr><td><b>Publish model</b></td><td>OAuth + auto-post (core value)</td><td>OAuth + auto-post</td><td>OAuth + auto-post</td><td>Limited / none</td></tr>
+    <tr><td><b>Funnel awareness</b></td><td>None</td><td>None</td><td>None</td><td>Campaign-level at best</td></tr>
+  </table></div>
+
+  <h3>Takeaways</h3>
+  <div class="grid g3">
+    <div class="card"><h4>Borrow</h4><p style="font-size:13px;margin:0">Taplio's core lesson: <strong>voice is the differentiator</strong>. A derived, versioned, creator-tunable voice profile is the single highest-leverage lever against generic AI copy — treat its quality as a first-class test target (§3, §4). Also borrow platform-native register: each platform gets its own style guide, not one caption resized for every network.</p></div>
+    <div class="card"><h4>Own</h4><p style="font-size:13px;margin:0"><strong>Curriculum grounding is unclaimed space.</strong> No competitor generates from an actual course structure — real module names, lesson outcomes, target students. WiseSel already holds this context; posts that quote it are unfakeable elsewhere. Funnel staging from day one seeds the Phase 4 closed loop competitors lack.</p></div>
+    <div class="card"><h4>Defer</h4><p style="font-size:13px;margin:0">The scheduler/OAuth stack is Buffer-class table stakes but heavy: connectors, token refresh, platform policy churn. Phase 1 deliberately wins on <strong>draft quality + manual-publish honesty</strong>; Phase 3 adds publishing through a unified social API as an irreversible-tier gated action.</p></div>
+  </div>
+</section>
+
+<!-- ==================== 03 PRODUCT APPROACH ==================== -->
+<section id="approach">
+  <p class="sec-eyebrow">03 — Product Approach</p>
+  <h2>One grounded pipeline, one reversible tier, one versioned write path.</h2>
+  <p class="lead-p">Everything — REST routes, assistant tools, UI buttons — funnels into a <strong>single service layer</strong> running one server-side generation pipeline. All 19 assistant tools run through the existing three-mode autonomy system: the five read/suggest tools execute freely, and all fourteen write tools are classified <strong>reversible</strong>, so agent actions auto-commit with a passive revert log and <strong>no blocking approval card appears anywhere in the feature</strong>. Every content write goes through one versioned-update statement; a stale version is a 409, never a silent overwrite.</p>
+
+  <div class="callout dec"><div class="lbl">Decisions taken (alternatives considered and rejected)</div>
+    <ul style="margin:6px 0 0;font-size:13.5px">
+      <li><b>One structured-output call per batch</b>, not N per-post calls — the funnel mix and ordering are reasoned together, it is cheaper, and it counts as one call against the platform-wide two-concurrent-model-call ceiling. No latency target: generation is quality-first under a hard 3-minute timeout (<code>SOCIAL_GENERATION_TIMEOUT_MS</code>).</li>
+      <li><b>Reversible auto-commit + revert log</b>, not approval cards — approval cards on reversible tools were the exact failure the autonomy redesign removed; reintroducing them here is forbidden.</li>
+      <li><b>Manual publish</b>, not platform connectors — publishing is deferred to Phase 3 where it becomes an irreversible-tier gated action; Phase 1 stays honest ("you post this yourself").</li>
+      <li><b>Soft delete only</b> — <code>deleteSocialPost</code> archives with <code>deletedAt</code>; hard purge is a later-phase retention job.</li>
+    </ul>
+  </div>
+
+  <h3>The generation pipeline — one server-side path for REST and assistant</h3>
+  <div class="flow">
+    <div class="fstep"><span class="fn">1</span><div class="ft">Resolve source context</div><div class="fd">Course / module / lesson via the existing retrieval layer, or manual topic verbatim. Token budget 6k, priority: description &gt; outcomes &gt; selected node &gt; sibling summaries.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">2</span><div class="ft">Load voice profile</div><div class="fd">Cached row; derived on first use with a small-tier call.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">3</span><div class="ft">Assemble prompt</div><div class="fd">Byte-stable static prefix (system + platform guides + safety rules) → voice block → context block → request block. Prompt-cache eligible.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">4</span><div class="ft">One batch model call</div><div class="fd">Mid-tier, structured output, JSON schema = array of ≤5 drafts. One call against the 2-concurrent ceiling.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">5</span><div class="ft">Zod gate</div><div class="fd">Parse against <code>GeneratedPostBatchSchema</code>. On failure: exactly one small-tier repair call fed the invalid JSON + error paths. Second failure → typed error, nothing persisted.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">6</span><div class="ft">Safety lint</div><div class="fd">Deterministic, code not model. Violations → targeted regeneration within the repair budget, or the offending post is dropped with a surfaced reason; clean posts survive.</div></div>
+    <span class="farrow">→</span>
+    <div class="fstep"><span class="fn">7</span><div class="ft">Persist + stream</div><div class="fd">Batch + posts + events in one transaction; drafts stream to the queue incrementally as they validate.</div></div>
+  </div>
+
+  <h3>Post lifecycle</h3>
+  <div class="states">
+    <span class="statuspill draft">draft</span><span class="sarrow">→</span>
+    <span class="statuspill ready">ready</span><span class="sarrow">→</span>
+    <span class="statuspill planned">planned</span><span class="sarrow">→</span>
+    <span class="statuspill posted">posted_manual</span><span class="sarrow">→</span>
+    <span class="statuspill archived">archived</span>
+  </div>
+  <ul style="font-size:13.5px">
+    <li><b>posted_manual</b> stamps <code>postedManuallyAt</code> and unlocks performance logging.</li>
+    <li><b>archived</b> is reachable from any state (bulk action, or soft delete via <code>deletedAt</code>). Unarchive restores.</li>
+    <li>Nothing ever fires from <code>plannedPostAt</code> — it is a planning label read by humans (and, later, by the Phase 3 scheduler; the field is not renamed).</li>
+  </ul>
+
+  <h3>Batch planning &amp; funnel mix</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4>Batch rules</h4>
+      <ul style="font-size:13px;margin:0">
+        <li>Hard max <b>5 posts per batch</b>, enforced in four layers on purpose (cost + safety control): Zod input schema, service layer, DB check (<code>batch_order between 1 and 5</code>), and UI.</li>
+        <li>A batch is a first-class row (<code>social_post_batches</code>) so the queue can group, retry, and audit per batch. Persistence is transactional — all posts commit or none.</li>
+        <li>Timing presets compute suggested times client-side in the creator's timezone: <b>same day</b> (≥2h apart, next full hour) · <b>spread this week</b> (one weekday-ish slot each, 9:00–11:00 local, never two per day) · <b>spread 2 weeks</b> (~every 2–3 days) · <b>custom</b> · <b>none</b>.</li>
+        <li>Suggested times carry ±20min jitter so followed plans don't look robotic.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Balanced funnel mix (default ON for counts ≥ 3)</h4>
+      <div class="tablewrap"><table style="box-shadow:none">
+        <tr><th>Count</th><th>tofu</th><th>mofu</th><th>bofu</th></tr>
+        <tr><td>5</td><td>3</td><td>1</td><td>1</td></tr>
+        <tr><td>4</td><td>2</td><td>1</td><td>1</td></tr>
+        <tr><td>3</td><td>2</td><td>0 <span style="color:var(--faint)">(mofu drops first)</span></td><td>1</td></tr>
+        <tr><td>2</td><td>1</td><td>0</td><td>1</td></tr>
+        <tr><td>1</td><td colspan="3">whatever the selected goal maps to</td></tr>
+      </table></div>
+      <p style="font-size:12.5px;margin:8px 0 0">Ordering within the plan: tofu earliest, bofu last — <b>value before ask</b>. Toggle OFF pins all posts to the selected goal/stage.</p>
+    </div>
+  </div>
+
+  <h3>Goal → funnel stage mapping (constants module; creator-overridable per post)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Goal</th><th>Default stage</th><th>Goal</th><th>Default stage</th></tr>
+    <tr><td>educational / value</td><td><span class="stagechip tofu">tofu</span></td><td>course benefit</td><td><span class="stagechip bofu">bofu</span></td></tr>
+    <tr><td>problem / solution</td><td><span class="stagechip tofu">tofu</span></td><td>course launch announcement</td><td><span class="stagechip bofu">bofu</span></td></tr>
+    <tr><td>student pain point</td><td><span class="stagechip mofu">mofu</span></td><td>promotional CTA</td><td><span class="stagechip bofu">bofu</span></td></tr>
+  </table></div>
+  <p style="font-size:13px"><code>funnelStage</code> is stored per post and used for batch balancing, queue filtering, and stage-appropriate CTA behavior (tofu → soft/no CTA; bofu → direct CTA). <span class="tag fwd">FWD</span> Phase 4 per-stage learning reads the same field — a one-field addition now versus a migration + backfill later.</p>
+
+  <h3>Creator voice profile — the anti-generic lever</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4>What it is</h4>
+      <p style="font-size:13px;margin:0">One active, versioned row per creator (<code>creator_voice_profiles</code>): a 2–4 sentence style summary, register, sentence-length tendency, emoji tolerance, signature moves ("opens with a question", "numbered mini-lists"), creator-editable banned phrases, and up to 3 creator-pasted sample excerpts.</p>
+    </div>
+    <div class="card">
+      <h4>How it behaves</h4>
+      <p style="font-size:13px;margin:0">Derived on first generation by a small-tier call over course descriptions + lesson intros + <code>delivery_profile</code> + any pasted samples. Viewable and regenerable from a settings sheet inside Social Posts. Creator edits persist and set <code>source='creator_edited'</code> — regeneration then requires confirmation. Injected into <b>every</b> generation and revision prompt. Test target: two distinct creator fixtures must produce distinguishably different posts.</p>
+    </div>
+  </div>
+
+  <h3>Governance — how agent writes behave</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Autonomy mode</th><th>Behavior (reads execute freely in every mode; all writes are reversible)</th></tr>
+    <tr><td><code>assisted</code> / <code>auto</code></td><td>Auto-commit with a revert-log entry. Quiet, dismissible — never a blocking card.</td></tr>
+    <tr><td><code>manual</code></td><td>The assistant proposes; the creator clicks apply. Existing mechanism — nothing new built for governance.</td></tr>
+  </table></div>
+  <div class="callout ok"><div class="lbl">The versioned-write rule (the only legal update path)</div>
+    <code style="display:block;background:#fff;padding:10px 12px;border-radius:9px;font-size:12px;overflow-x:auto">update social_posts set …, version = version + 1, updated_at = now()<br>&nbsp;&nbsp;where id = $1 and version = $2 and deleted_at is null returning *;</code>
+    <p style="margin:8px 0 0;font-size:13px">Zero rows returned ⇒ 409 to the caller. No other UPDATE may touch content fields — all writes funnel through one repository function, and a lint/test greps for strays. On 409 the assistant re-reads, re-applies intent against the fresh content, and says so. It never force-writes.</p>
+  </div>
+
+  <h3>Business KPIs</h3>
+  <p style="font-size:13.5px">The four success criteria in §01 are the Phase 1 KPI set (save-without-rewrite ≥80%, the 3-minute generation ceiling, zero silent overwrites, 100% lint pass). Current analytics for this surface do not exist — all current values are <b>N/A</b>; instrumentation ships with the feature (every copy/download/edit/status event fires from day one), so baselines accumulate immediately. Finer-grained metrics wait until these four are measured.</p>
+</section>
+
+<!-- ==================== 04 FUNCTIONAL DESIGN ==================== -->
+<section id="functional">
+  <p class="sec-eyebrow">04 — Functional Design</p>
+  <h2>High-fidelity design &amp; engineering spec.</h2>
+  <p class="lead-p">The feature is a single surface: <strong>Web · Marketing tab → Social Posts</strong>, sharing the marketing system's panel chrome and queue visual language so it feels native, not like an embedded generator. Screens below are final-fidelity; all in-screen copy is final English. Every capability shown is <b>new</b> in this phase; reads execute freely and every write is classified <span class="tag rev">reversible</span>. Controls collapse to a compact row after use — the queue is the hero.</p>
+
+  <!-- ---------- user flow ---------- -->
+  <h3>The user flow — configure → generate → refine → export → learn</h3>
+  <div class="journey">
+    <div class="jstageband">
+      <span class="jstage">Configure · 1–8</span><span class="jstage">Generate · 9</span><span class="jstage">Refine · 10–11</span><span class="jstage">Export &amp; post · 12–13</span><span class="jstage">Learn · 14</span>
+    </div>
+    <div class="jsteps">
+      <div class="jstep"><span class="jn">1</span><span class="jt">Creator opens <b>Marketing tab → Social Posts</b>.</span></div>
+      <div class="jstep"><span class="jn">2</span><span class="jt">Chooses <b>source</b>: course · module · lesson · manual topic (free-text topic + optional context paste).</span></div>
+      <div class="jstep"><span class="jn">3</span><span class="jt">Chooses <b>platform</b>: LinkedIn · Facebook. Single platform per batch; "rewrite for the other platform" is a one-click action afterward. Instagram returns when image/video generation ships (Phase 1.5+).</span></div>
+      <div class="jstep"><span class="jn">4</span><span class="jt">Chooses <b>goal</b>: launch announcement · educational/value · course benefit · problem/solution · student pain point · promotional CTA.</span></div>
+      <div class="jstep"><span class="jn">5</span><span class="jt"><b>Funnel stage auto-derives</b> from the goal and displays as an editable chip (tofu / mofu / bofu).</span></div>
+      <div class="jstep"><span class="jn">6</span><span class="jt">Chooses <b>tone</b>: professional · friendly · founder-led · educational · casual — default seeded from <code>delivery_profile</code> + voice profile.</span></div>
+      <div class="jstep"><span class="jn">7</span><span class="jt">Chooses <b>count</b> 1–5. For counts ≥3 a <b>"balanced funnel mix"</b> toggle appears (default ON): stages distribute ~3/1/1 scaled to count, per-post goals auto-assigned; OFF pins all posts to the selected goal/stage.</span></div>
+      <div class="jstep"><span class="jn">8</span><span class="jt">Chooses <b>timing</b>: none · same day · spread this week · spread 2 weeks · custom. Suggested daytime slots in the creator's timezone, editable, jittered ±20min.</span></div>
+      <div class="jstep"><span class="jn">9</span><span class="jt">Clicks <b>Generate</b>. Drafts <b>stream incrementally</b> into the content queue — platform, stage chip, body preview, CTA, hashtags, suggested image idea, planned time, status=draft.</span></div>
+      <div class="jstep"><span class="jn">10</span><span class="jt">Opens a draft in the <b>post editor</b>: edits manually, applies AI edit actions, or asks the chat assistant.</span></div>
+      <div class="jstep"><span class="jn">11</span><span class="jt">Optionally <b>uploads an image</b> (preview renders beside the post; alt-text field surfaced prominently).</span></div>
+      <div class="jstep"><span class="jn">12</span><span class="jt">Saves. <b>Copies body / copies hashtags / downloads .txt or .md.</b></span></div>
+      <div class="jstep"><span class="jn">13</span><span class="jt">Posts manually on the actual platform, then marks the post <b>Posted manually</b> (timestamp captured).</span></div>
+      <div class="jstep"><span class="jn">14</span><span class="jt">Later, optionally <b>logs performance</b>: impressions / likes / comments / shares / clicks, or a one-tap qualitative rating.</span></div>
+    </div>
+  </div>
+  <p style="font-size:13px;color:var(--muted)">A persistent, calm reminder appears in the editor and queue: <i>"You post this yourself — WiseSel never publishes to social platforms."</i> The assistant flow (§05, story 5) reaches every one of these steps conversationally through the same service layer.</p>
+
+  <!-- ============ SURFACE ============ -->
+  <div class="surface-label"><span class="badge">Surface</span> Web · Marketing tab · Social Posts (creator)</div>
+
+  <!-- SCREEN 1 -->
+  <p class="scaption">Screen 1 · Social Posts home — generation controls + seeded empty state</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">wisesel.pro/marketing/social</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <div class="mini-h">Marketing · Social Posts</div>
+          <div style="font-family:var(--display);font-size:19px;font-weight:500">Create social posts from your course</div>
+        </div>
+        <span style="flex:1"></span>
+        <span class="btn ghost">Voice profile</span>
+      </div>
+      <div class="grid g2" style="gap:12px">
+        <div class="card" style="padding:15px">
+          <div class="frow"><span class="fl">Source</span><span class="fv sel">Course · Watercolor Foundations</span><span class="btn sm ghost">Change</span></div>
+          <div class="frow"><span class="fl">Platform</span><span class="fv sel">LinkedIn</span><span class="fv">Facebook</span></div>
+          <div class="frow"><span class="fl">Goal</span><span class="fv sel">Educational / value</span><span class="stagechip tofu">tofu · auto</span></div>
+          <div class="frow"><span class="fl">Tone</span><span class="fv sel">Friendly</span><span style="font-size:11px;color:var(--faint)">seeded from your profile</span></div>
+        </div>
+        <div class="card" style="padding:15px">
+          <div class="frow"><span class="fl">Count</span><span class="fv sel">5 posts</span></div>
+          <div class="frow"><span class="fl">Funnel mix</span><span class="fv sel">Balanced · 3 tofu / 1 mofu / 1 bofu</span><span style="font-size:11px;color:var(--faint)">toggle</span></div>
+          <div class="frow"><span class="fl">Timing</span><span class="fv sel">Spread across this week</span></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+            <span class="btn grad">✦ Generate 5 drafts</span>
+            <span style="font-size:11px;color:var(--faint)">quality-first · drafts stream in as they're ready</span>
+          </div>
+        </div>
+      </div>
+      <div style="border:1px dashed var(--line);border-radius:13px;padding:26px;text-align:center;margin-top:14px;background:#fdfbf7">
+        <div style="font-family:var(--display);font-size:16px;font-weight:500;margin-bottom:5px">No posts yet</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:11px">Generate platform-ready drafts from your real course content — then copy and post them yourself, wherever you already show up.</div>
+        <div class="chips" style="justify-content:center">
+          <span class="chip">Announce Watercolor Foundations</span>
+          <span class="chip">3 value posts from Module 2</span>
+          <span class="chip">A pain-point post for beginners</span>
+        </div>
+      </div>
+      <div class="notice" style="margin-top:12px"><span>ⓘ</span><span>You post this yourself — WiseSel never publishes to social platforms.</span></div>
+    </div>
+    <div class="cap"><b>Controls up top, queue as the hero, honesty pinned at the bottom.</b> Stage chip auto-derives from goal (editable). Balanced-mix toggle appears at count ≥3, default ON. Example chips seed the manual-topic path. Defaults (tone, platform emphasis) come from <code>delivery_profile</code> + voice profile; everything is overridable. After first use the control block collapses to a single compact row.</div>
+  </div>
+
+  <!-- SCREEN 2 -->
+  <p class="scaption">Screen 2 · Generating — drafts stream into the queue (loading state)</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social — generating batch</span></div>
+    <div class="body">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:11px;flex-wrap:wrap">
+        <span class="mini-h" style="margin:0">Batch · LinkedIn · balanced mix · spread this week</span>
+        <span style="flex:1"></span>
+        <span style="font-family:var(--mono);font-size:10.5px;color:var(--brand-700)">2 of 5 drafts ready…</span>
+      </div>
+      <div class="qcard">
+        <div class="qtop"><span class="pfl">LinkedIn</span><span class="stagechip tofu">tofu</span><span class="statuspill draft" style="font-size:9.5px;padding:3px 9px">draft</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">planned · Tue 09:40</span></div>
+        <div class="qbody">Most beginners think watercolor is about controlling the paint. Module 2 of Watercolor Foundations teaches the opposite: wet-on-wet works because you let the water do the moving…</div>
+        <div class="qmeta"><span>CTA · none (soft follow)</span><span>#watercolor #learntopaint +2</span><span>image idea · your palette mid-wash</span></div>
+      </div>
+      <div class="qcard">
+        <div class="qtop"><span class="pfl">LinkedIn</span><span class="stagechip tofu">tofu</span><span class="statuspill draft" style="font-size:9.5px;padding:3px 9px">draft</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">planned · Wed 10:15</span></div>
+        <div class="qbody">Three brush mistakes that flatten every wash — and the one-minute fix from Lesson 3 (Loading the brush)…</div>
+        <div class="qmeta"><span>CTA · none (soft follow)</span><span>#paintingtips #watercolor +1</span><span>image idea · three brushes on paper towel</span></div>
+      </div>
+      <div class="skel"><div class="bar" style="width:34%"></div><div class="bar" style="width:88%"></div><div class="bar" style="width:71%"></div></div>
+      <div class="skel"><div class="bar" style="width:28%"></div><div class="bar" style="width:82%"></div></div>
+    </div>
+    <div class="cap"><b>Never a monolithic spinner.</b> The server streams each draft as it passes the Zod gate + safety lint (same incremental pattern as the change-set panel). Each card lands with platform, stage chip, body preview, CTA, hashtags, suggested image idea, planned time, status=draft. Real module ("Wet-on-wet") and lesson ("Loading the brush") names come from actual course context — the grounding is visible.</div>
+  </div>
+
+  <!-- SCREEN 3 -->
+  <p class="scaption">Screen 3 · Content queue — filters, batch grouping, bulk actions</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social — queue</span></div>
+    <div class="body">
+      <div class="chips" style="margin-bottom:12px">
+        <span class="chip on"><span class="cdot"></span>All statuses</span><span class="chip">Draft</span><span class="chip">Ready</span><span class="chip">Planned</span><span class="chip">Posted</span>
+        <span style="width:10px"></span>
+        <span class="chip on"><span class="cdot"></span>All platforms</span><span class="chip">LinkedIn</span><span class="chip">Facebook</span>
+        <span style="width:10px"></span>
+        <span class="chip">Stage · all</span><span class="chip">Course · Watercolor Foundations</span><span class="chip">Sort · planned time</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px;flex-wrap:wrap">
+        <span class="mini-h" style="margin:0">Batch · Mon Jul 6 · 5 posts · balanced mix</span>
+        <span style="flex:1"></span>
+        <span class="btn sm ghost">Mark all ready</span><span class="btn sm ghost">Archive batch</span>
+      </div>
+      <div class="qcard">
+        <div class="qtop"><span class="pfl">LinkedIn</span><span class="stagechip tofu">tofu</span><span class="statuspill ready" style="font-size:9.5px;padding:3px 9px">ready</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">planned · Tue 09:40</span><span class="btn sm ghost">Open</span></div>
+        <div class="qbody">Most beginners think watercolor is about controlling the paint. Module 2 teaches the opposite…</div>
+      </div>
+      <div class="qcard">
+        <div class="qtop"><span class="pfl">LinkedIn</span><span class="stagechip mofu">mofu</span><span class="statuspill draft" style="font-size:9.5px;padding:3px 9px">draft</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">planned · Thu 09:55</span><span class="btn sm ghost">Open</span></div>
+        <div class="qbody">"My washes always dry patchy." If that's you, you're not missing talent — you're missing one habit from Lesson 5…</div>
+      </div>
+      <div class="qcard">
+        <div class="qtop"><span class="pfl">LinkedIn</span><span class="stagechip bofu">bofu</span><span class="statuspill posted" style="font-size:9.5px;padding:3px 9px">posted manually</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">posted · Fri 10:02</span><span class="btn sm ghost">Log performance</span></div>
+        <div class="qbody">Watercolor Foundations is open. Eight modules, 31 lessons, zero "just practice more" hand-waving…</div>
+      </div>
+    </div>
+    <div class="cap"><b>Cards grouped by batch; filter chips for status, platform, stage, course; sort by planned time or last update.</b> Stage chips are color-coded <i>and</i> text-labeled (a11y). Bulk actions: mark ready, archive. A posted post's card swaps its action to <b>Log performance</b>. Value-before-ask ordering is visible: tofu earliest, bofu last.</div>
+  </div>
+
+  <!-- SCREEN 4 -->
+  <p class="scaption">Screen 4 · Post editor — manual control, AI actions, export, history</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social/post/8f21 — LinkedIn · draft · v3</span></div>
+    <div class="body">
+      <div class="grid g2" style="gap:12px">
+        <div class="card" style="padding:15px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="pfl">LinkedIn</span><span class="stagechip tofu">tofu</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">212 words · 1,428 / 3,000 chars · target 120–300 words ✓</span></div>
+          <div style="border:1px solid var(--line);border-radius:11px;padding:12px;font-size:12.5px;color:var(--ink-soft);line-height:1.6;background:#fdfdfc">
+            Most beginners think watercolor is about controlling the paint.<br><br>
+            Module 2 of Watercolor Foundations teaches the opposite: wet-on-wet works because you let the water do the moving. You choose where the pigment starts — the paper decides where it blooms.<br><br>
+            Three things my students practice before any "real" painting: …
+          </div>
+          <div class="frow" style="margin-top:11px"><span class="fl">CTA</span><span class="fv" style="flex:1">Follow along — I share one foundations tip each week.</span></div>
+          <div class="frow"><span class="fl">Hashtags</span><span class="chips"><span class="chip">#watercolor ×</span><span class="chip">#learntopaint ×</span><span class="chip">#arteducation ×</span><span class="chip">#beginnerartist ×</span></span><span style="font-family:var(--mono);font-size:10px;color:var(--faint)">4 / 5 max</span></div>
+          <div class="frow"><span class="fl">Planned</span><span class="fv">Tue Jul 7 · 09:40</span><span class="fl" style="width:auto">Status</span><span class="fv sel">Draft</span></div>
+        </div>
+        <div style="display:grid;gap:12px">
+          <div class="card" style="padding:15px">
+            <div class="mini-h">AI edit actions <span style="text-transform:none;letter-spacing:0">· small-tier · versioned writes</span></div>
+            <div class="chips">
+              <span class="chip">Make shorter</span><span class="chip">More professional</span><span class="chip">More casual</span><span class="chip">Stronger CTA</span><span class="chip">3 variants</span><span class="chip">Rewrite for Facebook</span><span class="chip">Suggest hashtags</span>
+            </div>
+          </div>
+          <div class="card" style="padding:15px">
+            <div class="mini-h">Image</div>
+            <div style="display:flex;gap:11px;align-items:center">
+              <div style="width:86px;height:64px;border-radius:9px;background:linear-gradient(135deg,#fde9d2,#f7d7b0);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:19px">🖼</div>
+              <div style="flex:1;font-size:12px;color:var(--muted)">palette-midwash.jpg · 1200×627 ✓ fits LinkedIn norms<br><span style="color:var(--faint)">Suggested idea: photo of your palette mid-lesson, water still beading</span></div>
+            </div>
+            <div class="frow" style="margin-top:9px"><span class="fl">Alt text</span><span class="fv" style="flex:1">A watercolor palette mid-wash, brush resting across the wells</span></div>
+            <div class="chips"><span class="btn sm ghost">Replace</span><span class="btn sm ghost">Remove</span><span class="btn sm ghost">Download</span></div>
+          </div>
+          <div class="card" style="padding:15px">
+            <div class="mini-h">Export</div>
+            <div class="chips"><span class="btn sm grad">Copy post</span><span class="btn sm ghost">Copy hashtags</span><span class="btn sm ghost">Download .txt</span><span class="btn sm ghost">Download .md</span><span style="flex:1"></span><span class="btn sm ghost">History</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="notice" style="margin-top:12px"><span>ⓘ</span><span>You post this yourself — WiseSel never publishes to social platforms.</span></div>
+    </div>
+    <div class="cap"><b>Full manual control beside AI leverage.</b> Char counter reads the same <code>PLATFORM_LIMITS</code> constants as the backend (imported, never duplicated); soft-warn at target length, hard cap from Zod. Hashtag chips warn per platform range. "Rewrite for X" creates a <b>new post row</b> (<code>aiMetadata.parentPostId</code>) — it never mutates the original. Every save threads <code>expectedVersion</code>; optimistic UI rolls back on 409/error. <b>History</b> opens the revert log for this post. Dimension check is a soft warning, never a block.</div>
+  </div>
+
+  <!-- SCREEN 5 -->
+  <p class="scaption">Screen 5 · Voice profile sheet — view, tune, regenerate</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social — voice profile</span></div>
+    <div class="body">
+      <div class="grid g2" style="gap:12px">
+        <div class="card" style="padding:15px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><h4 style="margin:0">Your voice, as WiseSel hears it</h4><span class="tag rev" style="font-size:8.5px">v2 · derived</span></div>
+          <p style="font-size:12.5px;margin:0 0 10px">Warm and direct, teaches by naming the mistake first. Short sentences, concrete studio detail, almost no exclamation marks. Prefers "you" over "students". Comfortable admitting what took years to learn.</p>
+          <div class="frow"><span class="fl">Register</span><span class="fv">Friendly-professional</span></div>
+          <div class="frow"><span class="fl">Sentences</span><span class="fv">Short–medium</span><span class="fl" style="width:auto">Emoji</span><span class="fv">Low tolerance</span></div>
+          <div class="frow"><span class="fl">Moves</span><span class="chips"><span class="chip">Opens with a misconception</span><span class="chip">Numbered mini-lists</span></span></div>
+        </div>
+        <div class="card" style="padding:15px">
+          <h4 style="margin:0 0 8px">Tune it</h4>
+          <div class="frow"><span class="fl">Banned</span><span class="chips"><span class="chip">"game-changer" ×</span><span class="chip">"unlock" ×</span><span class="chip">+ add phrase</span></span></div>
+          <div class="mini-h" style="margin-top:10px">Sample posts (optional, up to 3)</div>
+          <div style="border:1px dashed var(--line);border-radius:10px;padding:10px;font-size:11.5px;color:var(--faint)">Paste a post you've written that sounds like you…</div>
+          <div style="display:flex;gap:8px;margin-top:11px">
+            <span class="btn sm grad">Save edits</span>
+            <span class="btn sm ghost">Regenerate from my courses</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>Derived on first use; always inspectable.</b> Small-tier derivation over course descriptions + lesson intros + <code>delivery_profile</code> + pasted samples. Creator edits set <code>source='creator_edited'</code>; regenerating over edits asks for confirmation first. The profile is injected into every generation and revision prompt — it is the primary defense against generic output, and a first-class test target (two distinct fixtures ⇒ distinguishably different posts).</div>
+  </div>
+
+  <!-- SCREEN 6 -->
+  <p class="scaption">Screen 6 · Performance log — manual metrics or one-tap rating</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social/post/8f21 — posted manually · Fri 10:02</span></div>
+    <div class="body">
+      <div class="card" style="padding:15px;max-width:560px">
+        <h4 style="margin:0 0 4px">How did this post do?</h4>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px">Log whatever you have — a gut call is enough. This trains future generation (Phase 4 reads it; nothing else happens now).</p>
+        <div class="chips" style="margin-bottom:12px">
+          <span class="chip">Flop</span><span class="chip on"><span class="cdot"></span>OK</span><span class="chip">Good</span><span class="chip">Viral</span>
+        </div>
+        <div class="frow"><span class="fl">Impressions</span><span class="fv">1,850</span><span class="fl" style="width:auto">Likes</span><span class="fv">42</span><span class="fl" style="width:auto">Comments</span><span class="fv">7</span></div>
+        <div class="frow"><span class="fl">Shares</span><span class="fv">3</span><span class="fl" style="width:auto">Clicks</span><span class="fv">—</span></div>
+        <div style="display:flex;gap:8px;margin-top:6px"><span class="btn sm grad">Save log</span><span class="btn sm ghost">Cancel</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>Metrics or a one-tap qualitative rating — either satisfies the schema</b> (<code>PostPerformanceSchema</code> requires at least one signal). Upserts the <code>performance</code> JSONB with <code>source:'manual'</code> (<span class="tag fwd" style="font-size:8px">FWD</span> Phase 4 adds <code>'api'</code>) and fires <code>social_post.performance_logged</code>. Available only on <code>posted_manual</code> posts.</div>
+  </div>
+
+  <!-- SCREEN 7 -->
+  <p class="scaption">Screen 7 · Error, lint-drop, and conflict states</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing/social — recoverable states</span></div>
+    <div class="body">
+      <div class="errcard" style="margin-bottom:11px">
+        <div style="font-weight:600;font-size:13px;color:#991b1b;margin-bottom:4px">Generation didn't complete</div>
+        <div style="font-size:12px;color:#7f1d1d;margin-bottom:9px">The model returned an invalid batch twice. Nothing was saved. Your setup is kept — try again.</div>
+        <div class="chips"><span class="chip" style="background:#fff">Course · Watercolor Foundations</span><span class="chip" style="background:#fff">LinkedIn · 5 posts</span><span class="chip" style="background:#fff">Balanced mix · spread this week</span><span style="flex:1"></span><span class="btn sm grad">Retry</span></div>
+      </div>
+      <div class="lintline" style="margin-bottom:11px"><span>⚠</span><span><b>1 post was removed:</b> it invented a student result ("students doubled their commissions"). The other 4 posts were saved. Rephrase the goal or add real results to your course description if you want claims like this.</span></div>
+      <div class="toast"><span style="color:#fbbf24">↻</span> Updated elsewhere — refreshed to latest. Your change was re-applied.</div>
+    </div>
+    <div class="cap"><b>Every failure is recoverable and specific.</b> Batch failure preserves all parameters (nothing partial persists — the transaction is all-or-nothing); safety-lint drops are surfaced inline per post with the reason; 409 resolutions show a non-blocking toast. Empty-context generation proceeds but warns: <i>"This course has little content — posts will be more generic. Add a course description for better results."</i> Image upload failures leave the post intact and retry independently.</div>
+  </div>
+
+  <!-- SCREEN 8 -->
+  <p class="scaption">Screen 8 · Marketing Chat Assistant — the conversational path</p>
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="ttl">…/marketing — chat assistant</span></div>
+    <div class="body">
+      <div class="chatrow user"><div class="bubble u">Generate 5 posts for Watercolor Foundations spread over next week, mostly value posts.</div></div>
+      <div class="toolline"><span>⚙</span><code style="background:none;border:none;padding:0">generateSocialPostDrafts</code><span>{course, count:5, funnelMix:'balanced', timing:'spread_week'}</span><span class="ok">✓ 5 drafts → queue</span><span class="tag rev" style="font-size:8px">reversible · logged</span></div>
+      <div class="chatrow"><div class="bubble a">Done — 5 LinkedIn drafts are in your queue, planned Tue→Sat mornings: 3 value posts (wet-on-wet, brush mistakes, color mixing), 1 pain-point post, and 1 launch post last. Value first, ask last. Want any of them punchier?</div></div>
+      <div class="chatrow user"><div class="bubble u">Make #3 punchier and rewrite #4 for Facebook.</div></div>
+      <div class="toolline"><span>⚙</span><code style="background:none;border:none;padding:0">getSocialPost</code><span>{post #3}</span><span class="ok">✓ read · v1</span></div>
+      <div class="toolline"><span>⚙</span><code style="background:none;border:none;padding:0">reviseSocialPost</code><span>{post #3, expectedVersion:1, "punchier"}</span><span class="ok">✓ v2</span></div>
+      <div class="toolline"><span>⚙</span><code style="background:none;border:none;padding:0">rewriteForPlatform</code><span>{post #4 → facebook}</span><span class="ok">✓ new post created</span></div>
+      <div class="chatrow"><div class="bubble a">Both done. #3 now opens on the misconception in six words — shorter hook lines hold LinkedIn readers past the fold. #4's Facebook version is a new post (the LinkedIn original is untouched): 74 words, opens on a question, 2 hashtags. Both changes are in your Recent changes log if you want to revert.</div></div>
+    </div>
+    <div class="cap"><b>Equivalent power, conversational.</b> Tools auto-commit (assisted/auto modes) with revert-log entries — no approval cards. The assistant explains <i>why</i> a revision may perform better in one or two sentences. On a 409 it re-reads, re-applies intent, and says so. If asked to auto-post, it explains the manual-publish model and mentions Phase 3 plans in one sentence — it never claims a post was published, scheduled, or connected.</div>
+  </div>
+
+  <!-- ---------- engineering spec ---------- -->
+  <h3>Assistant tool surface — 19 typed tools: read freely, write reversibly</h3>
+  <p style="font-size:13.5px">The Cursor feel comes from the loop, not any single tool: <b>inspect → targeted edit → explain</b>. The read tools let the agent see exactly what the creator sees before touching anything; every write is a versioned, single-post-scoped, revertible operation through the same service layer as the UI.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Tool</th><th>Input (abridged)</th><th>Behavior</th><th>Reversal path</th></tr>
+    <tr><td colspan="4" style="background:#fbf8f3;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Read &amp; suggest — execute freely in every mode, write nothing</td></tr>
+    <tr><td><code>listSocialPosts</code></td><td>filters: status, platform, stage, course, batch; cursor</td><td>Query the queue — the agent sees exactly what the creator sees ("what's planned this week?")</td><td>n/a (read)</td></tr>
+    <tr><td><code>getSocialPost</code></td><td>postId</td><td>Full post + current version + revert-log summary — read-before-edit</td><td>n/a (read)</td></tr>
+    <tr><td><code>getVoiceProfile</code></td><td>—</td><td>Current voice profile, version, and source (derived / creator_edited)</td><td>n/a (read)</td></tr>
+    <tr><td><code>suggestHashtags</code></td><td>postId or raw text, platform</td><td>Small-tier suggestion; writes only if asked</td><td>n/a (read-like)</td></tr>
+    <tr><td><code>draftImageAltText</code></td><td>postId</td><td>Small-tier alt-text draft returned as a suggestion; written only when the creator asks (then a versioned write) — never auto-written</td><td>n/a (read-like)</td></tr>
+    <tr><td colspan="4" style="background:#fbf8f3;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Write — all reversible, all versioned</td></tr>
+    <tr><td><code>generateSocialPostDrafts</code></td><td>sourceType/id(s), platform, goal or funnelMix, tone, count≤5, timing</td><td>Full pipeline (§03)</td><td>Delete created rows (revert log groups by batch)</td></tr>
+    <tr><td><code>reviseSocialPost</code></td><td>postId, expectedVersion, instruction</td><td>Small-tier rewrite of body/CTA/hashtags per free-form instruction</td><td>Version history restore</td></tr>
+    <tr><td><code>changePostTone</code></td><td>postId, expectedVersion, targetTone</td><td>Small-tier retone — rewrites body/CTA in the target tone and updates the stored <code>tone</code> field in one versioned write</td><td>Version history restore</td></tr>
+    <tr><td><code>regenerateSocialPost</code></td><td>postId, expectedVersion</td><td>Fresh take — re-runs single-post generation with the post's stored parameters (source, goal, stage, tone) through the full pipeline incl. Zod gate + lint</td><td>Version history restore</td></tr>
+    <tr><td><code>createSocialPostVariant</code></td><td>postId, n≤3</td><td>New rows, <code>variantOf</code> set; own batch, still ≤5; counts against daily budget</td><td>Delete rows</td></tr>
+    <tr><td><code>createSocialPost</code></td><td>Full manual fields</td><td>Direct insert, no model call</td><td>Delete row</td></tr>
+    <tr><td><code>updateSocialPost</code></td><td>postId, expectedVersion, patch</td><td>Versioned patch (body, CTA, hashtags, alt text, stage, audience…)</td><td>Version history restore</td></tr>
+    <tr><td><code>deleteSocialPost</code></td><td>postId</td><td><b>Soft delete</b> (archived + <code>deletedAt</code>)</td><td>Unarchive</td></tr>
+    <tr><td><code>markSocialPostStatus</code></td><td>postId, status</td><td>Lifecycle transition; <code>posted_manual</code> stamps timestamp</td><td>Set previous status</td></tr>
+    <tr><td><code>uploadSocialPostImage</code></td><td>postId, uploadRef</td><td>Attach storage object</td><td>Remove reference (object kept until purge)</td></tr>
+    <tr><td><code>removeSocialPostImage</code></td><td>postId</td><td>Detach reference</td><td>Re-attach (object retained)</td></tr>
+    <tr><td><code>rewriteForPlatform</code></td><td>postId, targetPlatform</td><td>New row, <code>parentPostId</code> set — never mutates the original</td><td>Delete row</td></tr>
+    <tr><td><code>updatePlannedPostTime</code></td><td>postId, expectedVersion, plannedPostAt</td><td>Versioned patch</td><td>Version history restore</td></tr>
+    <tr><td><code>logSocialPostPerformance</code></td><td>postId, metrics and/or qualitative</td><td>Upsert performance JSONB + event</td><td>Clear log entry</td></tr>
+  </table></div>
+
+  <h4>Cursor-parity check — common requests the agent must handle without hand-offs</h4>
+  <div class="tablewrap"><table>
+    <tr><th>Creator says…</th><th>Agent path</th><th>Creator says…</th><th>Agent path</th></tr>
+    <tr><td>"What's planned for this week?"</td><td><code>listSocialPosts</code> (status=planned)</td><td>"This draft feels stale — try again."</td><td><code>regenerateSocialPost</code></td></tr>
+    <tr><td>"Make #3 more professional."</td><td><code>changePostTone</code></td><td>"Move the launch post to Friday morning."</td><td><code>updatePlannedPostTime</code></td></tr>
+    <tr><td>"Punch up the hook on this one."</td><td><code>getSocialPost</code> → <code>reviseSocialPost</code></td><td>"Give me two more takes on it."</td><td><code>createSocialPostVariant</code></td></tr>
+    <tr><td>"Rewrite this for Facebook."</td><td><code>rewriteForPlatform</code> (new row)</td><td>"Write alt text for the image."</td><td><code>draftImageAltText</code> (suggests; writes on ask)</td></tr>
+    <tr><td>"Better hashtags?"</td><td><code>suggestHashtags</code></td><td>"Mark the first three ready."</td><td><code>markSocialPostStatus</code> ×3</td></tr>
+    <tr><td>"Does this sound like me?"</td><td><code>getVoiceProfile</code> + <code>getSocialPost</code></td><td>"Scrap it."</td><td><code>deleteSocialPost</code> (soft — unarchive reverts)</td></tr>
+  </table></div>
+  <p style="font-size:12.5px;color:var(--muted)">A request outside this surface (e.g. "post it for me") is answered honestly: the assistant explains the manual-publish model in one sentence — it never fakes a capability.</p>
+
+  <h3>Platform style guides (one constants module — prompt + Zod maxLengths + UI counters all import it)</h3>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>LinkedIn</th><th>Facebook</th></tr>
+    <tr><td><b>Register</b></td><td>Professional, educational, founder/authority-friendly</td><td>Community/conversational, page-comfortable</td></tr>
+    <tr><td><b>Target length</b></td><td>120–300 words</td><td>40–120 words</td></tr>
+    <tr><td><b>Hard char cap (Zod)</b></td><td>3,000</td><td>5,000 (practical cap)</td></tr>
+    <tr><td><b>Hashtags</b></td><td>0–5, end of post</td><td>0–3</td></tr>
+    <tr><td><b>Structure</b></td><td>Hook line → short whitespace-separated paragraphs → optional CTA → hashtags</td><td>Opener (often a question) → 1–2 short paras → CTA</td></tr>
+    <tr><td><b>Emoji policy</b></td><td>Sparse (0–2)</td><td>Sparse–moderate</td></tr>
+  </table></div>
+  <p style="font-size:12.5px;color:var(--muted)">Instagram's style guide (concise caption, hook in the first 125 characters, 3–8 hashtags) is parked with Phase 1.5 — it rejoins the constants module when image/video generation makes Instagram content viable.</p>
+
+  <h3>Data model — three tables, RLS-scoped, soft-delete only</h3>
+  <div class="grid g3">
+    <div class="card">
+      <h4><code>social_post_batches</code></h4>
+      <p style="font-size:12.5px;margin:0">First-class batch row: creator, source (course/module/lesson/manual), platform, <code>requested_count</code> (DB check 1–5), <code>funnel_mix</code> (balanced|pinned), <code>timing_preset</code>, <code>ai_metadata</code> (model, promptVersion, tokens, latencyMs, repairUsed).</p>
+    </div>
+    <div class="card">
+      <h4><code>social_posts</code></h4>
+      <p style="font-size:12.5px;margin:0">The post: content refs (nullable FKs, <code>on delete set null</code> so archived courses never cascade-destroy marketing history), platform, goal, <code>funnel_stage</code>, tone, body, CTA, hashtags[], image fields, <code>suggested_image_idea</code>, <code>planned_post_at</code>, status, <code>posted_manually_at</code>, <code>performance</code> jsonb, <b><code>version</code></b>, <code>ai_metadata</code>, <code>deleted_at</code>. <span class="tag fwd" style="font-size:8px">FWD</span> <code>post_type</code> ('text' now; 'clip'/'carousel' in 1.5), <code>external_ref</code> (Phase 3 publish state). Indexes: (creator, status) and (creator, planned_post_at) where not deleted; (batch_id).</p>
+    </div>
+    <div class="card">
+      <h4><code>creator_voice_profiles</code></h4>
+      <p style="font-size:12.5px;margin:0">One active row per creator: <code>profile</code> jsonb (summary, register, sentenceLength, emojiTolerance, signatureMoves[], bannedPhrases[], sampleExcerpts[]), <code>source</code> (derived | creator_edited), <code>version</code>.</p>
+    </div>
+  </div>
+  <ul style="font-size:13px">
+    <li><b>RLS:</b> all three tables scoped <code>creator_id = auth.uid()</code> for select/insert/update; <b>no delete policy</b> (soft delete only). The generation service uses the service role. Follows the repo's existing RLS test pattern.</li>
+    <li><b>Zod is the single source of truth</b> — enums (<code>Platform</code>, <code>Goal</code>, <code>FunnelStage</code>, <code>Tone</code>, <code>PostStatus</code>), <code>GeneratedPostSchema</code> (per-platform max via <code>superRefine</code> against <code>PLATFORM_LIMITS</code>), <code>GeneratedPostBatchSchema</code> (1–5), <code>GenerateRequestSchema</code> (source-id consistency), <code>SocialPostSchema</code> row mirror, <code>PostPerformanceSchema</code>. Inferred TS types everywhere; never hand-written. The <code>Platform</code> enum is <code>linkedin | facebook</code> — deliberately closed at 2; Instagram joins when image/video generation ships (Phase 1.5+).</li>
+    <li><b>Events</b> extend the shared discriminated union — client SDK and server ingest in the same change: <code>social_post.batch_generated</code> · <code>created</code> · <code>updated</code> (fieldsChanged, byAgent) · <code>revised_by_agent</code> · <code>status_changed</code> · <code>copied</code> · <code>downloaded</code> · <code>image_attached / image_removed</code> · <code>performance_logged</code> · <code>generation_failed</code> (stage: model|zod|repair|lint) · <code>voice_profile.derived / edited</code>. Standard envelope; publication-version field null (marketing events, not course-consumption events — documented).</li>
+  </ul>
+
+  <h3>Backend surface</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4>REST (creator-authed, RLS enforced; no logic in routes)</h4>
+      <p style="font-size:12px;margin:0;font-family:var(--mono);line-height:1.9">
+        POST /api/marketing/social-posts/generate<br>
+        GET /api/marketing/social-posts <span style="color:var(--faint)">· filters + cursor pagination</span><br>
+        GET/PATCH /:id <span style="color:var(--faint)">· PATCH requires expectedVersion</span><br>
+        POST /:id/revise · /:id/variants · /:id/rewrite<br>
+        POST /:id/status · /:id/performance<br>
+        POST /:id/image · DELETE /:id/image · DELETE /:id <span style="color:var(--faint)">· soft</span><br>
+        GET/PUT /api/marketing/voice-profile<br>
+        POST /api/marketing/voice-profile/regenerate
+      </p>
+    </div>
+    <div class="card">
+      <h4>Cross-cutting rules</h4>
+      <ul style="font-size:12.5px;margin:0">
+        <li>One service layer (<code>services/socialPosts/*</code>) behind REST <i>and</i> tools; reuse the existing course context retriever — do not fork a second one.</li>
+        <li>Model keys server-only; cache-stable prefix; mid-tier generation / small-tier revisions; existing semaphore honors the 2-concurrent ceiling.</li>
+        <li>Rate limits (config, not constants): <code>SOCIAL_MAX_BATCHES_PER_DAY</code> = 20, <code>SOCIAL_MAX_REVISIONS_PER_DAY</code> = 100 → typed 429 the UI renders kindly.</li>
+        <li>Generation timeout: <code>SOCIAL_GENERATION_TIMEOUT_MS</code> = 180,000 (config). No latency target — quality first; on timeout a typed error returns, nothing persists, and the batch parameters are kept for retry.</li>
+        <li>Idempotency: <code>POST /generate</code> accepts an <code>Idempotency-Key</code>; duplicates return the original batch.</li>
+        <li>Observability: <code>ai_metadata</code> on batch + post rows; <code>generation_failed</code> events on every failure path.</li>
+        <li>No cron, no webhooks, no outbound calls to any social host (asserted by an allowlist test).</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Safety — prompt rules + deterministic lint</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h4>Prompt-level (stable system prefix)</h4>
+      <p style="font-size:12.5px;margin:0">No fake testimonials · no fake student outcomes · no misleading income/result claims · no artificial scarcity/urgency unless verbatim in creator-supplied context · no hashtag stuffing · no platform-policy circumvention advice · no engagement-bait formulas ("comment YES if…") unless tone=casual AND the voice profile shows it · every post includes a <code>suggestedImageIdea</code> that is shootable/ownable by the creator ("photo of your palette mid-lesson", never "generate an image of…") · manual publishing is the model and copy must never contradict it.</p>
+    </div>
+    <div class="card">
+      <h4>Deterministic lint (code, post-Zod, table-driven tests)</h4>
+      <p style="font-size:12.5px;margin:0 0 8px">Regex/heuristic flags:</p>
+      <ul style="font-size:12.5px;margin:0">
+        <li>Currency + earnings verbs ("made $", "earn $X")</li>
+        <li>"Students got/achieved &lt;number&gt;" patterns</li>
+        <li>"Only X spots/hours left" absent from source context</li>
+        <li>Testimonial quote patterns (<code>"…" — Name</code>) not in source context</li>
+        <li>Hashtags over platform max · ALL-CAPS ratio &gt; 30%</li>
+      </ul>
+      <p style="font-size:12.5px;margin:8px 0 0">Flag ⇒ one targeted repair instruction (within the single repair budget) or drop the post with a surfaced reason. Creator-provided context whitelists its own claims (false-positive escape hatch).</p>
+    </div>
+  </div>
+
+  <h3>Image handling</h3>
+  <p style="font-size:13.5px">Upload only — never generated. jpeg/png/webp ≤ 10MB to bucket <code>social-post-images</code> at <code>creators/{creatorId}/social/{postId}/{uuid}.{ext}</code>, RLS-scoped, signed URLs with short TTL. Flow: signed upload → finalize endpoint → server validates content-type + size + dimensions → soft warning (never a block) if far from platform norms (LinkedIn 1200×627, Facebook 1200×630). Alt text prominent; the assistant may draft it on request but never auto-writes it. Remove detaches the reference; the object is retained (revert-friendly) until a later retention purge.</p>
+
+  <!-- ---------- implementation plan ---------- -->
+  <h3>Implementation plan — five milestones, checkpoint stops between each</h3>
+  <p style="font-size:13.5px">Run sequentially. After each milestone: <b>stop, show diff summary + test results, wait for review</b>. Search the repo before building anything — the context retriever, semaphore, RLS test harness, streaming client, and tool registry all exist; reuse them.</p>
+
+  <div class="milestones">
+    <div class="mile">
+      <div class="mh"><span class="mn">M1</span><span class="mt">Schema, types, events</span></div>
+      <div class="md">Migrations for the three tables + indexes + RLS · shared Zod module (enums, row/request/generated/performance schemas, <code>PLATFORM_LIMITS</code>, goal→stage map) · event taxonomy union extended in client SDK + server ingest <b>together</b>.</div>
+      <div class="mtests"><b>Tests:</b> schema round-trips · constraint violations · RLS matrix · event parse/serialize.</div>
+    </div>
+    <div class="ckpt">Checkpoint stop · review before continuing</div>
+    <div class="mile">
+      <div class="mh"><span class="mn">M2</span><span class="mt">Service layer + generation pipeline</span></div>
+      <div class="md">Repository (single versioned-update function) · context assembly with token budget · voice-profile derivation · prompt assembly with cache-stable prefix + prompt version constant · structured-output batch call (mid-tier) · Zod gate + single repair (small-tier) · safety lint module · transactional persist · event emission · incremental stream · rate limits + idempotency.</div>
+      <div class="mtests"><b>Tests:</b> unit (lint tables, stage mapping, timing presets incl. DST edge, budget truncation) · integration with mocked model fixtures (happy, malformed→repair, repair-fail, lint-drop) · concurrency ceiling respected.</div>
+    </div>
+    <div class="ckpt">Checkpoint stop · review before continuing</div>
+    <div class="mile">
+      <div class="mh"><span class="mn">M3</span><span class="mt">REST + assistant tools</span></div>
+      <div class="md">All routes · all 19 tools registered (read tier + reversible write tier) and wired to the service layer · revert-log entries · 409 re-read/re-apply behavior in the assistant harness.</div>
+      <div class="mtests"><b>Tests:</b> route validation matrix · tool registry snapshot · versioned-write conflict integration · tool E2E through the orchestrator with a mocked model.</div>
+    </div>
+    <div class="ckpt">Checkpoint stop · review before continuing</div>
+    <div class="mile">
+      <div class="mh"><span class="mn">M4</span><span class="mt">Frontend</span></div>
+      <div class="md">Nav entry · generation screen · queue with streaming + filters · editor with all controls/counters/AI actions · image flow · export cluster · status + performance forms · voice-profile sheet · all four states · optimistic mutations with version threading · shared manual-publish notice component.</div>
+      <div class="mtests"><b>Tests:</b> component tests (editor/queue/counters) · E2E happy path (generate → edit → save → copy → posted_manual → log performance) · E2E conflict toast · a11y pass on the editor.</div>
+    </div>
+    <div class="ckpt">Checkpoint stop · review before continuing</div>
+    <div class="mile">
+      <div class="mh"><span class="mn">M5</span><span class="mt">Hardening + docs</span></div>
+      <div class="md">Language-rule grep test · no-social-hosts allowlist test · absence-of-scheduler test · verify the 3-minute generation ceiling with the fixture model stub (timeout fires a typed error, nothing persists, parameters kept) · feature README (architecture, prompt versioning, how to add a platform/goal) + taxonomy docs · seed script for demo data.</div>
+      <div class="mtests"><b>Exit:</b> full suite green. — DONE</div>
+    </div>
+  </div>
+
+  <div class="callout guard"><div class="lbl">Do-not-change list (protect while implementing)</div>
+    <p style="font-size:13px;margin:0">Orchestrator→subagent hierarchy and the single <code>runSubagent</code> primitive · two-concurrent-model-call ceiling · reversibility-graded governance (this feature adds <b>only</b> reversible tools; no approval cards) · publish = immutable snapshot and node-ID survival on the course side (untouched here) · answer keys never reach the client · Zod discriminated-union event pattern shared client/server · versioned-update convention.</p>
+  </div>
+  <div class="callout"><div class="lbl">Consequential-updates checklist (must land together)</div>
+    <p style="font-size:13px;margin:0">Event union extended in SDK + ingest in the same PR · Marketing tab navigation + tool registry + autonomy-mode config all list the new tools · docs updated with the new events and tools · <code>PLATFORM_LIMITS</code> imported (not copied) on both sides · <code>delivery_profile</code> seeding wired into tone/platform defaults.</p>
+  </div>
+  <div class="callout dec"><div class="lbl">Non-goal reminders for the implementer</div>
+    <p style="font-size:13px;margin:0">Reserved <span class="tag fwd" style="font-size:8px">FWD</span> fields stay unused by UI. No scheduler, no webhook, no platform SDKs, no email module imports, no image-generation dependencies. If a "quick win" requires any of those, it belongs in a later-phase PRD — flag it, don't build it.</p>
+  </div>
+</section>
+
+<!-- ==================== 05 USER EXPERIENCE ==================== -->
+<section id="ux">
+  <p class="sec-eyebrow">05 — User Experience (Acceptance)</p>
+  <h2>Self-acceptance stories — the core flows that must pass.</h2>
+  <p class="lead-p">Five stories at core-flow level, each grounded in visible prototype actions (Screens 1–8). Exhaustive QA lives in the milestone test plans (§04); the full acceptance list in the source spec (19 criteria) maps onto the automated suites.</p>
+
+  <div class="story">
+    <div class="sh"><span class="sn">Story 1</span><span class="st">Generate a balanced batch from a real course</span></div>
+    <div class="srow"><span class="sk">User need</span><span class="sv">"I finished Watercolor Foundations. Give me a week of posts that sound like me and actually reference my course."</span></div>
+    <div class="srow"><span class="sk">Flow</span><span class="sv">Open Marketing → Social Posts (Screen 1) → source = Course · Watercolor Foundations → platform LinkedIn → goal Educational/value (stage chip shows tofu) → tone Friendly → count 5 with Balanced funnel mix ON → timing Spread across this week → click <b>Generate 5 drafts</b>.</span></div>
+    <div class="srow"><span class="sk">Expected result</span><span class="sv">Drafts stream into the queue one by one (Screen 2), never a monolithic spinner. Exactly 5 posts: 3 tofu, 1 mofu, 1 bofu, ordered value-first with bofu planned last. Bodies quote real module/lesson names ("Wet-on-wet techniques"). Each card carries platform, stage chip, CTA, hashtags within LinkedIn's 0–5 range, a shootable image idea, a jittered weekday-morning planned time, status=draft. No 6th post is possible from UI, Zod, service, or DB.</span></div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">Story 2</span><span class="st">Edit safely — versions protect every write</span></div>
+    <div class="srow"><span class="sk">User need</span><span class="sv">"I tweak drafts myself and also let the assistant polish them — my edits must never get silently clobbered."</span></div>
+    <div class="srow"><span class="sk">Flow</span><span class="sv">Open a draft in the post editor (Screen 4) → edit the hook line manually → Save → then in Marketing Chat ask "make this punchier" while the editor still holds the older version → assistant runs <code>reviseSocialPost</code> with its <code>expectedVersion</code>.</span></div>
+    <div class="srow"><span class="sk">Expected result</span><span class="sv">The manual save increments the version. The assistant's stale write hits the 409 path: it re-reads the fresh body, re-applies "punchier" on top of the manual edit, and says it did so. The editor shows the non-blocking toast "Updated elsewhere — refreshed to latest" (Screen 7). At no point is either edit lost; History shows both entries.</span></div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">Story 3</span><span class="st">Attach an image, export, and mark posted manually</span></div>
+    <div class="srow"><span class="sk">User need</span><span class="sv">"I want the finished post plus my own photo in my hands, then I'll post it on LinkedIn myself."</span></div>
+    <div class="srow"><span class="sk">Flow</span><span class="sv">In the editor (Screen 4): upload palette-midwash.jpg → preview renders with a dimension check → fill the alt-text field → <b>Copy post</b> → <b>Download .md</b> → post natively on LinkedIn → back in WiseSel set status to <b>Posted manually</b>.</span></div>
+    <div class="srow"><span class="sk">Expected result</span><span class="sv">Copy puts body + CTA on the clipboard with a success toast; the .md download carries front-matter (platform, stage, plannedPostAt, status — never anything publish-like) plus body, CTA, hashtags; both fire their export events. The status change stamps <code>postedManuallyAt</code> and the queue card's action becomes <b>Log performance</b> (Screen 3). The manual-publish notice was visible throughout; a failed upload would have left the post intact.</span></div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">Story 4</span><span class="st">Log how the post did — in one tap if that's all I know</span></div>
+    <div class="srow"><span class="sk">User need</span><span class="sv">"I don't track spreadsheets. Let me record 'that one did well' and move on."</span></div>
+    <div class="srow"><span class="sk">Flow</span><span class="sv">On a posted-manual card, click <b>Log performance</b> (Screen 6) → tap the qualitative rating <b>OK</b> (optionally add impressions/likes/comments) → <b>Save log</b>.</span></div>
+    <div class="srow"><span class="sk">Expected result</span><span class="sv">The log saves with either signal alone (one-tap qualitative is sufficient), persists to the <code>performance</code> JSONB with <code>source:'manual'</code> and <code>loggedAt</code>, fires <code>social_post.performance_logged</code>, and shows on the post. Nothing else changes — no analysis, no automation; the data simply starts accumulating for Phase 4.</span></div>
+  </div>
+
+  <div class="story">
+    <div class="sh"><span class="sn">Story 5</span><span class="st">Do it all conversationally — and stay revertible</span></div>
+    <div class="srow"><span class="sk">User need</span><span class="sv">"I'd rather just tell the assistant what I want than click through controls."</span></div>
+    <div class="srow"><span class="sk">Flow</span><span class="sv">In Marketing Chat (Screen 8): "Generate 5 posts for Watercolor Foundations spread over next week, mostly value posts" → then "Make #3 punchier and rewrite #4 for Facebook" → open Recent changes and revert the revision of #3.</span></div>
+    <div class="srow"><span class="sk">Expected result</span><span class="sv">The assistant calls <code>generateSocialPostDrafts</code>, summarizes the batch, then reads #3 (<code>getSocialPost</code>) before <code>reviseSocialPost</code> + <code>rewriteForPlatform</code> — each write auto-commits quietly with a revert-log entry; <b>no approval card ever appears</b>. The Facebook rewrite is a new post; the LinkedIn original is untouched. Each revision comes with a one-to-two-sentence "why this may perform better". The revert restores #3's previous version byte-for-byte. If asked to auto-post, the assistant explains the manual-publish model in one sentence and never claims anything was published.</span></div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <span>WiseSel · Social Media Post Generator — Marketing Phase 1</span>
+  <span>·</span>
+  <span>Sections: Purpose &amp; Goals · Competitive Analysis · Product Approach · Functional Design · User Experience</span>
+  <span>·</span>
+  <span>Self-contained HTML · docs/prd/Social-Media-Post-Generator-Marketing-Web.html</span>
+</footer>
+
+</div>
+</body>
+</html>

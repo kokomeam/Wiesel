@@ -38,7 +38,10 @@ export type EntityKind =
   | "lead_list"
   | "sender_identity"
   | "follow_up_rule"
-  | "voice_profile";
+  | "voice_profile"
+  | "social_post"
+  | "social_post_batch"
+  | "social_voice_profile";
 
 export interface EntityRef {
   entity: EntityKind;
@@ -78,6 +81,13 @@ export interface MarketingToolContext {
   /** Set by the agent loop — clarifying questions raised mid-run store it so
    *  the answer resumes the SAME conversation. Null on user-surface calls. */
   conversationId?: string | null;
+  /**
+   * Optional per-request progress sink (ADDITIVE — the repo's loop-hook
+   * convention). The social generate tool reports each validated draft
+   * through it so the SSE route can stream queue cards incrementally;
+   * absent everywhere else.
+   */
+  progress?: (event: { type: string; data?: unknown }) => void;
   /**
    * Set by the gate for IRREVERSIBLE tools only:
    *   false/undefined → return a side-effect-FREE preview (audience size, etc.)

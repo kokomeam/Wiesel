@@ -17,7 +17,8 @@
 import { z } from "zod";
 import type { Json } from "@/lib/database.types";
 import type { EmailTouch } from "../types";
-import { findMissingFallbacks, type MergeVarContext } from "../mergeVars";
+import { resolveCtaDestinations, siteUrlFinding } from "../ctaDestination";
+import { findMissingFallbacks, renderMergeVars, type MergeVarContext } from "../mergeVars";
 import {
   loadCampaign,
   loadCourseMarketingContext,
@@ -97,6 +98,18 @@ const reviewCampaignCompliance = defineMarketingTool({
     const findings: ComplianceFinding[] = [];
     const quality: QualityFinding[] = [];
 
+    // 0 · site URL sanity — a wrong base URL makes EVERY emailed link 404
+    // (observed live: NEXT_PUBLIC_SITE_URL set to the Vercel dashboard path).
+    const siteIssue = siteUrlFinding();
+    if (siteIssue) {
+      findings.push({
+        key: "site_url_misconfigured",
+        label: "Site URL misconfigured — emailed links would break",
+        severity: siteIssue.severity,
+        detail: siteIssue.detail,
+      });
+    }
+
     // 1 · lead source risk + consent status
     const list = campaign.leadListId ? await loadLeadList(ctx.supabase, campaign.leadListId) : null;
     if (!list) {
@@ -131,6 +144,7 @@ const reviewCampaignCompliance = defineMarketingTool({
       .limit(1);
     const sequence = seqRows?.[0] ? await loadEmailSequence(ctx.supabase, seqRows[0].id) : null;
 
+    const dest = await resolveCtaDestinations(ctx.supabase, { courseId: ctx.courseId, campaignId: campaign.id });
     const eligibleContexts: MergeVarContext[] = [];
     if (list) {
       const memberIds = await listLeadListMemberIds(ctx.supabase, list.id);
@@ -142,8 +156,8 @@ const reviewCampaignCompliance = defineMarketingTool({
             firstName: s.name?.split(" ")[0] ?? null,
             courseName: course.title,
             creatorName: sender?.fromName ?? null,
-            freeLessonUrl: null,
-            ctaUrl: null,
+            freeLessonUrl: dest.freeLessonUrl,
+            ctaUrl: dest.ctaUrl,
             offerDeadline: (campaign.config.brief?.offerDeadlineIso as string | undefined) ?? null,
           });
         }
@@ -181,8 +195,16 @@ const reviewCampaignCompliance = defineMarketingTool({
           findings.push({ key: `spammy_${touch.id}`, label: "Spammy tone", severity: "warning", detail: `Step "${touch.stageName ?? touch.subject}" uses spam-associated phrasing.` });
         }
         for (const block of touch.body.blocks) {
-          if (block.kind === "button" && !(await urlResolves(block.href))) {
-            findings.push({ key: `broken_cta_${touch.id}`, label: "CTA URL does not resolve", severity: "blocking", detail: `Step "${touch.stageName ?? touch.subject}" links to "${block.href}".` });
+          if (block.kind !== "button") continue;
+          // Validate the href AS IT WILL RENDER at send time — {{ctaUrl}} etc.
+          // resolve through the same destinations the scheduler uses.
+          const renderedHref = renderMergeVars(block.href, {
+            courseName: course.title,
+            freeLessonUrl: dest.freeLessonUrl,
+            ctaUrl: dest.ctaUrl,
+          });
+          if (!(await urlResolves(renderedHref))) {
+            findings.push({ key: `broken_cta_${touch.id}`, label: "CTA URL does not resolve", severity: "blocking", detail: `Step "${touch.stageName ?? touch.subject}" links to "${renderedHref}".` });
           }
         }
         const score = scoreEmailStep({

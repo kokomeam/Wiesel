@@ -86,6 +86,12 @@ function siteUrl(): string {
   return process.env.NEXT_PUBLIC_SITE_URL ?? "";
 }
 
+/** Absolute public URL for an app path — the base every emailed link uses
+ *  (emails need absolute URLs; a relative href is dead in a mail client). */
+export function publicUrl(path: string): string {
+  return `${siteUrl()}${path}`;
+}
+
 /** A signed, permanent unsubscribe link (no expiry — must work from any old
  *  email a subscriber digs up). */
 export function unsubscribeUrl(subscriberId: string): string {

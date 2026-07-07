@@ -67,6 +67,11 @@ const HOUR = 3600 * 1000;
 const DAY = 24 * HOUR;
 
 async function main() {
+  // tsx does not auto-load .env.local — mirror the dev environment so the
+  // site-URL compliance check (blocking when UNSET) sees what Next.js sees.
+  // localhost yields a WARNING (dev-only links), never a block.
+  process.env.NEXT_PUBLIC_SITE_URL ??= "http://localhost:3000";
+
   /* ════════════════════ pure checks (no DB) ════════════════════ */
 
   console.log("# A1 · sequence blueprints");
@@ -437,8 +442,14 @@ async function main() {
     ctx
   );
   await acceptMarketingAction(supabase, mv.actionId!);
+  // {{freeLessonUrl}} resolves to the landing page now (the CTA-destination
+  // layer) — stash + delete the pages so A3b's missing-data premise holds,
+  // then restore right after the review.
+  const { data: stashedPages } = await supabase.from("landing_page").select("*").eq("campaign_id", campaignId);
+  await supabase.from("landing_page").delete().eq("campaign_id", campaignId);
   const rev1 = await executeMarketingTool("review_campaign_compliance", { campaignId }, ctx);
   await acceptMarketingAction(supabase, rev1.actionId!);
+  if (stashedPages?.length) await supabase.from("landing_page").insert(stashedPages as never);
   const report1 = rev1.data as { findings: { key: string; severity: string }[] };
   check("compliance blocks: steps not approved", report1.findings.some((f) => f.key === "steps_not_approved" && f.severity === "blocking"));
   check("compliance blocks: merge var w/o fallback + missing data (A3b)", report1.findings.some((f) => f.key.startsWith("merge_var_freeLessonUrl") && f.severity === "blocking"));

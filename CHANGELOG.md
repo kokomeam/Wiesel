@@ -6,6 +6,109 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — email CTA destinations + site-URL guard, 2026-07-06
+
+From a live incident: an automated email's CTA landed on vercel.com's 404.
+Three stacked defects — the sending environment's `NEXT_PUBLIC_SITE_URL`
+pointed at the Vercel DASHBOARD (`vercel.com/wisesel`), the `{{ctaUrl}}` /
+`{{freeLessonUrl}}` merge vars the LLM copywriter is told to use were
+hard-coded `null` at send time (model-written buttons rendered a literal
+`{{ctaUrl}}` into the tracked link), and the click route called
+`NextResponse.redirect()` with a RELATIVE path (which Next rejects → 500 even
+with a correct domain).
+
+- **The destination rule** (`lib/marketing/ctaDestination.ts`, new): email CTA
+  → the course's public preview/enroll page **`/learn/{slug}`** whenever a
+  LIVE publication exists, else the campaign landing page `/p/{slug}`.
+  Mailing-list traffic goes to the CONVERSION surface — sending subscribers
+  back to a lead-capture form is circular. `{{freeLessonUrl}}` keeps pointing
+  at the capture page. Resolved at SEND time (scheduler, cached per
+  course+campaign per tick) and at generation time (template button hrefs) —
+  publishing a course upgrades every queued send without regenerating copy.
+- **Merge vars are real now**: the scheduler, `send_test_email`, and the
+  compliance review all resolve `ctaUrl`/`freeLessonUrl` through the same
+  function (absolute URLs via the new `publicUrl()` in tokens.ts). The
+  compliance CTA check validates button hrefs AS THEY WILL RENDER (merge vars
+  applied first).
+- **Site-URL guard**: `review_campaign_compliance` now runs `siteUrlFinding()`
+  — unset / unparseable / `vercel.com` (the dashboard, never an app origin) =
+  BLOCKING; localhost = warning (dev-only links). This class of misconfig now
+  blocks the launch instead of shipping dead links.
+- **Click route** resolves relative destinations against the request origin
+  (`new URL(dest, origin)`); non-http(s) destinations neutralize to `/`.
+- **Tests**: new `verify:marketing:cta` (26 — the site-URL matrix, click-route
+  redirects incl. the relative-path regression, pre/post-publish destination
+  flip via a real `publishCourse`, send-time render leaves no literal merge
+  token, compliance wiring). Campaign suite updated: tsx doesn't auto-load
+  .env.local so the suite now mirrors dev (`NEXT_PUBLIC_SITE_URL ??=
+  localhost`), and the A3b missing-merge-var test creates its premise
+  explicitly (destinations RESOLVE now, so `{{freeLessonUrl}}` is only missing
+  when no landing page exists). templates.ts opt renamed `landingPath` →
+  `ctaPath` (it may be either destination now).
+
+## Marketing — Social Post Generator (Phase 1), 2026-07-06
+
+The generation backbone from the approved PRD (`docs/prd/Social-Media-Post-
+Generator-Marketing-Web.html`; guide: `docs/social-posts.md`): creators turn
+real course content into 1–5 platform-ready **LinkedIn/Facebook** drafts —
+grounded, voice-true, funnel-staged, manually published. Zero platform APIs,
+zero email, zero scheduling (nothing fires from `planned_post_at`), zero
+approval cards (every tool is reversible-tier).
+
+- **Schema** (migrations `20260706120000` + `20260706120100`): `social_post`
+  (versioned optimistic-concurrency writes; SOFT delete only — no delete
+  policy), `social_post_batch` (first-class batch: grouping, audit,
+  Idempotency-Key replay, daily-budget counting), `social_voice_profile`
+  (derived + versioned; distinct from the email `voice_profile` rules, which
+  feed its derivation), the transactional `social_create_batch` SQL function
+  (SECURITY INVOKER — RLS applies; all posts commit or none), the private
+  `social-post-images` bucket (own-folder RLS), and 13 new event types on the
+  single `analytics_event` stream (TS union + DB check extended together).
+- **Pipeline** (`lib/marketing/social/*`): context assembly (reuses
+  `loadCourseMarketingContext`, token-budgeted), voice profile
+  (derive-on-first-use, creator-tunable, `source='creator_edited'` guards
+  regeneration), cache-stable prompt prefix + `PROMPT_VERSION` stamped in
+  `ai_metadata`, ONE structured batch call (semaphore-capped, hard 3-minute
+  ceiling — quality over speed), Zod gate + exactly one repair call,
+  deterministic safety lint with a creator-context whitelist (flagged drafts
+  repair-or-drop with surfaced reasons), transactional persist, per-draft SSE
+  streaming, deterministic template fallback for the zero-key path.
+- **19 agent tools** (`tools/socialPosts.ts`): 5 read/suggest + 14 reversible
+  writes — the Cursor loop (list/get → versioned targeted edits →
+  explain-why). Version conflicts teach re-read + re-apply; `rewrite_for_platform`
+  and variants create NEW rows (originals never mutated); variants always ride
+  a batch so the set reverts as one unit. Composite `social_post_batch`
+  snapshotter restores post sets byte-for-byte; revert-of-create ARCHIVES
+  (soft-delete-only invariant). Agent prompt teaches SOCIAL POSTS + the
+  manual-publishing honesty contract.
+- **REST** (`/api/marketing/social-posts/*`, `/api/marketing/social-voice-profile`):
+  generate (SSE + Idempotency-Key), list/get/patch/delete, revise/tone/
+  regenerate/variants/rewrite/status/performance/image/hashtags/alt-text/track
+  — all mutations through `executeMarketingTool` → the gate (revert-log
+  entries for UI edits; the revision budget counts the ledger). Typed errors:
+  409 conflict / 429 budget / 502 generation-failed(stage) / 503 no-model.
+- **UI** (`/marketing/social` + `components/marketing/social/*`): generator
+  controls (source/platform/goal+auto-stage-chip/tone/count+balanced-mix/
+  timing) that collapse after first use, streaming skeleton intake, filterable
+  batch-grouped queue, full editor (counters from `PLATFORM_LIMITS` —
+  imported, never copied; hashtag chips; AI actions; image upload/finalize
+  with magic-byte validation + soft norm warnings; export cluster firing
+  telemetry; performance one-tap form), voice-profile sheet, the ONE
+  `ManualPublishNotice` component, error-with-retained-parameters + conflict
+  toast states. Hub Explore nav entry.
+- **Tests**: `verify:social` (127 pure — schemas/caps, funnel mix, every lint
+  rule + whitelist, timing incl. the DST edge, exports, imageMeta, prompt
+  stability, 19-tool registry snapshot, and the hardening greps: banned UI
+  language, no social hosts, no scheduler, single-writer rule) — in `npm test`;
+  `verify:social:int` (59 vs live Supabase + mock model — pipeline incl.
+  repair/lint-drop/fallback, idempotency, rate limits, 409s at both layers,
+  lifecycle + soft-delete-only, byte-for-byte reverts, full RLS matrix,
+  storage finalize, agent turn end-to-end with zero pauses).
+- ⚠ Hard-won: zod v4 **throws at runtime** on `.omit()/.extend()` over a
+  refined schema (TS doesn't catch it — the build's page-data collection did);
+  export the base object separately. And Node prefers supabase.co's IPv6 on
+  this network — int scripts pin `dns.setDefaultResultOrder("ipv4first")`.
+
 ## Marketing — approval sync, stop controls, hub redesign, 2026-07-06
 
 Three UX defects from live usage: (1) the SAME approval rendered in the agent

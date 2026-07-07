@@ -38,6 +38,7 @@ function singleRow(
     | "sender_identity"
     | "follow_up_rule"
     | "voice_profile"
+    | "social_voice_profile"
 ): EntitySnapshotter {
   return {
     async snapshot(supabase, id) {
@@ -151,6 +152,87 @@ const leadListSnapshotter: EntitySnapshotter = {
   },
 };
 
+/**
+ * social_post is SOFT-DELETE-ONLY (no delete RLS policy by design — hard
+ * purge is a later-phase retention job), so the revert of a CREATE archives
+ * the row (status='archived' + deleted_at) instead of deleting it; the revert
+ * of an update upserts the prior row verbatim (including its deleted_at, so
+ * reverting a soft-delete restores the post).
+ */
+const socialPostSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, id) {
+    const { data } = await supabase.from("social_post").select("*").eq("id", id).maybeSingle();
+    return (data as unknown as Json) ?? null;
+  },
+  async restore(supabase, id, before) {
+    if (before === null) {
+      const { error } = await supabase
+        .from("social_post")
+        .update({ status: "archived", deleted_at: new Date().toISOString() })
+        .eq("id", id);
+      if (error) throw new Error(`restore(archive social_post/${id}): ${error.message}`);
+      return;
+    }
+    const { error } = await supabase.from("social_post").upsert(before as never, { onConflict: "id" });
+    if (error) throw new Error(`restore(upsert social_post/${id}): ${error.message}`);
+  },
+};
+
+/**
+ * social_post_batch is a composite (batch row + its posts) so reverting a
+ * generate (or a variants call that grew an existing batch) restores the
+ * post SET byte-for-byte: posts in the snapshot are upserted back, posts
+ * added since are archived (soft-delete-only, as above). restore(null) —
+ * the revert of the batch create — archives every post in the batch; the
+ * empty batch row remains as an audit artifact.
+ */
+const socialBatchSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, id) {
+    const { data: batch } = await supabase
+      .from("social_post_batch")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (!batch) return null;
+    const { data: posts } = await supabase.from("social_post").select("*").eq("batch_id", id);
+    return { batch, posts: posts ?? [] } as unknown as Json;
+  },
+  async restore(supabase, id, before) {
+    if (before === null) {
+      const { error } = await supabase
+        .from("social_post")
+        .update({ status: "archived", deleted_at: new Date().toISOString() })
+        .eq("batch_id", id)
+        .is("deleted_at", null);
+      if (error) throw new Error(`restore(archive social_post_batch/${id}): ${error.message}`);
+      return;
+    }
+    const snap = before as unknown as {
+      batch: Database["public"]["Tables"]["social_post_batch"]["Row"];
+      posts: Database["public"]["Tables"]["social_post"]["Row"][];
+    };
+    const { error: be } = await supabase
+      .from("social_post_batch")
+      .upsert(snap.batch as never, { onConflict: "id" });
+    if (be) throw new Error(`restore(upsert social_post_batch/${id}): ${be.message}`);
+    if (snap.posts.length) {
+      const { error: pe } = await supabase
+        .from("social_post")
+        .upsert(snap.posts as never, { onConflict: "id" });
+      if (pe) throw new Error(`restore(upsert social_post for batch ${id}): ${pe.message}`);
+    }
+    const keep = snap.posts.map((p) => p.id);
+    let extra = supabase
+      .from("social_post")
+      .update({ status: "archived", deleted_at: new Date().toISOString() })
+      .eq("batch_id", id)
+      .is("deleted_at", null);
+    if (keep.length) extra = extra.not("id", "in", `(${keep.join(",")})`);
+    const { error: xe } = await extra;
+    if (xe) throw new Error(`restore(prune social_post for batch ${id}): ${xe.message}`);
+  },
+};
+
 const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   campaign: singleRow("marketing_campaign"),
   landing_page: singleRow("landing_page"),
@@ -161,6 +243,9 @@ const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   sender_identity: singleRow("sender_identity"),
   follow_up_rule: singleRow("follow_up_rule"),
   voice_profile: singleRow("voice_profile"),
+  social_post: socialPostSnapshotter,
+  social_post_batch: socialBatchSnapshotter,
+  social_voice_profile: singleRow("social_voice_profile"),
 };
 
 export async function snapshotEntity(supabase: DB, ref: EntityRef): Promise<Json | null> {

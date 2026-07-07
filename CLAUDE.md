@@ -1324,6 +1324,21 @@ compliant footers (8 locales, `language.ts`).
   wrap-up contract ("Enqueued is NOT sent" — what happened / what's true /
   what happens next WITH timing / what awaits the creator) and the approve
   resume message demands that wrap-up.
+- **Email CTA destinations + site-URL guard (2026-07-06, from a live 404):**
+  `lib/marketing/ctaDestination.ts` — email CTA → the course preview
+  **`/learn/{slug}`** when a LIVE publication exists, else the landing page
+  `/p/{slug}` (list traffic goes to the CONVERSION surface, never back to the
+  capture form); `{{freeLessonUrl}}` stays on the capture page. Resolved at
+  SEND time (scheduler, cached per course+campaign) AND generation time, so
+  publishing upgrades queued sends. `{{ctaUrl}}`/`{{freeLessonUrl}}` merge
+  vars are REAL now (were hard-coded null — LLM-authored buttons leaked a
+  literal `{{ctaUrl}}` into the click link); compliance validates hrefs AS
+  RENDERED + `siteUrlFinding()` (unset/garbage/vercel.com = BLOCKING —
+  vercel.com is the dashboard, never an app origin; localhost = warning).
+  Click route resolves relative destinations against the request origin
+  (NextResponse.redirect rejects bare relatives). `verify:marketing:cta`
+  (26). ⚠ tsx does NOT auto-load .env.local — suites that run the compliance
+  tool must set NEXT_PUBLIC_SITE_URL themselves (campaign suite does).
 - **Approval sync + stop controls + hub redesign (2026-07-06, see CHANGELOG +
   docs/marketing-autonomy.md § Cross-surface sync):** the same approval used to
   render in chat AND hub with no invalidation — now `lib/marketing/
@@ -1370,6 +1385,80 @@ compliant footers (8 locales, `language.ts`).
 - **Status:** all phases + the campaign layer verified green, including
   anonymous ingest (the service key had been stored under a typo'd env-var name
   — `UPABASE_…` — since setup; fixed 2026-07-02).
+
+## Social Post Generator (Marketing Phase 1) — `lib/marketing/social/*`, 2026-07-06
+
+> Guide: **`docs/social-posts.md`** · PRD: `docs/prd/Social-Media-Post-Generator-Marketing-Web.html`.
+> Phase 1 = the generation backbone: 1–5 grounded, voice-true, funnel-staged
+> **LinkedIn/Facebook** drafts the creator posts MANUALLY. Hard fences (grep-
+> tested in `verify:social`): no platform APIs/OAuth, no email imports, no
+> scheduler (nothing fires from `planned_post_at` — it's a label the Phase 3
+> scheduler will read under the same name), no AI images, **no approval cards**
+> (every tool is read or reversible), no new runtime deps. Instagram is
+> deliberately OUT until image/video gen ships (platform enum closed at 2).
+
+- **Tables** (migrations `20260706120000` + `20260706120100`): `social_post`
+  (SOFT delete only — zero delete policies; `version` int for optimistic
+  writes), `social_post_batch` (grouping/audit/idempotency/daily-budget
+  counting; unique partial (creator, idempotency_key)), `social_voice_profile`
+  (derived+versioned jsonb; DISTINCT from the email `voice_profile` rules
+  table, whose rules feed the derivation; alone has a delete policy — the
+  gate's revert-of-create needs it). Transactional persist =
+  `social_create_batch` SQL function, SECURITY **INVOKER** (RLS applies,
+  atomicity + in-DB Idempotency-Key replay incl. the unique-race path).
+  13 `social_*` event types on the single `analytics_event` stream (TS union
+  in lib/marketing/types.ts + DB check extended TOGETHER).
+- **Pipeline** (`generate.ts`): context (reuses `loadCourseMarketingContext` +
+  module/lesson narrowing, `SOCIAL_CONTEXT_MAX_TOKENS` budget) → voice
+  (`ensureSocialVoiceProfile`, derive-on-first-use) → byte-stable prompt
+  prefix (`prompt.ts`, `PROMPT_VERSION` stamped in ai_metadata everywhere) →
+  ONE structured call (withSemaphore, `SOCIAL_GENERATION_TIMEOUT_MS` 180s
+  hard ceiling — quality-first, NOT a latency target) → Zod gate + exactly ONE
+  repair (mock-testable via the `social_post_batch_repair` responseFormat
+  name) → deterministic lint (`lint.ts`, creator context whitelists its own
+  claims; flagged drafts repair-or-DROP w/ surfaced reason) → RPC persist →
+  events → per-draft `onDraft` (SSE). No model ⇒ `templates.ts` grounded
+  fallback (`model:"template-fallback"`). Slot plan (`buildBatchPlan`) wins
+  over model-echoed goal/stage/tone; hashtags CLAMP to the platform max.
+- **THE versioned-write rule**: all content updates go through ONE function
+  (`repository.ts · versionedUpdateSocialPost` — `…set version=version+1
+  where id=$1 and version=$2 and deleted_at is null`); 0 rows ⇒
+  `SocialVersionConflictError` ⇒ 409 / an agent message teaching re-read +
+  re-apply. Deliberately NOT a DB trigger (the gate's restore upserts
+  before-snapshots verbatim, version included). Lifecycle/performance/image
+  columns are non-versioned by design. `verify-social.ts` greps writes down
+  to repository.ts + entities.ts.
+- **19 tools** (`tools/socialPosts.ts`): 5 read (`list_social_posts`,
+  `get_social_post`, `get_social_voice_profile`, `suggest_hashtags`,
+  `draft_image_alt_text`) + 14 reversible writes (generate/revise/tone/
+  regenerate/variant/create/update/delete[soft]/status/attach_image/
+  remove_image/rewrite_for_platform/planned_time/performance). Composite
+  `social_post_batch` snapshotter (batch+posts) restores sets byte-for-byte;
+  revert-of-create ARCHIVES (soft-delete-only). Variants ALWAYS ride a batch
+  (one is created for batch-less posts) so the set reverts as one unit.
+  REST mutations also go through `executeMarketingTool` → revert-log entries
+  for UI edits + the revision budget counts `marketing_action` (RLS scopes it
+  per creator). Agent prompt: "SOCIAL POSTS" (Cursor loop: inspect →
+  versioned edit → explain-why) + "MANUAL PUBLISHING" honesty sections.
+- **Routes**: `/api/marketing/social-posts/{generate[SSE+Idempotency-Key],
+  ,[id],[id]/(revise|tone|regenerate|variants|rewrite|status|performance|
+  image|hashtags|alt-text|track)}` + `/api/marketing/social-voice-profile`
+  (+`/regenerate`, 409 `needs_confirm` over creator edits). Typed errors:
+  409/429/502(stage)/503. UI: `/marketing/social` (hub Explore entry) —
+  collapsing generator, streaming skeletons, batch-grouped queue, editor
+  (counters import `PLATFORM_LIMITS`, never copy), voice sheet, ONE
+  `ManualPublishNotice` component (the language rules live in one place),
+  error card retains parameters for Retry, 409 → refetch + re-apply once +
+  toast. Image uploads: client → private `social-post-images` bucket
+  (`{uid}/social/{postId}/…`) → finalize validates by MAGIC BYTES
+  (`imageMeta.ts`, dependency-free PNG/JPEG/WebP dims) + soft norm warning.
+- **Tests**: `npm run verify:social` (127 pure, in `npm test`) ·
+  `verify:social:int` (59 vs live Supabase + mock model — full pipeline,
+  reverts byte-for-byte, RLS matrix, agent turn zero-pause). ⚠ zod v4 THROWS
+  at runtime on `.omit()/.extend()` over a refined schema (export the base
+  object separately — TS won't catch it, the build's page-data collection
+  does). ⚠ Node prefers supabase.co's broken-here IPv6 — int scripts pin
+  `dns.setDefaultResultOrder("ipv4first")`.
 
 ## Where things live
 

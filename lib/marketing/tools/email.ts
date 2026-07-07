@@ -23,11 +23,11 @@ import type { Json } from "@/lib/database.types";
 import { getBlueprint, stagesForLength, clampLength, CAMPAIGN_GOALS, type CampaignGoal } from "../blueprints";
 import { generateBlueprintSequence, generateFollowup, generateLaunchSequence, type TouchDraft } from "../email/templates";
 import { generateSequenceWithModel } from "../email/llmGenerate";
+import { resolveCtaDestinations } from "../ctaDestination";
 import { resolveCopyLocale } from "../language";
 import {
   bodyToJson,
   defaultVoiceRules,
-  listLandingPages,
   loadCampaign,
   loadCampaignForCourse,
   loadCourseMarketingContext,
@@ -64,10 +64,11 @@ async function requireCampaignId(ctx: MarketingToolContext): Promise<string> {
   return c.id;
 }
 
-async function landingPathFor(ctx: MarketingToolContext, campaignId: string): Promise<string | null> {
-  const pages = await listLandingPages(ctx.supabase, campaignId);
-  const pub = pages.find((p) => p.status === "published") ?? pages[0];
-  return pub ? `/p/${pub.slug}` : null;
+/** CTA destination: course preview (/learn) when a live publication exists,
+ *  else the campaign landing page — see lib/marketing/ctaDestination.ts. */
+async function ctaPathFor(ctx: MarketingToolContext, campaignId: string): Promise<string | null> {
+  const dest = await resolveCtaDestinations(ctx.supabase, { courseId: ctx.courseId, campaignId });
+  return dest.ctaPath;
 }
 
 /** Non-suppressed subscriber ids for a segment (optional status filter). */
@@ -222,10 +223,10 @@ const generateEmailSequence = defineMarketingTool({
     }
     const length = clampLength(blueprint, args.length);
     const stages = stagesForLength(blueprint, length);
-    const landingPath = await landingPathFor(ctx, campaignId);
+    const ctaPath = await ctaPathFor(ctx, campaignId);
     const brief = campaign?.config.brief;
 
-    let draft = generateBlueprintSequence(course, stages, { landingPath, brief });
+    let draft = generateBlueprintSequence(course, stages, { ctaPath, brief });
     let usedModel = false;
     if (ctx.model) {
       const voiceProfile = await loadVoiceProfile(ctx.supabase, ctx.ownerId);
@@ -408,7 +409,7 @@ const generateFollowupTool = defineMarketingTool({
     const course = await loadCourseMarketingContext(ctx.supabase, ctx.courseId);
     if (!course) throw new MarketingToolError("Course not found");
     const draft = generateFollowup(course, {
-      landingPath: await landingPathFor(ctx, campaignId),
+      ctaPath: await ctaPathFor(ctx, campaignId),
       triggerEvent: (args.triggerEvent as AnalyticsEventType | null) ?? undefined,
     });
     const { sequenceId, touchCount } = await insertSequence(ctx, campaignId, draft, course);
@@ -747,6 +748,7 @@ const sendTestEmail = defineMarketingTool({
     // the unsubscribe link is genuinely clickable (proves the mechanism) and
     // degrades gracefully ("already unsubscribed") rather than a dead "#".
     const testSubscriberId = `test-${crypto.randomUUID()}`;
+    const dest = await resolveCtaDestinations(ctx.supabase, { courseId: ctx.courseId, campaignId: ctx.campaignId });
     const { subject, body, text } = renderSendableEmail({
       subject: args.subject,
       body: args.body,
@@ -754,8 +756,8 @@ const sendTestEmail = defineMarketingTool({
         firstName: null, // no real recipient name for a self-test — renders the "there" fallback
         courseName: course?.title ?? null,
         creatorName: sender?.fromName ?? null,
-        freeLessonUrl: null,
-        ctaUrl: null,
+        freeLessonUrl: dest.freeLessonUrl,
+        ctaUrl: dest.ctaUrl,
         offerDeadline: (campaign?.config.brief?.offerDeadlineIso as string | undefined) ?? null,
       },
       dims: { subscriberId: testSubscriberId, campaignId: ctx.campaignId ?? undefined, courseId: ctx.courseId },

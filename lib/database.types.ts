@@ -1443,17 +1443,17 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "marketing_action_conversation_id_fkey"
-            columns: ["conversation_id"]
-            isOneToOne: false
-            referencedRelation: "conversations"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "marketing_action_campaign_id_fkey"
             columns: ["campaign_id"]
             isOneToOne: false
             referencedRelation: "marketing_campaign"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "marketing_action_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
             referencedColumns: ["id"]
           },
           {
@@ -2353,6 +2353,253 @@ export type Database = {
           },
         ]
       }
+      social_post: {
+        Row: {
+          ai_metadata: Json
+          audience: string | null
+          batch_id: string | null
+          batch_order: number | null
+          body: string
+          campaign_id: string | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          cta: string | null
+          deleted_at: string | null
+          external_ref: Json | null
+          funnel_stage: string
+          goal: string
+          hashtags: string[]
+          id: string
+          image_alt_text: string | null
+          image_storage_path: string | null
+          image_url: string | null
+          lesson_id: string | null
+          module_id: string | null
+          performance: Json | null
+          planned_post_at: string | null
+          platform: string
+          post_type: string
+          posted_manually_at: string | null
+          source_text: string | null
+          source_type: string
+          status: string
+          suggested_image_idea: string | null
+          tone: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          ai_metadata?: Json
+          audience?: string | null
+          batch_id?: string | null
+          batch_order?: number | null
+          body: string
+          campaign_id?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          cta?: string | null
+          deleted_at?: string | null
+          external_ref?: Json | null
+          funnel_stage: string
+          goal: string
+          hashtags?: string[]
+          id?: string
+          image_alt_text?: string | null
+          image_storage_path?: string | null
+          image_url?: string | null
+          lesson_id?: string | null
+          module_id?: string | null
+          performance?: Json | null
+          planned_post_at?: string | null
+          platform: string
+          post_type?: string
+          posted_manually_at?: string | null
+          source_text?: string | null
+          source_type: string
+          status?: string
+          suggested_image_idea?: string | null
+          tone: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          ai_metadata?: Json
+          audience?: string | null
+          batch_id?: string | null
+          batch_order?: number | null
+          body?: string
+          campaign_id?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          cta?: string | null
+          deleted_at?: string | null
+          external_ref?: Json | null
+          funnel_stage?: string
+          goal?: string
+          hashtags?: string[]
+          id?: string
+          image_alt_text?: string | null
+          image_storage_path?: string | null
+          image_url?: string | null
+          lesson_id?: string | null
+          module_id?: string | null
+          performance?: Json | null
+          planned_post_at?: string | null
+          platform?: string
+          post_type?: string
+          posted_manually_at?: string | null
+          source_text?: string | null
+          source_type?: string
+          status?: string
+          suggested_image_idea?: string | null
+          tone?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_post_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "social_post_batch"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "marketing_campaign"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_module_id_fkey"
+            columns: ["module_id"]
+            isOneToOne: false
+            referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_post_batch: {
+        Row: {
+          ai_metadata: Json
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          funnel_mix: string
+          id: string
+          idempotency_key: string | null
+          lesson_id: string | null
+          module_id: string | null
+          platform: string
+          requested_count: number
+          source_text: string | null
+          source_type: string
+          timing_preset: string
+        }
+        Insert: {
+          ai_metadata?: Json
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          funnel_mix?: string
+          id?: string
+          idempotency_key?: string | null
+          lesson_id?: string | null
+          module_id?: string | null
+          platform: string
+          requested_count: number
+          source_text?: string | null
+          source_type: string
+          timing_preset?: string
+        }
+        Update: {
+          ai_metadata?: Json
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          funnel_mix?: string
+          id?: string
+          idempotency_key?: string | null
+          lesson_id?: string | null
+          module_id?: string | null
+          platform?: string
+          requested_count?: number
+          source_text?: string | null
+          source_type?: string
+          timing_preset?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_post_batch_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_batch_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_batch_module_id_fkey"
+            columns: ["module_id"]
+            isOneToOne: false
+            referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_voice_profile: {
+        Row: {
+          created_at: string
+          creator_id: string
+          id: string
+          profile: Json
+          source: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          creator_id: string
+          id?: string
+          profile: Json
+          source?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          creator_id?: string
+          id?: string
+          profile?: Json
+          source?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: []
+      }
       subscriber: {
         Row: {
           anonymous_id: string | null
@@ -2630,6 +2877,10 @@ export type Database = {
         Returns: Json
       }
       refresh_course_analytics: { Args: { cid: string }; Returns: undefined }
+      social_create_batch: {
+        Args: { p_batch: Json; p_posts: Json }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never
@@ -2762,4 +3013,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

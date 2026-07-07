@@ -22,8 +22,11 @@ export async function GET(req: Request) {
   if (!destination) return NextResponse.json({ ok: false, error: "Missing destination" }, { status: 400 });
 
   const safeDestination = destination.startsWith("/") || destination.startsWith("http") ? destination : "/";
+  // NextResponse.redirect REJECTS relative paths — resolve against this
+  // request's origin (absolute destinations pass through untouched).
+  const redirectTo = new URL(safeDestination, url.origin);
 
-  if (!isAdminConfigured()) return NextResponse.redirect(safeDestination, { status: 302 });
+  if (!isAdminConfigured()) return NextResponse.redirect(redirectTo, { status: 302 });
 
   const payload = verifyToken(token);
   const admin = createAdminClient();
@@ -46,5 +49,5 @@ export async function GET(req: Request) {
     if (courseId) await recordUnattributedClick(admin, courseId);
   }
 
-  return NextResponse.redirect(safeDestination, { status: 302 });
+  return NextResponse.redirect(redirectTo, { status: 302 });
 }

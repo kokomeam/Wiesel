@@ -36,6 +36,7 @@ import { landingTools } from "./landing";
 import { leadTools } from "./leads";
 import { readTools } from "./read";
 import { senderIdentityTools } from "./senderIdentity";
+import { socialPostTools } from "./socialPosts";
 import { voiceTools } from "./voice";
 import {
   MarketingToolError,
@@ -54,6 +55,7 @@ const allReadTools = [
   ...campaignLifecycleTools.filter((t) => t.reversibility === "read"),
   ...senderIdentityTools.filter((t) => t.reversibility === "read"),
   ...voiceTools.filter((t) => t.reversibility === "read"),
+  ...socialPostTools.filter((t) => t.reversibility === "read"),
 ];
 const mutatingTools = [
   ...campaignTools,
@@ -64,6 +66,9 @@ const mutatingTools = [
   ...campaignLifecycleTools.filter((t) => t.reversibility !== "read"),
   ...senderIdentityTools.filter((t) => t.reversibility !== "read"),
   ...voiceTools.filter((t) => t.reversibility !== "read"),
+  // Social Post Generator (Phase 1): ALL writes are reversible by design —
+  // no approval cards anywhere in the feature (the autonomy-redesign rule).
+  ...socialPostTools.filter((t) => t.reversibility !== "read"),
 ];
 
 const reversibleTools = mutatingTools.filter((t) => t.reversibility === "reversible");

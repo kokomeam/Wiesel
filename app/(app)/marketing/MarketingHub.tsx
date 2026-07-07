@@ -30,6 +30,7 @@ import {
   Loader2,
   Mail,
   Send,
+  Share2,
   Sparkles,
   UserPlus,
   Users,
@@ -90,6 +91,7 @@ const EXPLORE_LINKS: { href: string; icon: typeof Mail; label: string; sub: stri
   { href: "/marketing/leads", icon: UserPlus, label: "Leads", sub: "Consent-first lists and imports" },
   { href: "/marketing/audience", icon: Users, label: "Audience", sub: "Subscribers and funnel stages" },
   { href: "/marketing/sequences", icon: Send, label: "Sequences", sub: "What sends, when, to whom" },
+  { href: "/marketing/social", icon: Share2, label: "Social posts", sub: "Drafts you copy and post yourself" },
   { href: "/marketing/analytics", icon: BarChart3, label: "Analytics", sub: "Views, clicks, enrollments" },
   { href: "/marketing/agent", icon: Wand2, label: "Agent", sub: "Full-screen chat" },
 ];
