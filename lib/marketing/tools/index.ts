@@ -37,6 +37,7 @@ import { leadTools } from "./leads";
 import { readTools } from "./read";
 import { senderIdentityTools } from "./senderIdentity";
 import { socialPostTools } from "./socialPosts";
+import { clipTools } from "./clips";
 import { voiceTools } from "./voice";
 import {
   MarketingToolError,
@@ -56,6 +57,7 @@ const allReadTools = [
   ...senderIdentityTools.filter((t) => t.reversibility === "read"),
   ...voiceTools.filter((t) => t.reversibility === "read"),
   ...socialPostTools.filter((t) => t.reversibility === "read"),
+  ...clipTools.filter((t) => t.reversibility === "read"),
 ];
 const mutatingTools = [
   ...campaignTools,
@@ -69,6 +71,8 @@ const mutatingTools = [
   // Social Post Generator (Phase 1): ALL writes are reversible by design —
   // no approval cards anywhere in the feature (the autonomy-redesign rule).
   ...socialPostTools.filter((t) => t.reversibility !== "read"),
+  // Lesson Clip Repurposing (Phase 1.5): same rule — reversible-tier only.
+  ...clipTools.filter((t) => t.reversibility !== "read"),
 ];
 
 const reversibleTools = mutatingTools.filter((t) => t.reversibility === "reversible");

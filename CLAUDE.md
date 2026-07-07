@@ -1518,6 +1518,60 @@ compliant footers (8 locales, `language.ts`).
   does). ⚠ Node prefers supabase.co's broken-here IPv6 — int scripts pin
   `dns.setDefaultResultOrder("ipv4first")`.
 
+## Lesson Clip Repurposing (Marketing Phase 1.5, M-A) — `lib/marketing/clips/*`, 2026-07-07
+
+> Guide: **`docs/clips.md`** · Task 0 findings: `docs/reap-task0-findings.md`.
+> M-A = transcripts + the moment selection engine + eval harness. **Task 0
+> (the live Reap smoke test, `npm run smoke:reap`) is BLOCKED on
+> `REAP_API_KEY` and gates M-B** (render provider/jobs/webhooks). Hard fences
+> (grep-tested): no platform APIs, no posting/scheduling (`/publish-clip` +
+> `/schedule-clips` never referenced), no cron, no synthetic media, Phase 1
+> language rules verbatim.
+
+- **Pipeline** (`selection.ts`): acquire transcript (cache → Mux caption VTT
+  → `TranscriptionProvider` seam [M-B fills]) → context (Phase 1 assembler +
+  **quiz-miss concepts** from `rollup_question_stats` — it has `lesson_id`
+  directly; question wording joined from draft quiz blocks via the node-id
+  invariant) → **`runSelectionCore`** (DB-free; shared VERBATIM with
+  `scripts/eval-clips.ts`): ONE mid-tier structured call (sequential
+  small-tier map→reduce over `CLIP_TRANSCRIPT_MAX_TOKENS` 24k) → Zod gate +
+  exactly ONE repair (deterministic flags may claim it; rubric-only failures
+  never do) → deterministic checks (`validate.ts`) → the ONE small-tier
+  validation call (coherence ±8s adjust-or-drop, multi-segment NEVER
+  adjusted; hook integrity w/ first-supported promotion) → persist
+  `clip_moment_candidate` (+ 5 snake_case events on the single stream).
+  Selection is model-REQUIRED (typed 503); failures persist NOTHING.
+- **⚠ Sentence snapping is load-bearing** (`snapToSentenceBounds`,
+  clips-v2): model span timestamps are interpolated guesses off 12s anchors —
+  unsnapped spans start mid-sentence and the coherence validator (rightly)
+  kills them. The first live eval scored 1 viable / 11 returned before this +
+  the coherence calibration (judge reference debt OUTSIDE the clip's time
+  window; the clip carries its own footage — "watch this" is fine).
+- **Prompts are versioned artifacts** (§8): `CLIP_PROMPT_VERSION` (now
+  `clips-v2`) stamped on every candidate; exemplars are repo fixtures
+  (`fixtures/exemplars.ts`). ANY prompt change: bump the version → beat the
+  baseline on `npm run eval:clips --live` → re-record CI stubs
+  (`--live --record` → `fixtures/recordings/`).
+- **Governance**: 3 tools in `tools/clips.ts`, ALL reversible (no approval
+  cards). Gate entities: `clip_moment_set` (composite over `request_id`;
+  revert removes the whole run's set, the transcript cache survives) +
+  `clip_moment_candidate` (single-row). `clip_moment_candidate` has a DELETE
+  policy for revert-of-create; `lesson_transcript` deliberately has none.
+- **DB**: migration `20260707100000_lesson_clips.sql` (applied). ⚠ the live
+  DB has unmerged-branch drift (`learning_events.feedback_comment`,
+  `learner_messages.delivery_status`…) — after a migration here, SPLICE the
+  new tables into `lib/database.types.ts` rather than full-regen, or this
+  branch's analytics pages break on foreign nullability changes.
+- **Tests**: `verify:clips` (117 pure, in `npm test`) · `verify:clips:int`
+  (33, live Supabase + mock model) · `eval:clips` (live/record/replay; the
+  flat-affect ≥2-viable gate is the differentiator claim). REST:
+  `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
+- **Next**: Task 0 findings → approval → M-B (ClipRenderProvider + Reap
+  adapter or pre-cut FFmpeg fallback, `clip_render_job`, webhook consumer,
+  reconciliation, 10/min bucket, quotas) → M-C ingest as
+  `social_post.post_type='clip'` (platform enum extension gated by
+  superRefine) → M-D posting kit/short links/preview → M-E UI → M-F chaos.
+
 ## Where things live
 
 - `lib/course/` — the Studio's **structured course document model** (UI-free):

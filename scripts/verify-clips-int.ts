@@ -1,0 +1,454 @@
+/**
+ * Lesson Clip Repurposing (Phase 1.5, M-A) — INTEGRATION suite (live Supabase
+ * + the mock model, no OpenAI key needed). Self-provisions throwaway users.
+ *
+ *   - transcript acquisition: platform path from a Mux-captioned video_assets
+ *     row (cue → interpolated words); CACHE (second request = zero provider
+ *     calls — acceptance §17.1); provider path through the injected seam
+ *     (provider_ref persisted); no-source lesson → typed 422-class error
+ *   - selection through the GATE: staged reversible action (never an approval
+ *     card), candidates persisted with rank 1..N + prompt_version + rubric
+ *     scores, events on the single stream (lesson_transcribed +
+ *     clip_moments_generated)
+ *   - reverts: rejecting select_clip_moments removes the WHOLE candidate set
+ *     (composite snapshotter over request_id); rejecting a status change
+ *     restores the row byte-for-byte (modulo the moddatetime re-stamp);
+ *     the transcript CACHE survives a revert (it's not the gate target)
+ *   - zero-survivors: nothing persisted, generation_failed on the stream
+ *   - RLS matrix: creator B sees/edits NOTHING of creator A's transcripts or
+ *     candidates
+ *
+ * Run: `npx tsx scripts/verify-clips-int.ts`
+ */
+
+import { readFileSync } from "node:fs";
+import dns from "node:dns";
+import { createClient } from "@supabase/supabase-js";
+
+// Node prefers supabase.co's IPv6 record; on IPv6-broken networks (this dev
+// machine's Clash setup) the TLS socket resets before the handshake.
+dns.setDefaultResultOrder("ipv4first");
+
+const retryingFetch: typeof fetch = async (input, init) => {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+};
+
+import type { Database, Json } from "@/lib/database.types";
+import { createMockModelClient } from "@/lib/ai/providers/mock";
+import { createMarketingServices } from "@/lib/marketing/services/factory";
+import { executeMarketingTool, rejectMarketingAction } from "@/lib/marketing/tools";
+import type { MarketingToolContext } from "@/lib/marketing/tools/types";
+import { ClipTranscriptUnavailableError, ClipGenerationError } from "@/lib/marketing/clips/errors";
+import {
+  acquireLessonTranscript,
+  type TranscriptionProvider,
+} from "@/lib/marketing/clips/transcripts";
+import { selectClipMoments } from "@/lib/marketing/clips/selection";
+import { CLIP_PROMPT_VERSION } from "@/lib/marketing/clips/prompt";
+import { fixtureByKey } from "@/lib/marketing/clips/fixtures/lessons";
+import type { ModelMoment, RubricScores } from "@/lib/marketing/clips/schemas";
+
+let pass = 0,
+  fail = 0;
+function check(name: string, cond: boolean, detail = "") {
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail++;
+    console.log(`  ✗ ${name} ${detail}`);
+  }
+}
+
+function loadEnv() {
+  const raw = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  const env: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+  return { url: env.NEXT_PUBLIC_SUPABASE_URL, anon: env.NEXT_PUBLIC_SUPABASE_ANON_KEY };
+}
+
+async function provisionUser(url: string, anon: string, tag: string) {
+  const email = `clips-${tag}-${crypto.randomUUID().slice(0, 8)}@example.com`;
+  const password = "test-password-1234";
+  const signup = await retryingFetch(`${url}/auth/v1/signup`, {
+    method: "POST",
+    headers: { apikey: anon, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!signup.ok) throw new Error(`signup: ${await signup.text()}`);
+  const supabase = createClient<Database>(url, anon, { global: { fetch: retryingFetch } });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) throw new Error(`signin: ${error?.message}`);
+  return { supabase, userId: data.user.id, email };
+}
+
+/* ───────────────────────── fixtures ────────────────────────────────── */
+
+const FLAT = fixtureByKey("flat_affect");
+
+/** Segment-level VTT (the same shape Mux produces at cue granularity). */
+function fixtureVtt(): string {
+  const toTs = (ms: number) => {
+    const t = Math.floor(ms / 1000);
+    const mm = String(Math.floor(t / 60)).padStart(2, "0");
+    const ss = String(t % 60).padStart(2, "0");
+    return `${mm}:${ss}.${String(ms % 1000).padStart(3, "0")}`;
+  };
+  const cues = FLAT.segments.map((s) => `${toTs(s.atMs)} --> ${toTs(s.endMs)}\n${s.text}`);
+  return `WEBVTT\n\n${cues.join("\n\n")}`;
+}
+
+const GOOD_SCORES: RubricScores = {
+  hook_potential: 4,
+  standalone: 5,
+  specificity: 4,
+  curiosity_gap: 4,
+  pedagogical_value: 5,
+  visual_interest: 3,
+  brand_safety: 5,
+};
+
+function fixtureMoment(overrides: Partial<ModelMoment> & { rank: number }): ModelMoment {
+  return {
+    startMs: 20_000,
+    endMs: 55_000,
+    momentType: "definition_reframe",
+    hookText: "Your index is a sorted copy",
+    altHooks: ["What a database index really is", "Indexes are copies, not magic"],
+    funnelStage: "tofu",
+    targetPlatformFit: ["instagram", "tiktok"],
+    rationale: "Reframes the core concept so every later rule is derivable.",
+    rubricScores: GOOD_SCORES,
+    captionDraft: "An index is a second sorted copy of your column.",
+    endCardCta: "Follow for the full indexing series",
+    segments: null,
+    stitchedScript: null,
+    ...overrides,
+  } as ModelMoment;
+}
+
+const BATCH = {
+  candidates: [
+    fixtureMoment({ rank: 1 }),
+    fixtureMoment({
+      rank: 2,
+      startMs: 55_000,
+      endMs: 95_000,
+      momentType: "misconception_buster",
+      hookText: "Why the planner ignores your index",
+      altHooks: ["The index you made is invisible", "Index the expression, not the column"],
+    }),
+    fixtureMoment({
+      rank: 3,
+      startMs: 130_000,
+      endMs: 175_000,
+      momentType: "counterintuitive_reveal",
+      hookText: "An index can slow your app down",
+      altHooks: ["Indexes are not free", "Faster reads, slower writes"],
+      funnelStage: "mofu",
+    }),
+  ],
+};
+
+const VERDICTS = {
+  verdicts: BATCH.candidates.map((c) => ({
+    rank: c.rank,
+    coherence: { pass: true, offendingPhrase: null, adjustedStartMs: null, adjustedEndMs: null },
+    hooks: [c.hookText, ...c.altHooks].map((h) => ({ hook: h, supported: true, unsupportedClaim: null })),
+  })),
+};
+
+async function main() {
+  const { url, anon } = loadEnv();
+  if (!url || !anon) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL / ANON_KEY in .env.local");
+
+  const A = await provisionUser(url, anon, "a");
+  const B = await provisionUser(url, anon, "b");
+  console.log("# provisioned two throwaway creators");
+
+  const courseId = crypto.randomUUID();
+  const moduleId = crypto.randomUUID();
+  const lesson1 = crypto.randomUUID(); // captioned video → platform transcript
+  const lesson2 = crypto.randomUUID(); // uncaptioned video → provider seam
+  const lesson3 = crypto.randomUUID(); // no video → typed error
+  await A.supabase.from("courses").insert({
+    id: courseId,
+    author_id: A.userId,
+    title: "Practical SQL Performance",
+    description: "Make real production queries fast.",
+    plan: {
+      outcomes: ["Read a query plan", "Choose the right index"],
+      prerequisites: [],
+      teachingStyle: "dry, precise",
+    } as unknown as Json,
+  });
+  await A.supabase.from("modules").insert({ id: moduleId, course_id: courseId, title: "The Query Planner Is Not Magic", order: 0 });
+  await A.supabase.from("lessons").insert([
+    { id: lesson1, course_id: courseId, module_id: moduleId, title: "Indexing Deep Dive", order: 0 },
+    { id: lesson2, course_id: courseId, module_id: moduleId, title: "Join Strategies", order: 1 },
+    { id: lesson3, course_id: courseId, module_id: moduleId, title: "Planning Ahead", order: 2 },
+  ]);
+
+  // Captioned ready video on lesson1 (the platform-transcript source).
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson1,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
+  // Uncaptioned ready video with an MP4 on lesson2 (the provider path).
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson2,
+    status: "ready",
+    duration_seconds: 120,
+    mp4_url: "https://example.com/lesson2.mp4",
+  });
+
+  const services = createMarketingServices();
+  const ctxFor = (model?: ReturnType<typeof createMockModelClient>): MarketingToolContext => ({
+    supabase: A.supabase as never,
+    courseId,
+    campaignId: null,
+    ownerId: A.userId,
+    services,
+    model,
+    requestedBy: "user",
+  });
+  const transcriptDeps = (provider?: TranscriptionProvider) => ({
+    supabase: A.supabase as never,
+    ownerId: A.userId,
+    courseIdForEvents: courseId,
+    transcriptionProvider: provider,
+  });
+
+  /* ───────────────── transcript acquisition ─────────────────────────── */
+
+  console.log("\n# transcript acquisition (platform · cache · provider · none)");
+  const t1 = await acquireLessonTranscript(transcriptDeps(), lesson1, { courseId });
+  check("platform path: source=platform, words interpolated", t1.source === "platform" && t1.words.length > 100);
+  check("platform path: duration from the asset", Math.abs(t1.durationSeconds - FLAT.durationMs / 1000) < 1);
+  check("platform path: plain text persisted", t1.text.includes("sorted copy"));
+
+  let providerCalled = 0;
+  const throwingProvider: TranscriptionProvider = {
+    async transcribe() {
+      providerCalled++;
+      throw new Error("must not be called");
+    },
+  };
+  const t1again = await acquireLessonTranscript(transcriptDeps(throwingProvider), lesson1, { courseId });
+  check("CACHE: second request returns the same transcript row", t1again.id === t1.id);
+  check("CACHE: zero provider calls on a cached lesson (§17.1)", providerCalled === 0);
+
+  const mockProvider: TranscriptionProvider = {
+    async transcribe({ mediaUrl }) {
+      providerCalled++;
+      check("provider gets the asset's media URL", mediaUrl === "https://example.com/lesson2.mp4");
+      return {
+        words: [
+          { w: "join", startMs: 0, endMs: 400, speaker: "S1" },
+          { w: "strategies", startMs: 400, endMs: 900, speaker: "S1" },
+          { w: "matter", startMs: 900, endMs: 1400, speaker: "S1" },
+        ],
+        text: "join strategies matter",
+        language: "en",
+        durationSeconds: 120,
+        providerRef: "mock-transcription-1",
+      };
+    },
+  };
+  const t2 = await acquireLessonTranscript(transcriptDeps(mockProvider), lesson2, { courseId });
+  check("provider path: source=provider + providerRef persisted", t2.source === "provider" && t2.providerRef === "mock-transcription-1");
+  check("provider path: diarized words survive", t2.words[0].speaker === "S1");
+
+  let noSourceErr: unknown = null;
+  try {
+    await acquireLessonTranscript(transcriptDeps(), lesson3, { courseId });
+  } catch (err) {
+    noSourceErr = err;
+  }
+  check("no video → ClipTranscriptUnavailableError (422-class)", noSourceErr instanceof ClipTranscriptUnavailableError);
+
+  const transcribedEvents = await A.supabase
+    .from("analytics_event")
+    .select("id,props")
+    .eq("course_id", courseId)
+    .eq("type", "lesson_transcribed");
+  check("lesson_transcribed events on the single stream (2 lessons)", (transcribedEvents.data ?? []).length === 2);
+
+  /* ───────────────── selection through the gate ─────────────────────── */
+
+  console.log("\n# selection through the gate (staged, evented, revertible)");
+  const mock = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const out = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson1, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(mock)
+  );
+  check("reversible → staged, never an approval card", out.status === "staged" && out.actionId != null);
+  check("target is the candidate SET (request_id)", out.target?.entity === "clip_moment_set");
+  const requestId = out.target!.id;
+
+  const { data: rows } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("*")
+    .eq("request_id", requestId)
+    .order("rank");
+  check("3 candidates persisted, ranks 1..3", (rows ?? []).length === 3 && rows!.map((r) => r.rank).join(",") === "1,2,3");
+  check("prompt_version stamped on every candidate (§8)", rows!.every((r) => r.prompt_version === CLIP_PROMPT_VERSION));
+  check("ai_metadata carries model + voiceProfileVersion", rows!.every((r) => (r.ai_metadata as Record<string, unknown>).promptVersion === CLIP_PROMPT_VERSION));
+  check("rubric scores + rationale persisted", rows!.every((r) => r.rationale.length > 0 && r.rubric_scores !== null));
+  check("summary explains moments in creator terms", out.summary.includes("worth clipping") && out.summary.includes("sorted copy"));
+
+  const genEvents = await A.supabase
+    .from("analytics_event")
+    .select("props")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moments_generated");
+  check("clip_moments_generated event with count + promptVersion", (genEvents.data ?? []).some((e) => {
+    const p = e.props as Record<string, unknown>;
+    return p.count === 3 && p.promptVersion === CLIP_PROMPT_VERSION;
+  }));
+
+  /* ─────────────── status lifecycle + byte-for-byte revert ──────────── */
+
+  console.log("\n# status lifecycle + reverts");
+  const target = rows![0];
+  const before = JSON.stringify({ ...target, updated_at: null });
+  const statusOut = await executeMarketingTool(
+    "update_clip_moment_status",
+    { candidateId: target.id, status: "selected" },
+    ctxFor()
+  );
+  check("status change staged (reversible)", statusOut.status === "staged" && statusOut.actionId != null);
+  const { data: afterSel } = await A.supabase.from("clip_moment_candidate").select("status").eq("id", target.id).single();
+  check("candidate now selected", afterSel?.status === "selected");
+  const selEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moment_selected");
+  check("clip_moment_selected event emitted", (selEvents.data ?? []).length === 1);
+
+  await rejectMarketingAction(A.supabase as never, statusOut.actionId!);
+  const { data: restored } = await A.supabase.from("clip_moment_candidate").select("*").eq("id", target.id).single();
+  check(
+    "reject restores the candidate BYTE-FOR-BYTE (modulo moddatetime)",
+    JSON.stringify({ ...restored, updated_at: null }) === before
+  );
+
+  await rejectMarketingAction(A.supabase as never, out.actionId!);
+  const { data: afterRevert } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("request_id", requestId);
+  check("rejecting the selection removes the WHOLE candidate set", (afterRevert ?? []).length === 0);
+  const t1cached = await A.supabase.from("lesson_transcript").select("id").eq("lesson_id", lesson1).single();
+  check("the transcript cache survives the revert (not the gate target)", t1cached.data?.id === t1.id);
+
+  /* ───────────────────── zero-survivors path ────────────────────────── */
+
+  console.log("\n# zero-survivors: nothing persisted");
+  const weakBatch = {
+    candidates: [fixtureMoment({ rank: 1, rubricScores: { ...GOOD_SCORES, standalone: 2 } })],
+  };
+  const weakMock = createMockModelClient([], {
+    structured: { clip_moment_batch: weakBatch, clip_moment_batch_repair: weakBatch, clip_validation: { verdicts: [] } },
+  });
+  let zeroErr: unknown = null;
+  try {
+    await selectClipMoments(
+      {
+        supabase: A.supabase as never,
+        ownerId: A.userId,
+        model: weakMock,
+        clock: services.clock,
+        courseIdForEvents: courseId,
+      },
+      { lessonId: lesson1, courseId, stages: "balanced", targetPlatforms: ["instagram"], count: 5 }
+    );
+  } catch (err) {
+    zeroErr = err;
+  }
+  check("all-dropped run throws (stage=validation)", zeroErr instanceof ClipGenerationError && zeroErr.stage === "validation");
+  const { data: leftover } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1);
+  check("NOTHING persisted on failure", (leftover ?? []).length === 0);
+  const failEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moments_generation_failed");
+  check("generation_failed event on the stream", (failEvents.data ?? []).length >= 1);
+
+  /* ─────────────────────────── RLS matrix ───────────────────────────── */
+
+  console.log("\n# RLS matrix (creator B vs. creator A's data)");
+  // Re-create a candidate set for A so B has something to try against.
+  const mock2 = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const out2 = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson1, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(mock2)
+  );
+  const { data: aCandidates } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("request_id", out2.target!.id);
+  check("fixture set re-created for the matrix", (aCandidates ?? []).length === 3);
+
+  const { data: bTranscripts } = await B.supabase.from("lesson_transcript").select("id");
+  check("B sees NO transcripts", (bTranscripts ?? []).length === 0);
+  const { data: bCandidates } = await B.supabase.from("clip_moment_candidate").select("id");
+  check("B sees NO candidates", (bCandidates ?? []).length === 0);
+  const { data: bUpdate } = await B.supabase
+    .from("clip_moment_candidate")
+    .update({ status: "dismissed" })
+    .eq("id", aCandidates![0].id)
+    .select("id");
+  check("B cannot update A's candidate", (bUpdate ?? []).length === 0);
+  const { data: bDelete } = await B.supabase
+    .from("clip_moment_candidate")
+    .delete()
+    .eq("id", aCandidates![0].id)
+    .select("id");
+  check("B cannot delete A's candidate", (bDelete ?? []).length === 0);
+  const { data: stillThere } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("status")
+    .eq("id", aCandidates![0].id)
+    .single();
+  check("A's candidate untouched by B's attempts", stillThere?.status === "candidate");
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -39,6 +39,7 @@ function singleRow(
     | "follow_up_rule"
     | "voice_profile"
     | "social_voice_profile"
+    | "clip_moment_candidate"
 ): EntitySnapshotter {
   return {
     async snapshot(supabase, id) {
@@ -233,6 +234,53 @@ const socialBatchSnapshotter: EntitySnapshotter = {
   },
 };
 
+/**
+ * clip_moment_set (Phase 1.5): one selection run's candidate SET, keyed by
+ * the shared request_id (NOT a row id — the social_post_batch composite
+ * precedent, minus a parent row). snapshot = every candidate in the set;
+ * restore(null) = delete the set (revert of select_clip_moments — candidates
+ * are regenerable AI artifacts, and the table has a creator-scoped DELETE
+ * policy for exactly this); restore(rows) = upsert them back + prune extras.
+ */
+const clipMomentSetSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, requestId) {
+    const { data } = await supabase
+      .from("clip_moment_candidate")
+      .select("*")
+      .eq("request_id", requestId)
+      .order("rank", { ascending: true });
+    if (!data || data.length === 0) return null;
+    return { candidates: data } as unknown as Json;
+  },
+  async restore(supabase, requestId, before) {
+    if (before === null) {
+      const { error } = await supabase
+        .from("clip_moment_candidate")
+        .delete()
+        .eq("request_id", requestId);
+      if (error) throw new Error(`restore(delete clip_moment_set/${requestId}): ${error.message}`);
+      return;
+    }
+    const snap = before as unknown as {
+      candidates: Database["public"]["Tables"]["clip_moment_candidate"]["Row"][];
+    };
+    if (snap.candidates.length > 0) {
+      const { error } = await supabase
+        .from("clip_moment_candidate")
+        .upsert(snap.candidates as never, { onConflict: "id" });
+      if (error) throw new Error(`restore(upsert clip_moment_set/${requestId}): ${error.message}`);
+    }
+    const keepIds = snap.candidates.map((c) => c.id);
+    const { error: pruneError } = await supabase
+      .from("clip_moment_candidate")
+      .delete()
+      .eq("request_id", requestId)
+      .not("id", "in", `(${keepIds.join(",")})`);
+    if (pruneError)
+      throw new Error(`restore(prune clip_moment_set/${requestId}): ${pruneError.message}`);
+  },
+};
+
 const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   campaign: singleRow("marketing_campaign"),
   landing_page: singleRow("landing_page"),
@@ -246,6 +294,8 @@ const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   social_post: socialPostSnapshotter,
   social_post_batch: socialBatchSnapshotter,
   social_voice_profile: singleRow("social_voice_profile"),
+  clip_moment_candidate: singleRow("clip_moment_candidate"),
+  clip_moment_set: clipMomentSetSnapshotter,
 };
 
 export async function snapshotEntity(supabase: DB, ref: EntityRef): Promise<Json | null> {

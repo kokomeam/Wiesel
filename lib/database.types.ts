@@ -424,6 +424,112 @@ export type Database = {
           },
         ]
       }
+      clip_moment_candidate: {
+        Row: {
+          ai_metadata: Json
+          alt_hooks: Json
+          caption_draft: string | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          end_card_cta: string | null
+          end_ms: number
+          funnel_stage: string
+          hook_text: string
+          id: string
+          lesson_id: string
+          moment_type: string
+          prompt_version: string
+          rank: number
+          rationale: string
+          request_id: string
+          rubric_scores: Json
+          segments: Json | null
+          start_ms: number
+          status: string
+          stitched_script: string | null
+          target_platform_fit: Json
+          transcript_id: string
+          updated_at: string
+        }
+        Insert: {
+          ai_metadata?: Json
+          alt_hooks?: Json
+          caption_draft?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          end_card_cta?: string | null
+          end_ms: number
+          funnel_stage: string
+          hook_text: string
+          id?: string
+          lesson_id: string
+          moment_type: string
+          prompt_version: string
+          rank: number
+          rationale: string
+          request_id: string
+          rubric_scores: Json
+          segments?: Json | null
+          start_ms: number
+          status?: string
+          stitched_script?: string | null
+          target_platform_fit?: Json
+          transcript_id: string
+          updated_at?: string
+        }
+        Update: {
+          ai_metadata?: Json
+          alt_hooks?: Json
+          caption_draft?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          end_card_cta?: string | null
+          end_ms?: number
+          funnel_stage?: string
+          hook_text?: string
+          id?: string
+          lesson_id?: string
+          moment_type?: string
+          prompt_version?: string
+          rank?: number
+          rationale?: string
+          request_id?: string
+          rubric_scores?: Json
+          segments?: Json | null
+          start_ms?: number
+          status?: string
+          stitched_script?: string | null
+          target_platform_fit?: Json
+          transcript_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clip_moment_candidate_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_moment_candidate_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_moment_candidate_transcript_id_fkey"
+            columns: ["transcript_id"]
+            isOneToOne: false
+            referencedRelation: "lesson_transcript"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversations: {
         Row: {
           course_id: string
@@ -1325,6 +1431,66 @@ export type Database = {
             columns: ["publication_id"]
             isOneToOne: false
             referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lesson_transcript: {
+        Row: {
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          duration_seconds: number
+          id: string
+          language: string
+          lesson_id: string
+          provider_ref: string | null
+          source: string
+          text: string
+          updated_at: string
+          words: Json
+        }
+        Insert: {
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          duration_seconds: number
+          id?: string
+          language?: string
+          lesson_id: string
+          provider_ref?: string | null
+          source: string
+          text: string
+          updated_at?: string
+          words: Json
+        }
+        Update: {
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          duration_seconds?: number
+          id?: string
+          language?: string
+          lesson_id?: string
+          provider_ref?: string | null
+          source?: string
+          text?: string
+          updated_at?: string
+          words?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lesson_transcript_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lesson_transcript_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: true
+            referencedRelation: "lessons"
             referencedColumns: ["id"]
           },
         ]

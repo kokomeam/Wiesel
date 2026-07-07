@@ -1,0 +1,39 @@
+{
+  "promptVersion": "clips-v2",
+  "recordedAt": "2026-07-07T08:46:22.040Z",
+  "scores": [
+    {
+      "fixture": "charismatic",
+      "returned": 3,
+      "viable": 3,
+      "goldTotal": 3,
+      "goldHit": 3,
+      "recallAt5": 1,
+      "rubricPassRate": 1,
+      "hookIntegrityRate": 1,
+      "coherencePassRate": 1
+    },
+    {
+      "fixture": "flat_affect",
+      "returned": 5,
+      "viable": 5,
+      "goldTotal": 4,
+      "goldHit": 4,
+      "recallAt5": 1,
+      "rubricPassRate": 1,
+      "hookIntegrityRate": 1,
+      "coherencePassRate": 1
+    },
+    {
+      "fixture": "multi_speaker",
+      "returned": 3,
+      "viable": 3,
+      "goldTotal": 3,
+      "goldHit": 3,
+      "recallAt5": 1,
+      "rubricPassRate": 1,
+      "hookIntegrityRate": 1,
+      "coherencePassRate": 1
+    }
+  ]
+}

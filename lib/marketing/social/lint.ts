@@ -92,14 +92,14 @@ function allCapsRatioViolation(text: string): LintViolation | null {
 }
 
 /**
- * Lint one generated post against the creator-supplied source context.
- * Returns every violation (the pipeline drops the post if any survive the
- * repair pass).
+ * Lint free text (any platform surface) against the §17.2 pattern rules +
+ * the ALL-CAPS ratio. This is the SHARED core — the social pipeline wraps it
+ * with platform hashtag caps below, and the clips pipeline (Phase 1.5) runs
+ * it over hooks/captions/CTAs (PRD 1.5 §7.4.4: "Phase 1 §17.2 rules apply").
+ * One rule table, two features — never copied.
  */
-export function lintGeneratedPost(post: LintablePost, sourceContext: string): LintViolation[] {
+export function lintFreeText(text: string, sourceContext: string): LintViolation[] {
   const violations: LintViolation[] = [];
-  const text = [post.body, post.cta ?? ""].join("\n");
-
   for (const rule of PATTERN_RULES) {
     const match = text.match(rule.pattern);
     if (!match) continue;
@@ -107,6 +107,19 @@ export function lintGeneratedPost(post: LintablePost, sourceContext: string): Li
     if (rule.whitelistable && whitelisted(excerpt, sourceContext)) continue;
     violations.push({ rule: rule.rule, reason: rule.reason, excerpt });
   }
+  const caps = allCapsRatioViolation(text);
+  if (caps) violations.push(caps);
+  return violations;
+}
+
+/**
+ * Lint one generated post against the creator-supplied source context.
+ * Returns every violation (the pipeline drops the post if any survive the
+ * repair pass).
+ */
+export function lintGeneratedPost(post: LintablePost, sourceContext: string): LintViolation[] {
+  const text = [post.body, post.cta ?? ""].join("\n");
+  const violations = lintFreeText(text, sourceContext);
 
   const limits = PLATFORM_LIMITS[post.platform];
   if (post.hashtags.length > limits.hashtagMax) {
@@ -116,9 +129,6 @@ export function lintGeneratedPost(post: LintablePost, sourceContext: string): Li
       excerpt: post.hashtags.join(" "),
     });
   }
-
-  const caps = allCapsRatioViolation(text);
-  if (caps) violations.push(caps);
 
   return violations;
 }
