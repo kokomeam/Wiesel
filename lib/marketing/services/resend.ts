@@ -23,16 +23,40 @@ import { Resend } from "resend";
 import { renderEmailHtml, renderEmailText } from "../email/render";
 import type { EmailProvider, SendEmailInput, SendEmailResult } from "./types";
 
+/**
+ * Trim + strip ONE layer of wrapping matching quotes off an env-sourced value.
+ * A `.env` file's `RESEND_FROM="WiseSel <hi@x.com>"` has its quotes stripped
+ * by dotenv-style parsing — but Vercel's environment-variable UI does NOT
+ * strip quotes: pasting that exact line's value (a common copy from
+ * .env.example) leaves the LITERAL quote characters in `process.env`, and
+ * Resend's from-address parser rejects them with "Invalid `from` field"
+ * (observed live: worked locally, broke only on the deployed domain). Pure —
+ * unit-tested without a key.
+ */
+export function cleanEnvValue(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1).trim();
+    }
+  }
+  return trimmed;
+}
+
 /** Compose the From header: the ADDRESS always comes from the configured
  *  (verified-domain) `envFrom`; `fromName` only replaces the display name.
- *  Pure — unit-tested without a key. */
+ *  `envFrom` is cleaned first (see `cleanEnvValue`) so a quoted env var can
+ *  never reach Resend malformed. Pure — unit-tested without a key. */
 export function composeFromHeader(fromName: string | null | undefined, envFrom: string): string {
-  if (!fromName?.trim()) return envFrom;
-  const m = envFrom.match(/<\s*([^<>\s]+@[^<>\s]+)\s*>/);
-  const address = m ? m[1] : envFrom.trim();
+  const cleanEnv = cleanEnvValue(envFrom);
+  if (!fromName?.trim()) return cleanEnv;
+  const m = cleanEnv.match(/<\s*([^<>\s]+@[^<>\s]+)\s*>/);
+  const address = m ? m[1] : cleanEnv;
   // Strip characters that would break or spoof the header.
   const safeName = fromName.replace(/["<>\r\n]/g, "").trim();
-  return safeName ? `${safeName} <${address}>` : envFrom;
+  return safeName ? `${safeName} <${address}>` : cleanEnv;
 }
 
 export function createResendEmailProvider(): EmailProvider {
@@ -56,10 +80,15 @@ export function createResendEmailProvider(): EmailProvider {
         headers: { "List-Unsubscribe": `<${input.unsubscribeUrl}>` },
       });
       if (error) {
-        // The #1 setup mistake gets an actionable message, not a raw API error.
+        // The #1 setup mistakes get actionable messages, not a raw API error.
         if (/domain is not verified/i.test(error.message)) {
           throw new Error(
             `Resend: ${error.message} — RESEND_FROM must be an address on the domain you verified in Resend (e.g. you@yourdomain.com). Sender identities only control the display name and Reply-To; they cannot send from an unverified domain.`
+          );
+        }
+        if (/invalid `?from`? field/i.test(error.message)) {
+          throw new Error(
+            `Resend: ${error.message} — the composed From header was "${composeFromHeader(input.fromName, from)}" (from RESEND_FROM="${from}"). Expected \`email@domain.com\` or \`Name <email@domain.com>\` — check for stray quotes/whitespace in the env var value (a value pasted from .env.example onto Vercel keeps its literal quote characters, unlike a local .env file).`
           );
         }
         throw new Error(`Resend: ${error.message}`);

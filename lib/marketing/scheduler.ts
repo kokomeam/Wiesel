@@ -32,7 +32,7 @@ import type { MarketingServices } from "./services/types";
 import { applyEventToSubscriber, isSuppressed } from "./stateMachine";
 import { clickUrl, unsubscribeUrl } from "./tokens";
 import { DEFAULT_SEND_WINDOW } from "./types";
-import type { AnalyticsEventType, EmailBlock, EmailBody, EmailSequence, SendWindow, SubscriberStatus } from "./types";
+import type { AnalyticsEventType, EmailBlock, EmailBody, EmailSequence, SendWindow, SenderIdentity, SubscriberStatus } from "./types";
 
 type DB = SupabaseClient<Database>;
 type SubscriberLite = { id: string; email: string; name: string | null; status: SubscriberStatus; campaign_id: string | null };
@@ -586,10 +586,12 @@ export async function processEventTrigger(
   return { enrolled };
 }
 
-/** One-off broadcast to an explicit set of subscribers (processed inline;
- *  ALSO respects sequence-independent guardrail checks are not applicable
- *  here since a broadcast has no sequence — its own campaign guardrail is
- *  still evaluated by the caller's next tick via the sequence path). */
+/** One-off broadcast to an explicit set of subscribers (processed inline, not
+ *  via the outbox — a broadcast has no sequence, so sequence-level guardrail
+ *  checks don't apply here; the campaign's own guardrail is still evaluated
+ *  by the caller's next tick via the sequence path). Sender identity, CTA
+ *  destination, and locale are resolved PER CAMPAIGN (course-level contacts
+ *  can span several), same as `runSchedulerTick`. */
 export async function sendBroadcast(
   supabase: DB,
   services: MarketingServices,
@@ -604,12 +606,40 @@ export async function sendBroadcast(
   let sent = 0,
     skipped = 0;
   const nowIso = new Date(args.nowMs).toISOString();
+  const course = await loadCourseMarketingContext(supabase, args.courseId);
+
+  // A broadcast's recipients can span multiple campaigns (contacts are
+  // course-level) — cache each campaign's sender identity / CTA destination /
+  // locale once, mirroring runSchedulerTick's per-tick cache. Without this a
+  // broadcast NEVER carried the sender's mailing address, display name, or
+  // Reply-To into the send (a compliance-footer gap), and any {{ctaUrl}}/
+  // {{freeLessonUrl}}/{{courseName}} token in the body rendered as a literal
+  // unresolved merge token instead of the real link/name.
+  const campaignCache = new Map<string, { sender: SenderIdentity | null; locale: string; dest: CtaDestinations; offerDeadline: string | null }>();
+  async function contextFor(campaignId: string | null) {
+    const key = campaignId ?? "";
+    const cached = campaignCache.get(key);
+    if (cached) return cached;
+    const campaign = campaignId ? await loadCampaign(supabase, campaignId) : null;
+    const sender = campaign?.senderIdentityId ? await loadSenderIdentity(supabase, campaign.senderIdentityId) : null;
+    const dest = await resolveCtaDestinations(supabase, { courseId: args.courseId, campaignId });
+    const ctx = {
+      sender,
+      locale: course ? resolveCopyLocale(course, campaign?.config.brief) : "en",
+      dest,
+      offerDeadline: (campaign?.config.brief?.offerDeadlineIso as string | undefined) ?? null,
+    };
+    campaignCache.set(key, ctx);
+    return ctx;
+  }
+
   for (const id of args.subscriberIds) {
     const sub = await loadSubscriber(supabase, id);
     if (!sub || isSuppressed(sub.status)) {
       skipped++;
       continue;
     }
+    const { sender, locale, dest, offerDeadline } = await contextFor(sub.campaign_id);
     const { data: row } = await supabase
       .from("scheduled_send")
       .insert({
@@ -628,6 +658,18 @@ export async function sendBroadcast(
       body: args.body,
       sequenceId: null,
       touchId: null,
+      mergeVars: {
+        firstName: sub.name?.split(" ")[0] ?? null,
+        courseName: course?.title ?? null,
+        creatorName: sender?.fromName ?? null,
+        freeLessonUrl: dest.freeLessonUrl,
+        ctaUrl: dest.ctaUrl,
+        offerDeadline,
+      },
+      locale,
+      senderName: sender?.fromName ?? null,
+      mailingAddress: sender?.mailingAddress ?? null,
+      replyTo: sender?.replyTo ?? sender?.fromEmail ?? null,
     });
     if (row) {
       if (outcome.status === "sent") {

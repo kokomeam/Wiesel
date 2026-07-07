@@ -185,13 +185,31 @@ async function main() {
   const tick4 = await runSchedulerTick(supabase, services, { courseId });
   check("followup touch delivers after the trigger", tick4.sent >= 1, JSON.stringify(tick4));
 
-  // ── broadcast (irreversible) ──────────────────────────────────────────
-  console.log("\n# send_broadcast → approve");
+  // ── sender identity, attached BEFORE the broadcast — a broadcast must
+  // carry it into the send (display name, Reply-To, compliance-footer
+  // mailing address), a live regression: it silently didn't ─────────────
+  console.log("\n# attach a sender identity, then send_broadcast → approve");
+  const senderTool = await executeMarketingTool(
+    "create_sender_identity",
+    { fromName: "Ana Painter", fromEmail: "ana@mail.wisesel.pro", replyTo: "studio@wisesel.pro", mailingAddress: "123 Studio Way, Portland OR", businessName: null },
+    ctx
+  );
+  await acceptMarketingAction(supabase, senderTool.actionId!);
+  const senderId = (senderTool.data as { senderIdentityId: string }).senderIdentityId;
+  const attach = await executeMarketingTool("attach_sender_identity_to_campaign", { campaignId, senderIdentityId: senderId }, ctx);
+  await acceptMarketingAction(supabase, attach.actionId!);
+
+  const mockEmail = services.email as ReturnType<typeof createMockEmailProvider>;
+  mockEmail.reset();
   // status "all" = EXPLICITLY everyone (null would be ambiguous targeting → a
   // clarifying question over this mixed-status audience; see verify-marketing-autonomy).
   const bc = await executeMarketingTool("send_broadcast", { subject: "Quick update", body: { blocks: [{ kind: "paragraph", text: "Hello everyone." }] }, status: "all" }, ctx);
   check("broadcast pends with audience", bc.status === "pending_approval" && (bc.approvalPreview as { audience: number }).audience >= 1);
   await approveMarketingAction(bc.actionId!, { supabase, ownerId: userId, services });
+  const bcSends = mockEmail.getSends();
+  check("broadcast sends carry the sender's display name (was silently dropped)", bcSends.length > 0 && bcSends.every((s) => s.fromName === "Ana Painter"), JSON.stringify(bcSends.map((s) => s.fromName)));
+  check("broadcast sends carry the sender's Reply-To", bcSends.every((s) => s.replyTo === "studio@wisesel.pro"));
+  check("broadcast footer includes the compliance-required mailing address", bcSends.every((s) => (s.text ?? "").includes("123 Studio Way")));
   const summary = await getAnalyticsSummary(supabase, courseId);
   check("broadcast + sequence sends show in analytics", summary.funnel.emailsSent >= 7, String(summary.funnel.emailsSent));
   check("opens/clicks recorded by the mock provider", summary.funnel.emailOpens >= 1);

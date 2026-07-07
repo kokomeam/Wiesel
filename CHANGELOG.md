@@ -6,6 +6,43 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — quoted RESEND_FROM + broadcast sender-identity gap, 2026-07-07
+
+Follow-up to the previous fix, which made the failure VISIBLE for the first
+time: "Resend: Invalid `from` field... — the request is still pending." Two
+defects, one only reachable because of the other:
+
+1. **A `.env`-style quoted value survives Vercel's env var UI verbatim.**
+   `.env.local` has `RESEND_FROM="WiseSel <you@domain.com>"` — dotenv-style
+   parsing strips those quotes locally, but Vercel's dashboard does NOT strip
+   quotes from a pasted value, so the literal `"..."` characters reach
+   `process.env.RESEND_FROM` and fail Resend's from-address parser (worked
+   locally, broke only on the deployed domain). Fix: `cleanEnvValue` in
+   `lib/marketing/services/resend.ts` trims + strips one layer of wrapping
+   matching quotes; `composeFromHeader` applies it to `envFrom` unconditionally
+   (defense at the one call site, not a Vercel-dashboard edit requirement). A
+   second error branch for "Invalid `from` field" now names the exact composed
+   header and the raw env value, so a still-malformed config self-diagnoses.
+2. **`sendBroadcast` (the `send_broadcast` tool — exactly what's approved from
+   the "Needs your attention" card) never loaded the campaign's sender
+   identity at all**, unlike the scheduled-sequence tick. This meant every
+   broadcast silently skipped the sender's display name, Reply-To, AND the
+   CAN-SPAM-required mailing address in the footer — and any
+   `{{ctaUrl}}`/`{{courseName}}`/etc. merge token in a broadcast body rendered
+   as a literal unresolved token (no merge vars were ever built). This is WHY
+   the bug only showed up on `send_broadcast`: with no sender identity's
+   `fromName`, `composeFromHeader` fell straight through to the raw
+   (quoted) env value instead of reconstructing a clean header. Fix:
+   `sendBroadcast` now caches sender identity / CTA destination / locale
+   PER CAMPAIGN (course-level contacts can span several) and passes the full
+   merge-var context + sender fields into `deliver()`, matching
+   `runSchedulerTick` exactly.
+- **Tests**: `verify:marketing:campaign` 112 → **119** (`cleanEnvValue` +
+  quoted-`composeFromHeader` matrix); `verify:marketing:email` gained 3 checks
+  asserting a broadcast's mock-recorded send carries the sender's display
+  name, Reply-To, and mailing-address footer. `:autonomy` (93), `:lists`
+  (31), `:sync` (50) re-ran green; full build clean.
+
 ## Marketing — approvals resolve instantly + errors render in the card, 2026-07-07
 
 Live incident #2 of the day: "Approve & send" appeared broken on BOTH

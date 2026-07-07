@@ -24,7 +24,7 @@ import { detectCourseLanguage, footerStrings, resolveCopyLocale } from "@/lib/ma
 import { renderEmailText } from "@/lib/marketing/email/render";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { createMockEmailProvider, fixedClock } from "@/lib/marketing/services/mock";
-import { composeFromHeader } from "@/lib/marketing/services/resend";
+import { cleanEnvValue, composeFromHeader } from "@/lib/marketing/services/resend";
 import { acceptMarketingAction, approveMarketingAction, executeMarketingTool, rejectMarketingAction } from "@/lib/marketing/tools";
 import { CONSENT_CONFIRMATION_TEXT } from "@/lib/marketing/tools/leads";
 import type { MarketingToolContext } from "@/lib/marketing/tools/types";
@@ -139,6 +139,21 @@ async function main() {
   check("env display name is REPLACED, address kept", composeFromHeader("Ana Painter", "WiseSel <hi@wisesel.pro>") === "Ana Painter <hi@wisesel.pro>");
   check("no identity name → env From used as-is", composeFromHeader(null, "WiseSel <hi@wisesel.pro>") === "WiseSel <hi@wisesel.pro>");
   check("header-breaking characters are stripped from the name", composeFromHeader('Eve <evil@x.com>"', "hi@wisesel.pro") === "Eve evil@x.com <hi@wisesel.pro>");
+
+  console.log("\n# cleanEnvValue + quoted RESEND_FROM (live incident: worked locally, 'Invalid `from` field' on Vercel)");
+  check("plain value untouched", cleanEnvValue("WiseSel <hi@wisesel.pro>") === "WiseSel <hi@wisesel.pro>");
+  check("wrapping double quotes stripped (the Vercel-paste mistake)", cleanEnvValue('"WiseSel <hi@wisesel.pro>"') === "WiseSel <hi@wisesel.pro>");
+  check("wrapping single quotes stripped", cleanEnvValue("'WiseSel <hi@wisesel.pro>'") === "WiseSel <hi@wisesel.pro>");
+  check("surrounding whitespace trimmed", cleanEnvValue("  hi@wisesel.pro  ") === "hi@wisesel.pro");
+  check("unbalanced quote is NOT stripped (only a matching pair)", cleanEnvValue('"WiseSel <hi@wisesel.pro>') === '"WiseSel <hi@wisesel.pro>');
+  check(
+    "a quoted env value composes cleanly with NO identity name (the send_broadcast path — no fromName)",
+    composeFromHeader(null, '"WiseSel <hi@wisesel.pro>"') === "WiseSel <hi@wisesel.pro>"
+  );
+  check(
+    "a quoted env value still yields a correct address WITH an identity name",
+    composeFromHeader("Ana Painter", '"WiseSel <hi@wisesel.pro>"') === "Ana Painter <hi@wisesel.pro>"
+  );
 
   console.log("\n# A13 · agent resume messages (pure)");
   const fakeAction = { toolName: "launch_campaign", summary: "Launch 'X' — 3 subscribers." } as MarketingActionRow;

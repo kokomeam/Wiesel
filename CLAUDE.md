@@ -1286,7 +1286,24 @@ compliant footers (8 locales, `language.ts`).
   be an address on the Resend-verified domain** — a freemail address makes
   every send throw "domain is not verified"; sender identities only skin the
   From DISPLAY NAME + set Reply-To via `composeFromHeader` in
-  `services/resend.ts`, they can never point sending at an unverified domain),
+  `services/resend.ts`, they can never point sending at an unverified domain).
+  **`composeFromHeader` cleans `envFrom` via `cleanEnvValue` (2026-07-07, from
+  a live "Invalid \`from\` field" — worked locally, broke only on Vercel):** a
+  `.env`-style `RESEND_FROM="Name <you@x.com>"` has dotenv strip its quotes
+  locally, but Vercel's dashboard does NOT strip a pasted value's quotes — the
+  literal `"..."` reached Resend and failed its parser. `cleanEnvValue` trims +
+  strips one layer of wrapping matching quotes at the one call site (fixes it
+  in code, no dashboard edit required); a still-malformed `from` gets a second
+  error branch naming the exact composed header + raw env value. **The bug
+  only reached prod via `send_broadcast`** because `scheduler.ts:sendBroadcast`
+  never loaded the campaign's sender identity (unlike `runSchedulerTick`) — no
+  `fromName` meant `composeFromHeader` fell straight to the raw quoted env
+  value instead of reconstructing a clean header, AND every broadcast silently
+  dropped the sender's display name/Reply-To/mailing-address footer and left
+  any `{{ctaUrl}}`-style merge token unresolved. Fixed alongside: `sendBroadcast`
+  now caches sender identity + CTA destination + locale PER CAMPAIGN
+  (course-level contacts can span several) and builds the full merge-var
+  context, matching `runSchedulerTick`.
   `RESEND_WEBHOOK_SECRET` (delivery webhooks), `MARKETING_TOKEN_SECRET` (link
   signing — required before real sends), `CRON_SECRET`, `NEXT_PUBLIC_SITE_URL`.
   All optional in dev — absent → the engine runs mock/author-scoped.
