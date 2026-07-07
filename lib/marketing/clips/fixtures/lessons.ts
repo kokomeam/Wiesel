@@ -1,15 +1,24 @@
 /**
- * Eval fixture lessons (PRD 1.5 §16, §20) — 3 human-annotated lessons with
- * word-timestamped transcripts and GOLD moment spans:
+ * Eval fixture lessons (PRD 1.5 §16, §20 + amendment FR-8) — 5 human-
+ * annotated lessons with word-timestamped transcripts and GOLD moment spans:
  *
- *   charismatic   — high-energy watercolor teacher. Traps: pure-energy hype
- *                   sections with zero standalone insight (the charisma trap)
- *                   and a context-debt zone referencing earlier material.
- *   flat_affect   — monotone, slide-heavy SQL indexing lecture. THE
- *                   differentiator fixture: zero vocal energy, ≥2 viable
+ *   charismatic   — high-energy watercolor teacher, CAMERA-ONLY. Traps:
+ *                   pure-energy hype sections with zero standalone insight
+ *                   (the charisma trap) and a context-debt zone referencing
+ *                   earlier material.
+ *   flat_affect   — monotone, slide-heavy SQL indexing lecture, SCREEN-ONLY
+ *                   with NO slide-sync data (the pre-sync platform reality).
+ *                   THE differentiator fixture: zero vocal energy, ≥2 viable
  *                   moments MUST surface on content alone (PRD §2).
- *   multi_speaker — host + guest USACO office hours (diarized). Traps:
- *                   fragmented banter and a cross-reference to "last week".
+ *   multi_speaker — host + guest USACO office hours (diarized), CAMERA-ONLY.
+ *                   Traps: fragmented banter and a "last week" cross-ref.
+ *   screen_slides — FR-8: flat-affect, SCREEN-ONLY, slide-based (static
+ *                   slides + monotone voiceover) WITH slide-sync entries.
+ *                   Binding: ≥2 viable candidates, ALL routed slide_short.
+ *   screen_action — FR-8: action-dense live-demo screencast, SCREEN-ONLY,
+ *                   no slides. Binding: viable candidates route
+ *                   screen_action_zoom (the lexicon carries the verdict —
+ *                   frame-diff is degraded off in eval).
  *
  * Word timings are synthesized deterministically (even spacing per segment) —
  * the same shape the platform path produces from cue-level VTT. Gold spans
@@ -20,7 +29,7 @@
  * content — an eval must never score the prompt on its own few-shots.
  */
 
-import type { TranscriptWord } from "../schemas";
+import type { ClipLayout, RecordingFormat, SlideSyncEntry, TranscriptWord } from "../schemas";
 import type { ClipMomentType } from "../constants";
 
 export interface FixtureSegment {
@@ -38,13 +47,30 @@ export interface GoldMoment {
 }
 
 export interface FixtureLesson {
-  key: "charismatic" | "flat_affect" | "multi_speaker";
+  key: "charismatic" | "flat_affect" | "multi_speaker" | "screen_slides" | "screen_action";
   title: string;
   /** Grounding block handed to the prompt as course context. */
   courseContext: string;
   segments: FixtureSegment[];
   goldMoments: GoldMoment[];
   durationMs: number;
+  /** FR-1/FR-8: the recording-format FACT for this lesson. */
+  recordingFormat: RecordingFormat;
+  /** FR-2/FR-8: slide-sync entries (synthetic — no platform producer yet). */
+  slideSync: SlideSyncEntry[] | null;
+  /** FR-8 routing gate: candidates' layouts must be in this set. Scope:
+   *  "all" (default) = every viable candidate; "gold" = every gold-hitting
+   *  candidate — for fixtures where a viable NON-gold span can honestly
+   *  route elsewhere (screen_action: a quiet aside routes audiogram, which
+   *  is CORRECT FR-2 behavior, not a routing failure). */
+  expectedLayouts: ClipLayout[];
+  expectedLayoutsScope?: "all" | "gold";
+  /** With scope "gold": ≥ this many viable candidates must use
+   *  expectedLayouts — the fixture must DEMONSTRATE the routing, not merely
+   *  avoid contradicting it. */
+  layoutFloor?: number;
+  /** FR-8 gate: minimum viable candidates (0 = no floor for this fixture). */
+  minViable: number;
 }
 
 /** Deterministic word timing: even spacing across each segment's span. */
@@ -137,6 +163,10 @@ const CHARISMATIC: FixtureLesson = {
     },
   ],
   durationMs: 225_000,
+  recordingFormat: "camera_only",
+  slideSync: null,
+  expectedLayouts: ["face_track"],
+  minViable: 0,
 };
 
 /* ────────────────────── fixture 2: flat_affect ────────────────────────── */
@@ -217,6 +247,13 @@ const FLAT_AFFECT: FixtureLesson = {
     },
   ],
   durationMs: 240_000,
+  // A slide-driven screen lecture recorded WITHOUT slide-sync (the platform
+  // has no producer) — the honest pre-sync reality: screen_only routes to
+  // screen_action_zoom or audiogram, NEVER slide_short/face_track.
+  recordingFormat: "screen_only",
+  slideSync: null,
+  expectedLayouts: ["screen_action_zoom", "audiogram"],
+  minViable: 2,
 };
 
 /* ───────────────────── fixture 3: multi_speaker ───────────────────────── */
@@ -296,9 +333,181 @@ const MULTI_SPEAKER: FixtureLesson = {
     },
   ],
   durationMs: 255_000,
+  recordingFormat: "camera_only",
+  slideSync: null,
+  expectedLayouts: ["face_track"],
+  minViable: 0,
 };
 
-export const FIXTURE_LESSONS: FixtureLesson[] = [CHARISMATIC, FLAT_AFFECT, MULTI_SPEAKER];
+/* ─────────────── fixture 4: screen_slides (amendment FR-8) ────────────── */
+
+const SCREEN_SLIDES: FixtureLesson = {
+  key: "screen_slides",
+  title: "Reading a Balance Sheet (Financial Statements for Founders, module 1)",
+  courseContext: [
+    'COURSE: "Financial Statements for Founders"',
+    "Description: A plain-language course teaching non-finance founders to read the three financial statements and spot trouble early, taught over annotated slide decks.",
+    "Target student: startup founders and small-business owners who nod along in board meetings without really reading the numbers.",
+    "Outcomes: read a balance sheet and income statement; tell profit from cash; run a 60-second solvency check.",
+    'FOCUS LESSON: "Reading a Balance Sheet" (module: "The Three Statements")',
+  ].join("\n"),
+  segments: [
+    {
+      atMs: 0,
+      endMs: 25_000,
+      text: "This lesson covers the balance sheet. We will use the slide deck in the resources section. The agenda on this slide lists four parts: accrual accounting, the cash gap, deferred revenue, and the solvency check. We will take them in order.",
+    },
+    {
+      atMs: 25_000,
+      endMs: 60_000,
+      text: "Profit is an opinion. Cash is a fact. That sentence is the whole lesson. Profit is computed under accrual rules, which means accountants made judgment calls about WHEN to recognize revenue and costs. Two honest accountants can produce two different profit numbers from the same year of business. Nobody can produce two different bank balances. So when profit and cash disagree, believe the cash, and then go find out which accrual judgment created the gap.",
+    },
+    {
+      atMs: 60_000,
+      endMs: 100_000,
+      text: "The diagram on this slide traces a single sale through both statements. The customer signs in January, pays in March, and you deliver through June. The income statement recognizes the revenue spread across delivery. The bank account moved once, in March. Same sale, three different timelines. Every line in the diagram is the same twelve thousand dollars appearing at a different time under a different rule. Keep this picture in mind whenever the two statements disagree.",
+    },
+    {
+      atMs: 100_000,
+      endMs: 145_000,
+      text: "The most common misreading founders make. Revenue on the income statement is not money in the bank. If customers prepay for a year, that cash sits in a liability called deferred revenue, and it becomes income statement revenue only as you deliver. The reverse is worse: you can book record revenue on signed contracts, show a profitable quarter, and still miss payroll, because none of those customers have paid yet. Companies do not die of low profit. They die of running out of cash.",
+    },
+    {
+      atMs: 145_000,
+      endMs: 205_000,
+      text: "The sixty second solvency check, on this slide. Take current assets, the top left block, and divide by current liabilities, the top right block. That number is the current ratio. Below one means the bills due this year exceed the money arriving this year, and you have a countdown clock. Between one point five and three is comfortable for most businesses. Run this on your own balance sheet and on any company you are about to sign a long contract with. It takes one minute and it has saved clients of mine from vendors that folded mid-contract.",
+    },
+    {
+      atMs: 205_000,
+      endMs: 235_000,
+      text: "That concludes the balance sheet material. The worksheet applies the solvency check to three sample companies. Next lesson is the income statement. Post questions in the course forum.",
+    },
+  ],
+  goldMoments: [
+    {
+      startMs: 25_000,
+      endMs: 60_000,
+      momentType: "definition_reframe",
+      note: "profit is an opinion, cash is a fact — accrual judgment vs. bank balance, resolves in-span",
+    },
+    {
+      startMs: 100_000,
+      endMs: 145_000,
+      momentType: "misconception_buster",
+      note: "revenue ≠ cash: deferred revenue + record-revenue-missed-payroll; 'companies die of cash'",
+    },
+    {
+      startMs: 145_000,
+      endMs: 205_000,
+      momentType: "concrete_win",
+      note: "60-second solvency check: current ratio, the thresholds, run it on vendors too",
+    },
+  ],
+  durationMs: 235_000,
+  recordingFormat: "screen_only",
+  // Synthetic slide-sync (FR-8) — one entry per slide advance; slide-1 at 0
+  // means every span has an active slide ⇒ sync COVERS all gold spans.
+  slideSync: [
+    { slideId: "slide-1-agenda", atMs: 0 },
+    { slideId: "slide-2-accrual", atMs: 25_000 },
+    { slideId: "slide-3-cash-gap-diagram", atMs: 60_000 },
+    { slideId: "slide-4-deferred-revenue", atMs: 100_000 },
+    { slideId: "slide-5-current-ratio", atMs: 145_000 },
+    { slideId: "slide-6-recap", atMs: 205_000 },
+  ],
+  expectedLayouts: ["slide_short"],
+  minViable: 2,
+};
+
+/* ─────────────── fixture 5: screen_action (amendment FR-8) ────────────── */
+
+const SCREEN_ACTION: FixtureLesson = {
+  key: "screen_action",
+  title: "One Formula That Replaces an Hour of Copy-Paste (Spreadsheet Automation, module 2)",
+  courseContext: [
+    'COURSE: "Spreadsheet Automation for Operations"',
+    "Description: A screen-demo course that turns repetitive spreadsheet work into formulas and small automations, taught live in the workbook.",
+    "Target student: operations and admin staff who spend hours a week on manual copy-paste reporting.",
+    "Outcomes: replace lookup copy-paste with XLOOKUP; catch duplicates automatically; stop formulas breaking when dragged.",
+    'FOCUS LESSON: "One Formula That Replaces an Hour of Copy-Paste" (module: "Lookups")',
+  ].join("\n"),
+  segments: [
+    {
+      atMs: 0,
+      endMs: 20_000,
+      text: "Today we are in the orders workbook from the sample files. Two sheets: orders on the left, customer master data on the right. The goal is to stop copying customer regions across by hand.",
+    },
+    {
+      atMs: 20_000,
+      endMs: 65_000,
+      text: "Let me show you the formula. In the region column I type equals XLOOKUP, open paren, the order's customer id, then the id column on the master sheet, then the region column. Watch what happens when I hit enter: the region appears. Now watch this — I double-click the fill handle, and you can see the whole column fill in about two thousand rows, one second. That column used to be forty five minutes of copy-paste every Monday. One formula, and it updates itself when the master data changes.",
+    },
+    {
+      atMs: 65_000,
+      endMs: 90_000,
+      text: "A note on why I teach XLOOKUP and not the older VLOOKUP you may have inherited in legacy workbooks. VLOOKUP counts columns by number, so inserting a column silently breaks every lookup to its right. XLOOKUP points at the columns themselves.",
+    },
+    {
+      atMs: 90_000,
+      endMs: 140_000,
+      text: "Duplicates. Let me show you the trap first: run remove duplicates on the raw orders sheet and it deletes rows silently — you cannot review what it took. Instead, watch what happens when I select the id column and add conditional formatting, highlight duplicate values. You can see every duplicate light up red, seven of them. Now I click the filter and filter by color, and the duplicates line up for review. Nothing deleted, everything visible. Decide row by row, THEN delete.",
+    },
+    {
+      atMs: 140_000,
+      endMs: 150_000,
+      text: "Save the workbook before the next part. We are going to break a formula on purpose.",
+    },
+    {
+      atMs: 150_000,
+      endMs: 195_000,
+      text: "The mistake that breaks most beginner spreadsheets: relative ranges. I made this exact mistake in my first ops job. Watch this. I write the lookup with the table range unanchored, and it works on the first row. Now I drag the formula down and you can see the results turn to errors halfway — the range slid down with every row, and it slid right off the data. The fix is one keystroke: select the range in the formula bar and hit F4, and dollar signs anchor it. Drag again — every row correct. If a formula works at the top and dies at the bottom, look for the missing dollar signs.",
+    },
+    {
+      atMs: 195_000,
+      endMs: 210_000,
+      text: "The practice file has three broken lookups for you to repair. Next lesson we chain XLOOKUP into running reports. See you in the forum.",
+    },
+  ],
+  goldMoments: [
+    {
+      startMs: 20_000,
+      endMs: 65_000,
+      momentType: "demo_payoff",
+      note: "XLOOKUP fills 2000 rows in a second — visible build-up + payoff, 45min→1s, all in-span",
+    },
+    {
+      startMs: 90_000,
+      endMs: 140_000,
+      momentType: "concrete_win",
+      note: "duplicate review without deletion: conditional formatting + filter by color, 7 dupes visible",
+    },
+    {
+      startMs: 150_000,
+      endMs: 195_000,
+      momentType: "mistake_autopsy",
+      note: "unanchored range slides off the data on drag; F4 anchors it — error shown, fixed in-span",
+    },
+  ],
+  durationMs: 210_000,
+  recordingFormat: "screen_only",
+  slideSync: null,
+  expectedLayouts: ["screen_action_zoom"],
+  // Gold spans are action-dense by construction (pure-suite-verified) and
+  // MUST route zoom; a viable candidate on a quiet aside (the VLOOKUP note)
+  // honestly routes audiogram — correct precedence, so the all-candidates
+  // scope would punish honest routing.
+  expectedLayoutsScope: "gold",
+  layoutFloor: 2,
+  minViable: 1,
+};
+
+export const FIXTURE_LESSONS: FixtureLesson[] = [
+  CHARISMATIC,
+  FLAT_AFFECT,
+  MULTI_SPEAKER,
+  SCREEN_SLIDES,
+  SCREEN_ACTION,
+];
 
 export function fixtureByKey(key: FixtureLesson["key"]): FixtureLesson {
   const f = FIXTURE_LESSONS.find((l) => l.key === key);

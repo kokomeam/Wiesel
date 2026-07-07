@@ -137,9 +137,6 @@ async function main() {
     filename: "wisesel-smoke-test.mp4",
   });
   const uploadId = (upload.responseBody as Record<string, unknown> | undefined)?.id as string | undefined;
-  const uploadUrl = (upload.responseBody as Record<string, unknown> | undefined)?.uploadUrl as
-    | string
-    | undefined;
   if (uploadId) {
     console.log(
       `  → PUT your video bytes to the uploadUrl above (Content-Type: video/mp4), then pass uploadId="${uploadId}" to create-clips/create-transcription/create-reframe instead of sourceUrl.`

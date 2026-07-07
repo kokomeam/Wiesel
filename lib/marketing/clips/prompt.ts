@@ -24,15 +24,29 @@ import {
   CLIP_RUBRIC_THRESHOLDS,
   CLIP_SPAN_MAX_MS,
   CLIP_SPAN_MIN_MS,
+  CLIP_VISUAL_INTEREST_FORMAT_LINES,
+  RECORDING_FORMATS,
   type ClipPlatform,
   type FunnelStage,
 } from "./constants";
 // The creator's voice block is Phase 1's — ONE renderer, never re-prosed.
 import { voiceBlock } from "../social/prompt";
 import type { SocialVoiceProfile } from "../social/schemas";
+import type { RecordingFormat } from "./schemas";
 import { renderExemplars } from "./fixtures/exemplars";
 
 /**
+ * clips-v3 (2026-07-08, the format-aware amendment): the selection call now
+ * RECEIVES the lesson's recording format (camera_only | screen_camera |
+ * screen_only) and scores visual_interest per format — screen-only spans are
+ * scored on what the SCREEN shows (action, build-up, visual payoff, a slide
+ * whose one diagram explains the concept), never on speaker presence;
+ * demo_payoff is steered up on action-dense screen footage. The per-format
+ * lines are ALL rendered in the static prefix (byte-stable — the caching
+ * rule); the lesson's actual format rides the variable request block.
+ * Eval: must meet/beat clips-v2 on fixtures 1-3 AND pass the two new
+ * screen-only fixtures (slide_short / screen_action_zoom routing).
+ *
  * clips-v2 (2026-07-07): live-eval calibration — coherence judges REFERENCE
  * DEBT (not spoken-style polish; the clip carries its own footage), prefers
  * proposing the ±8s adjustment, and spans are sentence-snapped server-side;
@@ -41,7 +55,7 @@ import { renderExemplars } from "./fixtures/exemplars";
  * fixtures — the validator was killing coherent spans over boundary
  * fragments and "this course" self-references.
  */
-export const CLIP_PROMPT_VERSION = "clips-v2";
+export const CLIP_PROMPT_VERSION = "clips-v3";
 
 function taxonomyLines(): string[] {
   return [
@@ -56,6 +70,19 @@ function rubricLines(): string[] {
     "SCORING RUBRIC (score every candidate 0-5 on each dimension, honestly — inflated scores are caught downstream):",
     ...CLIP_RUBRIC_DIMENSIONS.map((d) => `- ${d}: ${CLIP_RUBRIC_DIMENSION_LINES[d]}`),
     `Viability bar: total ≥ ${CLIP_RUBRIC_THRESHOLDS.totalMin}/35 AND hook_potential ≥ ${CLIP_RUBRIC_THRESHOLDS.hookPotentialMin} AND standalone ≥ ${CLIP_RUBRIC_THRESHOLDS.standaloneMin}. Do not pad the list with candidates below the bar.`,
+  ];
+}
+
+/** FR-4: how visual_interest is scored PER recording format. All formats
+ *  render here (static prefix, byte-stable); the request block names the
+ *  lesson's actual format. */
+function formatAwarenessLines(): string[] {
+  return [
+    "RECORDING FORMAT AWARENESS (the request block names this lesson's format — score visual_interest for THAT footage, not an imagined one):",
+    ...RECORDING_FORMATS.map((f) => `- ${f}: ${CLIP_VISUAL_INTEREST_FORMAT_LINES[f]}`),
+    "- For screen_only lessons, prefer demo_payoff moments where the screen visibly DOES something during the span (typing, building, a before/after) — the demonstration is the visual payoff. Do not manufacture demo_payoff where the screen is static.",
+    "- A hook may point at an on-screen visual (\"this one diagram explains X\") ONLY when that visual is on screen within the span — a hook citing a slide the clip never shows is dropped, not repaired.",
+    "- Format awareness changes HOW visual_interest is scored, never WHAT is worth teaching. Never select a span BECAUSE it mentions or reads a slide — syntax notes and bullet read-throughs are weak clips in every format; the standalone-insight bar is unchanged.",
   ];
 }
 
@@ -112,6 +139,8 @@ export const CLIP_SELECTION_SYSTEM_PROMPT: string = [
   "",
   ...rubricLines(),
   "",
+  ...formatAwarenessLines(),
+  "",
   ...hookFormulaLines(),
   "",
   ...pacingLines(),
@@ -155,6 +184,9 @@ export interface SelectionRequestBlock {
   stages: "balanced" | FunnelStage[];
   targetPlatforms: ClipPlatform[];
   count: number;
+  /** FR-4: the lesson's recording format — the variable half of format
+   *  awareness (the scoring instructions live in the static prefix). */
+  recordingFormat: RecordingFormat;
 }
 
 function requestLines(request: SelectionRequestBlock): string[] {
@@ -167,6 +199,7 @@ function requestLines(request: SelectionRequestBlock): string[] {
     .join(", ");
   return [
     `REQUEST: select the ${request.count} strongest teachable moments (fewer if fewer clear the viability bar — never pad).`,
+    `- recording format: ${request.recordingFormat} (apply this format's visual_interest rule from RECORDING FORMAT AWARENESS)`,
     `- ${stageLine}`,
     `- target platforms: ${platforms} (respect each platform's hard duration cap for candidates you mark as fitting it)`,
   ];

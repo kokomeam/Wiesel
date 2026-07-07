@@ -189,6 +189,69 @@ shape is confirmed: `{ projectId, projectType, source, status }`, `status`
 cost-minutes field M-B's `clip_render_jobs.cost_minutes` should read —
 **unconfirmed until one job completes.**
 
+## (f) Provider layout support — amendment FR-7, NOT YET RUNNABLE
+
+Gated on the same blocker as (d)/(e): no video has reached a completed
+render. What to probe once one does (the smoke script's render already
+requests `reframeClips: true` + `exportOrientation: "portrait"`, so both
+questions answer from the same runs):
+
+- **stacked_split on composited footage:** WiseSel `screen_camera`
+  recordings are ONE flattened canvas track (see (g)) — does Reap's facecam
+  detection find the baked-in camera bubble and produce a usable split, or
+  does it treat the frame as generic screen content? Determines whether the
+  adapter can hand composited footage to the provider for `stacked_split`
+  or must reframe in-house.
+- **screen-only footage:** does the reframe track the ACTIVE screen region
+  (cursor/typing/change hotspots) or blindly center-crop 16:9 → 9:16? If it
+  center-crops, amendment FR-5 binds us to build the in-house
+  `screen_action_zoom` path (FFmpeg zoompan keyframed from transcript cues +
+  frame-diff hot zones) in M-B — fully, not stubbed.
+
+## (g) WiseSel recorder-output audit — amendment FR-7, DONE (2026-07-08)
+
+Audited `components/editor/lesson/video/useVideoRecorder.ts` +
+`VideoStudioModal.tsx` + the course document model:
+
+- **`screen_camera` is composited at record time into ONE track.**
+  `startComposite` draws screen + webcam bubble onto a single 1280×720
+  canvas and records `canvas.captureStream(30)`; audio (mic + screen) is
+  mixed to one track. The stored Mux asset has NO separate camera/screen
+  tracks. ⇒ Amendment FR-5's "platform stores camera and screen as SEPARATE
+  tracks" branch (in-house stacked-split compositing from separate streams)
+  has **no applicable input on platform recordings** — it could only apply
+  to hypothetical external dual-track uploads, which the upload path doesn't
+  accept either (single file). `stacked_split` for platform recordings means
+  reframing the COMPOSITED frame (provider or in-house — decided by (f)).
+- **Recording format metadata exists and is authoritative** —
+  `VideoLessonBlock.recording.mode` (`camera_only|screen_camera|screen_only`,
+  literals identical to the amendment's enum), set by every studio recording,
+  NEVER set by the upload path. Lives only in `blocks.content` jsonb (not on
+  `video_assets`). The M-A amendment reads it via the asset's `block_id`.
+- **Slide-sync data does NOT exist.** No slide↔video-timestamp structure
+  anywhere: `Slide` has no time field, `deck_import_pages` has no timing,
+  the learner player advances slides manually, analytics `slide_viewed`
+  carries dwell (not alignment), and "chapters" is an explicit
+  coming-soon stub. ⇒ `slide_short` routing is contract-complete but
+  unreachable for real lessons until a producer exists. **The natural
+  producer:** the studio recorder, capturing `{slideId, atMs}` on each slide
+  advance while recording a slide deck — an M-F prerequisite needing creator
+  sign-off on scope (it touches the recorder, not the clips pipeline).
+- **Renderer reuse for the M-F slide-short provider:** the structured slide
+  layout components + `DiagramView` are PURE (props-in/JSX-out,
+  `renderToStaticMarkup`-proven by verify-stretch/verify-visuals) — the
+  right building blocks for a Remotion composition. `SlideStage` itself is
+  browser-only (ResizeObserver-gated paint) and is NOT the reuse target.
+- **Brand tokens:** the WiseSel PRODUCT brand is single-sourced
+  (`app/globals.css` `@theme` ramp + `public/brand/*` +
+  `components/brand/WiseSelLogo.tsx`), but NO per-creator brand-settings
+  source exists (sender_identity is compliance-only; voice profiles are
+  writing style; landing themes are page-scoped enums) — and Reap has no
+  brand-template API either ((c)). ⇒ The amendment's "SAME brand-settings
+  source the Reap templates consume" does not exist on EITHER side yet;
+  M-C/M-F must define ONE module (product tokens now, per-creator kit when
+  that feature exists) that both consume.
+
 ## Adapter design changes surfaced for approval
 
 1. **Field names are camelCase, not snake_case** — the whole M-B PRD section

@@ -71,15 +71,27 @@ snapshot/restore).
 
 ## Eval harness (§16/§20)
 
-`scripts/eval-clips.ts` runs `runSelectionCore` (the REAL pipeline) over 3
-annotated fixture lessons (`fixtures/lessons.ts`): `charismatic` (energy-trap
-sections that must NOT be selected), `flat_affect` (the differentiator: ≥2
-viable candidates from content alone — a hard gate), `multi_speaker`
-(diarized). Metrics: gold recall@5 (overlap ≥50% of the shorter span), rubric
-pass rate, hook-integrity rate, coherence rate. CI runs in **replay** mode
-against recorded model outputs (`fixtures/recordings/*.json`); replay
-format-checks each call so a structural prompt change invalidates recordings
-loudly.
+`scripts/eval-clips.ts` runs `runSelectionCore` (the REAL pipeline) over 5
+annotated fixture lessons (`fixtures/lessons.ts`): `charismatic`
+(camera-only; energy-trap sections that must NOT be selected), `flat_affect`
+(screen-only, no sync — the differentiator: ≥2 viable candidates from content
+alone, a hard gate), `multi_speaker` (camera-only, diarized), `screen_slides`
+(FR-8: flat-affect slide lecture WITH synthetic slide-sync — ≥2 viable, ALL
+routed `slide_short`, binding), `screen_action` (FR-8: action-dense
+screencast — every GOLD-hitting candidate routes `screen_action_zoom` on the
+lexicon alone, ≥2 candidates demonstrate it; a viable candidate on a quiet
+aside honestly routes `audiogram`, which is correct FR-2 precedence, so the
+gate scopes to gold + a floor rather than punishing honest routing).
+Metrics: gold recall@5 (overlap ≥50% of the shorter span), rubric pass rate,
+hook-integrity rate, coherence rate, mean visual_interest, plus per-fixture
+layout-routing gates and viability floors. The **no-regression gate**: a
+prompt bump must meet/beat the incumbent baseline on every prior fixture
+while passing the new ones. CI runs in **replay** mode against recorded model
+outputs (`fixtures/recordings/*.json`); replay format-checks each call so a
+structural prompt change invalidates recordings loudly. `--live --control`
+re-runs everything under the PRE-amendment (format-blind) prompt and records
+`recordings/control-scores.json` — the FR-8 "visual_interest is scored from
+screen content" delta artifact.
 
 ## Quality gates in code (not prompt hopes)
 
@@ -98,17 +110,111 @@ loudly.
 - **Fail closed**: an unreadable validation verdict aborts the run — an
   unverified batch is never surfaced.
 
+## Recording formats & layout routing (amendment, 2026-07-08)
+
+WiseSel lessons come in three **recording formats** the teacher chooses at
+record time — facts, stored as `VideoLessonBlock.recording.mode` (the block's
+content jsonb; literals identical to `RECORDING_FORMATS`). **Layouts** are
+decisions about how a candidate/render job is treated. `routing.ts ·
+resolveClipLayout(format, momentContext)` is the ONLY place facts become
+decisions:
+
+| Recording format | Condition | Layout |
+|---|---|---|
+| `camera_only` | always | `face_track` |
+| `screen_camera` | always | `stacked_split` |
+| `screen_only` | slide-sync covers the span | `slide_short` |
+| `screen_only` | no slide-short eligibility AND span is action-dense | `screen_action_zoom` |
+| `screen_only` | neither | `audiogram` |
+
+Precedence within `screen_only` is top-down; `audiogram` is never selected
+when a higher row applies. The resolved layout is stored on every
+`clip_moment_candidate` row (creators see the clip kind BEFORE rendering; the
+`clip_render_job` copy folds into M-B's CREATE). Human copy for the FR-9
+chips lives in `CLIP_LAYOUT_LABELS` (import, never copy): Face clip · Split
+screen + camera · Slide short · Screen zoom · Audiogram; audiogram candidates
+carry `CLIP_AUDIOGRAM_CAVEAT` ("simplest visual treatment…").
+
+**Format resolution (FR-1)**, in `format.ts` + the acquisition path:
+
+1. **Platform metadata** — studio recordings always carry `recording.mode`;
+   the read is an identity map and detection NEVER runs over it (spy-tested).
+2. **Classifier** — external uploads only (the upload path never sets a
+   mode): ≥8 frames sampled across the duration, each judged `{facePresent,
+   screenContentPresent}`; face ≥60% of samples → `camera_only` (or
+   `screen_camera` when screen content is frame-dominant, ≥50%); no
+   consistent face → `screen_only`. **Frame source reality:** ffprobe/ffmpeg
+   are not in this runtime and the repo has no face-detection dep — the
+   production `FrameInspector` is Mux thumbnail stills judged through the
+   existing `ModelClient.inspectImage` vision seam (zero new deps; a local
+   ffprobe inspector can fill the same seam later). No metadata AND no
+   inspector ⇒ the degraded default `camera_only` (source `classifier`).
+3. **Creator override** — `overrideTranscriptFormat` pins
+   `recording_format` + `format_source='creator_override'` on the transcript
+   row; the cache path never re-classifies over it.
+
+Classification runs ONCE per lesson and persists on `lesson_transcript`
+(`recording_format`, `format_source`).
+
+**Action density (FR-3)**, in `actionDensity.ts` — deterministic, no model
+call. A span is action-dense when its **transcript-cue rate** (distinct
+`CLIP_ACTION_CUES` hits per minute) meets `CLIP_ACTION_DENSITY_THRESHOLD`,
+OR an optional **frame-diff ratio** meets `CLIP_ACTION_FRAME_DIFF_THRESHOLD`.
+
+- *Threshold rationale:* annotating the eval fixtures, live demo narration
+  ("watch this", "as I type…") lands 3–6 cues/min while slide/lecture reading
+  lands 0–1; the default **2 cues/min** splits the populations with margin.
+  Frame-diff default **0.15** = ≥15% of sampled adjacent-frame pairs differ
+  materially. Both env-overridable.
+- *Degraded mode (documented + tested):* frame sampling needs locally
+  accessible media (ffmpeg) — unavailable in this runtime — so transcript
+  cues alone decide. `frameDiffRatio` is an injectable input for when a local
+  pipeline exists.
+- *Lexicon maintenance:* `CLIP_ACTION_CUES` entries are regex sources
+  compiled with word boundaries; **adding a cue is a data change only** —
+  append to the array, run `npm run verify:clips` (the table-driven
+  `actionDensity.lexicon.spec` section), done. Keep cues *demonstrative*
+  ("watch what happens", "as I type"), never topical.
+
+**Format-aware selection (FR-4):** the static prompt prefix carries ALL
+formats' `visual_interest` scoring rules (byte-stable, cache-safe); the
+request block names the lesson's actual format. `demo_payoff` earns a
+deterministic +1 `visual_interest` (capped at 5, recorded as
+`visualInterestBoosted`) when the format is `screen_only` and the span is
+action-dense — applied BEFORE the rubric bar. The hook-integrity lint gained
+`hook_slide_ref_unsupported`: a hook citing a diagram/slide must have a slide
+inside the span's sync window — enforced only when sync data EXISTS (with no
+sync the claim is unverifiable and the model-side verdict still applies).
+
+**Slide-sync status (FR-7(g) audit):** the platform has NO slide↔timestamp
+producer — the recorder does not capture slide timings and no table stores
+them (exhaustively verified 2026-07-08: slides/`deck_import_pages` carry no
+time fields; the learner player advances slides manually; `slide_viewed`
+dwell is not alignment). The CONTRACT is first-class (`SlideSyncEntrySchema`,
+`loadLessonSlideSync` seam, coverage/`slidesForSpan` helpers, eval fixtures
+carry synthetic sync) but production lessons route `slide_short` only once a
+producer exists — recorder slide-timing capture is an **M-F prerequisite**
+surfaced at the amendment checkpoint. Also from the audit: `screen_camera`
+recordings are composited to ONE canvas track at record time (screen +
+camera bubble baked together; audio mixed) — the platform never stores
+separate tracks, so FR-5's separate-track compositing branch applies only to
+hypothetical external dual-track uploads.
+
 ## Data model (migration `20260707100000_lesson_clips.sql`)
 
 - `lesson_transcript` — one row per lesson (unique), `words` jsonb
   `[{w,startMs,endMs,speaker}]`, source `platform|provider`, creator-scoped
   RLS, **no delete policy** (it's a cache; never a gate target; re-transcription
-  upserts).
+  upserts). Amendment (`20260708100000_clip_recording_format.sql`):
+  `recording_format` (`camera_only|screen_camera|screen_only`) +
+  `format_source` (`platform|classifier|creator_override`).
 - `clip_moment_candidate` — spans + hooks + rubric + status
   (`candidate|selected|dismissed`), `request_id` groups a selection run,
   `prompt_version` + `ai_metadata` observability. Creator-scoped RLS **with a
   delete policy** — the gate's revert-of-create needs it (the
-  `social_voice_profile` precedent).
+  `social_voice_profile` precedent). Amendment: `layout` (the FR-2 decision;
+  DB default `'face_track'` exists ONLY so pre-amendment gate snapshots still
+  restore — code always writes it explicitly).
 - 5 event types on the single `analytics_event` stream (`source: "clips"`):
   `lesson_transcribed` · `clip_moments_generated` ·
   `clip_moments_generation_failed` · `clip_moment_selected` ·
@@ -123,8 +229,11 @@ loudly.
 latency target) · `CLIP_SELECT_MODEL`/`CLIP_SELECT_EFFORT` (provider default /
 medium — mid-tier, never downgraded for latency) ·
 `CLIP_VALIDATE_MODEL`/`CLIP_VALIDATE_EFFORT` (provider default / low) ·
-`CLIP_MAP_MODEL`/`CLIP_MAP_EFFORT` (provider default / low). M-B adds
-`REAP_API_KEY` + quota knobs (`CLIP_MINUTES_PER_MONTH`, `CLIP_JOBS_PER_DAY`).
+`CLIP_MAP_MODEL`/`CLIP_MAP_EFFORT` (provider default / low) ·
+`CLIP_ACTION_DENSITY_THRESHOLD` (2 cues/min) ·
+`CLIP_ACTION_FRAME_DIFF_THRESHOLD` (0.15) — rationale in the routing section.
+M-B adds `REAP_API_KEY` + quota knobs (`CLIP_MINUTES_PER_MONTH`,
+`CLIP_JOBS_PER_DAY`).
 
 ## Deviations from the PRD (deliberate, repo conventions win)
 
@@ -143,7 +252,16 @@ medium — mid-tier, never downgraded for latency) ·
 - **Slide-sync input is absent** (PRD §7.1 "where available"): this platform
   has no slide↔video timestamp alignment. The context assembler documents the
   gap; quiz-miss data IS wired (via `rollup_question_stats`, which carries
-  `lesson_id` directly).
+  `lesson_id` directly). The amendment upgraded slide-sync to a first-class
+  CONTRACT (routing section above) — the producer still doesn't exist.
+- **The amendment's named `*.spec.ts` tests map to named verify sections**
+  (this repo has no jest/vitest — the tsx verify-suite pattern is the
+  convention): each spec name is a literal section header in
+  `verify-clips.ts` (pure halves) / `verify-clips-int.ts` (DB halves).
+- **Classifier frame signals ride the vision seam**, not ffprobe (not
+  installed in this runtime; no face-detection dep exists) — see the routing
+  section. The decision function implements the amendment's thresholds
+  verbatim.
 - **Selection is model-required** (typed 503) — no deterministic fallback
   could honestly rank teachable moments. Transcript acquisition and the
   candidate queue work without a key.
@@ -153,42 +271,75 @@ medium — mid-tier, never downgraded for latency) ·
 
 ## Tests
 
-- `npm run verify:clips` — **113 pure checks** (no key/DB), in the `npm test`
+- `npm run verify:clips` — **198 pure checks** (no key/DB), in the `npm test`
   chain: constants/taxonomy/rubric, Zod gates (incl. the multi-segment
   exception rules), VTT→word interpolation, anchors/chunking, every
   deterministic validation rule, verdict application (±8s bound, hook
   promotion, multi-segment drop), the full pipeline core vs. the mock model
   (happy/repair×2/rubric-no-repair/fail-closed/map→reduce/per-tier efforts),
   prompt pins + exemplars, fixture sanity, tool registry snapshot (1 read +
-  2 reversible + ZERO irreversible), event-union↔migration drift guard, and
-  the hardening greps (no publish/schedule references, no scheduler
-  primitives, banned language, text platforms still closed at 2).
-- `npm run verify:clips:int` — **33 checks** vs live Supabase + the mock
+  2 reversible + ZERO irreversible), event-union↔migration drift guard, the
+  hardening greps (no publish/schedule references, no scheduler primitives,
+  banned language, text platforms still closed at 2), and the amendment's
+  named spec sections: `recordingFormat.metadata/classifier/override.spec`,
+  `routing.matrix.spec` (matrix + precedence + sync helpers),
+  `actionDensity.lexicon/Diff/degraded.spec`, `rubric.formatAware.spec`
+  (boost matrix), `hookIntegrity.slideRef.spec`.
+- `npm run verify:clips:int` — **44 checks** vs live Supabase + the mock
   model: platform/cache/provider/no-source acquisition, gate-staged selection
   with persisted ranks + prompt versions + events, byte-for-byte status
   revert, whole-set revert (transcript cache survives), zero-survivor
-  nothing-persisted, and the full creator-B RLS matrix.
-- `npm run eval:clips` — the §20 eval (see above).
-- `npm run smoke:reap` — Task 0 (blocked on `REAP_API_KEY`).
+  nothing-persisted, the full creator-B RLS matrix, and the amendment's DB
+  halves: block-metadata short-circuit (inspector-never-built spy),
+  upload-path classification, the creator-override flip + cache persistence,
+  layout on every candidate row + in ai_metadata + on the generated event.
+- `npm run eval:clips` — the §20 eval (see above; 5 fixtures + layout gates;
+  `--live --control` records the FR-8 pre-amendment delta artifact).
+- `npm run smoke:reap` — Task 0 ((a)–(c) done vs the live API; (d)/(e) need
+  one real ≥90s video; (f) provider layout probing rides the same script).
 
-## Milestone map
+## Milestone map (amendment renumbering applied)
 
-- **Task 0** — BLOCKED on `REAP_API_KEY` (script + findings doc ready).
-- **M-A** — ✅ this document.
+- **Task 0** — (a)–(c) DONE vs the live Reap API (camelCase contract, ≥60s
+  window, no webhooks, no brand-template API — `docs/reap-task0-findings.md`);
+  (d)/(e) open on one real ≥90s video; the amendment adds (f) provider layout
+  probing (stacked_split on composited footage; screen-region tracking vs
+  blind center-crop) and (g) the recorder audit (DONE — composited single
+  track; no slide-sync producer; findings in the routing section + the
+  findings doc).
+- **M-A** — ✅ this document, including the amendment's FR-1/2/3/4 + FR-8
+  (format plumbing, routing matrix, classifier, action density, clips-v3,
+  eval fixtures 4+5).
 - **M-B** — `ClipRenderProvider` + Reap adapter (per Task 0 findings; pre-cut
-  FFmpeg fallback if timestamps unsupported), `clip_render_job`, webhook
-  consumer (M7 pattern), reconciliation sweep, 10/min token bucket, quotas +
-  cost ledger.
-- **M-C** — packaging presets + brand templates, submit→webhook→ingest→
-  `social_post` rows (`post_type='clip'`, platform enum extension gated by
-  superRefine), lineage on regenerate.
+  FFmpeg fallback if timestamps unsupported), `clip_render_job` (CREATE
+  includes the `layout` + widened `provider` columns), webhook consumer (M7
+  pattern), reconciliation sweep, 10/min token bucket, quotas + cost ledger;
+  amendment FR-5/FR-7: adapter layout mapping per Task 0 (f), in-house
+  compositing only for genuine separate-track sources, in-house
+  `screen_action_zoom` (FFmpeg zoompan) IF Task 0 (f) finds the provider gap.
+- **M-C** — packaging presets (gain the required `layout` field — presets ×
+  layouts orthogonal) + submit→webhook→ingest→`social_post` rows
+  (`post_type='clip'`, platform enum extension gated by superRefine), lineage
+  on regenerate.
 - **M-D** — posting kit (small-tier, code-inserted disclosure line), comment
   keywords, `short_link` service, `/l/:code` + `/preview/:code` (answer-key
   invariant re-asserted), enrollment attribution.
 - **M-E** — the clips UI inside Social Posts (moment picker, job cards, kit
-  panel, usage meter).
-- **M-F** — webhook chaos tests, WER measurement, eval re-run vs Task 0
-  baseline, seed script.
+  panel, usage meter) + FR-9 layout chips (`CLIP_LAYOUT_LABELS`) and the
+  audiogram caveat (`CLIP_AUDIOGRAM_CAVEAT`).
+- **M-F (NEW — amendment FR-6)** — `WiseselSlideShortProvider`
+  (`provider='wisesel_slides'`, Remotion composition reusing the lesson slide
+  components, kinetic word captions, same `clip_render_job` state machine +
+  ingest path, `CLIP_INHOUSE_MINUTE_RATE` cost ledger, `CLIP_RENDER_WORKERS`
+  pool outside the 2-LLM ceiling). **Prerequisites surfaced at the M-A
+  checkpoint:** a slide-sync producer (recorder capture) and a brand-tokens
+  source shared with Reap packaging (neither exists yet); note SlideStage
+  itself is browser-only (ResizeObserver) — the Remotion composition builds
+  on the PURE structured-layout components + DiagramView, which are
+  `renderToStaticMarkup`-proven.
+- **M-G (was M-F)** — hardening + docs: webhook chaos tests, WER measurement,
+  eval re-run covering ALL five fixtures, the FR-6 render tests in the full
+  suite, seed script.
 
 ## Hard fences (unchanged from the PRD §3, grep-tested)
 

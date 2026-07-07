@@ -24,6 +24,133 @@ export type { FunnelStage } from "../social/constants";
 export const CLIP_PLATFORMS = ["instagram", "tiktok", "youtube_shorts", "facebook"] as const;
 export type ClipPlatform = (typeof CLIP_PLATFORMS)[number];
 
+/* ──────────── recording formats + clip layouts (amendment §1) ──────────── */
+
+/**
+ * Recording format = a FACT about the lesson recording, chosen by the teacher
+ * at record time. The literals deliberately equal the platform's OWN
+ * `VideoRecordingMode` union (lib/course/types.ts) — the metadata read is an
+ * identity map, never a translation table. Zod mirrors live in schemas.ts
+ * (`RecordingFormatSchema`); never hand-write the TS type elsewhere.
+ */
+export const RECORDING_FORMATS = ["camera_only", "screen_camera", "screen_only"] as const;
+export const FORMAT_SOURCES = ["platform", "classifier", "creator_override"] as const;
+
+/**
+ * Layout = a DECISION about a render job/candidate. Formats are facts;
+ * layouts are decisions; routing.ts maps facts → decisions (FR-2).
+ */
+export const CLIP_LAYOUTS = [
+  "face_track",
+  "stacked_split",
+  "slide_short",
+  "screen_action_zoom",
+  "audiogram",
+] as const;
+
+/** FR-9 human copy — defined with the enum so the M-E chips import, not copy. */
+export const CLIP_LAYOUT_LABELS: Record<(typeof CLIP_LAYOUTS)[number], string> = {
+  face_track: "Face clip",
+  stacked_split: "Split screen + camera",
+  slide_short: "Slide short",
+  screen_action_zoom: "Screen zoom",
+  audiogram: "Audiogram",
+};
+
+/** FR-9: the honest caveat carried by audiogram candidates (simplest visual
+ *  treatment) — single-sourced here for the M-E card and the tool summary. */
+export const CLIP_AUDIOGRAM_CAVEAT =
+  "simplest visual treatment — consider enabling slide previews for richer clips";
+
+/* ───────────── format classifier thresholds (FR-1, binding) ────────────── */
+
+/** ≥8 sampled frames spread across the duration (FR-1). */
+export const FORMAT_CLASSIFIER_MIN_FRAMES = 8;
+/** Face present in ≥60% of samples (FR-1's binding threshold). */
+export const FORMAT_CLASSIFIER_FACE_PCT = 0.6;
+/** "Frame-dominant screen content" bar: screen content in ≥50% of samples
+ *  distinguishes screen_camera from camera_only once the face bar is met. */
+export const FORMAT_CLASSIFIER_SCREEN_PCT = 0.5;
+
+/* ─────────────── action-density lexicon + thresholds (FR-3) ────────────── */
+
+/**
+ * Demonstration cues — transcript evidence that the SCREEN is doing something
+ * worth watching during a span (typing, clicking, building, a visible
+ * before/after). Regex SOURCES compiled with word boundaries in
+ * actionDensity.ts; adding a cue is a data change only (FR-3) — extend this
+ * array, run `npm run verify:clips`, done. Maintenance guide: docs/clips.md.
+ */
+export const CLIP_ACTION_CUES: readonly string[] = [
+  "watch what happens",
+  "watch this",
+  "watch as",
+  "let me show you",
+  "let me demonstrate",
+  "i'?ll show you",
+  "as i (?:type|draw|build|click|drag|write|run|scroll|paint)",
+  "(?:as )?you can see",
+  "you'?ll see",
+  "notice (?:how|what|the)",
+  "look at (?:this|that|the)",
+  "if (?:i|we) (?:click|type|run|change|add|remove|drag|delete)",
+  "let'?s (?:run|build|type|try|add|click|open|create|write)",
+  "i'?m (?:typing|clicking|dragging|drawing|building|running|painting)",
+  "on (?:the )?screen",
+  "step by step",
+  "now i (?:click|type|run|add|select|open|drag)",
+  "here'?s what happens",
+  "run (?:this|the|it)",
+  "hit (?:enter|run|save)",
+  "the (?:output|result|plan|number) (?:changes|updates|drops|shows|becomes)",
+  "in real time",
+] as const;
+
+/**
+ * Action-dense bar (FR-3): a span is action-dense when its transcript-cue
+ * rate meets CLIP_ACTION_DENSITY_THRESHOLD (distinct cue hits per minute),
+ * OR — when a frame-diff signal is available — the coarse frame-difference
+ * ratio meets CLIP_ACTION_FRAME_DIFF_THRESHOLD.
+ *
+ * Default 2 cues/min, rationale (documented per FR-3): annotating the eval
+ * fixtures, live demo narration ("watch this", "as I type…") lands 3-6 cues
+ * per minute while slide/lecture reading lands 0-1; 2/min splits the two
+ * populations with margin on both sides. Frame-diff 0.15 = ≥15% of sampled
+ * adjacent-frame pairs differ materially — motion on an otherwise static
+ * screen recording. Frame sampling needs locally accessible media (ffmpeg);
+ * when unavailable (this runtime today) transcript cues alone decide — the
+ * documented, tested degraded mode.
+ */
+export const CLIP_ACTION_DENSITY_DEFAULT_THRESHOLD = 2;
+export const CLIP_ACTION_FRAME_DIFF_DEFAULT_THRESHOLD = 0.15;
+
+export function clipActionDensityThreshold(): number {
+  const v = Number(process.env.CLIP_ACTION_DENSITY_THRESHOLD);
+  return Number.isFinite(v) && v > 0 ? v : CLIP_ACTION_DENSITY_DEFAULT_THRESHOLD;
+}
+export function clipActionFrameDiffThreshold(): number {
+  const v = Number(process.env.CLIP_ACTION_FRAME_DIFF_THRESHOLD);
+  return Number.isFinite(v) && v > 0 ? v : CLIP_ACTION_FRAME_DIFF_DEFAULT_THRESHOLD;
+}
+
+/** FR-4: demo_payoff's deterministic rubric boost (visual_interest +N, capped
+ *  at 5) when the format is screen_only AND the span is action-dense. */
+export const CLIP_DEMO_PAYOFF_ACTION_BOOST = 1;
+
+/**
+ * FR-4: the per-format visual_interest scoring instruction. ALL formats'
+ * lines render in the STATIC system prompt (byte-stable — the caching rule);
+ * the lesson's actual format rides the variable request block.
+ */
+export const CLIP_VISUAL_INTEREST_FORMAT_LINES: Record<(typeof RECORDING_FORMATS)[number], string> = {
+  camera_only:
+    "the footage is the speaker on camera — score gesture, physical demos, props, and shown objects; talking-head-only caps at 3",
+  screen_camera:
+    "the footage is the screen with a camera bubble — score what the SCREEN shows during the span (action, build-up, visual payoff) first, speaker presence second",
+  screen_only:
+    "the footage is the screen ONLY — score what the screen shows during the span (action, build-up, visual payoff), NOT speaker presence; a span carried by one clear slide/diagram scores on that visual's explanatory power (\"this one diagram explains X\" is a valid hook basis); narration over a static wall of text caps at 2, and reading a slide's bullets aloud IS a static wall of text",
+};
+
 export interface ClipPlatformSpec {
   /** Human label for UI + prompt ("Instagram Reels", not "instagram"). */
   label: string;

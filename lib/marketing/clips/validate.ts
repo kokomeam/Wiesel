@@ -18,16 +18,20 @@
 
 import {
   CLIP_COHERENCE_ADJUST_MS,
+  CLIP_DEMO_PAYOFF_ACTION_BOOST,
   CLIP_OVERLAP_MAX_RATIO,
   CLIP_PLATFORM_SPECS,
+  CLIP_RUBRIC_THRESHOLDS,
   CLIP_SPAN_MAX_MS,
   CLIP_SPAN_MIN_MS,
   type ClipPlatform,
 } from "./constants";
-import { lintClipTextSurfaces, lintHookNumbers } from "./lint";
+import { scoreActionDensity } from "./actionDensity";
+import { lintClipTextSurfaces, lintHookNumbers, lintHookSlideRef } from "./lint";
+import { hasSlideWithinSpan, resolveClipLayout, slideSyncCoversSpan } from "./routing";
 import { meetsRubricThreshold, rubricTotal, type CandidateVerdict, type ModelMoment } from "./schemas";
 import { snapToSentenceBounds, transcriptSlice } from "./transcripts";
-import type { TranscriptWord } from "./schemas";
+import type { ClipLayout, RecordingFormat, SlideSyncEntry, TranscriptWord } from "./schemas";
 
 export interface ClipDrop {
   rank: number;
@@ -48,6 +52,38 @@ export interface NormalizedCandidate extends ModelMoment {
   spanTranscript: string;
   /** True when the caption was clamped to the tightest target-platform cap. */
   captionClamped: boolean;
+  /** FR-2: the resolved layout for this candidate's FINAL span. */
+  layout: ClipLayout;
+  /** FR-3's verdict for the final span (rides ai_metadata). */
+  actionDense: boolean;
+  /** FR-4: whether the demo_payoff action boost lifted visual_interest. */
+  visualInterestBoosted: boolean;
+}
+
+/** The format facts every check/routing decision reads (amendment §1). */
+export interface FormatCheckContext {
+  recordingFormat: RecordingFormat;
+  /** Slide-sync entries, or null — no platform producer exists yet (FR-7(g)). */
+  slideSync: SlideSyncEntry[] | null;
+  /** Coarse frame-diff signal when media is locally accessible; null = the
+   *  documented degraded mode (transcript cues alone decide density). */
+  frameDiffRatio: number | null;
+}
+
+/** FR-2/FR-3 for one span: density verdict + routed layout. */
+function routingFor(
+  span: { startMs: number; endMs: number },
+  words: TranscriptWord[],
+  format: FormatCheckContext
+): { layout: ClipLayout; actionDense: boolean } {
+  const action = scoreActionDensity(words, span, { frameDiffRatio: format.frameDiffRatio });
+  return {
+    layout: resolveClipLayout(format.recordingFormat, {
+      slideSyncCoversSpan: slideSyncCoversSpan(format.slideSync, span),
+      actionDense: action.dense,
+    }),
+    actionDense: action.dense,
+  };
 }
 
 /** Effective playing ranges: contiguous span → one range. */
@@ -85,12 +121,20 @@ export interface DeterministicResult {
 
 /**
  * §7.4.1 bounds/shape checks + §7.4.4 safety lint + deterministic hook
- * numbers, plus overlap pruning and the §8.3 rubric bar. `sourceContext`
- * whitelists the creator's own claims (the Phase 1 lint escape).
+ * numbers + the FR-4 slide-ref hook lint, plus overlap pruning, the FR-4
+ * demo_payoff action boost, and the §8.3 rubric bar. `sourceContext`
+ * whitelists the creator's own claims (the Phase 1 lint escape). `format`
+ * carries the recording-format facts (FR-1) that routing (FR-2), density
+ * (FR-3), and the boost read.
  */
 export function runDeterministicChecks(
   candidates: ModelMoment[],
-  ctx: { durationMs: number; words: TranscriptWord[]; sourceContext: string }
+  ctx: {
+    durationMs: number;
+    words: TranscriptWord[];
+    sourceContext: string;
+    format: FormatCheckContext;
+  }
 ): DeterministicResult {
   const kept: NormalizedCandidate[] = [];
   const dropped: ClipDrop[] = [];
@@ -157,12 +201,35 @@ export function runDeterministicChecks(
       continue;
     }
 
+    // FR-4: demo_payoff earns a deterministic visual_interest boost when the
+    // recording is screen-only and the span is action-dense — the demo IS the
+    // visual payoff. Applied BEFORE the rubric bar; capped at 5; recorded on
+    // the candidate so ai_metadata stays honest about the lift.
+    const envelopeSpan = { startMs: m.startMs, endMs: m.endMs };
+    const routing = routingFor(envelopeSpan, ctx.words, ctx.format);
+    let rubricScores = m.rubricScores;
+    let visualInterestBoosted = false;
+    if (
+      ctx.format.recordingFormat === "screen_only" &&
+      m.momentType === "demo_payoff" &&
+      routing.actionDense
+    ) {
+      const boosted = Math.min(
+        rubricScores.visual_interest + CLIP_DEMO_PAYOFF_ACTION_BOOST,
+        CLIP_RUBRIC_THRESHOLDS.maxPerDimension
+      );
+      if (boosted !== rubricScores.visual_interest) {
+        rubricScores = { ...rubricScores, visual_interest: boosted };
+        visualInterestBoosted = true;
+      }
+    }
+
     // Rubric bar (§8.3) — droppable ONLY (never ask the model to re-score).
-    if (!meetsRubricThreshold(m.rubricScores)) {
+    if (!meetsRubricThreshold(rubricScores)) {
       dropped.push({
         rank: m.rank,
         rule: "rubric_below_threshold",
-        reason: `it scores ${rubricTotal(m.rubricScores)}/35 on the quality rubric (bar: 21, hook ≥3, standalone ≥4)`,
+        reason: `it scores ${rubricTotal(rubricScores)}/35 on the quality rubric (bar: 21, hook ≥3, standalone ≥4)`,
       });
       continue;
     }
@@ -186,18 +253,33 @@ export function runDeterministicChecks(
       m.stitchedScript?.trim() ||
       rs.map((r) => transcriptSlice(ctx.words, r.startMs, r.endMs)).join(" … ");
 
-    // Deterministic hook-integrity: prune hooks with unsupported numbers.
+    // Deterministic hook-integrity: prune hooks with unsupported numbers, and
+    // (FR-4) hooks citing a slide/diagram no slide-sync window backs. The
+    // slide-ref lint only speaks when sync data EXISTS for the lesson.
+    const syncCtx = {
+      syncAvailable: (ctx.format.slideSync?.length ?? 0) > 0,
+      slideWithinSpan: hasSlideWithinSpan(ctx.format.slideSync, envelopeSpan),
+    };
     const hooks = [m.hookText, ...m.altHooks];
-    const supportedHooks = hooks.filter((h) => lintHookNumbers(h, spanTranscript).length === 0);
+    const supportedHooks = hooks.filter(
+      (h) =>
+        lintHookNumbers(h, spanTranscript).length === 0 &&
+        lintHookSlideRef(h, syncCtx).length === 0
+    );
     if (supportedHooks.length === 0) {
+      const slideRefOnly = hooks.some((h) => lintHookNumbers(h, spanTranscript).length === 0);
       repairIssues.push({
         rank: m.rank,
-        issue: `candidate ${m.rank}: every hook makes a numeric claim its own transcript never states — write hooks the span cashes`,
+        issue: slideRefOnly
+          ? `candidate ${m.rank}: every hook points at a slide/diagram that is not on screen during the span — hook what the clip actually shows`
+          : `candidate ${m.rank}: every hook makes a numeric claim its own transcript never states — write hooks the span cashes`,
       });
       dropped.push({
         rank: m.rank,
-        rule: "hook_number_unsupported",
-        reason: "every proposed hook claims a number the clip never says",
+        rule: slideRefOnly ? "hook_slide_ref_unsupported" : "hook_number_unsupported",
+        reason: slideRefOnly
+          ? "every proposed hook cites a slide the clip never shows"
+          : "every proposed hook claims a number the clip never says",
         excerpt: m.hookText,
       });
       continue;
@@ -233,12 +315,16 @@ export function runDeterministicChecks(
 
     kept.push({
       ...m,
+      rubricScores,
       hookText: supportedHooks[0],
       altHooks: supportedHooks.slice(1),
       targetPlatformFit: fit as ClipPlatform[],
       captionDraft,
       spanTranscript,
       captionClamped,
+      layout: routing.layout,
+      actionDense: routing.actionDense,
+      visualInterestBoosted,
     });
   }
 
@@ -264,7 +350,7 @@ export interface VerdictResult {
 export function applyValidationVerdicts(
   candidates: NormalizedCandidate[],
   verdicts: CandidateVerdict[],
-  ctx: { durationMs: number; words: TranscriptWord[] }
+  ctx: { durationMs: number; words: TranscriptWord[]; format: FormatCheckContext }
 ): VerdictResult {
   const byRank = new Map(verdicts.map((v) => [v.rank, v]));
   const kept: NormalizedCandidate[] = [];
@@ -304,11 +390,17 @@ export function applyValidationVerdicts(
         });
         continue;
       }
+      // FR-2: a shifted span can change the routing facts (sync coverage,
+      // action density) — re-resolve the layout for the FINAL span.
+      const adjusted = { startMs: newStart, endMs: newEnd };
+      const routing = routingFor(adjusted, ctx.words, ctx.format);
       current = {
         ...current,
         startMs: newStart,
         endMs: newEnd,
         spanTranscript: transcriptSlice(ctx.words, newStart, newEnd),
+        layout: routing.layout,
+        actionDense: routing.actionDense,
       };
     }
 

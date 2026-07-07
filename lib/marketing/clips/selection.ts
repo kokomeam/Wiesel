@@ -58,9 +58,12 @@ import {
   type ClipMomentCandidate,
   type LessonTranscript,
   type ModelMoment,
+  type RecordingFormat,
   type SelectMomentsRequest,
+  type SlideSyncEntry,
   type TranscriptWord,
 } from "./schemas";
+import { loadLessonSlideSync } from "./routing";
 import {
   acquireLessonTranscript,
   chunkTranscript,
@@ -86,6 +89,8 @@ export interface ClipPipelineDeps {
   courseIdForEvents: string;
   /** M-B's Reap adapter slots in here; tests inject a mock. */
   transcriptionProvider?: TranscriptionProvider;
+  /** FR-1 classifier seam (external uploads only) — see TranscriptDeps. */
+  frameInspectorFor?: import("./transcripts").TranscriptDeps["frameInspectorFor"];
 }
 
 export interface SelectMomentsResult {
@@ -236,6 +241,13 @@ export interface SelectionCoreArgs {
   words: TranscriptWord[];
   durationMs: number;
   request: SelectionRequestBlock;
+  /** FR-1: the recording-format FACT (from the transcript row). */
+  recordingFormat: RecordingFormat;
+  /** FR-2: slide-sync entries — null until a platform producer exists
+   *  (FR-7(g) audit); eval fixtures inject synthetic sync. */
+  slideSync: SlideSyncEntry[] | null;
+  /** FR-3: optional coarse frame-diff signal; null = degraded mode. */
+  frameDiffRatio?: number | null;
 }
 
 export interface SelectionCoreResult {
@@ -306,7 +318,16 @@ export async function runSelectionCore(
   }
 
   // Deterministic checks; repairable flags claim the repair call if unused.
-  const checkCtx = { durationMs: args.durationMs, words: args.words, sourceContext: args.sourceContext };
+  const checkCtx = {
+    durationMs: args.durationMs,
+    words: args.words,
+    sourceContext: args.sourceContext,
+    format: {
+      recordingFormat: args.recordingFormat,
+      slideSync: args.slideSync,
+      frameDiffRatio: args.frameDiffRatio ?? null,
+    },
+  };
   let result = runDeterministicChecks(parsed.data.candidates, checkCtx);
   if (result.repairIssues.length > 0 && !repairUsed) {
     repairUsed = true;
@@ -367,6 +388,7 @@ export async function runSelectionCore(
     const verdictResult = applyValidationVerdicts(kept, verdictParsed.data.verdicts, {
       durationMs: args.durationMs,
       words: args.words,
+      format: checkCtx.format,
     });
     kept = verdictResult.kept;
     dropped = [...dropped, ...verdictResult.dropped];
@@ -401,11 +423,15 @@ export async function selectClipMoments(
         ownerId: deps.ownerId,
         courseIdForEvents: deps.courseIdForEvents,
         transcriptionProvider: deps.transcriptionProvider,
+        frameInspectorFor: deps.frameInspectorFor,
       },
       req.lessonId,
       { courseId }
     );
     const durationMs = Math.round(transcript.durationSeconds * 1000);
+    // FR-2: slide-sync facts. No platform producer exists yet (FR-7(g)) —
+    // this is null today; the seam keeps the routing conditions live-wired.
+    const slideSync: SlideSyncEntry[] | null = await loadLessonSlideSync(req.lessonId);
 
     const context: ClipContext = await assembleClipContext(
       deps.supabase,
@@ -425,7 +451,14 @@ export async function selectClipMoments(
       sourceContext: context.sourceContext,
       words: transcript.words,
       durationMs,
-      request: { stages: req.stages, targetPlatforms: req.targetPlatforms, count: req.count },
+      request: {
+        stages: req.stages,
+        targetPlatforms: req.targetPlatforms,
+        count: req.count,
+        recordingFormat: transcript.recordingFormat,
+      },
+      recordingFormat: transcript.recordingFormat,
+      slideSync,
     });
 
     if (core.kept.length === 0) {
@@ -461,6 +494,10 @@ export async function selectClipMoments(
           repairUsed: core.repairUsed,
           latencyMs,
           quizMissCount: context.quizMisses.length,
+          recordingFormat: transcript.recordingFormat,
+          formatSource: transcript.formatSource,
+          actionDense: moment.actionDense,
+          visualInterestBoosted: moment.visualInterestBoosted,
         },
       }))
     );
@@ -476,6 +513,8 @@ export async function selectClipMoments(
       mapReduceUsed: core.mapReduceUsed,
       latencyMs,
       requestedBy: opts.requestedBy ?? "user",
+      recordingFormat: transcript.recordingFormat,
+      layouts: candidates.map((c) => c.layout),
     });
 
     return {

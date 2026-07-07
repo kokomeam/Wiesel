@@ -24,7 +24,14 @@ import type { Database, Json } from "@/lib/database.types";
 import { parseVtt, plainTextFromVtt, type CaptionCue } from "@/lib/video/captions";
 import { hlsUrl } from "@/lib/video/playbackUrls";
 import { ClipTranscriptUnavailableError } from "./errors";
-import type { LessonTranscript, TranscriptWord } from "./schemas";
+import { resolveRecordingFormat, type FrameInspector } from "./format";
+import {
+  RecordingFormatSchema,
+  type FormatSource,
+  type LessonTranscript,
+  type RecordingFormat,
+  type TranscriptWord,
+} from "./schemas";
 import { emitClipEvent } from "./events";
 
 type DB = SupabaseClient<Database>;
@@ -90,6 +97,16 @@ export interface TranscriptDeps {
   courseIdForEvents: string;
   /** Absent ⇒ platform-only acquisition (typed error if no captioned video). */
   transcriptionProvider?: TranscriptionProvider;
+  /**
+   * FR-1 classifier seam: builds a FrameInspector for the lesson's video
+   * asset (external uploads have no recording metadata). Absent/null ⇒ the
+   * degraded default (camera_only, source 'classifier'). NEVER invoked when
+   * block metadata exists — resolveRecordingFormat short-circuits first.
+   */
+  frameInspectorFor?: (asset: {
+    playbackId: string | null;
+    durationSeconds: number | null;
+  }) => FrameInspector | null;
 }
 
 type TranscriptRow = Database["public"]["Tables"]["lesson_transcript"]["Row"];
@@ -106,6 +123,8 @@ export function rowToTranscript(row: TranscriptRow): LessonTranscript {
     words: (row.words as unknown as TranscriptWord[]) ?? [],
     text: row.text,
     providerRef: row.provider_ref,
+    recordingFormat: row.recording_format as RecordingFormat,
+    formatSource: row.format_source as FormatSource,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -123,6 +142,8 @@ export async function getLessonTranscript(supabase: DB, lessonId: string): Promi
 
 interface VideoAssetSource {
   id: string;
+  blockId: string | null;
+  playbackId: string | null;
   transcriptVtt: string | null;
   transcriptText: string | null;
   durationSeconds: number | null;
@@ -134,7 +155,7 @@ interface VideoAssetSource {
 async function findLessonVideoAsset(supabase: DB, lessonId: string): Promise<VideoAssetSource | null> {
   const { data, error } = await supabase
     .from("video_assets")
-    .select("id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status")
+    .select("id,block_id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status")
     .eq("lesson_id", lessonId)
     .eq("status", "ready")
     .order("duration_seconds", { ascending: false, nullsFirst: false });
@@ -145,11 +166,28 @@ async function findLessonVideoAsset(supabase: DB, lessonId: string): Promise<Vid
   const row = withCaptions ?? rows[0];
   return {
     id: row.id,
+    blockId: row.block_id,
+    playbackId: row.mux_playback_id,
     transcriptVtt: row.transcript_vtt,
     transcriptText: row.transcript,
     durationSeconds: row.duration_seconds,
     mediaUrl: row.mp4_url ?? (row.mux_playback_id ? hlsUrl(row.mux_playback_id) : null),
   };
+}
+
+/**
+ * FR-1 metadata read: the recording format the platform already stores —
+ * `VideoLessonBlock.recording.mode` in the block's content jsonb (the
+ * literals equal RECORDING_FORMATS verbatim). Studio recordings always carry
+ * it; external uploads never do (the upload path skips mode selection).
+ */
+async function readBlockRecordingMode(supabase: DB, blockId: string | null): Promise<string | null> {
+  if (!blockId) return null;
+  const { data, error } = await supabase.from("blocks").select("content").eq("id", blockId).maybeSingle();
+  if (error) throw new Error(`blocks read (recording mode): ${error.message}`);
+  const content = data?.content as { recording?: { mode?: unknown } } | null;
+  const mode = content?.recording?.mode;
+  return typeof mode === "string" ? mode : null;
 }
 
 async function persistTranscript(
@@ -163,6 +201,8 @@ async function persistTranscript(
     words: TranscriptWord[];
     text: string;
     providerRef: string | null;
+    recordingFormat: RecordingFormat;
+    formatSource: FormatSource;
   }
 ): Promise<LessonTranscript> {
   const { data, error } = await deps.supabase
@@ -178,6 +218,8 @@ async function persistTranscript(
         words: input.words as unknown as Json,
         text: input.text,
         provider_ref: input.providerRef,
+        recording_format: input.recordingFormat,
+        format_source: input.formatSource,
       },
       { onConflict: "lesson_id" }
     )
@@ -191,8 +233,32 @@ async function persistTranscript(
     source: input.source,
     durationSeconds: input.durationSeconds,
     wordCount: input.words.length,
+    recordingFormat: input.recordingFormat,
+    formatSource: input.formatSource,
   });
   return transcript;
+}
+
+/**
+ * FR-1 creator override: pin a transcript's recording format by hand
+ * (misclassified external upload, or an edge the teacher knows better).
+ * format_source becomes 'creator_override'; acquisition never re-classifies
+ * over it (the cache path returns the row as-is).
+ */
+export async function overrideTranscriptFormat(
+  supabase: DB,
+  lessonId: string,
+  format: RecordingFormat
+): Promise<LessonTranscript> {
+  const parsed = RecordingFormatSchema.parse(format); // throws on a bad value
+  const { data, error } = await supabase
+    .from("lesson_transcript")
+    .update({ recording_format: parsed, format_source: "creator_override" })
+    .eq("lesson_id", lessonId)
+    .select("*")
+    .single();
+  if (error) throw new Error(`lesson_transcript format override: ${error.message}`);
+  return rowToTranscript(data);
 }
 
 /**
@@ -206,16 +272,34 @@ export async function acquireLessonTranscript(
   opts: { courseId?: string | null } = {}
 ): Promise<LessonTranscript> {
   const cached = await getLessonTranscript(deps.supabase, lessonId);
-  if (cached) return cached;
+  if (cached) return cached; // classification ran once; overrides survive
 
   const courseId = opts.courseId ?? deps.courseIdForEvents ?? null;
   const asset = await findLessonVideoAsset(deps.supabase, lessonId);
+
+  // FR-1: format resolution — metadata short-circuits; the classifier
+  // (frame inspector) runs ONLY when the block carries no recording.mode
+  // (i.e. an external upload).
+  const resolveFormat = async () => {
+    if (!asset) return { format: "camera_only" as RecordingFormat, source: "classifier" as FormatSource };
+    const metadataMode = await readBlockRecordingMode(deps.supabase, asset.blockId);
+    const inspector =
+      metadataMode === null
+        ? (deps.frameInspectorFor?.({
+            playbackId: asset.playbackId,
+            durationSeconds: asset.durationSeconds,
+          }) ?? null)
+        : null; // never even constructed when metadata exists
+    const resolution = await resolveRecordingFormat({ metadataMode, frameInspector: inspector });
+    return { format: resolution.format, source: resolution.source };
+  };
 
   if (asset?.transcriptVtt) {
     const cues = parseVtt(asset.transcriptVtt);
     const words = wordsFromVttCues(cues);
     if (words.length > 0) {
       const lastEndMs = words[words.length - 1].endMs;
+      const fmt = await resolveFormat();
       return persistTranscript(deps, lessonId, courseId, {
         source: "platform",
         language: "en",
@@ -223,12 +307,15 @@ export async function acquireLessonTranscript(
         words,
         text: asset.transcriptText ?? plainTextFromVtt(asset.transcriptVtt),
         providerRef: null,
+        recordingFormat: fmt.format,
+        formatSource: fmt.source,
       });
     }
   }
 
   if (deps.transcriptionProvider && asset?.mediaUrl) {
     const result = await deps.transcriptionProvider.transcribe({ mediaUrl: asset.mediaUrl });
+    const fmt = await resolveFormat();
     return persistTranscript(deps, lessonId, courseId, {
       source: "provider",
       language: result.language,
@@ -236,6 +323,8 @@ export async function acquireLessonTranscript(
       words: result.words,
       text: result.text,
       providerRef: result.providerRef,
+      recordingFormat: fmt.format,
+      formatSource: fmt.source,
     });
   }
 

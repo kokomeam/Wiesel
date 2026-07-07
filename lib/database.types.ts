@@ -437,6 +437,7 @@ export type Database = {
           funnel_stage: string
           hook_text: string
           id: string
+          layout: string
           lesson_id: string
           moment_type: string
           prompt_version: string
@@ -464,6 +465,7 @@ export type Database = {
           funnel_stage: string
           hook_text: string
           id?: string
+          layout?: string
           lesson_id: string
           moment_type: string
           prompt_version: string
@@ -491,6 +493,7 @@ export type Database = {
           funnel_stage?: string
           hook_text?: string
           id?: string
+          layout?: string
           lesson_id?: string
           moment_type?: string
           prompt_version?: string
@@ -1441,10 +1444,12 @@ export type Database = {
           created_at: string
           creator_id: string
           duration_seconds: number
+          format_source: string
           id: string
           language: string
           lesson_id: string
           provider_ref: string | null
+          recording_format: string
           source: string
           text: string
           updated_at: string
@@ -1455,10 +1460,12 @@ export type Database = {
           created_at?: string
           creator_id: string
           duration_seconds: number
+          format_source?: string
           id?: string
           language?: string
           lesson_id: string
           provider_ref?: string | null
+          recording_format: string
           source: string
           text: string
           updated_at?: string
@@ -1469,10 +1476,12 @@ export type Database = {
           created_at?: string
           creator_id?: string
           duration_seconds?: number
+          format_source?: string
           id?: string
           language?: string
           lesson_id?: string
           provider_ref?: string | null
+          recording_format?: string
           source?: string
           text?: string
           updated_at?: string

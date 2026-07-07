@@ -1,6 +1,6 @@
 {
-  "promptVersion": "clips-v2",
-  "recordedAt": "2026-07-07T08:46:22.040Z",
+  "promptVersion": "clips-v3",
+  "recordedAt": "2026-07-07T18:26:56.441Z",
   "scores": [
     {
       "fixture": "charismatic",
@@ -15,14 +15,14 @@
     },
     {
       "fixture": "flat_affect",
-      "returned": 5,
-      "viable": 5,
+      "returned": 4,
+      "viable": 3,
       "goldTotal": 4,
-      "goldHit": 4,
-      "recallAt5": 1,
+      "goldHit": 3,
+      "recallAt5": 0.75,
       "rubricPassRate": 1,
       "hookIntegrityRate": 1,
-      "coherencePassRate": 1
+      "coherencePassRate": 0.75
     },
     {
       "fixture": "multi_speaker",
@@ -34,6 +34,28 @@
       "rubricPassRate": 1,
       "hookIntegrityRate": 1,
       "coherencePassRate": 1
+    },
+    {
+      "fixture": "screen_slides",
+      "returned": 4,
+      "viable": 4,
+      "goldTotal": 3,
+      "goldHit": 3,
+      "recallAt5": 1,
+      "rubricPassRate": 1,
+      "hookIntegrityRate": 1,
+      "coherencePassRate": 1
+    },
+    {
+      "fixture": "screen_action",
+      "returned": 4,
+      "viable": 3,
+      "goldTotal": 3,
+      "goldHit": 2,
+      "recallAt5": 0.6666666666666666,
+      "rubricPassRate": 1,
+      "hookIntegrityRate": 1,
+      "coherencePassRate": 0.75
     }
   ]
 }

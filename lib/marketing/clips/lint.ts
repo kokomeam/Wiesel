@@ -63,6 +63,40 @@ export function lintHookNumbers(hook: string, spanTranscript: string): LintViola
   return violations;
 }
 
+/* ─────────────── slide-reference hook integrity (FR-4) ─────────────────── */
+
+/** A hook that points the viewer at an on-screen visual ("this diagram…"). */
+const SLIDE_REF_RE =
+  /\b(?:this|that|the)\s+(?:one\s+)?(?:diagram|chart|graph|slide|table|figure)\b/iu;
+
+export function hookCitesSlideVisual(hook: string): boolean {
+  return SLIDE_REF_RE.test(hook);
+}
+
+/**
+ * FR-4: a hook citing a diagram/slide must correspond to a slide actually
+ * within the span's sync window. Only decidable when the lesson HAS
+ * slide-sync data (`hasSlideWithinSpan` from routing.ts) — when sync data
+ * exists and no slide falls inside the span, the hook promises a visual the
+ * clip never shows. With NO sync data the claim is unverifiable (the visual
+ * may be on camera or on an untracked screen) and this lint stays silent —
+ * the model-side hook-integrity verdict still judges the substance.
+ */
+export function lintHookSlideRef(
+  hook: string,
+  ctx: { syncAvailable: boolean; slideWithinSpan: boolean }
+): LintViolation[] {
+  if (!ctx.syncAvailable || !hookCitesSlideVisual(hook)) return [];
+  if (ctx.slideWithinSpan) return [];
+  return [
+    {
+      rule: "hook_slide_ref_unsupported",
+      reason: "the hook points at a slide/diagram but no slide is on screen during the clip's span",
+      excerpt: hook.slice(0, 80),
+    },
+  ];
+}
+
 /** Safety lint over one candidate's text surfaces (hook + caption + CTA). */
 export function lintClipTextSurfaces(
   surfaces: { hookText: string; captionDraft: string | null; endCardCta: string | null },

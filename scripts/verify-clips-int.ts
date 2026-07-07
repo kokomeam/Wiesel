@@ -18,6 +18,19 @@
  *   - RLS matrix: creator B sees/edits NOTHING of creator A's transcripts or
  *     candidates
  *
+ *   AMENDMENT (recording-format routing) — the DB halves of the named specs:
+ *   - recordingFormat.metadata.spec: a lesson whose video BLOCK carries
+ *     recording.mode resolves from 'platform' and the frame inspector is
+ *     NEVER constructed (spy)
+ *   - recordingFormat.classifier.spec: an upload (no block metadata)
+ *     classifies through the injected inspector; no inspector → the degraded
+ *     camera_only default
+ *   - recordingFormat.override.spec: overrideTranscriptFormat flips the row
+ *     to 'creator_override' and the cache returns it untouched
+ *   - routing.matrix.spec (test_layout_persisted_on_candidate_and_job —
+ *     candidate half): layout lands on every clip_moment_candidate row and
+ *     round-trips reads; the clip_render_jobs half folds into M-B's CREATE
+ *
  * Run: `npx tsx scripts/verify-clips-int.ts`
  */
 
@@ -50,8 +63,10 @@ import type { MarketingToolContext } from "@/lib/marketing/tools/types";
 import { ClipTranscriptUnavailableError, ClipGenerationError } from "@/lib/marketing/clips/errors";
 import {
   acquireLessonTranscript,
+  overrideTranscriptFormat,
   type TranscriptionProvider,
 } from "@/lib/marketing/clips/transcripts";
+import type { FrameInspector, FrameSignal } from "@/lib/marketing/clips/format";
 import { selectClipMoments } from "@/lib/marketing/clips/selection";
 import { CLIP_PROMPT_VERSION } from "@/lib/marketing/clips/prompt";
 import { fixtureByKey } from "@/lib/marketing/clips/fixtures/lessons";
@@ -183,6 +198,7 @@ async function main() {
   const lesson1 = crypto.randomUUID(); // captioned video → platform transcript
   const lesson2 = crypto.randomUUID(); // uncaptioned video → provider seam
   const lesson3 = crypto.randomUUID(); // no video → typed error
+  const lesson4 = crypto.randomUUID(); // captioned video WITH block recording.mode
   await A.supabase.from("courses").insert({
     id: courseId,
     author_id: A.userId,
@@ -199,7 +215,25 @@ async function main() {
     { id: lesson1, course_id: courseId, module_id: moduleId, title: "Indexing Deep Dive", order: 0 },
     { id: lesson2, course_id: courseId, module_id: moduleId, title: "Join Strategies", order: 1 },
     { id: lesson3, course_id: courseId, module_id: moduleId, title: "Planning Ahead", order: 2 },
+    { id: lesson4, course_id: courseId, module_id: moduleId, title: "Recorded In Studio", order: 3 },
   ]);
+
+  // lesson4: a studio-recorded video — the BLOCK carries recording.mode
+  // (screen_camera), the platform metadata FR-1 must read verbatim.
+  const videoBlock4 = crypto.randomUUID();
+  await A.supabase.from("blocks").insert({
+    id: videoBlock4,
+    course_id: courseId,
+    lesson_id: lesson4,
+    type: "video",
+    order: 0,
+    content: {
+      asset: { provider: "mux", status: "ready" },
+      recording: { mode: "screen_camera", layout: "screen_with_camera_bubble", includeMic: true },
+      edit: { trimStartSeconds: null, trimEndSeconds: null },
+      settings: { autoplay: false, showChapters: false },
+    } as unknown as Json,
+  });
 
   // Captioned ready video on lesson1 (the platform-transcript source).
   await A.supabase.from("video_assets").insert({
@@ -221,6 +255,18 @@ async function main() {
     duration_seconds: 120,
     mp4_url: "https://example.com/lesson2.mp4",
   });
+  // Captioned ready video on lesson4, LINKED to the metadata-carrying block.
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson4,
+    block_id: videoBlock4,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
 
   const services = createMarketingServices();
   const ctxFor = (model?: ReturnType<typeof createMockModelClient>): MarketingToolContext => ({
@@ -232,11 +278,18 @@ async function main() {
     model,
     requestedBy: "user",
   });
-  const transcriptDeps = (provider?: TranscriptionProvider) => ({
+  const transcriptDeps = (
+    provider?: TranscriptionProvider,
+    frameInspectorFor?: (asset: {
+      playbackId: string | null;
+      durationSeconds: number | null;
+    }) => FrameInspector | null
+  ) => ({
     supabase: A.supabase as never,
     ownerId: A.userId,
     courseIdForEvents: courseId,
     transcriptionProvider: provider,
+    frameInspectorFor,
   });
 
   /* ───────────────── transcript acquisition ─────────────────────────── */
@@ -246,6 +299,30 @@ async function main() {
   check("platform path: source=platform, words interpolated", t1.source === "platform" && t1.words.length > 100);
   check("platform path: duration from the asset", Math.abs(t1.durationSeconds - FLAT.durationMs / 1000) < 1);
   check("platform path: plain text persisted", t1.text.includes("sorted copy"));
+
+  console.log("\n# recordingFormat.metadata.spec / classifier.spec (DB halves)");
+  // lesson1's video has NO block metadata and NO inspector → degraded default.
+  check(
+    "no metadata + no inspector → camera_only from 'classifier' (degraded default)",
+    t1.recordingFormat === "camera_only" && t1.formatSource === "classifier"
+  );
+  // lesson4's video block carries recording.mode — read verbatim; the spy
+  // inspector factory must NEVER be constructed (metadata short-circuits).
+  let inspectorBuilt = 0;
+  const spyFactory = () => {
+    inspectorBuilt++;
+    return {
+      async sampleFrames(count: number): Promise<FrameSignal[]> {
+        return Array.from({ length: count }, () => ({ facePresent: true, screenContentPresent: false }));
+      },
+    };
+  };
+  const t4 = await acquireLessonTranscript(transcriptDeps(undefined, spyFactory), lesson4, { courseId });
+  check(
+    "block recording.mode read verbatim → screen_camera from 'platform'",
+    t4.recordingFormat === "screen_camera" && t4.formatSource === "platform"
+  );
+  check("classifier NEVER invoked when metadata exists (spy)", inspectorBuilt === 0);
 
   let providerCalled = 0;
   const throwingProvider: TranscriptionProvider = {
@@ -275,9 +352,23 @@ async function main() {
       };
     },
   };
-  const t2 = await acquireLessonTranscript(transcriptDeps(mockProvider), lesson2, { courseId });
+  // lesson2 = an upload (no block metadata) — the injected inspector
+  // classifies it screen_only through the pure decision.
+  const t2 = await acquireLessonTranscript(
+    transcriptDeps(mockProvider, () => ({
+      async sampleFrames(count: number): Promise<FrameSignal[]> {
+        return Array.from({ length: count }, () => ({ facePresent: false, screenContentPresent: true }));
+      },
+    })),
+    lesson2,
+    { courseId }
+  );
   check("provider path: source=provider + providerRef persisted", t2.source === "provider" && t2.providerRef === "mock-transcription-1");
   check("provider path: diarized words survive", t2.words[0].speaker === "S1");
+  check(
+    "upload classified through the inspector → screen_only from 'classifier'",
+    t2.recordingFormat === "screen_only" && t2.formatSource === "classifier"
+  );
 
   let noSourceErr: unknown = null;
   try {
@@ -292,7 +383,26 @@ async function main() {
     .select("id,props")
     .eq("course_id", courseId)
     .eq("type", "lesson_transcribed");
-  check("lesson_transcribed events on the single stream (2 lessons)", (transcribedEvents.data ?? []).length === 2);
+  check("lesson_transcribed events on the single stream (3 lessons)", (transcribedEvents.data ?? []).length === 3);
+  check(
+    "lesson_transcribed events carry recordingFormat + formatSource",
+    (transcribedEvents.data ?? []).every((e) => {
+      const p = e.props as Record<string, unknown>;
+      return typeof p.recordingFormat === "string" && typeof p.formatSource === "string";
+    })
+  );
+
+  console.log("\n# recordingFormat.override.spec (DB half)");
+  const overridden = await overrideTranscriptFormat(A.supabase as never, lesson2, "screen_camera");
+  check(
+    "override flips format + stamps 'creator_override'",
+    overridden.recordingFormat === "screen_camera" && overridden.formatSource === "creator_override"
+  );
+  const t2cached = await acquireLessonTranscript(transcriptDeps(throwingProvider), lesson2, { courseId });
+  check(
+    "cache returns the override untouched (never re-classified)",
+    t2cached.recordingFormat === "screen_camera" && t2cached.formatSource === "creator_override"
+  );
 
   /* ───────────────── selection through the gate ─────────────────────── */
 
@@ -319,6 +429,23 @@ async function main() {
   check("ai_metadata carries model + voiceProfileVersion", rows!.every((r) => (r.ai_metadata as Record<string, unknown>).promptVersion === CLIP_PROMPT_VERSION));
   check("rubric scores + rationale persisted", rows!.every((r) => r.rationale.length > 0 && r.rubric_scores !== null));
   check("summary explains moments in creator terms", out.summary.includes("worth clipping") && out.summary.includes("sorted copy"));
+  // routing.matrix.spec — test_layout_persisted_on_candidate_and_job
+  // (candidate half; clip_render_jobs folds into M-B's CREATE):
+  check(
+    "layout persisted on every candidate row (camera_only lesson → face_track)",
+    rows!.every((r) => r.layout === "face_track")
+  );
+  check(
+    "ai_metadata carries recordingFormat + formatSource + actionDense",
+    rows!.every((r) => {
+      const m = r.ai_metadata as Record<string, unknown>;
+      return m.recordingFormat === "camera_only" && m.formatSource === "classifier" && typeof m.actionDense === "boolean";
+    })
+  );
+  check(
+    "tool summary shows the layout label on every candidate line",
+    out.summary.includes("Face clip")
+  );
 
   const genEvents = await A.supabase
     .from("analytics_event")
@@ -328,6 +455,10 @@ async function main() {
   check("clip_moments_generated event with count + promptVersion", (genEvents.data ?? []).some((e) => {
     const p = e.props as Record<string, unknown>;
     return p.count === 3 && p.promptVersion === CLIP_PROMPT_VERSION;
+  }));
+  check("clip_moments_generated event carries recordingFormat + per-candidate layouts", (genEvents.data ?? []).some((e) => {
+    const p = e.props as Record<string, unknown>;
+    return p.recordingFormat === "camera_only" && Array.isArray(p.layouts) && (p.layouts as string[]).every((l) => l === "face_track");
   }));
 
   /* ─────────────── status lifecycle + byte-for-byte revert ──────────── */

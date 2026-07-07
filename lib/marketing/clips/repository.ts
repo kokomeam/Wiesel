@@ -9,7 +9,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import type { ClipCandidateStatus } from "./constants";
-import type { ClipMomentCandidate, ModelMoment, RubricScores } from "./schemas";
+import type { ClipLayout, ClipMomentCandidate, ModelMoment, RubricScores } from "./schemas";
 import type { ClipPlatform } from "./constants";
 
 type DB = SupabaseClient<Database>;
@@ -37,6 +37,7 @@ export function rowToCandidate(row: CandidateRow): ClipMomentCandidate {
     rationale: row.rationale,
     captionDraft: row.caption_draft,
     endCardCta: row.end_card_cta,
+    layout: row.layout as ClipLayout,
     status: row.status as ClipCandidateStatus,
     promptVersion: row.prompt_version,
     aiMetadata: (row.ai_metadata as Record<string, unknown>) ?? {},
@@ -46,7 +47,9 @@ export function rowToCandidate(row: CandidateRow): ClipMomentCandidate {
 }
 
 export interface CandidatePersistInput {
-  moment: ModelMoment & { spanTranscript?: string };
+  /** FR-2: layout is REQUIRED at persist time — code always writes it
+   *  explicitly (the DB default exists only for legacy snapshot restores). */
+  moment: ModelMoment & { spanTranscript?: string; layout: ClipLayout };
   rank: number;
   aiMetadata: Record<string, unknown>;
 }
@@ -85,6 +88,7 @@ export async function insertCandidates(
     rationale: moment.rationale,
     caption_draft: moment.captionDraft,
     end_card_cta: moment.endCardCta,
+    layout: moment.layout,
     status: "candidate" as const,
     prompt_version: args.promptVersion,
     ai_metadata: aiMetadata as Json,

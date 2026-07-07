@@ -12,18 +12,49 @@ import {
   CLIP_ALT_HOOK_COUNT,
   CLIP_CANDIDATE_STATUSES,
   CLIP_HOOK_MAX_WORDS,
+  CLIP_LAYOUTS,
   CLIP_MAX_CANDIDATES,
   CLIP_MOMENT_TYPES,
   CLIP_PLATFORMS,
   CLIP_RUBRIC_DIMENSIONS,
   CLIP_RUBRIC_THRESHOLDS,
+  FORMAT_SOURCES,
   FUNNEL_STAGES,
+  RECORDING_FORMATS,
 } from "./constants";
 
 export const ClipPlatformSchema = z.enum(CLIP_PLATFORMS);
 export const ClipMomentTypeSchema = z.enum(CLIP_MOMENT_TYPES);
 export const ClipFunnelStageSchema = z.enum(FUNNEL_STAGES);
 export const ClipCandidateStatusSchema = z.enum(CLIP_CANDIDATE_STATUSES);
+
+/* ─────────── recording formats + layouts (amendment §1, FR-1/FR-2) ─────── */
+
+/** The shared-contracts Zod mirror (amendment FR-1) — the TS types are
+ *  INFERRED from these enums, never hand-written. */
+export const RecordingFormatSchema = z.enum(RECORDING_FORMATS);
+export type RecordingFormat = z.infer<typeof RecordingFormatSchema>;
+
+export const FormatSourceSchema = z.enum(FORMAT_SOURCES);
+export type FormatSource = z.infer<typeof FormatSourceSchema>;
+
+export const ClipLayoutSchema = z.enum(CLIP_LAYOUTS);
+export type ClipLayout = z.infer<typeof ClipLayoutSchema>;
+
+/**
+ * Slide-sync contract (FR-2/FR-6): slide↔timestamp alignment for a lesson's
+ * recording. Entries are ordered by atMs; a slide stays active until the next
+ * entry. ⚠ No platform producer exists yet (the FR-7(g) audit finding — the
+ * recorder does not capture slide timings), so production lessons carry null
+ * sync today and `slide_short` routing is reachable only where sync data is
+ * supplied (eval fixtures now; the recorder capture is an M-F prerequisite).
+ */
+export const SlideSyncEntrySchema = z.object({
+  slideId: z.string().min(1),
+  /** When this slide became visible, ms from media start. */
+  atMs: z.number().int().nonnegative(),
+});
+export type SlideSyncEntry = z.infer<typeof SlideSyncEntrySchema>;
 
 export function hookWordCount(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
@@ -53,6 +84,10 @@ export const LessonTranscriptSchema = z.object({
   words: z.array(TranscriptWordSchema),
   text: z.string(),
   providerRef: z.string().nullable(),
+  /** FR-1: the recording format FACT + where it came from. Creator override
+   *  lands here (format_source='creator_override') via overrideTranscriptFormat. */
+  recordingFormat: RecordingFormatSchema,
+  formatSource: FormatSourceSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -261,6 +296,9 @@ export const ClipMomentCandidateSchema = z.object({
   rationale: z.string(),
   captionDraft: z.string().nullable(),
   endCardCta: z.string().nullable(),
+  /** FR-2: the resolved layout — creators see what kind of clip a candidate
+   *  will become BEFORE rendering. Stored on every candidate row. */
+  layout: ClipLayoutSchema,
   status: ClipCandidateStatusSchema,
   promptVersion: z.string(),
   aiMetadata: z.record(z.string(), z.unknown()),

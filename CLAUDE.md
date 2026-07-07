@@ -1522,11 +1522,48 @@ compliant footers (8 locales, `language.ts`).
 
 > Guide: **`docs/clips.md`** · Task 0 findings: `docs/reap-task0-findings.md`.
 > M-A = transcripts + the moment selection engine + eval harness. **Task 0
-> (the live Reap smoke test, `npm run smoke:reap`) is BLOCKED on
-> `REAP_API_KEY` and gates M-B** (render provider/jobs/webhooks). Hard fences
-> (grep-tested): no platform APIs, no posting/scheduling (`/publish-clip` +
-> `/schedule-clips` never referenced), no cron, no synthetic media, Phase 1
-> language rules verbatim.
+> ran vs the LIVE Reap API (2026-07-08)**: contract is camelCase
+> (`sourceUrl`/`uploadId` — the PRD guessed snake_case); explicit
+> `selectedStart/End` exist BUT **Reap enforces a ≥60s window** (our spans
+> are 20-90s — top M-B risk; pre-cut-and-upload recommended); NO webhooks in
+> the API; NO brand-template API; (d)/(e)/(f) still need one real ≥90s video.
+> Hard fences (grep-tested): no platform APIs, no posting/scheduling
+> (`/publish-clip` + `/schedule-clips` never referenced), no cron, no
+> synthetic media, Phase 1 language rules verbatim.
+>
+> **Format-aware amendment (2026-07-08, folded into M-A):** recording format
+> (`camera_only|screen_camera|screen_only` — the literals ARE the platform's
+> `VideoRecordingMode`) is a first-class input: read from the video BLOCK's
+> `recording.mode` via the asset's block_id (metadata short-circuits,
+> spy-tested); uploads never carry a mode → classifier over ≥8 Mux thumbnail
+> frames judged through `ModelClient.inspectImage` (ffprobe NOT installed,
+> no face-detection dep — the vision seam is the zero-dep frame source;
+> degraded default camera_only/'classifier'); persisted on `lesson_transcript`
+> (`recording_format`+`format_source`; `overrideTranscriptFormat` =
+> creator_override, cache never re-classifies). `routing.ts ·
+> resolveClipLayout` = the ONLY facts→decisions map: camera→face_track ·
+> screen_camera→stacked_split · screen_only→ slide_short (sync covers span)
+> ≻ screen_action_zoom (action-dense: `actionDensity.ts`, lexicon
+> `CLIP_ACTION_CUES` ≥2 cues/min OR frame-diff ≥0.15; degraded = cues alone)
+> ≻ audiogram. `layout` on every candidate row (migration `20260708100000`;
+> the DB default 'face_track' exists ONLY for pre-amendment snapshot
+> restores — code always writes explicitly). Prompt = **clips-v3**:
+> ALL formats' visual_interest rules in the STATIC prefix (cache rule), the
+> lesson's format in the request block; demo_payoff +1 visual_interest
+> (screen_only + dense, applied pre-rubric-bar, capped 5, recorded as
+> visualInterestBoosted); hook-slide-ref lint fires ONLY when sync data
+> exists. ⚠ **Slide-sync has NO producer** (recorder captures no slide
+> timings — exhaustively audited): the contract (`SlideSyncEntrySchema`,
+> `loadLessonSlideSync` returns null) + eval fixtures are live, but real
+> lessons can't route slide_short until the recorder captures `{slideId,
+> atMs}` — an M-F prerequisite. ⚠ `screen_camera` recordings are ONE
+> composited canvas track — separate streams never exist on this platform.
+> 5 eval fixtures (screen_slides: ≥2 viable, ALL slide_short — binding;
+> screen_action → screen_action_zoom on the lexicon alone); `eval:clips
+> --live --control` = the FR-8 pre-amendment delta artifact. Milestones
+> renumbered: **M-F = the Remotion slide-short provider (NEW), M-G =
+> hardening.** The amendment's `*.spec.ts` names map to named verify-suite
+> sections (repo has no jest).
 
 - **Pipeline** (`selection.ts`): acquire transcript (cache → Mux caption VTT
   → `TranscriptionProvider` seam [M-B fills]) → context (Phase 1 assembler +
@@ -1548,7 +1585,7 @@ compliant footers (8 locales, `language.ts`).
   the coherence calibration (judge reference debt OUTSIDE the clip's time
   window; the clip carries its own footage — "watch this" is fine).
 - **Prompts are versioned artifacts** (§8): `CLIP_PROMPT_VERSION` (now
-  `clips-v2`) stamped on every candidate; exemplars are repo fixtures
+  `clips-v3`) stamped on every candidate; exemplars are repo fixtures
   (`fixtures/exemplars.ts`). ANY prompt change: bump the version → beat the
   baseline on `npm run eval:clips --live` → re-record CI stubs
   (`--live --record` → `fixtures/recordings/`).
@@ -1562,15 +1599,21 @@ compliant footers (8 locales, `language.ts`).
   `learner_messages.delivery_status`…) — after a migration here, SPLICE the
   new tables into `lib/database.types.ts` rather than full-regen, or this
   branch's analytics pages break on foreign nullability changes.
-- **Tests**: `verify:clips` (117 pure, in `npm test`) · `verify:clips:int`
-  (33, live Supabase + mock model) · `eval:clips` (live/record/replay; the
-  flat-affect ≥2-viable gate is the differentiator claim). REST:
-  `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
-- **Next**: Task 0 findings → approval → M-B (ClipRenderProvider + Reap
-  adapter or pre-cut FFmpeg fallback, `clip_render_job`, webhook consumer,
-  reconciliation, 10/min bucket, quotas) → M-C ingest as
+- **Tests**: `verify:clips` (198 pure, in `npm test` — incl. the amendment's
+  named spec sections) · `verify:clips:int` (44, live Supabase + mock model —
+  incl. metadata-short-circuit spy, upload classification, override flip,
+  layout round-trip) · `eval:clips` (live/record/replay/control; the
+  flat-affect ≥2-viable gate is the differentiator claim + the FR-8 layout
+  gates). REST: `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
+- **Next**: Task 0 (d)/(e)/(f) on one real ≥90s video → approval → M-B
+  (ClipRenderProvider + Reap adapter or pre-cut FFmpeg fallback,
+  `clip_render_job` [CREATE carries layout + provider enum], webhook-less
+  poll-first consumer per findings, reconciliation, 10/min bucket, quotas,
+  FR-5 layout mapping + in-house zoom if (f) finds the gap) → M-C ingest as
   `social_post.post_type='clip'` (platform enum extension gated by
-  superRefine) → M-D posting kit/short links/preview → M-E UI → M-F chaos.
+  superRefine; packaging gains `layout`) → M-D posting kit/short links/
+  preview → M-E UI (+FR-9 chips) → M-F Remotion slide-short provider (needs
+  the slide-sync producer + brand-tokens module) → M-G hardening.
 
 ## Where things live
 

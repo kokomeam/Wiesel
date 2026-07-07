@@ -1,5 +1,6 @@
 /**
- * Lesson Clip Repurposing (Phase 1.5, M-A) — PURE suite (no key, no DB).
+ * Lesson Clip Repurposing (Phase 1.5, M-A + the format-aware amendment) —
+ * PURE suite (no key, no DB).
  *
  *   - constants: the §8.5 pacing table (4 clip platforms, caps, hook windows),
  *     the §8.2 taxonomy (8 types, no "energy" type), the §8.3 rubric bar
@@ -17,11 +18,25 @@
  *     map→reduce for over-budget transcripts · per-tier efforts
  *   - prompt: byte-stable prefix, version pin, exemplars (3 strong/3
  *     rejected), pacing rows, negative constraints
- *   - fixtures: 3 lessons, gold spans in-bounds and 20-90s, flat-affect ≥2
+ *   - fixtures: 5 lessons, gold spans in-bounds and 20-90s, flat-affect ≥2
  *   - drift guards: TS event union ↔ migration check constraint
  *   - tool registry: 1 read + 2 reversible, ZERO irreversible
  *   - hardening greps: no publish/schedule endpoint references, banned UI
  *     language, no scheduler primitives, text platform enum still closed at 2
+ *
+ *   AMENDMENT sections (the directive's named specs — this repo has no
+ *   jest/vitest, so each *.spec.ts name maps to a named section here; the
+ *   int suite covers the DB halves):
+ *   - recordingFormat.metadata.spec  — metadata short-circuits detection
+ *     (spy: classifier NEVER invoked when metadata exists)
+ *   - recordingFormat.classifier.spec — one fixture per format + boundaries
+ *   - recordingFormat.override.spec   — bad values rejected pre-DB (the DB
+ *     flip itself is verify-clips-int)
+ *   - routing.matrix.spec — table-driven matrix + precedence cases
+ *   - actionDensity.lexicon.spec / actionDensityDiff.spec /
+ *     actionDensity.degraded.spec
+ *   - rubric.formatAware.spec — demo_payoff boost matrix + prompt lines
+ *   - hookIntegrity.slideRef.spec — slide-citing hooks vs. the sync window
  *
  * Run: `npx tsx scripts/verify-clips.ts`
  */
@@ -33,18 +48,39 @@ import { createMockModelClient } from "@/lib/ai/providers/mock";
 import { toStrictJsonSchema } from "@/lib/ai/schema";
 import {
   BANNED_UI_PHRASES,
+  CLIP_ACTION_CUES,
+  CLIP_LAYOUTS,
+  CLIP_LAYOUT_LABELS,
   CLIP_MOMENT_TYPES,
   CLIP_PLATFORMS,
   CLIP_PLATFORM_SPECS,
   CLIP_RUBRIC_DIMENSIONS,
   CLIP_RUBRIC_THRESHOLDS,
+  CLIP_VISUAL_INTEREST_FORMAT_LINES,
+  RECORDING_FORMATS,
   clipConfig,
 } from "@/lib/marketing/clips/constants";
+import { matchActionCues, scoreActionDensity } from "@/lib/marketing/clips/actionDensity";
 import {
+  classifyRecordingFormat,
+  resolveRecordingFormat,
+  type FrameSignal,
+} from "@/lib/marketing/clips/format";
+import {
+  activeSlideAt,
+  hasSlideWithinSpan,
+  resolveClipLayout,
+  slideSyncCoversSpan,
+  slidesForSpan,
+} from "@/lib/marketing/clips/routing";
+import {
+  hookCitesSlideVisual,
   lintClipTextSurfaces,
   lintHookNumbers,
+  lintHookSlideRef,
   numericClaims,
 } from "@/lib/marketing/clips/lint";
+import { overrideTranscriptFormat } from "@/lib/marketing/clips/transcripts";
 import {
   CLIP_MAP_SYSTEM_PROMPT,
   CLIP_PROMPT_VERSION,
@@ -112,6 +148,14 @@ const VOICE = deriveVoiceProfileDeterministic({ courses: [], emailVoiceRules: []
 const FLAT = fixtureByKey("flat_affect");
 const WORDS = wordsFromSegments(FLAT.segments);
 const DURATION_MS = FLAT.durationMs;
+
+/** camera_only + no sync + degraded diff — the format ctx that leaves every
+ *  pre-amendment expectation untouched (no boost, slide-ref lint silent). */
+const CAMERA_FMT = {
+  recordingFormat: "camera_only" as const,
+  slideSync: null,
+  frameDiffRatio: null,
+};
 
 const GOOD_SCORES: RubricScores = {
   hook_potential: 4,
@@ -385,7 +429,7 @@ function lintChecks() {
 
 function validateChecks() {
   console.log("# deterministic validation (§7.4.1)");
-  const ctx = { durationMs: DURATION_MS, words: WORDS, sourceContext: "" };
+  const ctx = { durationMs: DURATION_MS, words: WORDS, sourceContext: "", format: CAMERA_FMT };
 
   const oob = runDeterministicChecks([moment({ rank: 1, startMs: 500_000, endMs: 540_000 })], ctx);
   check("out-of-media span dropped + repairable", oob.dropped[0]?.rule === "span_out_of_bounds" && oob.repairIssues.length === 1);
@@ -493,7 +537,7 @@ function validateChecks() {
         hooks: [{ hook: kept[0].hookText, supported: true, unsupportedClaim: null }],
       },
     ],
-    { durationMs: DURATION_MS, words: WORDS }
+    { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT }
   );
   check("in-bound ±8s adjustment applied", adjusted.kept[0]?.startMs === 24_000);
   check("adjusted span re-sliced", adjusted.kept[0]?.spanTranscript.length > 0);
@@ -507,7 +551,7 @@ function validateChecks() {
         hooks: [],
       },
     ],
-    { durationMs: DURATION_MS, words: WORDS }
+    { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT }
   );
   check("adjustment beyond ±8s → dropped", tooFar.kept.length === 0 && tooFar.dropped[0]?.rule === "standalone_coherence");
 
@@ -536,7 +580,7 @@ function validateChecks() {
         hooks: [],
       },
     ],
-    { durationMs: DURATION_MS, words: WORDS }
+    { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT }
   );
   check(
     "incoherent multi-segment NEVER adjusted — dropped (§7.3/§17.3)",
@@ -556,7 +600,7 @@ function validateChecks() {
         ],
       },
     ],
-    { durationMs: DURATION_MS, words: WORDS }
+    { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT }
   );
   check("unsupported hook → first supported alt promoted", hookSwap.kept[0]?.hookText === kept[0].altHooks[0]);
 
@@ -573,11 +617,11 @@ function validateChecks() {
         })),
       },
     ],
-    { durationMs: DURATION_MS, words: WORDS }
+    { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT }
   );
   check("all hooks unsupported → candidate dropped (§7.4.3)", allHooksFail.dropped[0]?.rule === "hook_integrity");
 
-  const noVerdict = applyValidationVerdicts(kept, [], { durationMs: DURATION_MS, words: WORDS });
+  const noVerdict = applyValidationVerdicts(kept, [], { durationMs: DURATION_MS, words: WORDS, format: CAMERA_FMT });
   check("candidate without a verdict is kept", noVerdict.kept.length === 1);
 }
 
@@ -594,7 +638,11 @@ async function pipelineChecks() {
       stages: "balanced" as const,
       targetPlatforms: [...CLIP_PLATFORMS],
       count: 5,
+      recordingFormat: FLAT.recordingFormat,
     },
+    recordingFormat: FLAT.recordingFormat,
+    slideSync: FLAT.slideSync,
+    frameDiffRatio: null,
   };
 
   // happy path
@@ -608,6 +656,14 @@ async function pipelineChecks() {
     const result = await runSelectionCore(mock, cfg, baseArgs);
     check("happy: 3 kept, 0 dropped, no repair", result.kept.length === 3 && result.dropped.length === 0 && !result.repairUsed);
     check("happy: no map/reduce for an in-budget transcript", !result.mapReduceUsed);
+    check(
+      "happy: every kept candidate carries a resolved layout (FR-2 core plumbing)",
+      result.kept.every((c) => (CLIP_LAYOUTS as readonly string[]).includes(c.layout))
+    );
+    check(
+      "happy: screen_only + no sync routes to screen_action_zoom/audiogram only",
+      result.kept.every((c) => c.layout === "screen_action_zoom" || c.layout === "audiogram")
+    );
     const calls = mock.getCalls();
     check("happy: exactly 2 model calls (1 select + 1 validate — §7.5)", calls.length === 2);
     check(
@@ -719,7 +775,7 @@ async function pipelineChecks() {
 
 function promptChecks() {
   console.log("# prompt (§8 — versioned artifact)");
-  check("version pinned", CLIP_PROMPT_VERSION === "clips-v2");
+  check("version pinned", CLIP_PROMPT_VERSION === "clips-v3");
   check(
     "static prefix carries the taxonomy",
     CLIP_MOMENT_TYPES.every((t) => CLIP_SELECTION_SYSTEM_PROMPT.includes(t))
@@ -750,13 +806,17 @@ function promptChecks() {
     voice: VOICE,
     courseContext: "CTX",
     transcript: "T",
-    request: { stages: "balanced", targetPlatforms: ["tiktok"], count: 3 },
+    request: { stages: "balanced", targetPlatforms: ["tiktok"], count: 3, recordingFormat: "screen_only" },
   });
   check(
     "selection input: voice → context → transcript → request order",
     input1.indexOf("VOICE PROFILE") < input1.indexOf("COURSE CONTEXT") &&
       input1.indexOf("COURSE CONTEXT") < input1.indexOf("LESSON TRANSCRIPT") &&
       input1.indexOf("LESSON TRANSCRIPT") < input1.indexOf("REQUEST:")
+  );
+  check(
+    "request block names the lesson's recording format (FR-4 variable half)",
+    input1.includes("recording format: screen_only")
   );
   check("validation system prompt carries the 8000ms bound", CLIP_VALIDATION_SYSTEM_PROMPT.includes("8000ms"));
   check("map prompt allows an empty shortlist", CLIP_MAP_SYSTEM_PROMPT.includes("empty list is a valid answer"));
@@ -767,11 +827,22 @@ function promptChecks() {
 }
 
 function fixtureChecks() {
-  console.log("# eval fixtures (§16/§20)");
-  check("3 fixtures", FIXTURE_LESSONS.length === 3);
+  console.log("# eval fixtures (§16/§20 + FR-8)");
+  check("5 fixtures (3 original + FR-8's screen_slides + screen_action)", FIXTURE_LESSONS.length === 5);
   check(
-    "fixture keys: charismatic, flat_affect, multi_speaker",
-    ["charismatic", "flat_affect", "multi_speaker"].every((k) => FIXTURE_LESSONS.some((f) => f.key === k))
+    "fixture keys: charismatic, flat_affect, multi_speaker, screen_slides, screen_action",
+    ["charismatic", "flat_affect", "multi_speaker", "screen_slides", "screen_action"].every((k) =>
+      FIXTURE_LESSONS.some((f) => f.key === k)
+    )
+  );
+  check(
+    "every fixture declares a recording format + expected layouts",
+    FIXTURE_LESSONS.every(
+      (f) =>
+        (RECORDING_FORMATS as readonly string[]).includes(f.recordingFormat) &&
+        f.expectedLayouts.length > 0 &&
+        f.expectedLayouts.every((l) => (CLIP_LAYOUTS as readonly string[]).includes(l))
+    )
   );
   for (const f of FIXTURE_LESSONS) {
     check(
@@ -799,6 +870,27 @@ function fixtureChecks() {
         !fixtureByKey("charismatic").goldMoments.some((g) => g.startMs === s.atMs)
     )
   );
+
+  // FR-8: the two screen-only fixtures' routing preconditions hold by data.
+  const slides = fixtureByKey("screen_slides");
+  check(
+    "screen_slides: slide-sync covers every gold span (⇒ slide_short routes)",
+    slides.goldMoments.every((g) => slideSyncCoversSpan(slides.slideSync, g))
+  );
+  check(
+    "screen_slides: flat-affect register (no exclamations in the voiceover)",
+    slides.segments.every((s) => !s.text.includes("!"))
+  );
+  check("screen_slides: ≥2 gold moments (the binding FR-8 floor)", slides.goldMoments.length >= 2);
+  const action = fixtureByKey("screen_action");
+  const actionWords = wordsFromSegments(action.segments);
+  check(
+    "screen_action: every gold span is action-dense by the LEXICON alone (degraded mode)",
+    action.goldMoments.every(
+      (g) => scoreActionDensity(actionWords, g, { frameDiffRatio: null }).dense
+    )
+  );
+  check("screen_action: no slide-sync (zoom, not slide_short)", action.slideSync === null);
 }
 
 function registryChecks() {
@@ -879,6 +971,371 @@ function driftAndGrepChecks() {
   check("text-post platform enum still closed at 2 (Phase 1 fence)", TEXT_PLATFORMS.length === 2);
 }
 
+/* ═══════════════════ amendment sections (named specs) ══════════════════ */
+
+function frames(n: number, face: number, screen: number): FrameSignal[] {
+  // First `face` frames carry a face, first `screen` frames carry screen
+  // content — counts are what the classifier reads, order is irrelevant.
+  return Array.from({ length: n }, (_, i) => ({
+    facePresent: i < face,
+    screenContentPresent: i < screen,
+  }));
+}
+
+async function recordingFormatSpecs() {
+  console.log("# recordingFormat.metadata.spec (FR-1: metadata short-circuits detection)");
+  let inspectorCalls = 0;
+  const spyInspector = {
+    async sampleFrames(count: number): Promise<FrameSignal[]> {
+      inspectorCalls++;
+      return frames(count, count, 0);
+    },
+  };
+  for (const f of RECORDING_FORMATS) {
+    const r = await resolveRecordingFormat({ metadataMode: f, frameInspector: spyInspector });
+    check(`metadata "${f}" → ${f} from 'platform'`, r.format === f && r.source === "platform");
+  }
+  check("classifier NEVER invoked when metadata exists (spy assertion)", inspectorCalls === 0);
+  const junk = await resolveRecordingFormat({ metadataMode: "webcam", frameInspector: spyInspector });
+  check(
+    "unknown metadata value falls through to the classifier",
+    junk.source === "classifier" && inspectorCalls === 1
+  );
+
+  console.log("# recordingFormat.classifier.spec (FR-1: one fixture per format + boundaries)");
+  check(
+    "camera fixture: face in 8/8, no screen → camera_only",
+    classifyRecordingFormat(frames(8, 8, 0)) === "camera_only"
+  );
+  check(
+    "screen+camera fixture: face in 8/8, screen in 8/8 → screen_camera",
+    classifyRecordingFormat(frames(8, 8, 8)) === "screen_camera"
+  );
+  check(
+    "screen fixture: no face, screen in 8/8 → screen_only",
+    classifyRecordingFormat(frames(8, 0, 8)) === "screen_only"
+  );
+  check(
+    "face at exactly 60% (5/10 below → screen_only; 6/10 = 60% → camera_only)",
+    classifyRecordingFormat(frames(10, 5, 0)) === "screen_only" &&
+      classifyRecordingFormat(frames(10, 6, 0)) === "camera_only"
+  );
+  check(
+    "face 6/8 + screen 4/8 (50% frame-dominant bar) → screen_camera",
+    classifyRecordingFormat(frames(8, 6, 4)) === "screen_camera"
+  );
+  check(
+    "face 6/8 + screen 3/8 (<50%) → camera_only",
+    classifyRecordingFormat(frames(8, 6, 3)) === "camera_only"
+  );
+  check("zero frames → null (no fabricated verdict)", classifyRecordingFormat([]) === null);
+  const degraded = await resolveRecordingFormat({ metadataMode: null, frameInspector: null });
+  check(
+    "no metadata + no inspector → degraded default camera_only/'classifier'",
+    degraded.format === "camera_only" && degraded.source === "classifier"
+  );
+  const broken = await resolveRecordingFormat({
+    metadataMode: null,
+    frameInspector: {
+      async sampleFrames() {
+        throw new Error("frame source down");
+      },
+    },
+  });
+  check(
+    "inspector failure degrades, never throws (transcript acquisition survives)",
+    broken.format === "camera_only" && broken.source === "classifier"
+  );
+  const classified = await resolveRecordingFormat({
+    metadataMode: null,
+    frameInspector: { async sampleFrames(count) { return frames(count, 0, count); } },
+  });
+  check(
+    "classifier evidence recorded (frames + facePct + screenPct)",
+    classified.classifierEvidence?.frames === 8 &&
+      classified.classifierEvidence.facePct === 0 &&
+      classified.classifierEvidence.screenPct === 1
+  );
+
+  console.log("# recordingFormat.override.spec (FR-1: creator override — DB flip in the int suite)");
+  let overrideThrew = false;
+  try {
+    // An invalid format must throw BEFORE any DB access — the stub explodes
+    // if reached, so a pass proves the Zod gate sits in front.
+    const explodingDb = new Proxy({}, { get() { throw new Error("DB touched before validation"); } });
+    await overrideTranscriptFormat(explodingDb as never, "lesson-id", "portrait" as never);
+  } catch (err) {
+    overrideThrew = err instanceof Error && !err.message.includes("DB touched");
+  }
+  check("override rejects an invalid format before touching the DB", overrideThrew);
+}
+
+function routingMatrixSpecs() {
+  console.log("# routing.matrix.spec (FR-2: the binding matrix, table-driven)");
+  const CASES: {
+    name: string;
+    format: (typeof RECORDING_FORMATS)[number];
+    ctx: { slideSyncCoversSpan: boolean; actionDense: boolean };
+    expect: (typeof CLIP_LAYOUTS)[number];
+  }[] = [
+    { name: "camera_only always → face_track", format: "camera_only", ctx: { slideSyncCoversSpan: false, actionDense: false }, expect: "face_track" },
+    { name: "camera_only ignores sync/action facts", format: "camera_only", ctx: { slideSyncCoversSpan: true, actionDense: true }, expect: "face_track" },
+    { name: "screen_camera always → stacked_split", format: "screen_camera", ctx: { slideSyncCoversSpan: false, actionDense: false }, expect: "stacked_split" },
+    { name: "screen_camera ignores sync/action facts", format: "screen_camera", ctx: { slideSyncCoversSpan: true, actionDense: true }, expect: "stacked_split" },
+    { name: "screen_only + sync coverage → slide_short", format: "screen_only", ctx: { slideSyncCoversSpan: true, actionDense: false }, expect: "slide_short" },
+    { name: "screen_only + action-dense (no sync) → screen_action_zoom", format: "screen_only", ctx: { slideSyncCoversSpan: false, actionDense: true }, expect: "screen_action_zoom" },
+    { name: "screen_only + neither → audiogram", format: "screen_only", ctx: { slideSyncCoversSpan: false, actionDense: false }, expect: "audiogram" },
+  ];
+  for (const c of CASES) check(c.name, resolveClipLayout(c.format, c.ctx) === c.expect);
+
+  // The directive's named precedence cases:
+  check(
+    "test_slide_short_beats_action_zoom_when_both_eligible",
+    resolveClipLayout("screen_only", { slideSyncCoversSpan: true, actionDense: true }) === "slide_short"
+  );
+  check(
+    "test_audiogram_only_when_nothing_else_applies",
+    (["camera_only", "screen_camera"] as const).every(
+      (f) => resolveClipLayout(f, { slideSyncCoversSpan: false, actionDense: false }) !== "audiogram"
+    ) &&
+      resolveClipLayout("screen_only", { slideSyncCoversSpan: true, actionDense: false }) !== "audiogram" &&
+      resolveClipLayout("screen_only", { slideSyncCoversSpan: false, actionDense: true }) !== "audiogram"
+  );
+  // test_layout_persisted_on_candidate_and_job: the candidate half is the
+  // int suite's DB round-trip; clip_render_jobs does not exist until M-B
+  // (its layout column folds into that CREATE — surfaced at the checkpoint).
+
+  console.log("# routing.matrix.spec — slide-sync fact helpers");
+  const sync = [
+    { slideId: "s1", atMs: 0 },
+    { slideId: "s2", atMs: 30_000 },
+    { slideId: "s3", atMs: 60_000 },
+  ];
+  check("activeSlideAt: last entry ≤ t", activeSlideAt(sync, 45_000)?.slideId === "s2");
+  check("activeSlideAt: before first entry → null", activeSlideAt(sync.slice(1), 10_000) === null);
+  check(
+    "coverage: slide active at span start",
+    slideSyncCoversSpan(sync, { startMs: 40_000, endMs: 70_000 }) === true
+  );
+  check(
+    "coverage: span starting before the first slide is NOT covered",
+    slideSyncCoversSpan(sync.slice(1), { startMs: 10_000, endMs: 50_000 }) === false
+  );
+  check("coverage: null/empty sync never covers", !slideSyncCoversSpan(null, { startMs: 0, endMs: 10 }) && !slideSyncCoversSpan([], { startMs: 0, endMs: 10 }));
+  const clipped = slidesForSpan(sync, { startMs: 45_000, endMs: 75_000 });
+  check(
+    "slidesForSpan: ordered refs clipped to the span (FR-6's input shape)",
+    clipped.length === 2 &&
+      clipped[0].slideId === "s2" &&
+      clipped[0].atMs === 45_000 &&
+      clipped[0].endMs === 60_000 &&
+      clipped[1].slideId === "s3" &&
+      clipped[1].endMs === 75_000
+  );
+  check("hasSlideWithinSpan matches the clip window", hasSlideWithinSpan(sync, { startMs: 45_000, endMs: 75_000 }));
+  check(
+    "layout label copy defined for every layout (FR-9 imports, never copies)",
+    CLIP_LAYOUTS.every((l) => CLIP_LAYOUT_LABELS[l]?.length > 0)
+  );
+}
+
+function actionDensitySpecs() {
+  console.log("# actionDensity.lexicon.spec (FR-3: table-driven cue matrix)");
+  const CUE_TABLE: { text: string; hits: boolean; why: string }[] = [
+    { text: "Watch what happens when I hit enter", hits: true, why: "two cues" },
+    { text: "Let me show you the formula", hits: true, why: "let me show you" },
+    { text: "as I type the lookup", hits: true, why: "as i type" },
+    { text: "you can see the whole column fill", hits: true, why: "you can see" },
+    { text: "Now I click the filter", hits: true, why: "now i click" },
+    { text: "notice how the plan changes", hits: true, why: "notice how" },
+    { text: "An index is a sorted copy of the column", hits: false, why: "pure lecture prose" },
+    { text: "The exam covers chapters one through five", hits: false, why: "admin talk" },
+    { text: "I was typing an email yesterday", hits: false, why: "'i was typing' is not a demo cue" },
+  ];
+  for (const row of CUE_TABLE) {
+    check(
+      `lexicon: "${row.text.slice(0, 44)}…" ${row.hits ? "matches" : "does not match"} (${row.why})`,
+      (matchActionCues(row.text).length > 0) === row.hits
+    );
+  }
+  check("every lexicon entry compiles as a word-bounded regex", CLIP_ACTION_CUES.every((c) => new RegExp(`\\b(?:${c})\\b`, "iu") instanceof RegExp));
+  const demoWords = wordsFromSegments([
+    { atMs: 0, endMs: 45_000, text: "Let me show you. Watch what happens when I hit enter. You can see the column fill." },
+  ]);
+  const dense = scoreActionDensity(demoWords, { startMs: 0, endMs: 45_000 }, { frameDiffRatio: null });
+  check("dense demo narration clears the 2 cues/min bar", dense.dense && dense.cuesPerMinute >= 2);
+  const lectureWords = wordsFromSegments([
+    { atMs: 0, endMs: 45_000, text: "An index is a second sorted copy of the column, maintained on every write, forever." },
+  ]);
+  const sparse = scoreActionDensity(lectureWords, { startMs: 0, endMs: 45_000 }, { frameDiffRatio: null });
+  check("lecture prose scores 0 cues/min (not dense)", !sparse.dense && sparse.cueHits.length === 0);
+
+  console.log("# actionDensityDiff.spec (FR-3: synthetic frame-diff fixtures)");
+  const staticSlide = scoreActionDensity(lectureWords, { startMs: 0, endMs: 45_000 }, { frameDiffRatio: 0.02 });
+  check("static-slide clip scores low (diff 0.02 < 0.15) → not dense", !staticSlide.dense);
+  const activeTyping = scoreActionDensity(lectureWords, { startMs: 0, endMs: 45_000 }, { frameDiffRatio: 0.4 });
+  check("active-typing screencast scores high (diff 0.4) → dense despite cue-free narration", activeTyping.dense);
+  check("frame-diff signal recorded on the verdict", activeTyping.frameDiffRatio === 0.4);
+
+  console.log("# actionDensity.degraded.spec (FR-3: cues alone decide without frame sampling)");
+  const degradedDense = scoreActionDensity(demoWords, { startMs: 0, endMs: 45_000 }, {});
+  check("degraded (no frameDiffRatio): cue-dense span still dense", degradedDense.dense && degradedDense.frameDiffRatio === null);
+  const degradedSparse = scoreActionDensity(lectureWords, { startMs: 0, endMs: 45_000 }, { frameDiffRatio: null });
+  check("degraded: cue-sparse span not dense (no phantom frame signal)", !degradedSparse.dense);
+  check("empty span text → 0 cues, not NaN/throw", scoreActionDensity([], { startMs: 0, endMs: 30_000 }).cuesPerMinute === 0);
+}
+
+function rubricFormatAwareSpecs() {
+  console.log("# rubric.formatAware.spec (FR-4: per-format scoring + the demo_payoff boost)");
+  check(
+    "static prefix carries every format's visual_interest rule (byte-stable half)",
+    RECORDING_FORMATS.every((f) => CLIP_SELECTION_SYSTEM_PROMPT.includes(CLIP_VISUAL_INTEREST_FORMAT_LINES[f]))
+  );
+  check(
+    "screen_only rule scores the SCREEN, not speaker presence",
+    CLIP_VISUAL_INTEREST_FORMAT_LINES.screen_only.includes("NOT speaker presence")
+  );
+  check(
+    'slide-explanatory-power hook basis stated ("this one diagram explains X")',
+    CLIP_SELECTION_SYSTEM_PROMPT.includes("this one diagram explains X")
+  );
+
+  // Boost matrix: the SAME candidate (demo_payoff, visual_interest 2 → total
+  // 20, below the 21 bar) on an action-dense span survives ONLY under
+  // screen_only — the boost lifts it to 21.
+  const demoWords = wordsFromSegments([
+    {
+      atMs: 20_000,
+      endMs: 55_000,
+      text: "Let me show you the formula. Watch what happens when I hit enter — you can see the whole column fill in one second. That column used to be an hour of copy-paste every Monday, and now it updates itself whenever the master data changes.",
+    },
+  ]);
+  const boostBase = {
+    durationMs: 60_000,
+    words: demoWords,
+    sourceContext: "",
+  };
+  const demoMoment = moment({
+    rank: 1,
+    startMs: 20_000,
+    endMs: 55_000,
+    momentType: "demo_payoff",
+    hookText: "One formula replaces an hour",
+    altHooks: ["Watch the column fill itself", "Stop copy-pasting lookups"],
+    captionDraft: null,
+    // 3+4+3+2+3+2+3 = 20 — one point under the 21 bar, hook/standalone mins met.
+    rubricScores: {
+      hook_potential: 3,
+      standalone: 4,
+      specificity: 3,
+      curiosity_gap: 2,
+      pedagogical_value: 3,
+      visual_interest: 2,
+      brand_safety: 3,
+    },
+  });
+  const boosted = runDeterministicChecks([demoMoment], {
+    ...boostBase,
+    format: { recordingFormat: "screen_only", slideSync: null, frameDiffRatio: null },
+  });
+  check(
+    "screen_only + action-dense + demo_payoff: +1 visual_interest lifts 20→21 (kept)",
+    boosted.kept.length === 1 &&
+      boosted.kept[0].rubricScores.visual_interest === 3 &&
+      boosted.kept[0].visualInterestBoosted === true
+  );
+  const cameraSame = runDeterministicChecks([demoMoment], {
+    ...boostBase,
+    format: { recordingFormat: "camera_only", slideSync: null, frameDiffRatio: null },
+  });
+  check(
+    "same candidate under camera_only: NO boost (dropped below bar)",
+    cameraSame.kept.length === 0 && cameraSame.dropped[0]?.rule === "rubric_below_threshold"
+  );
+  const nonDemo = runDeterministicChecks(
+    [moment({ ...demoMoment, momentType: "concrete_win" } as never)],
+    { ...boostBase, format: { recordingFormat: "screen_only", slideSync: null, frameDiffRatio: null } }
+  );
+  check("non-demo_payoff type on the same dense span: NO boost", nonDemo.kept.length === 0);
+  const capped = runDeterministicChecks(
+    [moment({ ...demoMoment, rubricScores: { ...GOOD_SCORES, visual_interest: 5 } } as never)],
+    { ...boostBase, format: { recordingFormat: "screen_only", slideSync: null, frameDiffRatio: null } }
+  );
+  check(
+    "boost caps at 5 and is not reported when it changes nothing",
+    capped.kept[0]?.rubricScores.visual_interest === 5 && capped.kept[0]?.visualInterestBoosted === false
+  );
+}
+
+function hookSlideRefSpecs() {
+  console.log("# hookIntegrity.slideRef.spec (FR-4: slide-citing hooks vs. the sync window)");
+  check("detects 'this diagram'", hookCitesSlideVisual("This diagram explains recursion"));
+  check("detects 'this one diagram'", hookCitesSlideVisual("This one diagram explains X"));
+  check("detects 'the chart'", hookCitesSlideVisual("The chart nobody reads correctly"));
+  check("plain hooks are not slide refs", !hookCitesSlideVisual("You've been indexing wrong"));
+  check(
+    "no sync data ⇒ lint silent (unverifiable, model verdict still applies)",
+    lintHookSlideRef("This diagram explains X", { syncAvailable: false, slideWithinSpan: false }).length === 0
+  );
+  check(
+    "sync + slide in window ⇒ pass",
+    lintHookSlideRef("This diagram explains X", { syncAvailable: true, slideWithinSpan: true }).length === 0
+  );
+  check(
+    "sync + NO slide in window ⇒ violation",
+    lintHookSlideRef("This diagram explains X", { syncAvailable: true, slideWithinSpan: false })[0]?.rule ===
+      "hook_slide_ref_unsupported"
+  );
+
+  // Full deterministic path: sync exists, span sits BEFORE the first slide →
+  // slide-citing hooks pruned; all-slide-ref hooks drop the candidate.
+  const slides = fixtureByKey("screen_slides");
+  const slideWords = wordsFromSegments(slides.segments);
+  const lateSync = [{ slideId: "s1", atMs: 200_000 }]; // nothing on screen until 200s
+  const slideRefMoment = moment({
+    rank: 1,
+    startMs: 25_000,
+    endMs: 60_000,
+    hookText: "This diagram explains the cash gap",
+    altHooks: ["The chart your accountant hides", "This one diagram explains profit"],
+    captionDraft: null,
+    rubricScores: GOOD_SCORES,
+  });
+  const dropped = runDeterministicChecks([slideRefMoment], {
+    durationMs: slides.durationMs,
+    words: slideWords,
+    sourceContext: "",
+    format: { recordingFormat: "screen_only", slideSync: lateSync, frameDiffRatio: null },
+  });
+  check(
+    "all hooks cite an off-screen slide → dropped as hook_slide_ref_unsupported + repairable",
+    dropped.dropped[0]?.rule === "hook_slide_ref_unsupported" && dropped.repairIssues.length === 1
+  );
+  const promoted = runDeterministicChecks(
+    [moment({ ...slideRefMoment, altHooks: ["Profit is an opinion", "Cash is the fact"] } as never)],
+    {
+      durationMs: slides.durationMs,
+      words: slideWords,
+      sourceContext: "",
+      format: { recordingFormat: "screen_only", slideSync: lateSync, frameDiffRatio: null },
+    }
+  );
+  check(
+    "slide-ref hook pruned, clean alt promoted",
+    promoted.kept[0]?.hookText === "Profit is an opinion"
+  );
+  const covered = runDeterministicChecks([slideRefMoment], {
+    durationMs: slides.durationMs,
+    words: slideWords,
+    sourceContext: "",
+    format: { recordingFormat: "screen_only", slideSync: slides.slideSync, frameDiffRatio: null },
+  });
+  check(
+    "same hooks with the slide actually on screen → kept (and routed slide_short)",
+    covered.kept[0]?.hookText.includes("diagram") && covered.kept[0]?.layout === "slide_short"
+  );
+}
+
 /* ─────────────────────────────── run ───────────────────────────────────── */
 
 async function main() {
@@ -892,6 +1349,11 @@ async function main() {
   fixtureChecks();
   registryChecks();
   driftAndGrepChecks();
+  await recordingFormatSpecs();
+  routingMatrixSpecs();
+  actionDensitySpecs();
+  rubricFormatAwareSpecs();
+  hookSlideRefSpecs();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

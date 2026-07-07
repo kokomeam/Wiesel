@@ -12,13 +12,20 @@
  */
 
 import { z } from "zod";
-import { CLIP_MAX_CANDIDATES, CLIP_PLATFORMS, FUNNEL_STAGES } from "../clips/constants";
+import {
+  CLIP_AUDIOGRAM_CAVEAT,
+  CLIP_LAYOUT_LABELS,
+  CLIP_MAX_CANDIDATES,
+  CLIP_PLATFORMS,
+  FUNNEL_STAGES,
+} from "../clips/constants";
 import { emitClipEvent } from "../clips/events";
 import {
   ClipGenerationError,
   ClipModelUnavailableError,
   ClipTranscriptUnavailableError,
 } from "../clips/errors";
+import { createMuxFrameInspector } from "../clips/format";
 import { getCandidate, listCandidatesForLesson, updateCandidateStatus } from "../clips/repository";
 import { selectClipMoments, type ClipPipelineDeps } from "../clips/selection";
 import type { ClipMomentCandidate } from "../clips/schemas";
@@ -31,6 +38,10 @@ function depsFrom(ctx: MarketingToolContext): ClipPipelineDeps {
     model: ctx.model,
     clock: ctx.services.clock,
     courseIdForEvents: ctx.courseId,
+    // FR-1: the classifier's frame source for EXTERNAL UPLOADS only (studio
+    // recordings carry metadata and short-circuit before this is touched) —
+    // Mux thumbnail stills judged through the model's vision seam.
+    frameInspectorFor: (asset) => createMuxFrameInspector(ctx.model, asset),
   };
 }
 
@@ -52,7 +63,8 @@ function fmtMs(ms: number): string {
 }
 
 function candidateLine(c: ClipMomentCandidate): string {
-  return `#${c.rank} [${fmtMs(c.startMs)}–${fmtMs(c.endMs)} · ${c.momentType} · ${c.funnelStage}] "${c.hookText}" — ${c.rationale}`;
+  const caveat = c.layout === "audiogram" ? ` (${CLIP_AUDIOGRAM_CAVEAT})` : "";
+  return `#${c.rank} [${fmtMs(c.startMs)}–${fmtMs(c.endMs)} · ${c.momentType} · ${c.funnelStage} · ${CLIP_LAYOUT_LABELS[c.layout]}] "${c.hookText}" — ${c.rationale}${caveat}`;
 }
 
 function compactCandidate(c: ClipMomentCandidate) {
@@ -70,6 +82,9 @@ function compactCandidate(c: ClipMomentCandidate) {
     rationale: c.rationale,
     captionDraft: c.captionDraft,
     endCardCta: c.endCardCta,
+    /** FR-2: what kind of clip this candidate becomes when rendered. */
+    layout: c.layout,
+    layoutLabel: CLIP_LAYOUT_LABELS[c.layout],
     status: c.status,
     isMultiSegment: c.segments !== null,
   };

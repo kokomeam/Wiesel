@@ -1,0 +1,86 @@
+{
+  "promptShape": "pre-amendment (format-awareness stripped)",
+  "against": "clips-v3",
+  "recordedAt": "2026-07-07T18:02:20.658Z",
+  "fixtures": [
+    {
+      "fixture": "charismatic",
+      "viable": 3,
+      "meanVisualInterest": 4.333333333333333,
+      "visualInterest": [
+        5,
+        5,
+        3
+      ],
+      "layouts": [
+        "face_track",
+        "face_track",
+        "face_track"
+      ]
+    },
+    {
+      "fixture": "flat_affect",
+      "viable": 4,
+      "meanVisualInterest": 3,
+      "visualInterest": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "layouts": [
+        "audiogram",
+        "audiogram",
+        "audiogram",
+        "audiogram"
+      ]
+    },
+    {
+      "fixture": "multi_speaker",
+      "viable": 3,
+      "meanVisualInterest": 3,
+      "visualInterest": [
+        3,
+        3,
+        3
+      ],
+      "layouts": [
+        "face_track",
+        "face_track",
+        "face_track"
+      ]
+    },
+    {
+      "fixture": "screen_slides",
+      "viable": 4,
+      "meanVisualInterest": 3.5,
+      "visualInterest": [
+        3,
+        3,
+        4,
+        4
+      ],
+      "layouts": [
+        "slide_short",
+        "slide_short",
+        "slide_short",
+        "slide_short"
+      ]
+    },
+    {
+      "fixture": "screen_action",
+      "viable": 3,
+      "meanVisualInterest": 4,
+      "visualInterest": [
+        5,
+        4,
+        3
+      ],
+      "layouts": [
+        "screen_action_zoom",
+        "screen_action_zoom",
+        "audiogram"
+      ]
+    }
+  ]
+}

@@ -10,6 +10,8 @@
  * Slide-sync data does NOT exist on this platform (slides are not aligned to
  * video timestamps), so the PRD's "slide text aligned to timestamps where
  * available" input is deliberately absent — documented in docs/clips.md.
+ * (The amendment made slide-sync a first-class CONTRACT — see routing.ts —
+ * but the producer still doesn't exist; loadLessonSlideSync returns null.)
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
