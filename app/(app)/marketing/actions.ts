@@ -60,9 +60,6 @@ export interface ActionResult {
   alreadyResolved?: boolean;
   /** Set when the action recorded a pending approval — render the card here. */
   pending?: PendingActionPayload;
-  /** Agent-requested resolutions: the resumed run's transcript, so the chat
-   *  panel can SHOW the agent's wrap-up instead of resuming headlessly. */
-  agentFollowUp?: AgentFollowUp;
 }
 
 const services = () => createMarketingServices();
@@ -247,10 +244,11 @@ export async function unpublishPageAction(courseId: string, pageId: string): Pro
   };
 }
 
-/** Approve a pending irreversible action (runs the real effect), then — for an
- *  agent-requested action — auto-resume the agent ONCE with the outcome as an
- *  observation (Amendment 13). The resume is best-effort: its failure never
- *  breaks the approval. */
+/** Approve a pending irreversible action (runs the real effect) and return
+ *  IMMEDIATELY — the card collapses the moment the effect is done. The agent's
+ *  resumed wrap-up arrives via fetchAgentFollowUpAction (fired by the card in
+ *  the background): the old inline resume made the approve button spin for the
+ *  whole multi-turn model run, which read as "the button doesn't work". */
 export async function approvePendingAction(actionId: string): Promise<ActionResult> {
   const { supabase, ownerId } = await authed();
   const action = await loadAction(supabase, actionId);
@@ -283,45 +281,23 @@ export async function approvePendingAction(actionId: string): Promise<ActionResu
     }
   }
 
-  // Capture the resumed run's events so the surface that approved can REPLAY
-  // the agent's wrap-up (previously the resume was headless — persisted, never
-  // shown). Still best-effort: a resume failure never breaks the approval.
-  let agentFollowUp: AgentFollowUp | undefined;
-  if (action?.requestedBy === "agent" && isOpenAIConfigured()) {
-    try {
-      const resolved = await loadAction(supabase, actionId);
-      if (resolved) {
-        const events: MarketingAgentEvent[] = [];
-        await resumeAgentAfterResolution({
-          supabase,
-          model: createOpenAIModelClient(),
-          services: services(),
-          ownerId,
-          action: resolved,
-          decision: "approved",
-          emit: (e) => events.push(e),
-        });
-        if (events.length) agentFollowUp = followUpFromEvents(events);
-      }
-    } catch {
-      // best-effort by contract — the approval itself already succeeded
-    }
-  }
   revalidatePath("/marketing");
   // For a publish, link straight to the now-live page.
   if (action?.toolName === "publish_landing_page" && action.targetRef?.id) {
     const page = await loadLandingPage(supabase, action.targetRef.id);
     if (page?.status === "published") {
-      return { message: "Approved — the page is live.", href: `/p/${page.slug}`, hrefLabel: "View live", agentFollowUp };
+      return { message: "Approved — the page is live.", href: `/p/${page.slug}`, hrefLabel: "View live" };
     }
   }
-  return { message: "Approved.", agentFollowUp };
+  return { message: "Approved." };
 }
 
-/** Deny a pending irreversible action (optional free-text reason flows into
- *  the agent's resumed observation — Amendment 13). */
+/** Deny a pending irreversible action and return immediately. The optional
+ *  free-text reason flows into the agent's resumed observation (Amendment 13)
+ *  via fetchAgentFollowUpAction — fired by the card in the background, same
+ *  fast-resolve contract as approve. */
 export async function denyPendingAction(actionId: string, reason?: string): Promise<ActionResult> {
-  const { supabase, ownerId } = await authed();
+  const { supabase } = await authed();
   const action = await loadAction(supabase, actionId);
   if (action && action.status !== "pending") {
     // The gate's reject is a silent no-op on resolved rows — surface the truth
@@ -335,28 +311,9 @@ export async function denyPendingAction(actionId: string, reason?: string): Prom
     revalidatePath("/marketing");
     return { message: e instanceof Error ? e.message : String(e), error: true };
   }
-
-  let agentFollowUp: AgentFollowUp | undefined;
-  if (action?.requestedBy === "agent" && isOpenAIConfigured()) {
-    try {
-      const events: MarketingAgentEvent[] = [];
-      await resumeAgentAfterResolution({
-        supabase,
-        model: createOpenAIModelClient(),
-        services: services(),
-        ownerId,
-        action,
-        decision: "denied",
-        denialReason: reason ?? null,
-        emit: (e) => events.push(e),
-      });
-      if (events.length) agentFollowUp = followUpFromEvents(events);
-    } catch {
-      // best-effort by contract — the denial itself already succeeded
-    }
-  }
+  void reason; // consumed by fetchAgentFollowUpAction (the card passes it there)
   revalidatePath("/marketing");
-  return { message: "Denied — nothing was sent or published.", agentFollowUp };
+  return { message: "Denied — nothing was sent or published." };
 }
 
 /* ───────────────────── clarifying questions (Q&A inbox) ───────────────────── */
@@ -422,26 +379,73 @@ export async function answerQuestionAction(
     }
   }
 
-  let agentFollowUp: AgentFollowUp | undefined;
-  if (q.requestedBy === "agent" && isOpenAIConfigured()) {
-    try {
-      const events: MarketingAgentEvent[] = [];
+  // The agent's resumed turn arrives via fetchAgentFollowUpAction (fired by
+  // the card in the background) — answering must return fast, not sit behind
+  // a multi-turn model run.
+  revalidatePath("/marketing");
+  return { message: "Answered — the agent picked it up from here." };
+}
+
+/* ─────────────── the agent's follow-up (fired AFTER a resolution) ─────────── */
+
+/** Hard ceiling on a background follow-up run — the resume is best-effort by
+ *  contract, and an un-deadlined model call through a stalled transport can
+ *  otherwise hang the server action forever (observed live). */
+const FOLLOW_UP_DEADLINE_MS = 180_000;
+
+/**
+ * Run the agent's ONE resume turn for an already-resolved approval/question and
+ * return the transcript for replay. Called by the cards AFTER the resolution
+ * action returned (fire-and-forget from the client), so approving/answering is
+ * instant and the wrap-up streams in when ready. Never throws; returns null
+ * when there's nothing to resume (not agent-requested, no OpenAI key, still
+ * pending, or the bounded run failed). The decision is derived from the ROW,
+ * never trusted from the client.
+ */
+export async function fetchAgentFollowUpAction(
+  target: { kind: "action"; id: string; reason?: string } | { kind: "question"; id: string }
+): Promise<AgentFollowUp | null> {
+  try {
+    const { supabase, ownerId } = await authed();
+    const events: MarketingAgentEvent[] = [];
+    if (!isOpenAIConfigured()) return null;
+    const signal = AbortSignal.timeout(FOLLOW_UP_DEADLINE_MS);
+
+    if (target.kind === "action") {
+      const action = await loadAction(supabase, target.id);
+      if (!action || action.requestedBy !== "agent" || action.status === "pending") return null;
+      const decision = action.status === "rejected" ? "denied" : "approved";
+      await resumeAgentAfterResolution({
+        supabase,
+        model: createOpenAIModelClient(),
+        services: services(),
+        ownerId,
+        action,
+        decision,
+        denialReason: decision === "denied" ? (target.reason ?? null) : null,
+        emit: (e) => events.push(e),
+        signal,
+      });
+    } else {
+      const q = await loadQuestion(supabase, target.id);
+      if (!q || q.requestedBy !== "agent" || q.status !== "answered" || !q.answer) return null;
       await resumeAgentAfterAnswer({
         supabase,
         model: createOpenAIModelClient(),
         services: services(),
         ownerId,
         question: q,
-        answer,
+        answer: q.answer,
         emit: (e) => events.push(e),
+        signal,
       });
-      if (events.length) agentFollowUp = followUpFromEvents(events);
-    } catch {
-      // best-effort by contract — the answer itself is already recorded
     }
+    revalidatePath("/marketing");
+    return events.length ? followUpFromEvents(events) : null;
+  } catch {
+    // best-effort by contract — the resolution itself already succeeded
+    return null;
   }
-  revalidatePath("/marketing");
-  return { message: "Answered — the agent picked it up from here.", agentFollowUp };
 }
 
 /** Dismiss a pending question without answering (the agent stays paused until

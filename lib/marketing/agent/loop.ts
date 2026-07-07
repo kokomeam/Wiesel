@@ -82,9 +82,16 @@ export async function runMarketingAgentTurn(
   const maxTurns = p.maxTurns ?? 6;
   let paused = false;
 
+  // HARD per-call deadline. Without timeoutMs the provider wires NO abort
+  // signal, and the SDK's own timeout is silently ignored by the proxied
+  // undici fetch (see providers/openai.ts) — a stalled model call would hang
+  // this loop (and whatever awaits it: the chat stream, an approval's resume)
+  // FOREVER. Observed live as an approve button spinning permanently.
+  const turnTimeoutMs = Number(process.env.MARKETING_AGENT_TURN_TIMEOUT_MS) || 120_000;
+
   for (let turn = 0; turn < maxTurns; turn++) {
     const result = await p.model.runTurn(
-      { system, input, tools, effort: "medium", signal: p.signal },
+      { system, input, tools, effort: "medium", signal: p.signal, timeoutMs: turnTimeoutMs },
       (e) => {
         if (e.type === "text_delta") emit({ type: "assistant_delta", text: e.delta });
       }

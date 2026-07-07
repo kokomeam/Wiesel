@@ -1352,12 +1352,25 @@ compliant footers (8 locales, `language.ts`).
   render in chat AND hub with no invalidation — now `lib/marketing/
   approvalSync.ts` (zustand resolution store keyed by actionId/questionId +
   BroadcastChannel) collapses every copy on one resolution; stale clicks
-  return `alreadyResolved` (no more approve-throws/deny-lies asymmetry); the
-  approve/deny/answer server actions capture the resumed agent run
-  (`followUpFromEvents`, pure) into `ActionResult.agentFollowUp` and
-  `AgentPanel` REPLAYS it (the wrap-up used to run headless — chat went silent
-  after approvals); `marketing_action.conversation_id` (migration `20260706`)
-  makes the resume land in the paused thread deterministically. Stop controls:
+  return `alreadyResolved` (no more approve-throws/deny-lies asymmetry);
+  `marketing_action.conversation_id` (migration `20260706`)
+  makes the resume land in the paused thread deterministically.
+  **Fast-resolve + background follow-up (2026-07-07, from a live "approve
+  button doesn't work"):** approve/deny/answer server actions return the
+  MOMENT the effect is done (never await the resume — the old inline resume
+  spun the button for the whole model run, indefinitely on a stalled
+  transport since the marketing loop had no `timeoutMs`); the agent's wrap-up
+  runs in `fetchAgentFollowUpAction` (fired by the card post-collapse,
+  decision derived from the ROW, 180s ceiling) and lands via
+  `attachActionFollowUp`/`attachQuestionFollowUp` on the sync store
+  (`applyRemote` lets a follow-up-carrying copy fill a null — the ONE
+  exception to first-writer-wins); AgentPanel replays through its existing
+  subscription. The loop's `runTurn` now sets
+  `MARKETING_AGENT_TURN_TIMEOUT_MS` (default 120s) — no marketing model call
+  can hang unbounded. Approve/deny/answer FAILURES render INLINE in
+  ApprovalCard/QuestionCard (rose alert w/ the provider's message — the agent
+  chat has no toast, so errors used to be invisible: a prod misconfig read as
+  a dead button). Stop controls:
   new reversible `pause_sequence`/`resume_sequence` (resume refused under a
   paused/cancelled campaign — scheduler keys off SEQUENCE status);
   pause/resume/cancel campaign are campaign-WIDE now (were primary-sequence-
@@ -1368,7 +1381,7 @@ compliant footers (8 locales, `language.ts`).
   (CampaignCard + landing pages) + quiet rail (compact Explore nav; Recent
   changes + Autonomy in `CollapsibleCard`s persisted via
   `lib/marketing/hubUiStore.ts` skipHydration). New PURE suite
-  `verify:marketing:sync` (42, in `npm test`).
+  `verify:marketing:sync` (50, in `npm test`).
 - **Verify:** `verify:marketing` (gate 37), `:flow` (18 — ingest needs the
   service key), `:analytics` (13), `:email` (34), `:agent` (22, mock model —
   incl. the one-pause-shape `agent_blocked` for approvals AND questions),
@@ -1382,10 +1395,11 @@ compliant footers (8 locales, `language.ts`).
   governance language, question pause/resume parity, approve race, segment
   history)**, **`:lists` (31 — audience filters, byte-for-byte membership
   revert incl. the import-revert regression, legacy snapshot back-compat,
-  agent-driven list build, "__other__" answer messages)**, **`:sync` (42,
-  PURE no-key — followUpFromEvents fold, approvalSync store/broadcast,
-  lifecycle registry + prompt-teaching invariants; in the `npm test`
-  chain)**. All others self-provision a throwaway live-Supabase user.
+  agent-driven list build, "__other__" answer messages)**, **`:sync` (50,
+  PURE no-key — followUpFromEvents fold, approvalSync store/broadcast incl.
+  the late-attach + remote fill-in matrix, lifecycle registry +
+  prompt-teaching invariants; in the `npm test` chain)**. All others
+  self-provision a throwaway live-Supabase user.
   **440 checks green (2026-07-06).** NOTE for suites on a `fixedClock`: pass
   `{ nowIso: services.clock.now() }` to `rejectMarketingAction` when reverting
   staged rows — the gate stamps windows from the injected clock but reject

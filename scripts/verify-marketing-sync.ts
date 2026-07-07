@@ -203,6 +203,72 @@ console.log("\n# B · approvalSync store (cross-surface resolution fan-out)");
   resetApprovalSyncForTests();
 }
 
+/* ── B2 · late follow-up attach (resolutions return instantly now; the agent's
+   wrap-up is fetched in the background and lands as a SECOND write) ── */
+
+console.log("\n# B2 · attach — the follow-up arrives after the resolution");
+
+{
+  resetApprovalSyncForTests();
+  const sent: SyncMessage[] = [];
+  const listeners: ((e: { data: unknown }) => void)[] = [];
+  connectApprovalSyncChannel({
+    postMessage: (m) => sent.push(m),
+    addEventListener: (_t, cb) => listeners.push(cb),
+  });
+  const wrapUp = { conversationId: "conv-1", paused: false, items: [{ kind: "assistant" as const, text: "Sent. Next…" }] };
+
+  // attach onto an existing resolution
+  useApprovalSync.getState().markActionResolved("act-1", { decision: "approved", message: "Approved.", followUp: null });
+  useApprovalSync.getState().attachActionFollowUp("act-1", wrapUp);
+  check("attach fills the null follow-up", useApprovalSync.getState().actions["act-1"]?.followUp === wrapUp);
+  check("attach keeps the original decision", useApprovalSync.getState().actions["act-1"]?.decision === "approved");
+  check("attach broadcasts (other tabs replay it)", sent.filter((m) => m.id === "act-1").length === 2);
+
+  // first follow-up wins; attach without a resolution is a no-op
+  const second = { conversationId: "conv-2", paused: false, items: [] };
+  useApprovalSync.getState().attachActionFollowUp("act-1", second);
+  check("a second attach does not overwrite", useApprovalSync.getState().actions["act-1"]?.followUp === wrapUp);
+  useApprovalSync.getState().attachActionFollowUp("act-ghost", wrapUp);
+  check("attach without a resolution is a no-op", !useApprovalSync.getState().actions["act-ghost"]);
+
+  // question variant
+  useApprovalSync.getState().markQuestionResolved("q-1", { outcome: "answered", label: "A", followUp: null });
+  useApprovalSync.getState().attachQuestionFollowUp("q-1", wrapUp);
+  check("question attach fills the null follow-up", useApprovalSync.getState().questions["q-1"]?.followUp === wrapUp);
+
+  // remote fill-in: tab A resolved + attached; tab B (which resolved locally
+  // first with followUp:null) must accept the follow-up-carrying copy…
+  resetApprovalSyncForTests();
+  connectApprovalSyncChannel({
+    postMessage: () => {},
+    addEventListener: (_t, cb) => listeners.push(cb),
+  });
+  useApprovalSync.getState().markActionResolved("act-2", { decision: "approved", message: "Approved.", followUp: null });
+  useApprovalSync.getState().applyRemote({
+    source: "wisesel-marketing-approval-sync",
+    kind: "action",
+    id: "act-2",
+    res: { decision: "approved", message: "Approved.", followUp: wrapUp },
+  });
+  check(
+    "remote copy WITH a follow-up fills a local resolution without one",
+    useApprovalSync.getState().actions["act-2"]?.followUp?.conversationId === "conv-1"
+  );
+  // …but a remote copy with NOTHING new still loses (first writer wins).
+  useApprovalSync.getState().applyRemote({
+    source: "wisesel-marketing-approval-sync",
+    kind: "action",
+    id: "act-2",
+    res: { decision: "denied", message: null, followUp: null },
+  });
+  check(
+    "remote copy without a follow-up still can't clobber",
+    useApprovalSync.getState().actions["act-2"]?.decision === "approved"
+  );
+  resetApprovalSyncForTests();
+}
+
 /* ─────────────────── C. lifecycle tools + prompt teaching ──────────────── */
 
 console.log("\n# C · lifecycle controls — registry grades + prompt teaching");

@@ -49,6 +49,12 @@ interface ApprovalSyncState {
   questions: Record<string, QuestionResolution>;
   markActionResolved: (actionId: string, res: ActionResolution) => void;
   markQuestionResolved: (questionId: string, res: QuestionResolution) => void;
+  /** Attach a LATE-arriving follow-up to an existing resolution — resolutions
+   *  return instantly now and the agent's wrap-up is fetched in the background,
+   *  so the follow-up lands as a second write. No-op if the resolution is
+   *  missing or already carries one (first follow-up wins). */
+  attachActionFollowUp: (actionId: string, followUp: AgentFollowUp) => void;
+  attachQuestionFollowUp: (questionId: string, followUp: AgentFollowUp) => void;
   /** Apply a remote (other-tab) resolution — same merge, no re-broadcast. */
   applyRemote: (msg: SyncMessage) => void;
 }
@@ -90,12 +96,31 @@ export const useApprovalSync = create<ApprovalSyncState>((set, get) => ({
     set((s) => ({ questions: { ...s.questions, [questionId]: res } }));
     broadcast?.({ source: CHANNEL_SOURCE, kind: "question", id: questionId, res });
   },
+  attachActionFollowUp(actionId, followUp) {
+    const cur = get().actions[actionId];
+    if (!cur || cur.followUp) return;
+    const res = { ...cur, followUp };
+    set((s) => ({ actions: { ...s.actions, [actionId]: res } }));
+    broadcast?.({ source: CHANNEL_SOURCE, kind: "action", id: actionId, res });
+  },
+  attachQuestionFollowUp(questionId, followUp) {
+    const cur = get().questions[questionId];
+    if (!cur || cur.followUp) return;
+    const res = { ...cur, followUp };
+    set((s) => ({ questions: { ...s.questions, [questionId]: res } }));
+    broadcast?.({ source: CHANNEL_SOURCE, kind: "question", id: questionId, res });
+  },
   applyRemote(msg) {
+    // First writer wins, with ONE exception: a remote copy carrying a follow-up
+    // may fill in a local resolution that doesn't have one yet (the follow-up
+    // is fetched after the resolution, so it always arrives as a second write).
     if (msg.kind === "action") {
-      if (get().actions[msg.id]) return;
+      const cur = get().actions[msg.id];
+      if (cur && (cur.followUp || !msg.res.followUp)) return;
       set((s) => ({ actions: { ...s.actions, [msg.id]: msg.res } }));
     } else {
-      if (get().questions[msg.id]) return;
+      const cur = get().questions[msg.id];
+      if (cur && (cur.followUp || !msg.res.followUp)) return;
       set((s) => ({ questions: { ...s.questions, [msg.id]: msg.res } }));
     }
   },

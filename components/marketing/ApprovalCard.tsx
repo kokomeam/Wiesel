@@ -18,11 +18,12 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Pencil, ShieldAlert, X } from "lucide-react";
+import { Check, Loader2, Pencil, ShieldAlert, TriangleAlert, X } from "lucide-react";
 import {
   approvePendingAction,
   denyPendingAction,
   editPendingAction,
+  fetchAgentFollowUpAction,
   type ActionResult,
   type PendingActionPayload,
 } from "@/app/(app)/marketing/actions";
@@ -144,12 +145,16 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
+  // A failed approve/deny renders HERE — some surfaces (the agent chat) have
+  // no toast, and a silent failure reads as "the button doesn't work".
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
   // Cross-surface sync: the SAME action can be rendered in the chat, the hub
   // inbox, the builder… — resolving any copy resolves them all (this store is
   // written by whichever card acted, and mirrored across tabs).
   const external = useApprovalSync((s) => s.actions[pending.actionId]);
   const markActionResolved = useApprovalSync((s) => s.markActionResolved);
+  const attachActionFollowUp = useApprovalSync((s) => s.attachActionFollowUp);
 
   const preview = pending.preview ?? {};
   const effectLabel = typeof preview.effectLabel === "string" ? preview.effectLabel : "run it";
@@ -174,42 +179,57 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
     );
   }
 
+  /** Fetch the agent's resumed wrap-up in the BACKGROUND — the card already
+   *  collapsed; the transcript streams into the chat via the sync store when
+   *  it's ready. Fire-and-forget: only touches the zustand store, so it's safe
+   *  even if this card unmounted meanwhile. */
+  const fetchFollowUp = (reason?: string) => {
+    if (pending.requestedBy !== "agent") return;
+    void fetchAgentFollowUpAction({ kind: "action", id: pending.actionId, reason })
+      .then((fu) => {
+        if (fu) attachActionFollowUp(pending.actionId, fu);
+      })
+      .catch(() => {});
+  };
+
   const approve = () =>
     startTransition(async () => {
+      setErrorMsg(null);
       const r = await approvePendingAction(pending.actionId);
       onResult?.(r);
       if (!r.error) {
-        markActionResolved(pending.actionId, {
-          decision: "approved",
-          message: r.message,
-          followUp: r.agentFollowUp ?? null,
-        });
+        markActionResolved(pending.actionId, { decision: "approved", message: r.message, followUp: null });
         onResolved?.("approved");
+        fetchFollowUp();
       } else if (r.alreadyResolved) {
         markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
+      } else {
+        setErrorMsg(r.message);
       }
       router.refresh();
     });
 
   const reject = () =>
     startTransition(async () => {
-      const r = await denyPendingAction(pending.actionId, note.trim() || undefined);
+      setErrorMsg(null);
+      const reason = note.trim() || undefined;
+      const r = await denyPendingAction(pending.actionId, reason);
       onResult?.(r);
       if (!r.error) {
-        markActionResolved(pending.actionId, {
-          decision: "denied",
-          message: r.message,
-          followUp: r.agentFollowUp ?? null,
-        });
+        markActionResolved(pending.actionId, { decision: "denied", message: r.message, followUp: null });
         onResolved?.("denied");
+        fetchFollowUp(reason);
       } else if (r.alreadyResolved) {
         markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
+      } else {
+        setErrorMsg(r.message);
       }
       router.refresh();
     });
 
   const saveEdit = () =>
     startTransition(async () => {
+      setErrorMsg(null);
       const patch: Record<string, unknown> = {};
       for (const key of editable) {
         if (!(key in draft)) continue;
@@ -223,6 +243,8 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
         setDraft({});
       } else if (r.alreadyResolved) {
         markActionResolved(pending.actionId, { decision: "resolved", message: r.message, followUp: null });
+      } else if (r.error) {
+        setErrorMsg(r.message);
       }
     });
 
@@ -296,6 +318,16 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
               value={note}
               onChange={(e) => setNote(e.target.value)}
             />
+          ) : null}
+
+          {errorMsg ? (
+            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-100/70 p-2.5 text-xs text-rose-800">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <p>
+                <span className="font-medium">Couldn&apos;t {effectLabel}:</span> {errorMsg}
+                <span className="text-rose-600"> The request is still pending — fix the cause and try again.</span>
+              </p>
+            </div>
           ) : null}
 
           <div className="flex flex-wrap items-center gap-2">

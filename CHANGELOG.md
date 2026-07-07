@@ -6,6 +6,37 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — approvals resolve instantly + errors render in the card, 2026-07-07
+
+Live incident #2 of the day: "Approve & send" appeared broken on BOTH
+environments. Two stacked defects:
+
+1. **Errors were invisible.** A failed approve (e.g. a provider config error
+   in production) returned an error `ActionResult`, but the agent-chat card
+   passes no `onResult` — the spinner just stopped with no reaction and the
+   card stayed clickable. **Fix:** ApprovalCard/QuestionCard render the
+   failure INLINE (rose alert with the real provider message + "still
+   pending, retry"), so a misconfigured deployment now diagnoses itself.
+2. **The approve action awaited the agent's full resume.** After the send,
+   `approvePendingAction` ran the multi-turn wrap-up model run inline — and
+   the marketing loop's `runTurn` had NO `timeoutMs`, so no abort signal was
+   wired and the SDK timeout is silently ignored by the proxied undici fetch
+   (providers/openai.ts): a stalled call hung the button FOREVER (the local
+   "sends the email but spins permanently").
+
+**Fixes:** (a) the marketing agent loop now sets a HARD per-call deadline
+(`MARKETING_AGENT_TURN_TIMEOUT_MS`, default 120s) — covers the chat stream
+too; (b) approve/deny/answer return the moment the effect is done (card
+collapses instantly) and the agent's wrap-up moved to a background
+`fetchAgentFollowUpAction` (fired by the card, decision derived from the ROW,
+bounded at 180s) whose transcript lands via new
+`attachActionFollowUp`/`attachQuestionFollowUp` writes on the approvalSync
+store (first-writer-wins kept; `applyRemote` accepts a follow-up-carrying
+copy filling a null); the AgentPanel replays it through the existing
+subscription. Tests: `verify:marketing:sync` 42 → **50** (attach matrix +
+remote fill-in); `verify:marketing:agent` (22) + `verify:marketing:autonomy`
+(93) re-ran green; full build clean.
+
 ## Marketing — send-time CTA hrefs are authoritative, 2026-07-07
 
 Live follow-up to the 2026-07-06 CTA work: a campaign's emails still landed

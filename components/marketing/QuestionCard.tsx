@@ -11,10 +11,11 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUp, HelpCircle, Loader2, PenLine, X } from "lucide-react";
+import { ArrowUp, HelpCircle, Loader2, PenLine, TriangleAlert, X } from "lucide-react";
 import {
   answerQuestionAction,
   dismissQuestionAction,
+  fetchAgentFollowUpAction,
   type ActionResult,
   type PendingActionPayload,
 } from "@/app/(app)/marketing/actions";
@@ -44,11 +45,14 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
   const [followUp, setFollowUp] = useState<PendingActionPayload | null>(null);
+  // A failed answer renders HERE — a silent failure reads as a dead card.
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
   // Cross-surface sync — answering here collapses the same question in the
   // chat/hub (and vice versa), exactly like ApprovalCard.
   const external = useApprovalSync((s) => s.questions[questionId]);
   const markQuestionResolved = useApprovalSync((s) => s.markQuestionResolved);
+  const attachQuestionFollowUp = useApprovalSync((s) => s.attachQuestionFollowUp);
 
   // A gate-raised question on the creator's own action resolves into the
   // real approval card — render it in place.
@@ -70,6 +74,7 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
 
   const answer = (value: string, label: string) =>
     startTransition(async () => {
+      setErrorMsg(null);
       // "__other__" carries the typed answer as the free text — the agent gets
       // it verbatim and acts on it instead of an option value.
       const text = value === "__other__" ? label : freeText.trim() || undefined;
@@ -77,14 +82,20 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
       onResult?.(r);
       if (!r.error) {
         if (r.pending) setFollowUp(r.pending);
-        markQuestionResolved(questionId, {
-          outcome: "answered",
-          label,
-          followUp: r.agentFollowUp ?? null,
-        });
+        markQuestionResolved(questionId, { outcome: "answered", label, followUp: null });
         onAnswered?.(value);
+        // The agent's resumed turn is fetched in the BACKGROUND — answering is
+        // instant and the wrap-up streams into the chat when ready. Safe if
+        // this card unmounts: only the zustand store is touched.
+        void fetchAgentFollowUpAction({ kind: "question", id: questionId })
+          .then((fu) => {
+            if (fu) attachQuestionFollowUp(questionId, fu);
+          })
+          .catch(() => {});
       } else if (r.alreadyResolved) {
         markQuestionResolved(questionId, { outcome: "resolved", label: null, followUp: null });
+      } else {
+        setErrorMsg(r.message);
       }
       router.refresh();
     });
@@ -177,6 +188,14 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
               </button>
             )}
           </div>
+          {errorMsg ? (
+            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-100/70 p-2.5 text-xs text-rose-800">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <p>
+                <span className="font-medium">Couldn&apos;t record the answer:</span> {errorMsg}
+              </p>
+            </div>
+          ) : null}
           {!otherOpen ? (
             <div className="flex items-center gap-2">
               <input
