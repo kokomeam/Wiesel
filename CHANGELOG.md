@@ -6,6 +6,35 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing — send-time CTA hrefs are authoritative, 2026-07-07
+
+Live follow-up to the 2026-07-06 CTA work: a campaign's emails still landed
+subscribers on the HOMEPAGE. Root cause — template bodies bake a literal
+button href at generation time (`ctaPath ?? "#"` in email/templates.ts), and
+send-time destination resolution only flowed through `{{ctaUrl}}` merge vars,
+so a body generated before the course had a destination carried `"#"` forever
+(the click route coerces `"#"` to `/`), and a pre-publish body kept sending
+list traffic to the capture form after the preview went live. The documented
+"publishing upgrades queued sends" promise only held for LLM bodies that used
+`{{ctaUrl}}`.
+
+- **`resolveSendTimeButtonHref`** (`lib/marketing/ctaDestination.ts`, pure):
+  inside `prepareBodyForSend` (the ONE send-render pipeline — tick, broadcast,
+  test send), every button href now resolves send-time-authoritatively:
+  (1) an authored `{{freeLessonUrl}}` button stays on the capture page;
+  (2) a DEAD href (`""`/`"#"`/`"/"`/unresolved merge token) is rescued to the
+  current `ctaUrl` (then `freeLessonUrl`); (3) a baked landing-page href
+  (relative or absolute) upgrades to the course preview once a live
+  publication makes `ctaUrl` diverge; (4) anything else renders untouched.
+- **Compliance sees what will send**: `review_campaign_compliance`'s broken-CTA
+  check validates hrefs through the SAME resolution — a rescued href passes, a
+  genuinely dead one (no destination anywhere) still blocks.
+- **Tests**: `verify:marketing:cta` 26 → **41** — the pure resolution matrix
+  (13) + two live regressions: a pre-publish sequence body renders post-publish
+  to the wrapped ABSOLUTE `/learn/{slug}` URL, and a baked `"#"` CTA is rescued
+  to the preview (never the homepage). `verify:marketing` (37),
+  `verify:marketing:email` (34), `verify:marketing:campaign` (112) re-ran green.
+
 ## Marketing — email CTA destinations + site-URL guard, 2026-07-06
 
 From a live incident: an automated email's CTA landed on vercel.com's 404.

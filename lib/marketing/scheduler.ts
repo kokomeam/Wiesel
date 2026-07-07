@@ -25,7 +25,7 @@ import type { Database, Json } from "@/lib/database.types";
 import { autoPauseCampaign, evaluateCampaignGuardrails, getAuthorSendRamp } from "./guardrails";
 import { renderEmailText } from "./email/render";
 import { resolveCopyLocale } from "./language";
-import { resolveCtaDestinations, type CtaDestinations } from "./ctaDestination";
+import { resolveCtaDestinations, resolveSendTimeButtonHref, type CtaDestinations } from "./ctaDestination";
 import { renderMergeVars, type MergeVarContext } from "./mergeVars";
 import { loadCampaign, loadCourseMarketingContext, loadEmailSequence, loadSenderIdentity } from "./persistence";
 import type { MarketingServices } from "./services/types";
@@ -86,7 +86,10 @@ function prepareBodyForSend(
 ): EmailBody {
   const blocks: EmailBlock[] = body.blocks.map((b) => {
     if (b.kind === "button") {
-      return { ...b, label: renderMergeVars(b.label, vars), href: clickUrl(renderMergeVars(b.href, vars), dims) };
+      // Send-time destination wins over the generation-time baked href — a
+      // "#" placeholder or a pre-publish landing path upgrades to the live
+      // course preview here, never reaching an inbox (resolveSendTimeButtonHref).
+      return { ...b, label: renderMergeVars(b.label, vars), href: clickUrl(resolveSendTimeButtonHref(b.href, vars), dims) };
     }
     if (b.kind === "heading" || b.kind === "paragraph") return { ...b, text: renderMergeVars(b.text, vars) };
     if (b.kind === "bullets") return { ...b, items: b.items.map((i) => renderMergeVars(i, vars)) };

@@ -13,10 +13,14 @@
  * with this same function — so publishing a course upgrades every queued
  * send's destination without regenerating any copy, and generation-time
  * template hrefs (ctaPath) and the {{ctaUrl}} merge var can never disagree.
+ * `resolveSendTimeButtonHref` (below) is what makes that promise hold for
+ * template bodies too: it rewrites baked dead/"stale landing" hrefs to the
+ * current destination inside the one send-render pipeline.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { renderMergeVars, type MergeVarContext } from "./mergeVars";
 import { listLandingPages } from "./persistence";
 import { publicUrl } from "./tokens";
 
@@ -62,6 +66,51 @@ export async function resolveCtaDestinations(
     ctaUrl: ctaPath ? publicUrl(ctaPath) : null,
     freeLessonUrl: landing ? publicUrl(landing) : null,
   };
+}
+
+/** Matches a raw href that was AUTHORED as the free-lesson link. */
+const FREE_LESSON_TOKEN_RE = /\{\{\s*freeLessonUrl/;
+/** Matches any merge token that survived rendering (unresolvable var). */
+const UNRESOLVED_TOKEN_RE = /\{\{\s*\w+/;
+
+function urlPath(url: string): string | null {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send-time button-href resolution — makes the SEND-time destination
+ * authoritative over whatever was baked into the body at GENERATION time.
+ * Template bodies bake a literal `ctaPath ?? "#"` href, so without this:
+ *   - a body generated before the course had any destination carries "#"
+ *     forever, and the click route coerces "#" to "/" — subscribers land on
+ *     the HOMEPAGE (observed live);
+ *   - a body generated pre-publish keeps sending list traffic to the
+ *     lead-capture landing page after the course preview goes live, silently
+ *     breaking the "publishing upgrades queued sends" rule above.
+ * Rules, in order:
+ *   1. a button the author/template wrote as {{freeLessonUrl}} stays on the
+ *      capture page (deliberate — that's where the free-lesson offer lives);
+ *   2. a DEAD href ("", "#", "/", or an unresolved merge token) is rescued
+ *      to the current ctaUrl (then freeLessonUrl; if neither exists the
+ *      rendered value passes through — compliance blocks that launch);
+ *   3. a baked landing-page href (relative or absolute) upgrades to the
+ *      course preview once a live publication makes ctaUrl diverge from it;
+ *   4. anything else renders untouched.
+ */
+export function resolveSendTimeButtonHref(rawHref: string, vars: MergeVarContext): string {
+  const rendered = renderMergeVars(rawHref, vars);
+  if (FREE_LESSON_TOKEN_RE.test(rawHref) && vars.freeLessonUrl) return rendered;
+  const dead = rendered === "" || rendered === "#" || rendered === "/" || UNRESOLVED_TOKEN_RE.test(rendered);
+  if (dead) return vars.ctaUrl ?? vars.freeLessonUrl ?? rendered;
+  if (vars.ctaUrl && vars.freeLessonUrl && vars.ctaUrl !== vars.freeLessonUrl) {
+    const landingPath = urlPath(vars.freeLessonUrl);
+    if (rendered === vars.freeLessonUrl || (landingPath !== null && rendered === landingPath)) return vars.ctaUrl;
+  }
+  return rendered;
 }
 
 export interface SiteUrlFinding {

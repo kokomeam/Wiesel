@@ -36,6 +36,7 @@ import { publishCourse } from "@/lib/course/publish/service";
 import {
   coursePreviewPath,
   resolveCtaDestinations,
+  resolveSendTimeButtonHref,
   siteUrlFinding,
 } from "@/lib/marketing/ctaDestination";
 import { renderSendableEmail } from "@/lib/marketing/scheduler";
@@ -161,6 +162,59 @@ function siteUrlChecks() {
   set(original);
 }
 
+/* ────────────── send-time button-href resolution (pure) ────────────── */
+
+function sendTimeHrefChecks() {
+  console.log("\n# resolveSendTimeButtonHref — send time wins over baked hrefs");
+  const cta = "https://site.test/learn/course-x";
+  const landing = "https://site.test/p/landing-y";
+  const both = { ctaUrl: cta, freeLessonUrl: landing };
+
+  check('baked "#" (the homepage incident) → rescued to ctaUrl', resolveSendTimeButtonHref("#", both) === cta);
+  check("baked empty href → rescued to ctaUrl", resolveSendTimeButtonHref("", both) === cta);
+  check('baked "/" → rescued to ctaUrl', resolveSendTimeButtonHref("/", both) === cta);
+  check(
+    "{{ctaUrl}} with a live destination renders it",
+    resolveSendTimeButtonHref("{{ctaUrl}}", both) === cta
+  );
+  check(
+    "unresolvable {{ctaUrl}} (null) falls back to freeLessonUrl, never a literal token",
+    resolveSendTimeButtonHref("{{ctaUrl}}", { ctaUrl: null, freeLessonUrl: landing }) === landing
+  );
+  check(
+    '"#" with NO destination at all passes through (compliance blocks that launch)',
+    resolveSendTimeButtonHref("#", { ctaUrl: null, freeLessonUrl: null }) === "#"
+  );
+  check(
+    "an authored {{freeLessonUrl}} button STAYS on the capture page",
+    resolveSendTimeButtonHref("{{freeLessonUrl}}", both) === landing
+  );
+  check(
+    "a baked RELATIVE landing path upgrades to the live preview",
+    resolveSendTimeButtonHref("/p/landing-y", both) === cta
+  );
+  check(
+    "a baked ABSOLUTE landing URL upgrades to the live preview",
+    resolveSendTimeButtonHref(landing, both) === cta
+  );
+  check(
+    "pre-publish (ctaUrl IS the landing) a landing href is untouched",
+    resolveSendTimeButtonHref("/p/landing-y", { ctaUrl: landing, freeLessonUrl: landing }) === "/p/landing-y"
+  );
+  check(
+    "an unrelated landing path is untouched",
+    resolveSendTimeButtonHref("/p/some-other-page", both) === "/p/some-other-page"
+  );
+  check(
+    "an already-correct preview path is untouched",
+    resolveSendTimeButtonHref("/learn/course-x", both) === "/learn/course-x"
+  );
+  check(
+    "an external URL is untouched",
+    resolveSendTimeButtonHref("https://example.com/z", both) === "https://example.com/z"
+  );
+}
+
 /* ───────────────────────── click route redirect ────────────────────── */
 
 async function clickRouteChecks() {
@@ -195,6 +249,7 @@ async function clickRouteChecks() {
 
 async function main() {
   siteUrlChecks();
+  sendTimeHrefChecks();
   await clickRouteChecks();
 
   const { url, anon } = loadEnv();
@@ -285,6 +340,48 @@ async function main() {
     "the wrapped destination is the absolute course preview",
     renderedHref.includes(encodeURIComponent(after.ctaUrl!)),
     renderedHref.slice(0, 120)
+  );
+
+  /* ── the live incident: a body generated PRE-publish must send to the
+     preview page, not the capture page (and a "#" must never reach a click
+     link — the click route coerces "#" to the HOMEPAGE) ── */
+  console.log("\n# queued-send upgrade — pre-publish bodies deliver to /learn after publish");
+  const staleVars = {
+    firstName: "Ada",
+    courseName: doc.title,
+    creatorName: null,
+    freeLessonUrl: after.freeLessonUrl,
+    ctaUrl: after.ctaUrl,
+    offerDeadline: null,
+  };
+  const staleBody = (touches1 ?? [])
+    .map((t) => t.body as { blocks?: { kind: string; href?: string }[] })
+    .find((b) => (b.blocks ?? []).some((bl) => bl.kind === "button"));
+  const upgraded = renderSendableEmail({
+    subject: "s",
+    body: staleBody as never,
+    vars: staleVars,
+    dims: { subscriberId: newRowId(), campaignId, courseId },
+    unsubscribeUrl: publicUrl("/api/marketing/unsubscribe?t=x"),
+  });
+  const upgradedHrefs = buttonHrefs(upgraded.body);
+  check(
+    "a landing-page href baked pre-publish now delivers the course preview",
+    upgradedHrefs.length > 0 && upgradedHrefs.every((h) => h.includes(encodeURIComponent(after.ctaUrl!))),
+    upgradedHrefs[0]?.slice(0, 140) ?? "(no buttons)"
+  );
+  const homepageIncident = renderSendableEmail({
+    subject: "s",
+    body: { blocks: [{ kind: "button", label: "Enroll", href: "#" }] } as never,
+    vars: staleVars,
+    dims: { subscriberId: newRowId(), campaignId, courseId },
+    unsubscribeUrl: publicUrl("/api/marketing/unsubscribe?t=x"),
+  });
+  const rescuedHref = buttonHrefs(homepageIncident.body)[0] ?? "";
+  check(
+    'a baked "#" CTA is rescued to the course preview (never the homepage)',
+    rescuedHref.includes(encodeURIComponent(after.ctaUrl!)),
+    rescuedHref.slice(0, 140)
   );
 
   /* ── compliance wiring: the dashboard-URL misconfig BLOCKS the launch ── */

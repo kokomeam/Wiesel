@@ -1336,9 +1336,17 @@ compliant footers (8 locales, `language.ts`).
   RENDERED + `siteUrlFinding()` (unset/garbage/vercel.com = BLOCKING —
   vercel.com is the dashboard, never an app origin; localhost = warning).
   Click route resolves relative destinations against the request origin
-  (NextResponse.redirect rejects bare relatives). `verify:marketing:cta`
-  (26). ⚠ tsx does NOT auto-load .env.local — suites that run the compliance
-  tool must set NEXT_PUBLIC_SITE_URL themselves (campaign suite does).
+  (NextResponse.redirect rejects bare relatives). **Send time is
+  AUTHORITATIVE over baked hrefs (2026-07-07, from a second live incident —
+  emails landed on the HOMEPAGE):** template bodies bake `ctaPath ?? "#"` at
+  generation, so `resolveSendTimeButtonHref` (same file) rewrites every
+  button href inside `prepareBodyForSend` — dead hrefs (`#`/``/`/`/
+  unresolved token) rescue to the current ctaUrl, a baked landing path
+  upgrades to `/learn` once published, `{{freeLessonUrl}}`-authored buttons
+  stay on the capture page; compliance validates through the same function.
+  `verify:marketing:cta` (41). ⚠ tsx does NOT auto-load .env.local — suites
+  that run the compliance tool must set NEXT_PUBLIC_SITE_URL themselves
+  (campaign suite does).
 - **Approval sync + stop controls + hub redesign (2026-07-06, see CHANGELOG +
   docs/marketing-autonomy.md § Cross-surface sync):** the same approval used to
   render in chat AND hub with no invalidation — now `lib/marketing/

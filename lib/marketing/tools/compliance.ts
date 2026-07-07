@@ -17,8 +17,8 @@
 import { z } from "zod";
 import type { Json } from "@/lib/database.types";
 import type { EmailTouch } from "../types";
-import { resolveCtaDestinations, siteUrlFinding } from "../ctaDestination";
-import { findMissingFallbacks, renderMergeVars, type MergeVarContext } from "../mergeVars";
+import { resolveCtaDestinations, resolveSendTimeButtonHref, siteUrlFinding } from "../ctaDestination";
+import { findMissingFallbacks, type MergeVarContext } from "../mergeVars";
 import {
   loadCampaign,
   loadCourseMarketingContext,
@@ -196,9 +196,11 @@ const reviewCampaignCompliance = defineMarketingTool({
         }
         for (const block of touch.body.blocks) {
           if (block.kind !== "button") continue;
-          // Validate the href AS IT WILL RENDER at send time — {{ctaUrl}} etc.
-          // resolve through the same destinations the scheduler uses.
-          const renderedHref = renderMergeVars(block.href, {
+          // Validate the href AS IT WILL RENDER at send time — the SAME
+          // resolution the scheduler applies ({{ctaUrl}} merge + dead-href
+          // rescue + landing→preview upgrade), so a finding here means a
+          // subscriber would actually see a broken link.
+          const renderedHref = resolveSendTimeButtonHref(block.href, {
             courseName: course.title,
             freeLessonUrl: dest.freeLessonUrl,
             ctaUrl: dest.ctaUrl,
