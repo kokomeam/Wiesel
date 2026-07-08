@@ -702,6 +702,20 @@ export const LessonBlockSchema = z.discriminatedUnion("type", [
         .enum(["bottom-right", "bottom-left", "top-right", "top-left"])
         .optional(),
       includeMic: z.boolean().optional(),
+      // M-R: all optional — legacy recordings/uploads simply lack them.
+      slideSync: z
+        .array(z.object({ slideId: z.string(), atMs: z.number().int().nonnegative() }))
+        .optional(),
+      pipGeometry: z
+        .object({
+          x: z.number(),
+          y: z.number(),
+          width: z.number(),
+          height: z.number(),
+          corner: z.enum(["bottom-right", "bottom-left", "top-right", "top-left"]),
+        })
+        .optional(),
+      dualCameraAssetRowId: z.string().optional(),
     }),
     edit: z.object({
       trimStartSeconds: z.number().nonnegative().optional(),

@@ -91,6 +91,49 @@ export function buildStackedSplitArgs(input: StackedSplitArgsInput): string[] {
   ];
 }
 
+export interface StackedSplitDualArgsInput {
+  /** The composited screen recording (the exact-span precut). */
+  screenInputPath: string;
+  /** The RAW camera track's exact-span precut (D-4 dual capture). */
+  cameraInputPath: string;
+  outputPath: string;
+  durationSeconds: number;
+}
+
+/**
+ * D-4 stacked_split from SEPARATE tracks: the face band comes from the
+ * full-resolution camera recording (no PiP upscale softness), the screen
+ * band from the composited recording (the bubble stays tiny inside it —
+ * acceptable; audio also rides input 0, the recording's mixed track).
+ */
+export function buildStackedSplitDualArgs(input: StackedSplitDualArgsInput): string[] {
+  const filter = [
+    `[1:v]scale=${CLIP_OUT_W}:${STACKED_FACE_BAND_H}:force_original_aspect_ratio=increase,` +
+      `crop=${CLIP_OUT_W}:${STACKED_FACE_BAND_H},setsar=1[face]`,
+    `[0:v]scale=${CLIP_OUT_W}:${STACKED_SCREEN_BAND_H},setsar=1[screen]`,
+    `color=c=${fc(BRAND_TOKENS.colors.backdrop)}:s=${CLIP_OUT_W}x${STACKED_CAPTION_BAND_H}:d=${input.durationSeconds}[pad]`,
+    `[face][screen]vstack=inputs=2[fs]`,
+    `[fs][pad]vstack=inputs=2[v]`,
+  ].join(";");
+  return [
+    "-y",
+    "-i", input.screenInputPath,
+    "-i", input.cameraInputPath,
+    "-filter_complex", filter,
+    "-map", "[v]",
+    "-map", "0:a?",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-r", "30",
+    "-shortest",
+    "-movflags", "+faststart",
+    input.outputPath,
+  ];
+}
+
 /* ─────────────────────── screen_action_zoom (pans) ─────────────────────── */
 
 export interface ZoomKeyframe {

@@ -411,6 +411,79 @@ async function main() {
     t2cached.recordingFormat === "screen_camera" && t2cached.formatSource === "creator_override"
   );
 
+  /* ─────── M-R: a synced studio recording routes slide_short ──────────── */
+
+  console.log("\n# M-R slide-sync producer → slide_short routing (D-2 end-to-end)");
+  const lesson5 = crypto.randomUUID();
+  await A.supabase.from("lessons").insert({
+    id: lesson5,
+    course_id: courseId,
+    module_id: moduleId,
+    title: "Recorded Slides",
+    order: 4,
+  });
+  const videoBlock5 = crypto.randomUUID();
+  // What the studio persists after a screen_only recording with the
+  // minimized-pill presenting flow: recording.mode + the captured slideSync.
+  await A.supabase.from("blocks").insert({
+    id: videoBlock5,
+    course_id: courseId,
+    lesson_id: lesson5,
+    type: "video",
+    order: 0,
+    content: {
+      asset: { provider: "mux", status: "ready" },
+      recording: {
+        mode: "screen_only",
+        layout: "screen_full",
+        includeMic: true,
+        slideSync: [
+          { slideId: "slide-intro", atMs: 0 },
+          { slideId: "slide-sorted-copy", atMs: 18_000 },
+          { slideId: "slide-planner", atMs: 60_000 },
+          { slideId: "slide-tradeoffs", atMs: 125_000 },
+        ],
+      },
+      edit: { trimStartSeconds: null, trimEndSeconds: null },
+      settings: { autoplay: false, showChapters: false },
+    } as unknown as Json,
+  });
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson5,
+    block_id: videoBlock5,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    mux_asset_id: "int-source-asset-5",
+    mux_playback_id: "int-source-playback-5",
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
+  const { loadLessonSlideSync } = await import("@/lib/marketing/clips/routing");
+  const loadedSync = await loadLessonSlideSync(A.supabase as never, lesson5);
+  check(
+    "loadLessonSlideSync reads the recorder-persisted capture (sorted, contract shape)",
+    loadedSync?.length === 4 && loadedSync[0].slideId === "slide-intro" && loadedSync[3].atMs === 125_000
+  );
+  const syncMock = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const syncOut = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson5, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(syncMock)
+  );
+  const { data: syncRows } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("layout")
+    .eq("request_id", syncOut.target!.id);
+  check(
+    "a fresh synced screen recording routes EVERY candidate slide_short (D-2 → FR-2)",
+    (syncRows ?? []).length === 3 && syncRows!.every((r) => r.layout === "slide_short")
+  );
+
   /* ───────────────── selection through the gate ─────────────────────── */
 
   console.log("\n# selection through the gate (staged, evented, revertible)");

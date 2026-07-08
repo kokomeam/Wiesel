@@ -155,12 +155,16 @@ interface VideoAssetSource {
 async function findLessonVideoAsset(supabase: DB, lessonId: string): Promise<VideoAssetSource | null> {
   const { data, error } = await supabase
     .from("video_assets")
-    .select("id,block_id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status")
+    .select("id,block_id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status,metadata")
     .eq("lesson_id", lessonId)
     .eq("status", "ready")
     .order("duration_seconds", { ascending: false, nullsFirst: false });
   if (error) throw new Error(`video_assets read: ${error.message}`);
-  const rows = data ?? [];
+  // D-4: auxiliary camera dual-tracks are NOT lesson videos (same duration as
+  // the primary — a naive longest-first pick would grab one).
+  const rows = (data ?? []).filter(
+    (r) => (r.metadata as { role?: string } | null)?.role !== "camera_dual_track"
+  );
   if (rows.length === 0) return null;
   const withCaptions = rows.find((r) => r.transcript_vtt);
   const row = withCaptions ?? rows[0];

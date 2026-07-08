@@ -186,19 +186,48 @@ action-dense — applied BEFORE the rubric bar. The hook-integrity lint gained
 inside the span's sync window — enforced only when sync data EXISTS (with no
 sync the claim is unverifiable and the model-side verdict still applies).
 
-**Slide-sync status (FR-7(g) audit):** the platform has NO slide↔timestamp
-producer — the recorder does not capture slide timings and no table stores
-them (exhaustively verified 2026-07-08: slides/`deck_import_pages` carry no
-time fields; the learner player advances slides manually; `slide_viewed`
-dwell is not alignment). The CONTRACT is first-class (`SlideSyncEntrySchema`,
-`loadLessonSlideSync` seam, coverage/`slidesForSpan` helpers, eval fixtures
-carry synthetic sync) but production lessons route `slide_short` only once a
-producer exists — recorder slide-timing capture is an **M-F prerequisite**
-surfaced at the amendment checkpoint. Also from the audit: `screen_camera`
-recordings are composited to ONE canvas track at record time (screen +
-camera bubble baked together; audio mixed) — the platform never stores
-separate tracks, so FR-5's separate-track compositing branch applies only to
-hypothetical external dual-track uploads.
+**Slide-sync producer (M-R, D-2 — REAL since 2026-07-08):** the studio
+recorder captures `{slideId, atMs}` on every slide advance WHILE recording
+and persists it as `recording.slideSync` (the same jsonb home as
+`recording.mode`), satisfying the M-A contract verbatim
+(`SlideSyncEntrySchema` — one shape, producer to consumer;
+`loadLessonSlideSync(supabase, lessonId)` reads it back). Mechanics:
+
+- `lib/editor/recordingSlideSync.ts` — a capture singleton on the RECORDED
+  timeline (the recorder's own clock, pauses excluded); consecutive
+  duplicates collapse; pure-testable.
+- Emitters: the editor store's selection (the recorder subscribes while
+  recording) and the learner slide player (same-tab preview). A DIFFERENT
+  browser tab is a different JS context and cannot be captured.
+- **The minimized REC pill** makes in-studio presenting possible: while
+  recording, "Minimize & present slides" collapses the modal to a floating
+  pill (timer · pause/resume · stop · expand) so the teacher navigates their
+  deck normally — that navigation IS the capture. Recording never
+  interrupts (the recorder lives in the parent hook).
+- `atMs` uses the recorder's elapsed clock (`performance.now() − start −
+  pausedAccum`), so paused stretches never skew sync.
+
+**pipGeometry (M-R, D-3):** the compositor stamps the bubble rect it ACTUALLY
+drew (`recording.pipGeometry {x,y,width,height,corner}`, live camera aspect
+included). stacked_split prefers it (provenance `deterministic`), falls back
+to corner-metadata `bubbleRect`, then one vision call (`detected`).
+
+**Dual-track capture (M-R, D-4, flag `NEXT_PUBLIC_RECORDER_DUAL_TRACK`,
+default OFF):** when on, screen+camera sessions ALSO record the raw camera
+stream (a second MediaRecorder) and upload it as a role-marked
+`video_assets` row (`metadata.role = "camera_dual_track"`, no captions,
+linked via `recording.dualCameraAssetRowId`). Dual-track rows are EXCLUDED
+from every lesson-video picker (transcripts + render source). The
+stacked_split render prefers it: both assets pre-cut to the same span, the
+face band comes from the FULL-RES camera track (`buildStackedSplitDualArgs`
+— no PiP upscale softness); a failed camera precut falls back to the PiP
+crop rather than stranding the job. **Storage cost (the OFF-by-default
+rationale):** roughly DOUBLES per-lesson video cost — a second ~1–2 MB/min
+browser upload plus 2× Mux encoding/storage minutes.
+
+From the FR-7(g) audit (unchanged): `screen_camera` recordings are
+composited to ONE canvas track at record time — separate tracks only exist
+when the D-4 flag captures them.
 
 ## Render jobs (M-B, migration `20260708130000_clip_render_jobs.sql`)
 

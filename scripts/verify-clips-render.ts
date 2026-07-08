@@ -31,6 +31,7 @@ import {
   buildAudiogramArgs,
   buildPanExpression,
   buildStackedSplitArgs,
+  buildStackedSplitDualArgs,
   buildZoomPanArgs,
   CLIP_OUT_H,
   CLIP_OUT_W,
@@ -503,6 +504,142 @@ function grepSpec() {
   );
 }
 
+/* ───────────────────────── M-R producer specs ─────────────────────────── */
+
+async function recorderCaptureSpec() {
+  console.log("# recorder.slideSync.spec (M-R D-2: the capture module, pure)");
+  const { beginSlideSyncCapture, reportSlideShown, endSlideSyncCapture, abortSlideSyncCapture, isSlideSyncCapturing, slideIdFromSelection } =
+    await import("@/lib/editor/recordingSlideSync");
+
+  check("no session → report is a no-op", (reportSlideShown("s1"), endSlideSyncCapture().length === 0));
+  let clock = 0;
+  beginSlideSyncCapture(() => clock);
+  check("capturing flag", isSlideSyncCapturing());
+  reportSlideShown("s1"); // t0
+  clock = 4_000;
+  reportSlideShown("s1"); // duplicate — not an advance
+  clock = 9_500;
+  reportSlideShown("s2");
+  clock = 15_200;
+  reportSlideShown("s3");
+  const entries = endSlideSyncCapture();
+  check(
+    "entries: dedupe consecutive, RECORDED-timeline ms, ascending",
+    entries.length === 3 &&
+      entries[0].slideId === "s1" &&
+      entries[0].atMs === 0 &&
+      entries[1].atMs === 9_500 &&
+      entries[2].atMs === 15_200
+  );
+  check("session closed after end", !isSlideSyncCapturing());
+  beginSlideSyncCapture(() => -50);
+  reportSlideShown("sx");
+  check("negative clock clamps to 0", endSlideSyncCapture()[0].atMs === 0);
+  beginSlideSyncCapture(() => 0);
+  reportSlideShown("sy");
+  abortSlideSyncCapture();
+  check("abort drops entries", endSlideSyncCapture().length === 0);
+
+  const SEL_TABLE: [Record<string, string>, string | null][] = [
+    [{ kind: "slide", id: "sl-1" }, "sl-1"],
+    [{ kind: "element", id: "el-1", slideId: "sl-2" }, "sl-2"],
+    [{ kind: "elements", slideId: "sl-3" }, "sl-3"],
+    [{ kind: "lesson", id: "l-1" }, null],
+    [{ kind: "course" }, null],
+    [{ kind: "block", id: "b-1" }, null],
+  ];
+  for (const [sel, want] of SEL_TABLE) {
+    check(`selection ${sel.kind} → ${want ?? "null"}`, slideIdFromSelection(sel as never) === want);
+  }
+
+  console.log("# recorder.contract.spec (M-R: producer shape = the M-A consumer contract)");
+  const { SlideSyncEntrySchema } = await import("@/lib/marketing/clips/schemas");
+  check(
+    "captured entries parse under the clips SlideSyncEntrySchema verbatim",
+    entries.every((e) => SlideSyncEntrySchema.safeParse(e).success)
+  );
+}
+
+async function recordingMetadataSpec() {
+  console.log("# recording.metadata.spec (M-R: schema + patch round-trip, back-compat)");
+  const { LessonBlockSchema } = await import("@/lib/course/schemas");
+  const { createVideoLessonBlock, createModule, createLesson } = await import("@/lib/course/factories");
+  const { updateVideoLessonPatch } = await import("@/lib/course/commands");
+  const { applyCoursePatch } = await import("@/lib/course/patches");
+  const { PLACEHOLDER_COURSE } = await import("@/lib/course/placeholder");
+
+  const block = createVideoLessonBlock();
+  check("legacy block (no M-R fields) still parses", LessonBlockSchema.safeParse(block).success);
+
+  const sync = [
+    { slideId: "sl-1", atMs: 0 },
+    { slideId: "sl-2", atMs: 12_400 },
+  ];
+  const pip = { x: 924, y: 512, width: 282, height: 158, corner: "bottom-right" as const };
+  const module_ = createModule("M", 0);
+  const lesson = createLesson("L", 0);
+  lesson.blocks = [block];
+  module_.lessons = [lesson];
+  const doc = { ...structuredClone(PLACEHOLDER_COURSE), modules: [module_] };
+  const patch = updateVideoLessonPatch(block.id, {
+    recording: {
+      mode: "screen_camera",
+      slideSync: sync,
+      pipGeometry: pip,
+      dualCameraAssetRowId: "11111111-2222-3333-4444-555555555555",
+    },
+  });
+  const now = "2026-07-08T12:00:00.000Z";
+  const res1 = applyCoursePatch(doc as never, patch, now);
+  check("patch applies ok", res1.ok);
+  if (!res1.ok) return;
+  const updated = res1.doc.modules[0].lessons[0].blocks[0] as typeof block;
+  check(
+    "UPDATE_VIDEO_LESSON persists slideSync + pipGeometry + dual link (D-2/D-3/D-4)",
+    updated.recording.slideSync?.length === 2 &&
+      updated.recording.slideSync[1].atMs === 12_400 &&
+      updated.recording.pipGeometry?.corner === "bottom-right" &&
+      updated.recording.dualCameraAssetRowId === "11111111-2222-3333-4444-555555555555"
+  );
+  check("the updated block round-trips the zod schema", LessonBlockSchema.safeParse(updated).success);
+  const res2 = applyCoursePatch(
+    res1.doc,
+    updateVideoLessonPatch(block.id, { recording: { slideSync: null } }),
+    now
+  );
+  check("clear patch applies ok", res2.ok);
+  if (!res2.ok) return;
+  const clearedBlock = res2.doc.modules[0].lessons[0].blocks[0] as typeof block;
+  check(
+    "null clears slideSync, siblings untouched (shallow-merge semantics)",
+    clearedBlock.recording.slideSync == null && clearedBlock.recording.pipGeometry?.corner === "bottom-right"
+  );
+}
+
+function dualStackedSpec() {
+  console.log("# composite.stackedSplit.spec (M-R D-4: dual-track geometry)");
+  const args = buildStackedSplitDualArgs({
+    screenInputPath: "screen.mp4",
+    cameraInputPath: "camera.mp4",
+    outputPath: "out.mp4",
+    durationSeconds: 40,
+  });
+  const graph = args[args.indexOf("-filter_complex") + 1];
+  check(
+    "dual: face band from the CAMERA input (full-res, no PiP crop)",
+    graph.includes(`[1:v]scale=${CLIP_OUT_W}:${STACKED_FACE_BAND_H}:force_original_aspect_ratio=increase`)
+  );
+  check(
+    "dual: screen band from the composited input, full slide legible",
+    graph.includes(`[0:v]scale=${CLIP_OUT_W}:${STACKED_SCREEN_BAND_H},setsar=1[screen]`)
+  );
+  check("dual: audio rides input 0 (the recording's mixed track)", args.join(" ").includes("-map 0:a?"));
+  check(
+    "dual: two inputs in order screen, camera",
+    args.indexOf("screen.mp4") < args.indexOf("camera.mp4")
+  );
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -511,6 +648,9 @@ async function main() {
   await renderRealSpec();
   await mappingSpec();
   grepSpec();
+  await recorderCaptureSpec();
+  await recordingMetadataSpec();
+  dualStackedSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

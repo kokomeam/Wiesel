@@ -429,9 +429,9 @@ export async function selectClipMoments(
       { courseId }
     );
     const durationMs = Math.round(transcript.durationSeconds * 1000);
-    // FR-2: slide-sync facts. No platform producer exists yet (FR-7(g)) —
-    // this is null today; the seam keeps the routing conditions live-wired.
-    const slideSync: SlideSyncEntry[] | null = await loadLessonSlideSync(req.lessonId);
+    // FR-2/M-R: slide-sync facts — real when the studio recorder captured
+    // slide advances (recording.slideSync); null on legacy/uploaded videos.
+    const slideSync: SlideSyncEntry[] | null = await loadLessonSlideSync(deps.supabase, req.lessonId);
 
     const context: ClipContext = await assembleClipContext(
       deps.supabase,

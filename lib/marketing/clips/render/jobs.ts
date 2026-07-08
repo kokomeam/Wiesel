@@ -68,12 +68,17 @@ export interface ClipJobSource {
   recordingFormat: RecordingFormat;
   /** The PiP rect for stacked_split (source pixels) when derivable. */
   pipRect?: { x: number; y: number; w: number; h: number } | null;
+  /** D-4: the raw camera dual-track (full-res face band) when captured. */
+  dualCamera?: { videoAssetRowId: string; sourceMuxAssetId: string } | null;
 }
 
 export interface ClipJobPrecut {
   muxAssetId: string;
   playbackId?: string | null;
   mp4Url?: string | null;
+  /** D-4: the camera track's own precut asset (stacked_split dual path). */
+  cameraMuxAssetId?: string | null;
+  cameraMp4Url?: string | null;
 }
 
 export interface ClipJobOutput {

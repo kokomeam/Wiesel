@@ -45,6 +45,8 @@ export interface CreateVideoAssetArgs {
    *  `generating` (the track appears in `preparing` once the asset is ready). */
   requestCaptions?: boolean;
   captionLanguageCode?: string;
+  /** M-R (D-4): auxiliary-track marker (e.g. "camera_dual_track"). */
+  role?: string | null;
 }
 
 export async function createVideoAsset(
@@ -67,6 +69,9 @@ export async function createVideoAsset(
         ? args.captionLanguageCode ?? DEFAULT_CAPTION_LANGUAGE
         : null,
       caption_source: args.requestCaptions ? "generated" : null,
+      // M-R (D-4): role metadata marks auxiliary tracks (e.g. the raw camera
+      // capture) so lesson-video pickers can exclude them.
+      ...(args.role ? { metadata: { role: args.role } } : {}),
     })
     .select("*")
     .single();

@@ -25,7 +25,7 @@
  * M-F prerequisite surfaced at the M-A amendment checkpoint.
  */
 
-import type { ClipLayout, RecordingFormat, SlideSyncEntry } from "./schemas";
+import { SlideSyncEntrySchema, type ClipLayout, type RecordingFormat, type SlideSyncEntry } from "./schemas";
 
 /* ─────────────────────── slide-sync fact helpers ──────────────────────── */
 
@@ -110,17 +110,39 @@ export function resolveClipLayout(format: RecordingFormat, ctx: MomentRoutingCon
   }
 }
 
-/* ──────────────────── slide-sync producer seam (empty) ─────────────────── */
+/* ─────────────────── slide-sync producer loader (M-R) ──────────────────── */
 
 /**
- * Load a lesson's slide-sync data. NO producer exists on the platform today
- * (FR-7(g) audit finding) — this returns null unconditionally and exists so
- * the selection engine's call site, the routing conditions, and the tests
- * are already wired when the producer (recorder slide-timing capture, an M-F
- * prerequisite) lands. It deliberately takes the lessonId so the future
- * implementation is a body swap, not a signature change.
+ * Load a lesson's slide-sync data — REAL since M-R (D-2): the studio
+ * recorder captures `{slideId, atMs}` on every slide advance while recording
+ * (the minimized REC pill makes in-studio presenting possible) and persists
+ * it as `blocks.content.recording.slideSync`, the SAME jsonb home as
+ * `recording.mode`. This reads the lesson's video blocks and returns the
+ * first non-empty capture, validated against the M-A contract
+ * (SlideSyncEntrySchema — one shape, producer to consumer). Legacy
+ * recordings and uploads have none → null (routing falls through to
+ * screen_action_zoom / audiogram, unchanged).
  */
-export async function loadLessonSlideSync(lessonId: string): Promise<SlideSyncEntry[] | null> {
-  void lessonId; // the future producer keys on it — signature is the contract
+export async function loadLessonSlideSync(
+  supabase: import("@supabase/supabase-js").SupabaseClient<import("@/lib/database.types").Database>,
+  lessonId: string
+): Promise<SlideSyncEntry[] | null> {
+  const { data, error } = await supabase
+    .from("blocks")
+    .select("content")
+    .eq("lesson_id", lessonId)
+    .eq("type", "video")
+    .order("order", { ascending: true });
+  if (error) throw new Error(`blocks read (slide sync): ${error.message}`);
+  for (const row of data ?? []) {
+    const raw = (row.content as { recording?: { slideSync?: unknown } } | null)?.recording?.slideSync;
+    if (!Array.isArray(raw) || raw.length === 0) continue;
+    const entries: SlideSyncEntry[] = [];
+    for (const item of raw) {
+      const parsed = SlideSyncEntrySchema.safeParse(item);
+      if (parsed.success) entries.push(parsed.data);
+    }
+    if (entries.length > 0) return entries.sort((a, b) => a.atMs - b.atMs);
+  }
   return null;
 }

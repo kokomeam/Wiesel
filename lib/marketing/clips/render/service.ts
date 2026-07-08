@@ -44,6 +44,7 @@ import type { ClipRenderProvider } from "../provider/types";
 import {
   buildAudiogramArgs,
   buildStackedSplitArgs,
+  buildStackedSplitDualArgs,
   buildZoomPanArgs,
   CLIP_OUT_H,
   CLIP_OUT_W,
@@ -166,14 +167,62 @@ export interface CreateClipJobDeps {
 async function findRenderSource(supabase: DB, lessonId: string) {
   const { data, error } = await supabase
     .from("video_assets")
-    .select("id,block_id,mux_asset_id,mux_playback_id,duration_seconds,transcript_vtt")
+    .select("id,block_id,mux_asset_id,mux_playback_id,duration_seconds,transcript_vtt,metadata")
     .eq("lesson_id", lessonId)
     .eq("status", "ready")
     .order("duration_seconds", { ascending: false, nullsFirst: false });
   if (error) throw new Error(`video_assets read: ${error.message}`);
-  const rows = (data ?? []).filter((r) => r.mux_asset_id);
+  const rows = (data ?? []).filter(
+    (r) =>
+      r.mux_asset_id &&
+      (r.metadata as { role?: string } | null)?.role !== "camera_dual_track"
+  );
   if (rows.length === 0) return null;
   return rows.find((r) => r.transcript_vtt) ?? rows[0];
+}
+
+/** D-4: the block's linked raw-camera asset (full-res face band), if the
+ *  dual-track flag captured one and it's ready. */
+async function findDualCameraSource(
+  supabase: DB,
+  blockId: string | null
+): Promise<{ videoAssetRowId: string; sourceMuxAssetId: string } | null> {
+  if (!blockId) return null;
+  const { data } = await supabase.from("blocks").select("content").eq("id", blockId).maybeSingle();
+  const rowId = (data?.content as { recording?: { dualCameraAssetRowId?: string } } | null)?.recording
+    ?.dualCameraAssetRowId;
+  if (!rowId) return null;
+  const { data: asset } = await supabase
+    .from("video_assets")
+    .select("id,mux_asset_id,status")
+    .eq("id", rowId)
+    .maybeSingle();
+  if (!asset?.mux_asset_id || asset.status !== "ready") return null;
+  return { videoAssetRowId: asset.id, sourceMuxAssetId: asset.mux_asset_id };
+}
+
+/** D-3: the recorder-stamped pipGeometry (exact rect from the compositor). */
+async function readPipGeometry(
+  supabase: DB,
+  blockId: string | null
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  if (!blockId) return null;
+  const { data } = await supabase.from("blocks").select("content").eq("id", blockId).maybeSingle();
+  const g = (data?.content as { recording?: { pipGeometry?: unknown } } | null)?.recording?.pipGeometry as
+    | { x?: unknown; y?: unknown; width?: unknown; height?: unknown }
+    | undefined;
+  if (
+    g &&
+    typeof g.x === "number" &&
+    typeof g.y === "number" &&
+    typeof g.width === "number" &&
+    typeof g.height === "number" &&
+    g.width > 0 &&
+    g.height > 0
+  ) {
+    return { x: g.x, y: g.y, width: g.width, height: g.height };
+  }
+  return null;
 }
 
 async function readBubblePosition(supabase: DB, blockId: string | null): Promise<CameraBubblePosition | null> {
@@ -236,16 +285,27 @@ export async function createClipRenderJob(
 
   let pipRect: PipRect | null = null;
   let cropProvenance: "deterministic" | "detected" | null = null;
+  let dualCamera: { videoAssetRowId: string; sourceMuxAssetId: string } | null = null;
   if (candidate.layout === "stacked_split") {
-    const bubble = await readBubblePosition(deps.supabase, asset.block_id);
-    const resolved = await resolvePipRect({
-      bubblePosition: bubble,
-      model: deps.model,
-      playbackId: asset.mux_playback_id,
-      durationSeconds: asset.duration_seconds,
-    });
-    pipRect = resolved.rect;
-    cropProvenance = resolved.provenance;
+    // D-4: a raw camera dual-track (full-res face band) beats any crop.
+    dualCamera = await findDualCameraSource(deps.supabase, asset.block_id);
+    // D-3: recorder-stamped pipGeometry is exact; corner metadata derives via
+    // the recorder's own constants; detection is the legacy-upload path only.
+    const stamped = await readPipGeometry(deps.supabase, asset.block_id);
+    if (stamped) {
+      pipRect = { x: stamped.x, y: stamped.y, w: stamped.width, h: stamped.height };
+      cropProvenance = "deterministic";
+    } else {
+      const bubble = await readBubblePosition(deps.supabase, asset.block_id);
+      const resolved = await resolvePipRect({
+        bubblePosition: bubble,
+        model: deps.model,
+        playbackId: asset.mux_playback_id,
+        durationSeconds: asset.duration_seconds,
+      });
+      pipRect = resolved.rect;
+      cropProvenance = resolved.provenance;
+    }
   }
 
   const source: ClipJobSource = {
@@ -256,6 +316,7 @@ export async function createClipRenderJob(
     endMs: candidate.endMs,
     recordingFormat,
     pipRect,
+    dualCamera,
   };
 
   return createRenderJob(deps.supabase, {
@@ -337,11 +398,24 @@ async function renderLocal(
   deps: RenderTickDeps,
   job: ClipRenderJob,
   inputPath: string,
-  outputPath: string
+  outputPath: string,
+  cameraInputPath: string | null
 ): Promise<void> {
   const run = deps.runFfmpegImpl ?? runFfmpeg;
   const durationSeconds = (job.source.endMs - job.source.startMs) / 1000;
   if (job.layout === "stacked_split") {
+    // D-4: the full-res camera track beats the PiP crop when captured.
+    if (cameraInputPath) {
+      await run(
+        buildStackedSplitDualArgs({
+          screenInputPath: inputPath,
+          cameraInputPath,
+          outputPath,
+          durationSeconds,
+        })
+      );
+      return;
+    }
     if (!job.source.pipRect) throw new Error("stacked_split job has no pipRect");
     await run(buildStackedSplitArgs({ inputPath, outputPath, pipRect: job.source.pipRect, durationSeconds }));
     return;
@@ -389,8 +463,20 @@ export async function advanceRenderJob(
           range.endMs,
           `wisesel-clip-precut:${job.id}`
         );
+        // D-4: the raw camera track precuts to the SAME span for the
+        // full-res face band (stacked_split only).
+        let cameraMuxAssetId: string | null = null;
+        if (job.layout === "stacked_split" && job.source.dualCamera) {
+          const cam = await deps.precut.start(
+            job.source.dualCamera.sourceMuxAssetId,
+            range.startMs,
+            range.endMs,
+            `wisesel-clip-precut-cam:${job.id}`
+          );
+          cameraMuxAssetId = cam.muxAssetId;
+        }
         await transitionRenderJob(deps.supabase, job.id, "queued", "precutting", {
-          precut: { muxAssetId: started.muxAssetId },
+          precut: { muxAssetId: started.muxAssetId, cameraMuxAssetId },
         });
         return "advanced";
       }
@@ -406,6 +492,20 @@ export async function advanceRenderJob(
           return "failed";
         }
         if (state.status !== "ready" || !state.mp4Url) return "noop"; // keep polling
+        // D-4: the camera precut must be ready too (falls back to the PiP
+        // crop if the camera precut errored — the render must not strand).
+        let cameraMp4Url: string | null = null;
+        if (job.precut.cameraMuxAssetId) {
+          const camState = await deps.precut.check(job.precut.cameraMuxAssetId);
+          if (camState.status === "errored") {
+            await deps.precut.cleanup(job.precut.cameraMuxAssetId);
+            cameraMp4Url = null; // PiP-crop fallback
+          } else if (camState.status !== "ready" || !camState.mp4Url) {
+            return "noop"; // keep polling both
+          } else {
+            cameraMp4Url = camState.mp4Url;
+          }
+        }
 
         if (job.provider === "reap") {
           if (!deps.provider) return "noop"; // provider unconfigured — hold
@@ -439,7 +539,7 @@ export async function advanceRenderJob(
         // In-house: flip to rendering_local (crash-visible), then render in
         // this same tick pass.
         const flipped = await transitionRenderJob(deps.supabase, job.id, "precutting", "rendering_local", {
-          precut: { ...job.precut, mp4Url: state.mp4Url },
+          precut: { ...job.precut, mp4Url: state.mp4Url, cameraMp4Url },
           submittedAt: deps.nowIso,
         });
         return advanceRenderJob(deps, flipped);
@@ -465,7 +565,12 @@ export async function advanceRenderJob(
           const inputPath = join(dir, "input.mp4");
           const outputPath = join(dir, "output.mp4");
           writeFileSync(inputPath, await downloadBytes(job.precut.mp4Url, fetchImpl));
-          await renderLocal(deps, job, inputPath, outputPath);
+          let cameraInputPath: string | null = null;
+          if (job.precut.cameraMp4Url) {
+            cameraInputPath = join(dir, "camera.mp4");
+            writeFileSync(cameraInputPath, await downloadBytes(job.precut.cameraMp4Url, fetchImpl));
+          }
+          await renderLocal(deps, job, inputPath, outputPath, cameraInputPath);
           const out = readFileSync(outputPath);
           const storagePath = `${job.creatorId}/clips/${job.id}.mp4`;
           await uploadOutput(deps.supabase, storagePath, out);
@@ -476,6 +581,7 @@ export async function advanceRenderJob(
             costMinutes,
           });
           await deps.precut.cleanup(job.precut.muxAssetId);
+          if (job.precut.cameraMuxAssetId) await deps.precut.cleanup(job.precut.cameraMuxAssetId);
           await emitClipEvent(deps.supabase, job.courseId ?? "", "clip_job_completed", {
             jobId: job.id,
             candidateId: job.candidateId,
