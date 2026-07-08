@@ -344,6 +344,32 @@ export function clipConfig(): ClipConfig {
   };
 }
 
+/* ───────────────────── render jobs + quotas (M-B) ─────────────────────── */
+
+/** Provider submissions per creator per trailing minute (the PRD's bucket). */
+export const CLIP_RENDER_TOKENS_PER_MIN_DEFAULT = 10;
+/** Render jobs per creator per UTC day. */
+export const CLIP_JOBS_PER_DAY_DEFAULT = 20;
+/** Cost-minutes per creator per UTC month (provider billedDuration +
+ *  in-house minutes × CLIP_INHOUSE_MINUTE_RATE — one ledger, one quota). */
+export const CLIP_MINUTES_PER_MONTH_DEFAULT = 60;
+/** Compute-minute rate for in-house renders (ffmpeg now, Remotion at M-F)
+ *  so the ledger stays meaningful across providers. */
+export const CLIP_INHOUSE_MINUTE_RATE_DEFAULT = 1;
+/** A job step is retried this many times before failing terminally. */
+export const CLIP_JOB_MAX_ATTEMPTS = 3;
+/** A rendering_local row untouched this long is presumed crashed → retried. */
+export const CLIP_LOCAL_RENDER_STALE_MS = 10 * 60_000;
+
+export function clipRenderConfig() {
+  return {
+    tokensPerMinute: envInt("CLIP_RENDER_TOKENS_PER_MIN", CLIP_RENDER_TOKENS_PER_MIN_DEFAULT),
+    jobsPerDay: envInt("CLIP_JOBS_PER_DAY", CLIP_JOBS_PER_DAY_DEFAULT),
+    minutesPerMonth: envInt("CLIP_MINUTES_PER_MONTH", CLIP_MINUTES_PER_MONTH_DEFAULT),
+    inhouseMinuteRate: envInt("CLIP_INHOUSE_MINUTE_RATE", CLIP_INHOUSE_MINUTE_RATE_DEFAULT),
+  };
+}
+
 /* ───────────────────────── candidate lifecycle ────────────────────────── */
 
 export const CLIP_CANDIDATE_STATUSES = ["candidate", "selected", "dismissed"] as const;

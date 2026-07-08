@@ -114,7 +114,12 @@ export type AnalyticsEventType =
   | "clip_moments_generated"
   | "clip_moments_generation_failed"
   | "clip_moment_selected"
-  | "clip_moment_dismissed";
+  | "clip_moment_dismissed"
+  // M-B render jobs (migration 20260708130000; payloads carry layout +
+  // recordingFormat per the consequential-updates rule)
+  | "clip_job_submitted"
+  | "clip_job_completed"
+  | "clip_job_failed";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";

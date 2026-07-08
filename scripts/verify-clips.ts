@@ -894,12 +894,12 @@ function fixtureChecks() {
 }
 
 function registryChecks() {
-  console.log("# tool registry (§13)");
-  check("exactly 3 clip tools in M-A", clipTools.length === 3);
+  console.log("# tool registry (§13; M-B adds the render trio)");
+  check("exactly 6 clip tools (M-A's 3 + M-B's render/cancel/list)", clipTools.length === 6);
   check(
-    "1 read + 2 reversible, ZERO irreversible",
-    clipTools.filter((t) => t.reversibility === "read").length === 1 &&
-      clipTools.filter((t) => t.reversibility === "reversible").length === 2 &&
+    "2 read + 4 reversible, ZERO irreversible (the reversible-only carryover)",
+    clipTools.filter((t) => t.reversibility === "read").length === 2 &&
+      clipTools.filter((t) => t.reversibility === "reversible").length === 4 &&
       clipTools.filter((t) => t.reversibility === "irreversible").length === 0
   );
   check(
@@ -908,9 +908,20 @@ function registryChecks() {
   );
   check(
     "generate-phase set includes the clip tools",
-    ["select_clip_moments", "list_clip_moment_candidates", "update_clip_moment_status"].every((n) =>
-      MARKETING_GENERATE_TOOLS.has(n)
-    )
+    [
+      "select_clip_moments",
+      "list_clip_moment_candidates",
+      "update_clip_moment_status",
+      "generate_lesson_clips",
+      "cancel_clip_job",
+      "list_clip_jobs",
+    ].every((n) => MARKETING_GENERATE_TOOLS.has(n))
+  );
+  check(
+    "render tool summaries are honest about queued ≠ rendered + manual posting",
+    /QUEUED IS NOT RENDERED/.test(
+      clipTools.find((t) => t.name === "generate_lesson_clips")?.description ?? ""
+    ) && /manually/.test(clipTools.find((t) => t.name === "generate_lesson_clips")?.description ?? "")
   );
   const select = clipTools.find((t) => t.name === "select_clip_moments");
   check("select_clip_moments targets the clip_moment_set entity", select?.existingTarget?.({} as never, {} as never) === null);

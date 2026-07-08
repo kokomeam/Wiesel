@@ -23,6 +23,9 @@ export type ClipEventType = Extract<
   | "clip_moments_generation_failed"
   | "clip_moment_selected"
   | "clip_moment_dismissed"
+  | "clip_job_submitted"
+  | "clip_job_completed"
+  | "clip_job_failed"
 >;
 
 export async function emitClipEvent(

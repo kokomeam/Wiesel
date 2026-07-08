@@ -58,6 +58,41 @@ export function matchActionCues(text: string): string[] {
 }
 
 /**
+ * WHEN the demonstration cues land inside a span — clip-relative ms offsets,
+ * one per cue hit (the screen_action_zoom pan keyframes, FR-5: "zoompan
+ * keyframing driven by transcript-cued regions"). Pure: builds the span's
+ * text with a char→word map, finds each cue match, converts the match
+ * offset to the underlying word's startMs.
+ */
+export function actionCueTimes(
+  words: TranscriptWord[],
+  span: { startMs: number; endMs: number }
+): number[] {
+  const spanWords = words.filter((w) => w.startMs < span.endMs && w.endMs > span.startMs);
+  if (spanWords.length === 0) return [];
+  let text = "";
+  const charToWord: number[] = [];
+  for (const [i, w] of spanWords.entries()) {
+    if (i > 0) {
+      text += " ";
+      charToWord.push(i - 1);
+    }
+    for (let c = 0; c < w.w.length; c++) charToWord.push(i);
+    text += w.w;
+  }
+  const normalized = text.replace(/[’‘]/g, "'");
+  const times: number[] = [];
+  for (const { source } of CUE_REGEXES) {
+    const re = new RegExp(`\\b(?:${source})\\b`, "giu");
+    for (const m of normalized.matchAll(re)) {
+      const wordIdx = charToWord[m.index] ?? 0;
+      times.push(Math.max(0, spanWords[wordIdx].startMs - span.startMs));
+    }
+  }
+  return [...new Set(times)].sort((a, b) => a - b);
+}
+
+/**
  * Score one span. Duration comes from the span bounds (not word count) so an
  * empty-transcript span scores 0 cues/min rather than dividing by zero.
  */

@@ -1599,12 +1599,41 @@ compliant footers (8 locales, `language.ts`).
   `learner_messages.delivery_status`…) — after a migration here, SPLICE the
   new tables into `lib/database.types.ts` rather than full-regen, or this
   branch's analytics pages break on foreign nullability changes.
-- **Tests**: `verify:clips` (198 pure, in `npm test` — incl. the amendment's
-  named spec sections) · `verify:clips:int` (44, live Supabase + mock model —
-  incl. metadata-short-circuit spy, upload classification, override flip,
-  layout round-trip) · `eval:clips` (live/record/replay/control; the
-  flat-affect ≥2-viable gate is the differentiator claim + the FR-8 layout
-  gates). REST: `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
+- **M-B render jobs (2026-07-08, see docs/clips.md § Render jobs):**
+  `clip_render_job` (migration `20260708130000`; SINGLE write path =
+  `transitionRenderJob`, optimistic on `from`; revert = CANCEL never delete —
+  cost-ledger rows survive) advanced ONE edge per marketing scheduler tick
+  (`processClipRenderTick` — reconciliation IS delivery; Reap has NO
+  webhooks). Every job PRE-CUTS the exact span via a temp Mux clip asset
+  (`createClipAsset`, zero-dep trim; Reap re-picks inside create-clips
+  windows AND rejects stream.mux.com as sourceUrl → upload-only +
+  `create-reframe`, whose output rides get-project-clips NOT urls.videoFile).
+  D-5: face_track→Reap; stacked_split/zoom/audiogram→in-house ffmpeg
+  (`ffmpegArgs.ts` pure builders, REAL renders in verify:clips:render;
+  `ffmpeg-static` is a real dependency — ~75MB binary, serverless needs
+  outputFileTracingIncludes); slide_short→M-F. stacked_split face band =
+  the recorder's OWN `bubbleRect` when metadata exists (provenance
+  'deterministic', D-3) else one vision call ('detected'). D-1:
+  `lib/marketing/brand/tokens.ts` = the ONE brand-constant module
+  (divergence-checked). Quotas server-side: 10 submits/min bucket
+  (submitted_at), CLIP_JOBS_PER_DAY 20, CLIP_MINUTES_PER_MONTH 60 (ONE
+  ledger: provider billedDuration verbatim + in-house minutes×rate).
+  Tools: generate_lesson_clips (idempotency `gen:{cand}:{preset}`,
+  "QUEUED IS NOT RENDERED") · cancel_clip_job · list_clip_jobs — all
+  reversible/read. Burned captions on in-house layouts arrive with M-F's
+  Remotion caption engine (deliberate; provider face_track ships captioned).
+- **Tests**: `verify:clips` (199 pure, in `npm test` — incl. the amendment's
+  named spec sections) · `verify:clips:render` (52 — provider contract vs
+  the T0 findings, state machine, golden ffmpeg args, brand divergence,
+  REAL ffmpeg renders of all 3 in-house layouts, D-3 provenance spies,
+  fences) · `verify:clips:int` (64, live Supabase + mock model — incl.
+  metadata-short-circuit spy, upload classification, override flip, layout
+  round-trip, gate-staged render jobs + idempotent replay + revert-cancel +
+  the full queued→precutting→submitted→completed lifecycle vs real
+  DB/storage with fake provider/precut/ffmpeg + token-bucket hold + RLS) ·
+  `eval:clips` (live/record/replay/control; the flat-affect ≥2-viable gate
+  is the differentiator claim + the FR-8 layout gates). REST:
+  `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
 - **Next**: Task 0 (d)/(e)/(f) on one real ≥90s video → approval → M-B
   (ClipRenderProvider + Reap adapter or pre-cut FFmpeg fallback,
   `clip_render_job` [CREATE carries layout + provider enum], webhook-less

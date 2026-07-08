@@ -281,6 +281,35 @@ const clipMomentSetSnapshotter: EntitySnapshotter = {
   },
 };
 
+/**
+ * clip_render_job (M-B): a render job is a COST-LEDGER row — spend can't be
+ * unspent, so the revert of a CREATE cancels the job (status='cancelled')
+ * instead of deleting (the table has no delete policy by design; the
+ * provider-side best-effort cancel happens in the tool's own flow — the
+ * gate restore is DB-only). Reverting an UPDATE upserts the prior row; if
+ * the provider job was already cancelled remotely, the next tick polls it,
+ * sees the terminal provider status, and converges the row honestly.
+ */
+const clipRenderJobSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, id) {
+    const { data } = await supabase.from("clip_render_job").select("*").eq("id", id).maybeSingle();
+    return (data as unknown as Json) ?? null;
+  },
+  async restore(supabase, id, before) {
+    if (before === null) {
+      const { error } = await supabase
+        .from("clip_render_job")
+        .update({ status: "cancelled" })
+        .eq("id", id)
+        .not("status", "in", "(completed,failed,cancelled)");
+      if (error) throw new Error(`restore(cancel clip_render_job/${id}): ${error.message}`);
+      return;
+    }
+    const { error } = await supabase.from("clip_render_job").upsert(before as never, { onConflict: "id" });
+    if (error) throw new Error(`restore(upsert clip_render_job/${id}): ${error.message}`);
+  },
+};
+
 const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   campaign: singleRow("marketing_campaign"),
   landing_page: singleRow("landing_page"),
@@ -296,6 +325,7 @@ const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   social_voice_profile: singleRow("social_voice_profile"),
   clip_moment_candidate: singleRow("clip_moment_candidate"),
   clip_moment_set: clipMomentSetSnapshotter,
+  clip_render_job: clipRenderJobSnapshotter,
 };
 
 export async function snapshotEntity(supabase: DB, ref: EntityRef): Promise<Json | null> {

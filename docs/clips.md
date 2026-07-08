@@ -200,6 +200,77 @@ camera bubble baked together; audio mixed) — the platform never stores
 separate tracks, so FR-5's separate-track compositing branch applies only to
 hypothetical external dual-track uploads.
 
+## Render jobs (M-B, migration `20260708130000_clip_render_jobs.sql`)
+
+Every render is a `clip_render_job` row advanced ONE edge per scheduler tick
+(`processClipRenderTick`, piggybacked on the marketing tick — the no-cron
+fence; Reap has no webhooks, so **the reconciliation sweep IS the delivery
+path**). Every status write goes through `transitionRenderJob` (the single
+legal write path; optimistic `eq(status, from)` — the M-F Remotion worker
+uses the SAME function).
+
+- **State machine:** `queued → precutting → submitted → completed|failed`
+  (provider) · `queued → precutting → rendering_local → completed|failed`
+  (in-house) · any non-terminal → `cancelled`.
+- **Pre-cut (every job):** a TEMPORARY Mux clip asset
+  (`createClipAsset(source, start, end)` — zero-dep server-side trim; the
+  media already lives on Mux) polled to ready, its exact-span MP4 downloaded,
+  then deleted. Task 0 ruled this mandatory: Reap re-picks inside any
+  `create-clips` window AND rejects `stream.mux.com` as `sourceUrl` — the
+  adapter only ever uploads pre-cut bytes and calls **`create-reframe`**
+  (renders the whole upload verbatim; output rides `get-project-clips`,
+  never `urls.videoFile`).
+- **Layout delegation (D-5):** `face_track` → Reap reframe ·
+  `stacked_split`/`screen_action_zoom`/`audiogram` → in-house FFmpeg
+  (`render/ffmpegArgs.ts` pure builders + `localRender.ts` spawn) ·
+  `slide_short` → the M-F Remotion provider. The `provider` column widens
+  the amendment's enum with `wisesel_ffmpeg` (a T0-findings extension,
+  surfaced at the M-B checkpoint).
+- **stacked_split geometry:** face band 720×460 (the PiP crop — DETERMINISTIC
+  via the recorder's own `bubbleRect` constants when `recording.
+  cameraBubblePosition` exists; a one-call vision-detected corner for legacy
+  uploads; `crop_provenance` records which — D-3) + screen band 720×405 (the
+  FULL slide, legible) + a 720×415 brand-backdrop caption zone (the reserved
+  seam region).
+- **screen_action_zoom:** the frame scaled to full canvas height (an
+  implicit ~1.78× region zoom) with a 720-wide window panning between
+  transcript-cued regions (`actionCueTimes` → `zoomKeyframesFromCues` →
+  a piecewise-eased overlay-x expression).
+- **audiogram:** blurred cover backdrop + the footage as a legible 16:9 card
+  + a brand-color `showwaves` strip.
+- **Burned captions on in-house layouts arrive with M-F's Remotion caption
+  engine** (deliberate: drawtext/libass font resolution is unreliable across
+  deploy targets; the provider face_track output already ships a captioned
+  variant). Surfaced at the M-B checkpoint.
+- **Brand tokens (D-1):** `lib/marketing/brand/tokens.ts` is the ONE brand-
+  constant module (mirrors globals.css `@theme` + `public/brand/*`); the
+  divergence check in `verify-clips-render` fails if any other clips file
+  defines a color literal. `creatorBrandOverrides` is the [FWD] per-creator
+  seam (always undefined in MVP).
+- **Quotas + pacing (server-side):** 10 provider submissions/min (token
+  bucket over `submitted_at`), `CLIP_JOBS_PER_DAY` (20), and ONE cost ledger
+  — `cost_minutes` = the provider's `billedDuration` (never recomputed) or
+  in-house minutes × `CLIP_INHOUSE_MINUTE_RATE` — against
+  `CLIP_MINUTES_PER_MONTH` (60). Pre-cutting to the exact span is also the
+  cheapest spend (Reap bills the ingested duration).
+- **Idempotency:** `(creator_id, idempotency_key)` unique; the generate tool
+  keys `gen:{candidateId}:{preset}` so replays return the same job.
+- **Revert = CANCEL, never delete:** the job row is a cost-ledger entry (no
+  delete policy); the gate's revert-of-create marks it cancelled and the
+  provider cancel is best-effort (a remote race converges via the next poll).
+- **ffmpeg** is a REAL dependency (`ffmpeg-static`, installed by
+  `npm install` — never a system assumption). Deploy note: the binary is
+  ~75 MB; on serverless targets include it in the tick route's traced files
+  (Vercel `outputFileTracingIncludes`) or run ticks from a worker box. Local
+  dev works out of the box; `verify:clips:render` renders all three in-house
+  layouts for real as proof.
+- **Tools (all reversible or read — zero approval cards):**
+  `generate_lesson_clips` (quota-gated create; summary says QUEUED IS NOT
+  RENDERED + manual posting) · `cancel_clip_job` · `list_clip_jobs`.
+- **Storage:** outputs land in the PRIVATE `clip-media` bucket
+  (`{creator}/clips/{jobId}.mp4`), written by the service-role tick; reads
+  go through author-gated signed URLs (M-E).
+
 ## Data model (migration `20260707100000_lesson_clips.sql`)
 
 - `lesson_transcript` — one row per lesson (unique), `words` jsonb

@@ -205,12 +205,16 @@ bottom-right, baked into the single canvas track):
   nothing to steer by (static crop), and there is no active-region tracking
   to lean on.
 - `create-reframe` exposes `disableAutoSplit` + `centerStage` knobs
-  (upload-only; no timeline fields; `enableCaptions: true` by default) — an
-  autoSplit probe on the full composited upload was submitted
-  (project `6a4dc6c6…`, billedDuration 6); its output determines whether
-  Reap's dedicated reframe product can produce a usable split on PiP
-  footage. Regardless of its answer, the pan-crop evidence above already
-  binds the amendment's FR-5 branch:
+  (upload-only; no timeline fields; `enableCaptions: true` by default). The
+  autoSplit probe COMPLETED (project `6a4dc6c6…`, billedDuration 6,
+  ~5.7min): **same face-weighted pan-crop on the PiP footage — no split**
+  (frame-inspected: slide text amputated, face kept). Two adapter-relevant
+  positives from the same probe: `create-reframe` renders the WHOLE upload
+  verbatim (one output clip, `segments [[0, 379.119]]`, 720×1280) — the
+  non-picking endpoint our pre-cut path needs — and its output rides
+  `get-project-clips` (ONE clip with `clipUrl` + `clipWithCaptionsUrl`),
+  NOT `urls.videoFile` (that is the source working video). This binds the
+  amendment's FR-5 branch:
 
 **Design consequence (D-5 resolved): in-house composition for
 `stacked_split` and `screen_action_zoom`.**

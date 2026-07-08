@@ -533,6 +533,103 @@ export type Database = {
           },
         ]
       }
+      clip_render_job: {
+        Row: {
+          attempts: number
+          candidate_id: string
+          cost_minutes: number | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          crop_provenance: string | null
+          error: string | null
+          id: string
+          idempotency_key: string | null
+          layout: string
+          lesson_id: string
+          output: Json | null
+          precut: Json | null
+          preset: string
+          provider: string
+          provider_ref: string | null
+          source: Json
+          status: string
+          submitted_at: string | null
+          updated_at: string
+          upload_ref: string | null
+        }
+        Insert: {
+          attempts?: number
+          candidate_id: string
+          cost_minutes?: number | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          crop_provenance?: string | null
+          error?: string | null
+          id?: string
+          idempotency_key?: string | null
+          layout: string
+          lesson_id: string
+          output?: Json | null
+          precut?: Json | null
+          preset?: string
+          provider: string
+          provider_ref?: string | null
+          source: Json
+          status?: string
+          submitted_at?: string | null
+          updated_at?: string
+          upload_ref?: string | null
+        }
+        Update: {
+          attempts?: number
+          candidate_id?: string
+          cost_minutes?: number | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          crop_provenance?: string | null
+          error?: string | null
+          id?: string
+          idempotency_key?: string | null
+          layout?: string
+          lesson_id?: string
+          output?: Json | null
+          precut?: Json | null
+          preset?: string
+          provider?: string
+          provider_ref?: string | null
+          source?: Json
+          status?: string
+          submitted_at?: string | null
+          updated_at?: string
+          upload_ref?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clip_render_job_candidate_id_fkey"
+            columns: ["candidate_id"]
+            isOneToOne: false
+            referencedRelation: "clip_moment_candidate"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_render_job_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_render_job_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversations: {
         Row: {
           course_id: string

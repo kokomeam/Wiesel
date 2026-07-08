@@ -59,6 +59,10 @@ import type { Database, Json } from "@/lib/database.types";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { executeMarketingTool, rejectMarketingAction } from "@/lib/marketing/tools";
+import { advanceRenderJob, processClipRenderTick } from "@/lib/marketing/clips/render/service";
+import { getRenderJob, submissionsInLastMinute } from "@/lib/marketing/clips/render/jobs";
+import type { ClipRenderProvider } from "@/lib/marketing/clips/provider/types";
+import type { PrecutOps } from "@/lib/marketing/clips/render/precut";
 import type { MarketingToolContext } from "@/lib/marketing/tools/types";
 import { ClipTranscriptUnavailableError, ClipGenerationError } from "@/lib/marketing/clips/errors";
 import {
@@ -235,13 +239,16 @@ async function main() {
     } as unknown as Json,
   });
 
-  // Captioned ready video on lesson1 (the platform-transcript source).
+  // Captioned ready video on lesson1 (the platform-transcript source; the
+  // mux ids make it a renderable M-B source too — fakes stand in for Mux).
   await A.supabase.from("video_assets").insert({
     owner_id: A.userId,
     course_id: courseId,
     lesson_id: lesson1,
     status: "ready",
     duration_seconds: FLAT.durationMs / 1000,
+    mux_asset_id: "int-source-asset",
+    mux_playback_id: "int-source-playback",
     transcript_vtt: fixtureVtt(),
     transcript: FLAT.segments.map((s) => s.text).join(" "),
     caption_status: "ready",
@@ -575,8 +582,182 @@ async function main() {
     .single();
   check("A's candidate untouched by B's attempts", stillThere?.status === "candidate");
 
+  /* ───────────────── M-B: render jobs through the gate ────────────────── */
+
+  console.log("\n# M-B render jobs: gate staging + idempotency + revert-cancel");
+  const gen1 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check("generate_lesson_clips staged (reversible, no approval card)", gen1.status === "staged" && gen1.actionId != null);
+  check("target is the clip_render_job entity", gen1.target?.entity === "clip_render_job");
+  const jobId = gen1.target!.id;
+  const { data: jobRow } = await A.supabase.from("clip_render_job").select("*").eq("id", jobId).single();
+  check(
+    "job row: queued, face_track via reap (camera_only lesson), preset by funnel stage",
+    jobRow?.status === "queued" && jobRow?.layout === "face_track" && jobRow?.provider === "reap"
+  );
+  const { data: cand0 } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("start_ms,end_ms")
+    .eq("id", aCandidates![0].id)
+    .single();
+  const src = jobRow?.source as { startMs?: number; endMs?: number; recordingFormat?: string };
+  check(
+    "job span = the candidate's validated span, format stamped",
+    src?.startMs === cand0?.start_ms && src?.endMs === cand0?.end_ms && src?.recordingFormat === "camera_only"
+  );
+  check("summary is honest: queued ≠ rendered, manual posting", /queued/i.test(gen1.summary) && /NOT rendered/i.test(gen1.summary));
+
+  const gen1again = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check("idempotent replay returns the SAME job", gen1again.target?.id === jobId);
+
+  await rejectMarketingAction(A.supabase as never, gen1.actionId!);
+  const { data: cancelledRow } = await A.supabase.from("clip_render_job").select("status").eq("id", jobId).single();
+  check("revert of the create CANCELS the job (cost-ledger row survives)", cancelledRow?.status === "cancelled");
+
+  console.log("\n# M-B lifecycle: queued → precutting → submitted → completed (fakes, real DB+storage)");
+  const admin = createClient<Database>(url, loadServiceKey(), { global: { fetch: retryingFetch } });
+  const gen2 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![1].id, preset: "tofu_hook" },
+    ctxFor()
+  );
+  const job2Id = gen2.target!.id;
+
+  const fakePrecut: PrecutOps & { cleaned: string[] } = {
+    cleaned: [],
+    async start() {
+      return { muxAssetId: "precut-asset-1" };
+    },
+    async check() {
+      return { status: "ready", playbackId: "pb", mp4Url: "https://media.example/precut.mp4", error: null };
+    },
+    async cleanup(id) {
+      this.cleaned.push(id);
+    },
+  };
+  const fakeProvider: ClipRenderProvider = {
+    id: "reap",
+    async submit(input) {
+      check(
+        "provider receives the PRE-CUT bytes (never a URL) as a reframe",
+        input.kind === "provider_reframe" && input.bytes.length > 0
+      );
+      return { providerRef: "proj-int-1", uploadRef: "up-int-1", costMinutes: 1 };
+    },
+    async getJob() {
+      return {
+        status: "completed",
+        providerStatus: "completed",
+        outputUrl: "https://media.example/output.mp4",
+        cleanOutputUrl: "https://media.example/output-clean.mp4",
+        output: { width: 720, height: 1280, durationSeconds: 40 },
+        costMinutes: 1,
+        error: null,
+      };
+    },
+    async cancel() {},
+  };
+  const fakeFetch: typeof fetch = async (input) => {
+    const u = String(input);
+    if (u.includes("media.example")) return new Response(Buffer.from(`bytes-of-${u}`), { status: 200 });
+    return fetch(input as never);
+  };
+  const tickDeps = {
+    supabase: admin as never,
+    provider: fakeProvider,
+    precut: fakePrecut,
+    nowIso: new Date().toISOString(),
+    fetchImpl: fakeFetch,
+  };
+
+  let job2 = (await getRenderJob(admin as never, job2Id))!;
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check("tick 1: queued → precutting (temp clip asset ref stored)", job2.status === "precutting" && job2.precut?.muxAssetId === "precut-asset-1");
+
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check(
+    "tick 2: precutting → submitted (provider refs + submitted_at + create-billed cost)",
+    job2.status === "submitted" && job2.providerRef === "proj-int-1" && job2.submittedAt !== null && job2.costMinutes === 1
+  );
+  check("temp precut asset cleaned after submission", fakePrecut.cleaned.includes("precut-asset-1"));
+  check(
+    "token bucket counts the submission",
+    (await submissionsInLastMinute(admin as never, A.userId, new Date().toISOString())) >= 1
+  );
+
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check(
+    "tick 3: submitted → completed with output + provider cost",
+    job2.status === "completed" && job2.output?.storagePath === `${A.userId}/clips/${job2Id}.mp4` && job2.costMinutes === 1
+  );
+  const dl = await admin.storage.from("clip-media").download(job2.output!.storagePath);
+  check("output bytes really landed in the private clip-media bucket", !dl.error && (await dl.data!.text()).includes("bytes-of-"));
+
+  const jobEvents = await A.supabase
+    .from("analytics_event")
+    .select("type,props")
+    .eq("course_id", courseId)
+    .in("type", ["clip_job_submitted", "clip_job_completed"]);
+  check(
+    "clip_job_submitted + clip_job_completed on the single stream w/ layout+format",
+    (jobEvents.data ?? []).length === 2 &&
+      (jobEvents.data ?? []).every((e) => {
+        const p = e.props as Record<string, unknown>;
+        return p.layout === "face_track" && p.recordingFormat === "camera_only";
+      })
+  );
+
+  console.log("\n# M-B token bucket: held when the minute budget is spent");
+  process.env.CLIP_RENDER_TOKENS_PER_MIN = "1";
+  try {
+    const gen3 = await executeMarketingTool(
+      "generate_lesson_clips",
+      { candidateId: aCandidates![2].id, preset: "mofu_story" },
+      ctxFor()
+    );
+    let job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    await advanceRenderJob(tickDeps, job3); // → precutting
+    job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    const outcome = await advanceRenderJob(tickDeps, job3);
+    check("submission HELD by the 10/min bucket (1/min override, 1 already submitted)", outcome === "held");
+    job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    check("held job stays in precutting (retried next tick, nothing lost)", job3.status === "precutting");
+  } finally {
+    delete process.env.CLIP_RENDER_TOKENS_PER_MIN;
+  }
+
+  // One edge per job per tick — a few sweeps drain the queue (the cron shape).
+  let sweptCompleted = 0;
+  for (let i = 0; i < 3 && sweptCompleted === 0; i++) {
+    const tickResult = await processClipRenderTick(tickDeps, { limit: 10 });
+    sweptCompleted += tickResult.completed;
+  }
+  check("tick sweeps drain the held job to completion (reconciliation IS delivery)", sweptCompleted >= 1);
+
+  const { data: bJobs } = await B.supabase.from("clip_render_job").select("id");
+  check("RLS: B sees NO render jobs", (bJobs ?? []).length === 0);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
+}
+
+function loadServiceKey(): string {
+  const raw = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*(SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SECRET_KEY)\s*=\s*(.*)\s*$/);
+    if (m) return m[2].replace(/^["']|["']$/g, "");
+  }
+  throw new Error("SUPABASE_SERVICE_ROLE_KEY missing from .env.local (the render tick is admin-driven)");
 }
 
 main().catch((err) => {

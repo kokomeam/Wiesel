@@ -28,6 +28,14 @@ import {
 import { createMuxFrameInspector } from "../clips/format";
 import { getCandidate, listCandidatesForLesson, updateCandidateStatus } from "../clips/repository";
 import { selectClipMoments, type ClipPipelineDeps } from "../clips/selection";
+import { createReapProvider, isReapConfigured } from "../clips/provider/reapClient";
+import { createMuxPrecutOps } from "../clips/render/precut";
+import { listRenderJobsForLesson, type ClipRenderJob } from "../clips/render/jobs";
+import {
+  cancelRenderJob,
+  ClipRenderError,
+  createClipRenderJob,
+} from "../clips/render/service";
 import type { ClipMomentCandidate } from "../clips/schemas";
 import { defineMarketingTool, MarketingToolError, type MarketingToolContext } from "./types";
 
@@ -190,8 +198,134 @@ const updateClipMomentStatusTool = defineMarketingTool({
   },
 });
 
+/* ───────────────────────── render jobs (M-B) ──────────────────────────── */
+
+function jobLine(j: ClipRenderJob): string {
+  const state =
+    j.status === "completed"
+      ? "ready to download"
+      : j.status === "failed"
+        ? `failed (${j.error ?? "unknown"})`
+        : j.status === "cancelled"
+          ? "cancelled"
+          : "rendering in the background";
+  return `${CLIP_LAYOUT_LABELS[j.layout]} · ${j.preset} · ${state}`;
+}
+
+function compactJob(j: ClipRenderJob) {
+  return {
+    id: j.id,
+    candidateId: j.candidateId,
+    layout: j.layout,
+    layoutLabel: CLIP_LAYOUT_LABELS[j.layout],
+    provider: j.provider,
+    preset: j.preset,
+    status: j.status,
+    cropProvenance: j.cropProvenance,
+    output: j.output,
+    costMinutes: j.costMinutes,
+    error: j.error,
+    createdAt: j.createdAt,
+  };
+}
+
+const generateLessonClipsTool = defineMarketingTool({
+  name: "generate_lesson_clips",
+  description:
+    "Queue a RENDER of a clip moment candidate (the creator picked it — now make the video). The render runs in the background (pre-cut to the exact validated span → the layout's render path); QUEUED IS NOT RENDERED and nothing is ever posted — the creator downloads the finished clip and posts it manually. Quota-gated (daily jobs + monthly minutes). Reversible: reverting cancels the job (spend already incurred stays on the ledger).",
+  params: z.object({
+    candidateId: z.uuid(),
+    /** Packaging preset (tofu_hook | mofu_story | bofu_preview); null → by
+     *  the candidate's funnel stage. */
+    preset: z.enum(["tofu_hook", "mofu_story", "bofu_preview"]).nullable(),
+  }),
+  reversibility: "reversible",
+  actionKind: "generate_lesson_clips",
+  existingTarget: () => null, // a create — revert cancels the job
+  async execute(args, ctx) {
+    const candidate = await getCandidate(ctx.supabase, args.candidateId);
+    if (!candidate) throw new MarketingToolError(`Clip candidate ${args.candidateId} not found`);
+    const preset =
+      args.preset ??
+      (candidate.funnelStage === "bofu"
+        ? "bofu_preview"
+        : candidate.funnelStage === "mofu"
+          ? "mofu_story"
+          : "tofu_hook");
+    try {
+      const job = await createClipRenderJob(
+        {
+          supabase: ctx.supabase,
+          ownerId: ctx.ownerId,
+          courseIdForEvents: ctx.courseId,
+          model: ctx.model,
+          nowIso: ctx.services.clock.now(),
+        },
+        { candidate, preset, idempotencyKey: `gen:${candidate.id}:${preset}` }
+      );
+      return {
+        summary: `Render queued for "${candidate.hookText}" — ${CLIP_LAYOUT_LABELS[job.layout]} (${job.provider === "reap" ? "provider reframe" : "in-house composition"}), preset ${preset}. It processes in the background over the next few minutes; queued is NOT rendered yet, and nothing is ever posted for you.`,
+        data: compactJob(job),
+        target: { entity: "clip_render_job", id: job.id },
+      };
+    } catch (err) {
+      if (err instanceof ClipRenderError) throw new MarketingToolError(err.message);
+      throw err;
+    }
+  },
+});
+
+const cancelClipJobTool = defineMarketingTool({
+  name: "cancel_clip_job",
+  description:
+    "Cancel an in-flight clip render job (best-effort at the provider; the job row is marked cancelled). Spend already incurred stays on the ledger. Reversible (restoring the row lets the next background pass re-poll; a provider-side cancel that already landed converges the job honestly).",
+  params: z.object({ jobId: z.uuid() }),
+  reversibility: "reversible",
+  actionKind: "cancel_clip_job",
+  existingTarget: (args) => ({ entity: "clip_render_job", id: args.jobId }),
+  async execute(args, ctx) {
+    const job = await cancelRenderJob(
+      {
+        supabase: ctx.supabase,
+        provider: isReapConfigured() ? createReapProvider() : undefined,
+        precutOps: createMuxPrecutOps(),
+      },
+      args.jobId
+    );
+    if (!job) throw new MarketingToolError(`Clip render job ${args.jobId} not found`);
+    return {
+      summary:
+        job.status === "cancelled"
+          ? `Render cancelled (${CLIP_LAYOUT_LABELS[job.layout]}).`
+          : `That render already finished (${job.status}) — nothing to cancel.`,
+      data: compactJob(job),
+      target: { entity: "clip_render_job", id: job.id },
+    };
+  },
+});
+
+const listClipJobsTool = defineMarketingTool({
+  name: "list_clip_jobs",
+  description:
+    "List a lesson's clip render jobs (layout, status, output readiness, cost minutes). Renders happen in the background — check here for progress instead of re-queuing.",
+  params: z.object({ lessonId: z.uuid() }),
+  reversibility: "read",
+  async execute(args, ctx) {
+    const jobs = await listRenderJobsForLesson(ctx.supabase, args.lessonId);
+    return {
+      summary: jobs.length
+        ? `${jobs.length} render job(s).\n${jobs.slice(0, 6).map(jobLine).join("\n")}`
+        : "No render jobs for this lesson yet — pick a candidate and run generate_lesson_clips.",
+      data: { jobs: jobs.map(compactJob) },
+    };
+  },
+});
+
 export const clipTools = [
   selectClipMomentsTool,
   listClipMomentCandidatesTool,
   updateClipMomentStatusTool,
+  generateLessonClipsTool,
+  cancelClipJobTool,
+  listClipJobsTool,
 ];
