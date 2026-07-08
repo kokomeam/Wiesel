@@ -8,18 +8,21 @@
  * first version of this script guessed wrong; see docs/reap-task0-findings.md
  * for the full writeup of what's now confirmed vs. still open.
  *
- * Confirmed so far (see the findings doc for detail):
- *   (a) create-clips DOES take explicit `selectedStart`/`selectedEnd` (secs)
- *       — but Reap enforces a ≥60s window, and whether it cuts EXACTLY that
- *       window or re-picks its own moment inside it is still UNCONFIRMED
- *       (every render attempt has failed on video-source fetching, not on
- *       request shape — see the "Unable to process video" finding).
- *   (b) no webhook field/endpoint exists anywhere in the API — check the
- *       Reap DASHBOARD for an account-level setting before assuming M-B
- *       must go poll-only.
+ * Task 0 is COMPLETE (2026-07-08 — full results in the findings doc):
+ *   (a) `selectedStart`/`selectedEnd` (secs, ≥60s window) are an EXACT
+ *       pre-cut boundary, but create-clips RE-PICKS its own clips inside
+ *       the window → our exact spans go pre-cut + create-reframe/captions,
+ *       never create-clips.
+ *   (b) no webhooks anywhere in the API — M-B is poll-first.
  *   (c) no brand-template create API — `get-all-presets` is read-only,
- *       system-provided caption styles only.
- *   (d)/(e) NOT YET DONE — need one real ≥90s video Reap can actually fetch.
+ *       system caption styles only; branding is applied on OUR side.
+ *   (d)/(e) DONE on a real 6:19 lesson recording via the UPLOAD path
+ *       (Reap's fetcher rejects stream.mux.com as sourceUrl): TTFC ~5.7min
+ *       for a 120s window; billedDuration = the selected duration in
+ *       minutes (floor/round, not ceil).
+ *   (f) face detection finds the composited PiP bubble (trackingData is
+ *       faces-only) but the reframe is a face-weighted PAN-CROP that cuts
+ *       off screen content — stacked_split/screen_action_zoom go in-house.
  *
  * Usage:
  *   REAP_API_KEY in .env.local, then:

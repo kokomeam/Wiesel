@@ -44,3 +44,6 @@ next-env.d.ts
 
 # generated visual-check screenshots (verify-materialize-visual.ts output)
 scripts/.materialize-visual/
+
+# Rendered clip artifacts (T0/M-C checkpoint outputs — media, never committed)
+/artifacts/

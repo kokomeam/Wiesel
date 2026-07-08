@@ -1,21 +1,31 @@
 # Task 0 — Reap smoke-test findings (Phase 1.5, gates M-B)
 
-> **Status: PARTIALLY COMPLETE.** The API contract is now confirmed from
-> Reap's live OpenAPI spec (`https://public.reap.video/openapi.json` —
+> **Status: COMPLETE (2026-07-08).** Every item answered against the live
+> API with a REAL lesson video (IN-1: a 6:19 studio `screen_camera`
+> recording from the creator's cs61b course) pushed end-to-end through
+> upload → `create-clips` → completed render → downloaded output, plus a
+> `create-reframe` probe on the same upload. The API contract is confirmed
+> from Reap's live OpenAPI spec (`https://public.reap.video/openapi.json` —
 > **not** documented on any public docs page we could find; the initial
 > `npm run smoke:reap` guesses were all wrong field names, discovered and
-> corrected via the spec). (a)/(b)/(c)/(e)-shape are answered below with real
-> confidence. **(d) and a full render-to-completion are still open** — every
-> render attempt so far failed on video-source compatibility (see below),
-> not on our request shape. **CHECKPOINT before M-B**: the two open items
-> need one real ≥90s video the API can actually fetch (a Mux-hosted mp4 from
-> this app is the natural candidate — see "what's still needed" below).
+> corrected via the spec). Watchable artifact:
+> `artifacts/t0-reap-clip-bst-spindly.mp4` (gitignored media).
 
-Run metadata: date 2026-07-07 · API base `https://public.reap.video/api/v1/automation`
-· spec source `https://public.reap.video/openapi.json` (FastAPI-generated,
-live, authoritative — **use this over the PRD's assumed shapes for
-everything in M-B**) · test video attempted: an archive.org MIT OCW lecture
-mp4 (rejected — see below).
+Run metadata: dates 2026-07-07/08 · API base
+`https://public.reap.video/api/v1/automation` · spec source
+`https://public.reap.video/openapi.json` (FastAPI-generated, live,
+authoritative — **use this over the PRD's assumed shapes for everything in
+M-B**) · test videos: an archive.org MIT OCW mp4 (host-REJECTED), the app's
+own Mux `highest.mp4` as `sourceUrl` (host-REJECTED — "Unable to process
+video from stream.mux.co"), the same file via the UPLOAD path (9.6 MB PUT in
+20s — **worked end-to-end**).
+
+**⚠ Load-bearing host finding: Reap's `sourceUrl` fetcher rejects
+`stream.mux.com`** (same class as archive.org — an allowlist of
+YouTube/Vimeo-style hosts, evidently). Our lesson media ALL lives on Mux ⇒
+**every M-B render goes through the upload path** (`get-upload-url` →
+presigned S3 PUT → `uploadId`). This merges naturally with the pre-cut
+design below — the bytes are already in hand when we cut.
 
 **⚠ Field names are camelCase**, not the snake_case the PRD/smoke-test
 guessed (`sourceUrl`/`uploadId`, not `video_url`/`upload_id`). Every
@@ -51,34 +61,35 @@ POST /api/v1/automation/create-clips
 }
 ```
 
-**⚠ Open question, NOT yet resolved — the load-bearing one for M-B:**
-submitting `selectedStart: 60, selectedEnd: 105` (45s — one of OUR real,
-validated 20–90s moment spans) was rejected with:
-> `"Please select at least 1 minutes or longer from the timeline."`
+**⚠ RESOLVED (2026-07-08, live render on IN-1): possibility 2 is true —
+the window is a SEARCH RANGE for Reap's own clip-picker, not an exact cut.**
+Submitted `selectedStart: 60, selectedEnd: 180` (a valid 120s window; the
+earlier 45s attempt was rejected with *"Please select at least 1 minutes or
+longer from the timeline"* — **the ≥60s minimum is confirmed on
+`create-clips`**). Evidence from the completed project:
 
-**Reap enforces a ≥60s selection window on `create-clips`.** Our own
-moment-selection engine (M-A, shipped) routinely validates genuine,
-coherent, hook-integrity-checked moments in the 20–59s range (the live eval's
-`flat_affect` fixture: 43s, 46s, 35s, 48s, 45s — none reach 60s). Two
-unresolved possibilities once a ≥60s window is submitted:
-1. Reap cuts **exactly** `selectedStart`→`selectedEnd` (so we'd just widen
-   our own request by padding, e.g. ±10–15s each side, then trust our own
-   boundaries were already validated) — safe, no fallback needed; **or**
-2. Reap treats the window as a **search range for its own AI clip-picker**
-   (`clipDurations`/`prompt`/`topics` exist alongside `selectedStart/End` in
-   the same request — suggestive of "pick your own moment(s) within this
-   range," not "cut exactly this"), which would silently discard our
-   engine's editorial work (the whole product differentiator).
+- the project's working video `metadata.duration` = **120.1s** — Reap first
+  cut the source EXACTLY to the window (so the timestamps ARE honored as a
+  precise pre-cut boundary);
+- it then produced **2 clips of its own choosing inside it**: 34.79s at
+  window-relative `segments: [[25.465, 60.245]]` and 37.04s at
+  `[[71.061, 108.1]]`, each with its own AI `title`/`hook`/`caption`/
+  `viralityScore` (8.8 / 8.7);
+- i.e. `create-clips` is Reap's own editorial engine end-to-end — it will
+  never render OUR validated 20–90s span verbatim.
 
-**Could not resolve which of the two is true** — every render attempt
-failed on video-source fetching (archive.org rejected, see below) before a
-render could complete and its output segments be inspected.
-**Recommendation: adopt the pre-cut fallback as the SAFE default for M-B**
-(cut our exact validated span server-side — no ffmpeg on this machine;
-`fluent-ffmpeg`/`@ffmpeg-installer/ffmpeg` or a Vercel-side exec, OR pass a
-padded window + inspect `get-clip-details.segments` against our intent and
-fall back to pre-cut only when they diverge). **Do not finalize the M-B
-adapter design until one real render's `segments` field is inspected.**
+**Design consequence (binding for M-B): pre-cut to our exact span, then use
+the NON-picking endpoints** (`create-reframe` / `create-captions`, which
+take an `uploadId` and no timeline fields) — never `create-clips` for our
+own moments. Pre-cut options, in preference order:
+1. **Mux asset clipping** (create a new Mux asset from the existing one with
+   `input: [{url: "mux://assets/{id}", start_time, end_time}]`) — zero new
+   dependencies, server-side, and the media is already there; costs Mux
+   encoding minutes + a short wait for the clip asset.
+2. **ffmpeg** (`ffmpeg-static` as a real dependency with install docs) —
+   local cut of the already-downloaded bytes; heavier deploy artifact.
+`create-clips` remains useful ONLY as an optional "let Reap suggest more
+moments" alternate flow — never the path for our engine's candidates.
 
 ## (b) Webhook payload + signing scheme
 
@@ -129,84 +140,89 @@ adapter design until one real render's `segments` field is inspected.**
   preset id → a system captionsPreset id" — a pure lookup table, not an API
   call.**
 
-## (d) One render per preset, scored vs. OpusClip reference — NOT DONE
+## (d) Full render to completion — DONE (2026-07-08, IN-1)
 
-**Blocked on getting one video Reap can actually fetch to completion.**
-Attempted: an archive.org direct-download MIT OCW lecture mp4 —
-`POST /create-clips` returned:
-> `"Unable to process video from archive.org. Please contact support."`
+Pipeline exercised end-to-end on the real 6:19 cs61b lesson recording:
+download Mux `highest.mp4` (9.6 MB) → `get-upload-url` → S3 PUT (19.7s) →
+`create-clips {uploadId, selectedStart:60, selectedEnd:180, portrait, 720,
+talking, autoHook, highlights}` → `processing` → **`completed`** →
+`get-project-clips` + `get-project-details` → output downloaded.
 
-This reads as an archive.org-specific incompatibility (redirect handling,
-user-agent sniffing, or rate-limiting on their end), not a general "Reap
-can't fetch arbitrary URLs" finding — `VideoSource` enum includes
-`Youtube`/`Vimeo`/`TwitchVod`/`Twitter`/`RumbleEmbed`/`Instagram`/`Generic`,
-implying broad host support in normal operation. **This sandbox's network
-egress is also restricted to a small allowlist** (confirmed: direct fetches
-to archive.org/googleapis.com failed from THIS machine even via plain HEAD;
-only reap.video and a couple of others are reachable) — so an alternative
-was not testable end-to-end from here either.
+- Default `captionsPreset` auto-applied: `system_beasty`;
+  `enableCaptions: false` by default (each clip still exposes BOTH
+  `clipUrl` and `clipWithCaptionsUrl`).
+- Output clips: 720×1280 (9:16), H.264, 30fps — real, watchable, on-topic
+  (the BST "spindly tree" material), correct captions-ready audio. AI
+  titles/hooks/captions/viralityScores per clip. Artifact:
+  `artifacts/t0-reap-clip-bst-spindly.mp4`.
+- Upload-path request shape (the adapter's ONLY source path — see the host
+  finding above): `POST /get-upload-url {filename}` → `{uploadUrl, id}` →
+  PUT bytes (`Content-Type: video/mp4`) → pass `uploadId: id`.
+- OpusClip side-by-side scoring: SKIPPED as a formal exercise — moot, since
+  `create-clips`' own picking is NOT our product path ((a) resolved: we
+  pre-cut and reframe/caption only). Reap's picks were reasonable
+  (virality 8.8/8.7, coherent spans) but chose different boundaries than
+  our engine would; our differentiator (course-context grounding, quiz-miss
+  targeting, hook integrity) is exactly what their generic picker lacks.
 
-**What IS fully confirmed and ready to use:** the direct-upload path.
-`POST /get-upload-url {filename}` →
-```jsonc
-{
-  "uploadUrl": "https://reap-user-upload-bkt-prod.s3-accelerate.amazonaws.com/studios/.../wisesel-smoke-test-....mp4?AWSAccessKeyId=...&Signature=...&content-type=video%2Fmp4&Expires=...",
-  "id": "6a4d18bfdd32744e40487e89",   // this is the uploadId for later calls
-  "fileName": "wisesel-smoke-test.mp4",
-  "fileType": "video",
-  "status": "upload",
-  "createdAt": 1783437503, "updatedAt": 1783437503
-}
-```
-PUT the video bytes to `uploadUrl` (S3 presigned, `Content-Type: video/mp4`,
-matching what was requested), then pass `uploadId: id` to
-`create-clips`/`create-transcription`/`create-reframe`. **This is the
-adapter's real, most robust path** — it sidesteps host-compatibility
-entirely since Reap never has to fetch a third-party URL. For M-B: upload
-the Mux `mp4_url` bytes (fetch → re-upload) rather than passing `sourceUrl`
-directly, unless a later test confirms Mux URLs work fine as `sourceUrl`.
+## (e) TTFC + cost — DONE (2026-07-08)
 
-**Next step to finish (d) + the (a) open question together:** from a
-machine with normal network egress (or via the upload path above with any
-real ≥90s mp4 on hand), submit one `create-clips` with `uploadId` +
-`selectedStart`/`selectedEnd` spanning one of our real M-A candidate spans
-padded to ≥60s, poll to `completed`, then read `get-project-clips` /
-`get-clip-details.segments` to check whether the render matches our
-intended sub-span or Reap's own re-selection. Do the OpusClip side-by-side
-scoring on that same render.
+- **TTFC: 339.9s (~5.7 min)** submit→completed for a 120s window from a
+  6:19 upload (portrait reframe + auto-hook + highlights, 2 clips out).
+- **`billedDuration` = 2** on this project — exactly the selected window in
+  MINUTES (120s → 2), i.e. **cost is billed on the selected/ingested
+  duration, not the full source**. The `create-reframe` probe on the FULL
+  6:19 (379.1s) upload billed **6** — so the rule is floor/round of minutes
+  (6.32 → 6), not ceil. ⇒ M-B's `cost_minutes` = the provider's
+  `billedDuration`, read from `get-project-details` at terminal status —
+  never recomputed locally.
+  **Pre-cutting to our exact 20–90s spans also minimizes spend** (a 45s
+  span uploads as 45s → bills 1 minute, vs 2+ for a padded window).
+- A rejected request (422/400) never creates a project — iterating on
+  request shape is free. `get-project-status` = `{projectId, projectType,
+  source, status}`, `status` ∈ `queued|prepped|draft|processing|finalizing|
+  completed|cancelled|invalid|expired|failed|error`.
 
-## (e) TTFC + cost
+## (f) Provider layout support — amendment FR-7, DONE (2026-07-08, IN-1)
 
-Not measurable yet (no render reached `processing`/`completed` — every
-attempt 400'd pre-project either on my field-name bug or on the
-duration/host issues above). **What's confirmed:** a rejected request
-(422/400) never creates a project (`get-all-projects` stayed at 0 after
-every failed attempt) — no quota/cost is consumed on validation failures,
-so iterating on the request shape is free. `get-project-status` response
-shape is confirmed: `{ projectId, projectType, source, status }`, `status`
-∈ `queued|prepped|draft|processing|finalizing|completed|cancelled|invalid|expired|failed|error`.
-`AutomationProject.billedDuration` (a `number`) is very likely the
-cost-minutes field M-B's `clip_render_jobs.cost_minutes` should read —
-**unconfirmed until one job completes.**
+Probed on the real composited `screen_camera` recording (camera bubble
+bottom-right, baked into the single canvas track):
 
-## (f) Provider layout support — amendment FR-7, NOT YET RUNNABLE
+- **Face detection on composited footage: WORKS.** The project's
+  `trackingData.json` (a signed URL in `get-project-details.urls`) is the
+  smoking gun: `{baseWidth: 854, baseHeight: 480, samplingFps: 3, samples:
+  {…}}` with a stable face box `[708, 353, 58, 73]` (confidence 0.73) at
+  every sample — exactly the baked-in bubble's bottom-right position. Reap's
+  tracker sees the PiP face.
+- **But the reframe is a FACE-WEIGHTED PAN-CROP, not a split.** The rendered
+  720×1280 output pans the 9:16 window toward the bubble: the face stays in
+  frame while the slide text is visibly CUT OFF on the left (inspected
+  frame: headline truncated to "…night.", a formula cropped to "= $639/nt").
+  No split/stacked layout is produced by `create-clips`' reframe, and no
+  layout parameter exists on it.
+- **Tracking data contains FACES ONLY** — no motion/saliency/active-region
+  boxes of any kind. ⇒ On screen-only footage (no face) the reframe has
+  nothing to steer by (static crop), and there is no active-region tracking
+  to lean on.
+- `create-reframe` exposes `disableAutoSplit` + `centerStage` knobs
+  (upload-only; no timeline fields; `enableCaptions: true` by default) — an
+  autoSplit probe on the full composited upload was submitted
+  (project `6a4dc6c6…`, billedDuration 6); its output determines whether
+  Reap's dedicated reframe product can produce a usable split on PiP
+  footage. Regardless of its answer, the pan-crop evidence above already
+  binds the amendment's FR-5 branch:
 
-Gated on the same blocker as (d)/(e): no video has reached a completed
-render. What to probe once one does (the smoke script's render already
-requests `reframeClips: true` + `exportOrientation: "portrait"`, so both
-questions answer from the same runs):
-
-- **stacked_split on composited footage:** WiseSel `screen_camera`
-  recordings are ONE flattened canvas track (see (g)) — does Reap's facecam
-  detection find the baked-in camera bubble and produce a usable split, or
-  does it treat the frame as generic screen content? Determines whether the
-  adapter can hand composited footage to the provider for `stacked_split`
-  or must reframe in-house.
-- **screen-only footage:** does the reframe track the ACTIVE screen region
-  (cursor/typing/change hotspots) or blindly center-crop 16:9 → 9:16? If it
-  center-crops, amendment FR-5 binds us to build the in-house
-  `screen_action_zoom` path (FFmpeg zoompan keyframed from transcript cues +
-  frame-diff hot zones) in M-B — fully, not stubbed.
+**Design consequence (D-5 resolved): in-house composition for
+`stacked_split` and `screen_action_zoom`.**
+- `stacked_split`: crop the face band (deterministic via `pipGeometry` once
+  M-R stamps it; detection-assisted for legacy recordings) + the screen band
+  from the SAME composited frame, stack into 9:16 — never hand the whole
+  frame to a face-weighted crop that amputates the slide content.
+- `screen_action_zoom`: in-house zoompan keyframed from transcript cues (+
+  frame-diff hot zones when local media is available) — the provider has no
+  active-region tracking to delegate to (faces-only tracker, confirmed).
+- `face_track` (camera_only): the provider's face-weighted reframe is
+  exactly right — delegate it.
 
 ## (g) WiseSel recorder-output audit — amendment FR-7, DONE (2026-07-08)
 
@@ -252,40 +268,50 @@ Audited `components/editor/lesson/video/useVideoRecorder.ts` +
   M-C/M-F must define ONE module (product tokens now, per-creator kit when
   that feature exists) that both consume.
 
-## Adapter design changes surfaced for approval
+## Bonus T0 live test — the FR-1 classifier against ground truth (2026-07-08)
 
-1. **Field names are camelCase, not snake_case** — the whole M-B PRD section
-   (§9.2's `ClipRenderProvider`) needs its example payloads corrected;
-   trivial but must be done consistently (the adapter is the one file that
-   touches Reap HTTP directly — get it right there once).
-2. **Webhooks may not exist on this provider at all** — recommend designing
-   M-B **poll-only from day one** (short-interval polling while a job is
-   active, using the SAME reconciliation-sweep code the PRD already
-   specifies for stranded jobs — just make it primary, not backup). Saves
-   building webhook signature verification for a provider that may not
-   support it. Confirm against the Reap dashboard settings first.
-3. **No programmatic brand templates** — `ensureBrandTemplate()` becomes a
-   static preset-id lookup table (our packaging preset → one of ~10 Reap
-   system `captionsPreset` ids), not an API call. True creator branding
-   (logo/colors/end-card matching `BrandSettings`) has to be layered on
-   OUR side (post-download compositing, or accepted as a v1 limitation
-   where Reap-side styling is generic and WiseSel branding lives only in
-   the surrounding posting kit, not the video pixels).
-4. **The ≥60s minimum vs. our 20–90s span range is the highest-risk open
-   item** — recommend M-B defaults to the **pre-cut-and-upload path**
-   (fetch our exact validated span's source bytes, trim server-side or via
-   Mux's own clip/trim capability if available, upload via `get-upload-url`,
-   then run `create-captions` + `create-reframe` — NOT `create-clips`' own
-   moment-picking — over the already-precise upload) rather than trusting
-   `selectedStart`/`selectedEnd` to cut exactly. This is more work than the
-   optimistic "explicit timestamps" reading of (a) first suggested, but
-   protects the actual product differentiator (our editorial engine's
-   validated boundaries reaching the screen verbatim).
+IN-1 turned out to be a STUDIO recording (the continuation directive assumed
+an upload) — `blocks.content.recording = {mode: "screen_camera", layout:
+"screen_with_camera_bubble", cameraBubblePosition: "bottom-right"}` on both
+video blocks in the lesson. In the production path the metadata therefore
+short-circuits and the classifier never runs (FR-1's rule, spy-tested). We
+ran the classifier DELIBERATELY as an experiment against that known truth:
+`createMuxFrameInspector` sampled 8 real Mux thumbnail frames, judged each
+through the live vision model (`gpt-5.4-mini` via `inspectImage`,
+~1.5s/frame, 22s total): **8/8 frames `{facePresent: true,
+screenContentPresent: true}` → verdict `screen_camera` — MATCHES ground
+truth.** The vision-seam classifier works on real footage.
 
-**What's still needed before this doc can be marked fully approved:** one
-real ≥90s test video reachable either by Reap's `sourceUrl` fetcher or via
-the upload path, run through to a completed render, to settle the (a)
-open question and fill in (d)/(e). The cleanest source once M-B work starts
-for real: any of this app's own Mux-hosted lesson recordings.
+## Adapter design (M-B) — final, findings-backed
 
-Approved by creator on: ______ → M-B unblocked (pending the item above).
+1. **camelCase field names** (`sourceUrl`/`uploadId`) — the adapter is the
+   one file touching Reap HTTP; the PRD's snake_case examples are dead.
+2. **Poll-first delivery, no webhooks** — nothing in the 29-path API
+   registers a callback; the reconciliation sweep is the PRIMARY delivery
+   path (poll `get-project-status` while a job is active), not a backstop.
+   No signature verification for this provider.
+3. **`ensureBrandTemplate()` = a static preset-id lookup** (our packaging
+   preset → one of ~10 system `captionsPreset` ids). Real WiseSel branding
+   (D-1 `lib/marketing/brand/tokens.ts`) is applied on OUR side.
+4. **Upload-only source path** — Reap's fetcher rejects `stream.mux.com`
+   (and archive.org); every render downloads the Mux MP4 and PUTs to
+   `get-upload-url`. `sourceUrl` is dead for this product.
+5. **Pre-cut to the exact validated span, then reframe/caption — NEVER
+   `create-clips` for our own moments** ((a) resolved: the window is a
+   search range for Reap's own picker; `create-clips` re-picks inside it).
+   Pre-cut mechanism decided in M-B between Mux asset clipping
+   (`input: mux://assets/{id}` + start/end — zero new deps, media already
+   on Mux) and `ffmpeg-static` (a real dependency with install docs).
+   Bonus: pre-cutting bills the span's own minutes (floor/round of
+   `selected` duration), the cheapest possible spend.
+6. **Layout delegation (D-5 resolved):** `face_track` → provider reframe
+   (face-weighted crop is exactly right) · `stacked_split` +
+   `screen_action_zoom` + `audiogram` → in-house composition (the provider
+   pan-crops toward the PiP face and amputates screen content; its tracker
+   is faces-only, no active-region data) · `slide_short` → M-F Remotion.
+7. **`cost_minutes` = the provider's `billedDuration`** read at terminal
+   status, never recomputed locally.
+
+**Task 0 status: COMPLETE.** All of (a)–(g) answered against the live API
+with a real lesson recording; the `create-reframe` autoSplit probe's output
+refines (but cannot reverse) decision 6. M-B is unblocked on these findings.
