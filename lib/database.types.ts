@@ -2632,6 +2632,7 @@ export type Database = {
           batch_id: string | null
           batch_order: number | null
           body: string
+          clip_job_id: string | null
           campaign_id: string | null
           course_id: string | null
           created_at: string
@@ -2660,6 +2661,8 @@ export type Database = {
           tone: string
           updated_at: string
           version: number
+          video_path: string | null
+          regenerated_from_post_id: string | null
         }
         Insert: {
           ai_metadata?: Json
@@ -2667,6 +2670,7 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body: string
+          clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null
           created_at?: string
@@ -2695,6 +2699,8 @@ export type Database = {
           tone: string
           updated_at?: string
           version?: number
+          video_path?: string | null
+          regenerated_from_post_id?: string | null
         }
         Update: {
           ai_metadata?: Json
@@ -2702,6 +2708,7 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body?: string
+          clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null
           created_at?: string
@@ -2730,6 +2737,8 @@ export type Database = {
           tone?: string
           updated_at?: string
           version?: number
+          video_path?: string | null
+          regenerated_from_post_id?: string | null
         }
         Relationships: [
           {

@@ -640,6 +640,31 @@ function dualStackedSpec() {
   );
 }
 
+async function packagingLayoutSpec() {
+  console.log("# packaging.layout.spec (M-C: presets × layouts are ORTHOGONAL)");
+  const { CLIP_PACKAGING_PRESETS, CLIP_PRESET_META, ResolvedPackagingSchema, resolvePackaging } =
+    await import("@/lib/marketing/clips/presets");
+  const { CLIP_LAYOUTS } = await import("@/lib/marketing/clips/constants");
+  check("3 presets with complete meta", CLIP_PACKAGING_PRESETS.every((p) => CLIP_PRESET_META[p].captionsPresetId.startsWith("system_")));
+  let all = true;
+  for (const preset of CLIP_PACKAGING_PRESETS) {
+    for (const layout of CLIP_LAYOUTS) {
+      const r = resolvePackaging(preset, layout);
+      if (!ResolvedPackagingSchema.safeParse(r).success || r.layout !== layout) all = false;
+      if (r.creatorBrandOverrides !== undefined) all = false; // [FWD], MVP undefined
+    }
+  }
+  check("every preset resolves in EVERY layout (bofu_preview slide_short, tofu_hook stacked_split, …) — no superRefine coupling", all);
+  check(
+    "layout membership enforced",
+    !ResolvedPackagingSchema.safeParse({ presetId: "tofu_hook", layout: "portrait", captionsPresetId: "system_hype" }).success
+  );
+  check(
+    "brand rides D-1 tokens (one source)",
+    resolvePackaging("tofu_hook", "face_track").brand.colors.brand === BRAND_TOKENS.colors.brand
+  );
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -651,6 +676,7 @@ async function main() {
   await recorderCaptureSpec();
   await recordingMetadataSpec();
   dualStackedSpec();
+  await packagingLayoutSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

@@ -32,12 +32,15 @@ export const CLIP_OUT_H = 1280;
 
 /* ───────────────────────── stacked_split geometry ──────────────────────── */
 
-/** 720×1280 = face band + screen band + caption zone. The screen band keeps
- *  the FULL slide legible (720 wide × 16:9 = 405); the caption zone is the
- *  reserved seam region (amendment FR-5's "captions across the seam"). */
+/** 720×1280 = face band + screen band + caption zone. EVERY band height is
+ *  EVEN — yuv420p sources round odd heights down (the lavfi color pad at
+ *  415 silently emitted 414 → a 1279px stack → libx264 refused; found on
+ *  the first REAL lesson render). The screen band keeps the FULL slide
+ *  legible: 406 vs the exact 16:9 405 is a 1px (0.25%) vertical stretch —
+ *  imperceptible, and even. */
 export const STACKED_FACE_BAND_H = 460;
-export const STACKED_SCREEN_BAND_H = 405;
-export const STACKED_CAPTION_BAND_H = CLIP_OUT_H - STACKED_FACE_BAND_H - STACKED_SCREEN_BAND_H; // 415
+export const STACKED_SCREEN_BAND_H = 406;
+export const STACKED_CAPTION_BAND_H = CLIP_OUT_H - STACKED_FACE_BAND_H - STACKED_SCREEN_BAND_H; // 414
 
 export interface PipRect {
   x: number;

@@ -790,6 +790,43 @@ async function main() {
       })
   );
 
+  // M-C: the completed job auto-ingested into the social queue.
+  const { data: clipPost } = await A.supabase
+    .from("social_post")
+    .select("post_type, platform, video_path, clip_job_id, ai_metadata, status")
+    .eq("clip_job_id", job2Id)
+    .maybeSingle();
+  check(
+    "M-C ingest: completed render → social_post (post_type='clip', draft, video_path, lineage metadata)",
+    clipPost?.post_type === "clip" &&
+      clipPost?.status === "draft" &&
+      clipPost?.video_path === `${A.userId}/clips/${job2Id}.mp4` &&
+      (clipPost?.ai_metadata as Record<string, unknown>)?.layout === "face_track"
+  );
+  check(
+    "M-C ingest: clip platform enum extension live, text posts still closed",
+    ["instagram", "tiktok", "youtube_shorts", "facebook", "linkedin"].includes(clipPost?.platform ?? "") &&
+      (await A.supabase
+        .from("social_post")
+        .insert({
+          creator_id: A.userId,
+          source_type: "manual",
+          platform: "instagram",
+          post_type: "text",
+          goal: "value",
+          funnel_stage: "tofu",
+          tone: "educational",
+          body: "x",
+        })
+        .then((r) => r.error !== null)) // the text-platform check must reject
+  );
+  const ingestEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_ingested");
+  check("clip_ingested event on the single stream", (ingestEvents.data ?? []).length >= 1);
+
   console.log("\n# M-B token bucket: held when the minute budget is spent");
   process.env.CLIP_RENDER_TOKENS_PER_MIN = "1";
   try {

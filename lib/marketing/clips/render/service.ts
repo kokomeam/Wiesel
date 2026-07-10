@@ -39,6 +39,8 @@ import { actionCueTimes } from "../actionDensity";
 import { clipRenderConfig, CLIP_JOB_MAX_ATTEMPTS, CLIP_LOCAL_RENDER_STALE_MS } from "../constants";
 import { emitClipEvent } from "../events";
 import { getLessonTranscript } from "../transcripts";
+import { ingestCompletedClipJob } from "../ingest";
+import { getCandidate } from "../repository";
 import type { ClipMomentCandidate } from "../schemas";
 import type { ClipRenderProvider } from "../provider/types";
 import {
@@ -51,7 +53,7 @@ import {
   zoomKeyframesFromCues,
   type PipRect,
 } from "./ffmpegArgs";
-import { runFfmpeg } from "./localRender";
+import { FfmpegError, runFfmpeg } from "./localRender";
 import type { PrecutOps } from "./precut";
 import {
   createRenderJob,
@@ -445,6 +447,28 @@ async function renderLocal(
   throw new Error(`layout ${job.layout} is not an in-house render`);
 }
 
+/** M-C: a completed job becomes a social_post (post_type='clip'). Best-
+ *  effort here — ingest is idempotent per job and the NEXT tick's sweep of
+ *  completed-but-uningested jobs would be redundant (the completion edge
+ *  only fires once); a failure logs loudly instead of failing the job. */
+async function ingestJob(deps: RenderTickDeps, jobId: string): Promise<void> {
+  try {
+    const fresh = await getRenderJob(deps.supabase, jobId);
+    if (!fresh) return;
+    const candidate = await getCandidate(deps.supabase, fresh.candidateId);
+    if (!candidate) return;
+    await ingestCompletedClipJob(deps.supabase, fresh, candidate);
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        tag: "clip_ingest_error",
+        jobId,
+        error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+      })
+    );
+  }
+}
+
 /** Advance ONE job one step. Returns what happened (tick bookkeeping). */
 export async function advanceRenderJob(
   deps: RenderTickDeps,
@@ -591,9 +615,16 @@ export async function advanceRenderJob(
             provider: job.provider,
             costMinutes,
           });
+          await ingestJob(deps, job.id);
           return "completed";
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          // FfmpegError carries the stderr tail — the diagnosable part.
+          const msg =
+            err instanceof FfmpegError
+              ? `${err.message} — ${err.stderrTail.slice(-300)}`
+              : err instanceof Error
+                ? err.message
+                : String(err);
           if (job.attempts + 1 >= CLIP_JOB_MAX_ATTEMPTS) {
             await failJob(deps, job, `in-house render: ${msg}`);
             return "failed";
@@ -642,6 +673,7 @@ export async function advanceRenderJob(
           provider: job.provider,
           costMinutes: completed.costMinutes,
         });
+        await ingestJob(deps, job.id);
         return "completed";
       }
 

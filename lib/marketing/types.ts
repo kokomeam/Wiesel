@@ -119,7 +119,9 @@ export type AnalyticsEventType =
   // recordingFormat per the consequential-updates rule)
   | "clip_job_submitted"
   | "clip_job_completed"
-  | "clip_job_failed";
+  | "clip_job_failed"
+  // M-C ingest (migration 20260708140000)
+  | "clip_ingested";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";

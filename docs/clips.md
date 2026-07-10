@@ -258,8 +258,9 @@ uses the SAME function).
 - **stacked_split geometry:** face band 720×460 (the PiP crop — DETERMINISTIC
   via the recorder's own `bubbleRect` constants when `recording.
   cameraBubblePosition` exists; a one-call vision-detected corner for legacy
-  uploads; `crop_provenance` records which — D-3) + screen band 720×405 (the
-  FULL slide, legible) + a 720×415 brand-backdrop caption zone (the reserved
+  uploads; `crop_provenance` records which — D-3) + screen band 720×406 (the
+  FULL slide, legible; all band heights EVEN — yuv420p pads round odd
+  heights down) + a 720×414 brand-backdrop caption zone (the reserved
   seam region).
 - **screen_action_zoom:** the frame scaled to full canvas height (an
   implicit ~1.78× region zoom) with a 720-wide window panning between
