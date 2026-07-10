@@ -93,7 +93,12 @@ function loadEnv() {
   const env: Record<string, string> = {};
   for (const line of raw.split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m) {
+      env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+      // tsx doesn't auto-load .env.local; modules that read process.env
+      // directly (createAdminClient in the attribution path) need it there.
+      if (process.env[m[1]] === undefined) process.env[m[1]] = env[m[1]];
+    }
   }
   return { url: env.NEXT_PUBLIC_SUPABASE_URL, anon: env.NEXT_PUBLIC_SUPABASE_ANON_KEY };
 }
@@ -826,6 +831,110 @@ async function main() {
     .eq("course_id", courseId)
     .eq("type", "clip_ingested");
   check("clip_ingested event on the single stream", (ingestEvents.data ?? []).length >= 1);
+
+  /* ─────────────── M-D: posting kit + short link + attribution ─────────── */
+
+  console.log("\n# M-D posting kit through the gate (template path — no model)");
+  const { data: ingestedPost } = await A.supabase
+    .from("social_post")
+    .select("id")
+    .eq("clip_job_id", job2Id)
+    .single();
+  const kitOut = await executeMarketingTool(
+    "generate_posting_kit",
+    { postId: ingestedPost!.id, platform: "instagram" },
+    ctxFor() // no model → the deterministic template kit
+  );
+  check("kit staged (reversible, no approval card)", kitOut.status === "staged");
+  const kitData = kitOut.data as {
+    commentKeyword: string | null;
+    disclosureLine: string;
+    shortCode: string | null;
+    fullText: string;
+  };
+  check(
+    "kit: keyword + code-inserted disclosure + short link + honest manual-post summary",
+    /^[A-Z0-9]{3,12}$/.test(kitData.commentKeyword ?? "") &&
+      kitData.disclosureLine.includes("From my course") &&
+      kitData.shortCode !== null &&
+      /MANUALLY/.test(kitOut.summary)
+  );
+  check(
+    "kit fullText assembles caption + keyword CTA + link + disclosure",
+    kitData.fullText.includes(kitData.disclosureLine) &&
+      kitData.fullText.includes(`/l/${kitData.shortCode}`) &&
+      kitData.fullText.includes(kitData.commentKeyword ?? "∅")
+  );
+  const { data: kitRow } = await A.supabase
+    .from("posting_kit")
+    .select("*")
+    .eq("post_id", ingestedPost!.id)
+    .single();
+  check("posting_kit row persisted (active, keyword indexed)", kitRow?.status === "active" && kitRow?.comment_keyword === kitData.commentKeyword);
+  const { data: linkRow } = await A.supabase
+    .from("short_link")
+    .select("*")
+    .eq("code", kitData.shortCode!)
+    .single();
+  check("short_link row: creator-scoped, course-bound, destination is an app path", linkRow?.creator_id === A.userId && linkRow?.course_id === courseId && linkRow!.destination.startsWith("/"));
+
+  // Keyword uniqueness: a second kit on ANOTHER post walks to a suffix.
+  const gen4 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![2].id, preset: "tofu_hook" },
+    ctxFor()
+  );
+  // finish it via the fake tick so it ingests
+  for (let i = 0; i < 4; i++) {
+    const j = (await getRenderJob(admin as never, gen4.target!.id))!;
+    if (j.status === "completed") break;
+    await advanceRenderJob({ ...tickDeps, nowIso: new Date().toISOString() }, j);
+  }
+  const { data: post4 } = await A.supabase
+    .from("social_post")
+    .select("id")
+    .eq("clip_job_id", gen4.target!.id)
+    .maybeSingle();
+  if (post4) {
+    const kit2 = await executeMarketingTool(
+      "generate_posting_kit",
+      { postId: post4.id, platform: "instagram" },
+      ctxFor()
+    );
+    const kit2Data = kit2.data as { commentKeyword: string | null };
+    check(
+      "keyword uniqueness: the second kit walks to a suffixed keyword",
+      kit2Data.commentKeyword !== kitData.commentKeyword && kit2Data.commentKeyword?.startsWith((kitData.commentKeyword ?? "").slice(0, 4)) === true
+    );
+  } else {
+    check("keyword uniqueness: the second kit walks to a suffixed keyword", false, "second job never ingested");
+  }
+
+  console.log("\n# M-D attribution: refCode → clip-attributed enrollment event");
+  const { recordClipEnrollment } = await import("@/lib/marketing/clips/attribution");
+  await recordClipEnrollment(courseId, kitData.shortCode!);
+  const { data: clipEnroll } = await admin
+    .from("analytics_event")
+    .select("props")
+    .eq("course_id", courseId)
+    .eq("type", "enrollment")
+    .eq("source", "clip_short_link");
+  check(
+    "enrollment event: source clip_short_link + kit/post lineage in props",
+    (clipEnroll ?? []).length === 1 &&
+      ((clipEnroll![0].props as Record<string, unknown>).kitId === kitRow?.id)
+  );
+  await recordClipEnrollment("00000000-0000-0000-0000-000000000000", kitData.shortCode!);
+  const { data: clipEnroll2 } = await admin
+    .from("analytics_event")
+    .select("id")
+    .eq("type", "enrollment")
+    .eq("source", "clip_short_link");
+  check("a foreign course's ref records NOTHING (no cross-course credit)", (clipEnroll2 ?? []).length === 1);
+
+  const { data: bKits } = await B.supabase.from("posting_kit").select("id");
+  const { data: bLinks } = await B.supabase.from("short_link").select("id");
+  check("RLS: B sees NO kits and NO short links", (bKits ?? []).length === 0 && (bLinks ?? []).length === 0);
 
   console.log("\n# M-B token bucket: held when the minute budget is spent");
   process.env.CLIP_RENDER_TOKENS_PER_MIN = "1";

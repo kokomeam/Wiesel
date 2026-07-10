@@ -27,6 +27,8 @@ export type ClipEventType = Extract<
   | "clip_job_completed"
   | "clip_job_failed"
   | "clip_ingested"
+  | "posting_kit_generated"
+  | "short_link_click"
 >;
 
 export async function emitClipEvent(

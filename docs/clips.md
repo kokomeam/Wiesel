@@ -301,6 +301,38 @@ uses the SAME function).
   (`{creator}/clips/{jobId}.mp4`), written by the service-role tick; reads
   go through author-gated signed URLs (M-E).
 
+## Posting kit + short links (M-D, migration `20260710100000_clip_posting_kit.sql`)
+
+A rendered clip's copy bundle for MANUAL posting (`generate_posting_kit`,
+reversible): caption + hashtags + comment keyword + `/l/{code}` short link +
+the disclosure line. Responsibility split (binding, PRD §10):
+
+- **AI drafts** caption/hashtags/keyword candidates (ONE small-tier call;
+  keyless ⇒ a deterministic template kit — degrades, never blocks);
+  **CODE enforces** platform caps, keyword normalization (3–12 upper
+  letters), and the **disclosure line** (`disclosureLine()` — never model
+  output; stored on the row so the copy button reproduces reviewed text).
+- **Keyword uniqueness** per creator among ACTIVE kits: a deterministic
+  suffix walk in code + a partial unique index as the DB backstop
+  (regenerating a kit retires the old row, freeing its keyword).
+- **Short links** (`short_link`, unambiguous 7-char codes): `/l/{code}`
+  counts the click (+ `short_link_click` event), **re-resolves the
+  destination at CLICK time** (a `/p/{slug}` link minted pre-publish
+  upgrades to `/learn/{slug}` — the email-CTA lesson), and stamps
+  `?ref={code}`. Unknown codes soft-land on the homepage (no 404 oracle).
+- **Enrollment attribution:** the EnrollButton threads `?ref` into
+  POST /api/learn/enroll → `recordClipEnrollment` (admin client, the
+  server-emit pattern) records an `enrollment` event with
+  `source='clip_short_link'` + kit/post lineage — ONLY when the code
+  belongs to that course (no cross-course credit). Best-effort: it can
+  never fail an enrollment.
+- **`/preview/{code}`** — the shareable clip preview (code possession = the
+  capability): a signed 1-hour URL over the private clip-media bucket + the
+  kit caption + an honest "hasn't been posted anywhere" notice. **Answer-key
+  invariant re-asserted**: the page's table surface is
+  short_link/posting_kit/social_post + storage ONLY (grep-tested — it can
+  never touch quiz/publication tables).
+
 ## Data model (migration `20260707100000_lesson_clips.sql`)
 
 - `lesson_transcript` — one row per lesson (unique), `words` jsonb

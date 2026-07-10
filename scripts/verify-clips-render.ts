@@ -665,6 +665,52 @@ async function packagingLayoutSpec() {
   );
 }
 
+async function postingKitSpec() {
+  console.log("# postingKit.spec (M-D: disclosure code-inserted, codes, keywords)");
+  const { disclosureLine, generateShortCode, normalizeKeyword, SHORT_CODE_LENGTH } = await import(
+    "@/lib/marketing/clips/postingKit"
+  );
+  check(
+    "disclosure line is deterministic code (never model output)",
+    disclosureLine('SQL Perf') === 'From my course "SQL Perf" — full lesson inside.'
+  );
+  const codes = new Set(Array.from({ length: 200 }, () => generateShortCode()));
+  check(
+    `short codes: ${SHORT_CODE_LENGTH} chars, unambiguous alphabet, no dupes in 200`,
+    codes.size === 200 && [...codes].every((c) => c.length === SHORT_CODE_LENGTH && /^[a-z2-9]+$/.test(c) && !/[01ol]/.test(c))
+  );
+  const KEYWORDS: [string, string | null][] = [
+    ["learn", "LEARN"],
+    ["  bst! ", "BST"],
+    ["INDEXING", "INDEXING"],
+    ["ab", null], // too short
+    ["THISKEYWORDISWAYTOOLONG", null],
+    ["123", null],
+  ];
+  for (const [raw, want] of KEYWORDS) {
+    check(`keyword "${raw}" → ${want ?? "rejected"}`, normalizeKeyword(raw) === want);
+  }
+
+  // Answer-key invariant grep (the /preview surface can never touch
+  // assessment tables).
+  const previewSrc = readFileSync(join(ROOT, "app", "preview", "[code]", "page.tsx"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, ""); // comments may NAME the invariant; code may not touch the tables
+  check(
+    "preview page table surface = short_link/posting_kit/social_post + storage ONLY (answer-key invariant)",
+    !/quiz_answer_keys|from\("blocks"\)|course_publications|quiz_attempts|question_responses/.test(previewSrc)
+  );
+  const linkSrc = readFileSync(join(ROOT, "app", "l", "[code]", "route.ts"), "utf8");
+  check(
+    "short-link route re-resolves the destination at CLICK time (publishing upgrades old links)",
+    linkSrc.includes("coursePreviewPath") && linkSrc.includes('searchParams.set("ref"')
+  );
+  check(
+    "enroll route threads refCode → clip attribution (best-effort)",
+    readFileSync(join(ROOT, "app", "api", "learn", "enroll", "route.ts"), "utf8").includes("recordClipEnrollment")
+  );
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -677,6 +723,7 @@ async function main() {
   await recordingMetadataSpec();
   dualStackedSpec();
   await packagingLayoutSpec();
+  await postingKitSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

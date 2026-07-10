@@ -2058,6 +2058,76 @@ export type Database = {
           },
         ]
       }
+      posting_kit: {
+        Row: {
+          ai_metadata: Json
+          caption: string
+          comment_keyword: string | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          disclosure_line: string
+          hashtags: Json
+          id: string
+          post_id: string
+          short_link_id: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          ai_metadata?: Json
+          caption: string
+          comment_keyword?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          disclosure_line: string
+          hashtags?: Json
+          id?: string
+          post_id: string
+          short_link_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          ai_metadata?: Json
+          caption?: string
+          comment_keyword?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          disclosure_line?: string
+          hashtags?: Json
+          id?: string
+          post_id?: string
+          short_link_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "posting_kit_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "posting_kit_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: true
+            referencedRelation: "social_post"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "posting_kit_short_link_id_fkey"
+            columns: ["short_link_id"]
+            isOneToOne: false
+            referencedRelation: "short_link"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -2621,6 +2691,47 @@ export type Database = {
             columns: ["subscriber_id"]
             isOneToOne: false
             referencedRelation: "subscriber"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      short_link: {
+        Row: {
+          clicks: number
+          code: string
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          destination: string
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          clicks?: number
+          code: string
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          destination: string
+          id?: string
+          updated_at?: string
+        }
+        Update: {
+          clicks?: number
+          code?: string
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          destination?: string
+          id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "short_link_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
             referencedColumns: ["id"]
           },
         ]

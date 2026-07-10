@@ -148,5 +148,8 @@ export type ProgressRequest = z.infer<typeof ProgressRequestSchema>;
 
 export const EnrollRequestSchema = z.object({
   courseId: z.string().min(1),
+  /** M-D clip attribution: the /l/{code} short-link ref that brought this
+   *  learner here (rides the URL → EnrollButton → here; optional, additive). */
+  refCode: z.string().max(20).optional(),
 });
 export type EnrollRequest = z.infer<typeof EnrollRequestSchema>;

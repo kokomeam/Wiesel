@@ -16,9 +16,12 @@ import {
   CLIP_AUDIOGRAM_CAVEAT,
   CLIP_LAYOUT_LABELS,
   CLIP_MAX_CANDIDATES,
+  CLIP_PLATFORM_SPECS,
   CLIP_PLATFORMS,
   FUNNEL_STAGES,
 } from "../clips/constants";
+import { coursePreviewPath } from "../ctaDestination";
+import { generatePostingKit, isClipPlatform } from "../clips/postingKit";
 import { emitClipEvent } from "../clips/events";
 import {
   ClipGenerationError,
@@ -321,6 +324,64 @@ const listClipJobsTool = defineMarketingTool({
   },
 });
 
+/* ─────────────────────── posting kit (M-D) ────────────────────────────── */
+
+const generatePostingKitTool = defineMarketingTool({
+  name: "generate_posting_kit",
+  description:
+    "Build the posting kit for a RENDERED clip (a social_post with post_type='clip'): caption + hashtags + a unique comment keyword + a /l/ short link to the course + the compliance disclosure line (code-inserted, never AI text). The creator copies the kit and posts MANUALLY — WiseSel never posts. Reversible (regenerating replaces the kit; the short link survives as an audit row).",
+  params: z.object({
+    postId: z.uuid(),
+    /** null → the post's own platform. */
+    platform: z.enum(CLIP_PLATFORMS).nullable(),
+  }),
+  reversibility: "reversible",
+  actionKind: "generate_posting_kit",
+  existingTarget: (args) => ({ entity: "social_post", id: args.postId }),
+  async execute(args, ctx) {
+    const { data: post } = await ctx.supabase
+      .from("social_post")
+      .select("id, course_id, platform, post_type, ai_metadata, body")
+      .eq("id", args.postId)
+      .maybeSingle();
+    if (!post) throw new MarketingToolError(`Post ${args.postId} not found`);
+    if (post.post_type !== "clip") {
+      throw new MarketingToolError("Posting kits are for rendered clips — this is a text post.");
+    }
+    const meta = (post.ai_metadata as Record<string, unknown>) ?? {};
+    const platform = args.platform ?? (isClipPlatform(post.platform) ? post.platform : "instagram");
+    const { data: course } = post.course_id
+      ? await ctx.supabase.from("courses").select("title").eq("id", post.course_id).maybeSingle()
+      : { data: null };
+    const destinationPath = post.course_id
+      ? ((await coursePreviewPath(ctx.supabase, post.course_id)) ?? `/p/${post.course_id}`)
+      : null;
+    const kit = await generatePostingKit(
+      {
+        supabase: ctx.supabase,
+        ownerId: ctx.ownerId,
+        courseIdForEvents: ctx.courseId,
+        model: ctx.model,
+        siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+      },
+      {
+        postId: post.id,
+        platform,
+        hookText: (meta.hookText as string) ?? post.body.slice(0, 80),
+        rationale: (meta.rationale as string) ?? "",
+        courseId: post.course_id,
+        courseTitle: course?.title ?? "my course",
+        destinationPath,
+      }
+    );
+    return {
+      summary: `Posting kit ready (${CLIP_PLATFORM_SPECS[platform].label}): comment keyword "${kit.commentKeyword}", short link /l/${kit.shortCode ?? "—"}. Copy the full text below and post it MANUALLY — WiseSel never posts for you.\n\n${kit.fullText}`,
+      data: kit,
+      target: { entity: "social_post", id: post.id },
+    };
+  },
+});
+
 export const clipTools = [
   selectClipMomentsTool,
   listClipMomentCandidatesTool,
@@ -328,4 +389,5 @@ export const clipTools = [
   generateLessonClipsTool,
   cancelClipJobTool,
   listClipJobsTool,
+  generatePostingKitTool,
 ];

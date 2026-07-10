@@ -121,7 +121,10 @@ export type AnalyticsEventType =
   | "clip_job_completed"
   | "clip_job_failed"
   // M-C ingest (migration 20260708140000)
-  | "clip_ingested";
+  | "clip_ingested"
+  // M-D posting kit + short links (migration 20260710100000)
+  | "posting_kit_generated"
+  | "short_link_click";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";
