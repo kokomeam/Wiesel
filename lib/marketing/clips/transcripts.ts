@@ -431,6 +431,39 @@ export function transcriptSlice(words: TranscriptWord[], startMs: number, endMs:
     .join(" ");
 }
 
+/* ───────────────────── word error rate (pure, M-G) ─────────────────────── */
+
+/**
+ * Word error rate (Levenshtein over normalized word sequences) — the M-G
+ * transcription-quality measure. Run it against a hand-checked reference
+ * whenever a TranscriptionProvider lands (the adapter's transcript vs the
+ * reference); the platform Mux path can be spot-checked the same way.
+ */
+export function wordErrorRate(reference: string, hypothesis: string): number {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s']/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  const ref = norm(reference);
+  const hyp = norm(hypothesis);
+  if (ref.length === 0) return hyp.length === 0 ? 0 : 1;
+  let prev = Array.from({ length: hyp.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= ref.length; i++) {
+    const cur = [i, ...new Array<number>(hyp.length).fill(0)];
+    for (let j = 1; j <= hyp.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1, // deletion
+        cur[j - 1] + 1, // insertion
+        prev[j - 1] + (ref[i - 1] === hyp[j - 1] ? 0 : 1) // substitution
+      );
+    }
+    prev = cur;
+  }
+  return prev[hyp.length] / ref.length;
+}
+
 /* ───────────────── sentence-boundary snapping (pure) ──────────────────── */
 
 const SENTENCE_END_RE = /[.?!]["'”’)\]]*$/;

@@ -1,10 +1,11 @@
 # Lesson Clip Repurposing — Marketing Phase 1.5
 
-> PRD: the Phase 1.5 "Lesson Clip Repurposing" spec (delivered 2026-07-07) ·
-> **Shipped so far: Milestone M-A** (transcripts + moment selection engine +
-> eval harness) — 2026-07-07. **Task 0 (Reap smoke test) is BLOCKED on
-> `REAP_API_KEY`** and gates M-B; see `docs/reap-task0-findings.md`.
-> Phase 1 foundation: `docs/social-posts.md`.
+> PRD: the Phase 1.5 "Lesson Clip Repurposing" spec + the format-aware
+> amendment + the continuation directive — **ALL MILESTONES SHIPPED
+> (2026-07-14): Task 0 · M-A(+amendment) · M-B · M-C · M-R · M-D · M-E ·
+> M-F · M-G.** Task 0 findings: `docs/reap-task0-findings.md` (live-verified
+> against the real Reap API + a real lesson recording). Phase 1 foundation:
+> `docs/social-posts.md`.
 
 ## What this is
 
@@ -12,8 +13,11 @@ Creators turn real lesson recordings into short-form vertical clip **candidates*
 the engine transcribes the lesson (or reuses the Mux caption transcript), runs a
 course-context-aware **moment selection engine** over it, and stages the 3–5 most
 teachable, hook-worthy spans as ranked candidates — each with an honest hook,
-2 alternates, funnel-stage fit, and a creator-facing rationale. Rendering
-(Reap), posting kits, short links, and the clips UI arrive in M-B…M-E.
+2 alternates, funnel-stage fit, a resolved LAYOUT, and a creator-facing
+rationale. Candidates RENDER (provider reframe or in-house ffmpeg/Remotion,
+by layout), ingest into the one social queue, and ship with a posting kit
+(caption/keyword/short link/disclosure) the creator copies and posts
+MANUALLY. The whole surface lives at `/marketing/clips`.
 
 The strategic bet (PRD §0): horizontal tools pick moments by vocal energy;
 WiseSel picks them by the **course graph** — lesson outcomes, module context,
@@ -472,7 +476,7 @@ M-B adds `REAP_API_KEY` + quota knobs (`CLIP_MINUTES_PER_MONTH`,
 - `npm run smoke:reap` — Task 0 ((a)–(c) done vs the live API; (d)/(e) need
   one real ≥90s video; (f) provider layout probing rides the same script).
 
-## Milestone map (amendment renumbering applied)
+## Milestone map (amendment renumbering applied — ALL SHIPPED 2026-07-14)
 
 - **Task 0** — (a)–(c) DONE vs the live Reap API (camelCase contract, ≥60s
   window, no webhooks, no brand-template API — `docs/reap-task0-findings.md`);

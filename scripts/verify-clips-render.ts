@@ -747,6 +747,71 @@ async function clipsUiSpec() {
   );
 }
 
+async function chaosAndWerSpec() {
+  console.log("# reconciliation.chaos.spec (M-G: the poll-first path survives provider chaos)");
+  const { advanceRenderJob } = await import("@/lib/marketing/clips/render/service");
+  const baseJob = {
+    id: "job-chaos",
+    creatorId: "c1",
+    courseId: "co1",
+    lessonId: "l1",
+    candidateId: "cand1",
+    layout: "face_track" as const,
+    provider: "reap" as const,
+    preset: "tofu_hook",
+    status: "submitted" as const,
+    source: {
+      videoAssetRowId: "v1",
+      sourceMuxAssetId: "m1",
+      playbackId: "p1",
+      startMs: 0,
+      endMs: 40_000,
+      recordingFormat: "camera_only" as const,
+    },
+    precut: { muxAssetId: "pre1", mp4Url: "https://media/pre.mp4" },
+    providerRef: "proj-1",
+    uploadRef: "up-1",
+    cropProvenance: null,
+    output: null,
+    costMinutes: 1,
+    error: null,
+    attempts: 0,
+    idempotencyKey: null,
+    submittedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const explodingDb = new Proxy({}, { get() { throw new Error("DB must not be touched on a chaos noop"); } });
+  const chaosDeps = {
+    supabase: explodingDb as never,
+    precut: { start: async () => ({ muxAssetId: "x" }), check: async () => ({ status: "preparing" as const, playbackId: null, mp4Url: null, error: null }), cleanup: async () => {} },
+    nowIso: new Date().toISOString(),
+  };
+  // provider poll THROWS (network chaos) → the step swallows, job untouched
+  const threw = await advanceRenderJob(
+    { ...chaosDeps, provider: { id: "reap", submit: async () => { throw new Error("x"); }, getJob: async () => { throw new Error("provider 503"); }, cancel: async () => {} } },
+    baseJob as never
+  );
+  check("provider poll throwing → noop (job left for the next tick, no DB write)", threw === "noop");
+  // provider returns garbage-but-processing → noop
+  const processing = await advanceRenderJob(
+    { ...chaosDeps, provider: { id: "reap", submit: async () => { throw new Error("x"); }, getJob: async () => ({ status: "processing" as const, providerStatus: "queued", outputUrl: null, cleanOutputUrl: null, output: null, costMinutes: null, error: null }), cancel: async () => {} } },
+    baseJob as never
+  );
+  check("provider still processing → noop (poll-first patience)", processing === "noop");
+  // no provider configured → noop, never a crash
+  const noProvider = await advanceRenderJob(chaosDeps as never, baseJob as never);
+  check("provider unconfigured → noop (a held job, not a crash)", noProvider === "noop");
+
+  console.log("# wer.spec (M-G: transcription quality measure through the adapter seam)");
+  const { wordErrorRate } = await import("@/lib/marketing/clips/transcripts");
+  check("identical → 0", wordErrorRate("an index is a sorted copy", "an index is a sorted copy") === 0);
+  check("punctuation/case-insensitive", wordErrorRate("An index, is a SORTED copy.", "an index is a sorted copy") === 0);
+  check("one substitution in five words → 0.2", wordErrorRate("one two three four five", "one two tree four five") === 0.2);
+  check("empty hypothesis → 1", wordErrorRate("a b c", "") === 1);
+  check("insertions counted", Math.abs(wordErrorRate("a b c", "a x b c") - 1 / 3) < 1e-9);
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -761,6 +826,7 @@ async function main() {
   await packagingLayoutSpec();
   await postingKitSpec();
   await clipsUiSpec();
+  await chaosAndWerSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

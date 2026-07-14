@@ -36,6 +36,10 @@ export interface BrandTokens {
     ink: string;
     /** Near-black backdrop for video caption/pad bands (stone-950). */
     backdrop: string;
+    /** Text on dark video surfaces (captions/hooks/end cards). */
+    onDark: string;
+    /** Muted text on dark video surfaces (watermarks/footnotes). */
+    onDarkMuted: string;
   };
   fonts: {
     /** UI/body family stack (Geist Sans). */
@@ -61,6 +65,8 @@ export const BRAND_TOKENS: BrandTokens = {
     line: "#ece7de",
     ink: "#1c1917",
     backdrop: "#0c0a09",
+    onDark: "#ffffff",
+    onDarkMuted: "rgba(255,255,255,0.6)",
   },
   fonts: {
     sans: "Geist Sans, system-ui, sans-serif",

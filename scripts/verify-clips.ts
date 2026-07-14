@@ -895,11 +895,11 @@ function fixtureChecks() {
 
 function registryChecks() {
   console.log("# tool registry (§13; M-B adds the render trio)");
-  check("exactly 6 clip tools (M-A's 3 + M-B's render/cancel/list)", clipTools.length === 6);
+  check("exactly 7 clip tools (M-A's 3 + M-B's render trio + M-D's kit)", clipTools.length === 7);
   check(
-    "2 read + 4 reversible, ZERO irreversible (the reversible-only carryover)",
+    "2 read + 5 reversible, ZERO irreversible (the reversible-only carryover)",
     clipTools.filter((t) => t.reversibility === "read").length === 2 &&
-      clipTools.filter((t) => t.reversibility === "reversible").length === 4 &&
+      clipTools.filter((t) => t.reversibility === "reversible").length === 5 &&
       clipTools.filter((t) => t.reversibility === "irreversible").length === 0
   );
   check(
@@ -915,6 +915,7 @@ function registryChecks() {
       "generate_lesson_clips",
       "cancel_clip_job",
       "list_clip_jobs",
+      "generate_posting_kit",
     ].every((n) => MARKETING_GENERATE_TOOLS.has(n))
   );
   check(

@@ -1634,15 +1634,30 @@ compliant footers (8 locales, `language.ts`).
   `eval:clips` (live/record/replay/control; the flat-affect ≥2-viable gate
   is the differentiator claim + the FR-8 layout gates). REST:
   `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
-- **Next**: Task 0 (d)/(e)/(f) on one real ≥90s video → approval → M-B
-  (ClipRenderProvider + Reap adapter or pre-cut FFmpeg fallback,
-  `clip_render_job` [CREATE carries layout + provider enum], webhook-less
-  poll-first consumer per findings, reconciliation, 10/min bucket, quotas,
-  FR-5 layout mapping + in-house zoom if (f) finds the gap) → M-C ingest as
-  `social_post.post_type='clip'` (platform enum extension gated by
-  superRefine; packaging gains `layout`) → M-D posting kit/short links/
-  preview → M-E UI (+FR-9 chips) → M-F Remotion slide-short provider (needs
-  the slide-sync producer + brand-tokens module) → M-G hardening.
+- **ALL MILESTONES SHIPPED (2026-07-14)** — Task 0 (live: camelCase,
+  ≥60s-window = Reap RE-PICKS → pre-cut + create-reframe only; sourceUrl
+  rejects stream.mux.com → upload-only; billedDuration = selected minutes;
+  faces-only tracker pan-crops PiP → in-house layouts) · M-C ingest
+  (`social_post.post_type='clip'`, platform enum extended w/ a text-posts
+  row gate, lineage `regenerated_from_post_id`, artifacts/
+  m-c-in1-stacked-split.mp4 = the real cs61b lesson end-to-end) · **M-R
+  recorder capture** (slideSync producer + minimized REC pill, pipGeometry
+  D-3, dual-track flag D-4 — recording.slideSync/pipGeometry/
+  dualCameraAssetRowId, all optional/back-compat; loadLessonSlideSync is
+  REAL) · M-D posting kit (`postingKit.ts` — disclosure CODE-inserted,
+  keyword suffix-walk + partial unique index, /l/{code} re-resolves at
+  CLICK time + threads ?ref → recordClipEnrollment, /preview/{code} w/ the
+  answer-key-invariant grep) · M-E `/marketing/clips` UI (FR-9 chips,
+  audiogram caveat, signed-URL player, kit panel, usage meter) · **M-F
+  Remotion slide-short provider** (`render/slideShort/*` — pure
+  StructuredSlide-dispatch mirror + element-fallback card, kinetic captions,
+  hook/end-card, app globals.css via @remotion/tailwind-v4 + @ alias;
+  serverExternalPackages keeps the stack out of the Next bundle;
+  CLIP_RENDER_WORKERS pool outside the LLM ceiling; license trigger = 4th
+  hire; deps now 20) · M-G hardening (reconciliation chaos, wordErrorRate,
+  seed:clips, full-chain green). Suites: verify:clips 199 ·
+  verify:clips:render 105 · verify:clips:slideshort 14 (REAL renders, in
+  npm test) · verify:clips:int 84 · eval replay PASS.
 
 ## Where things live
 

@@ -140,7 +140,7 @@ function Captions({ spec, tMs }: { spec: SlideShortSpec; tMs: number }) {
             className="text-5xl font-bold uppercase tracking-tight"
             style={{
               fontFamily: BRAND_TOKENS.fonts.sans,
-              color: active ? BRAND_TOKENS.colors.brand : "#ffffff",
+              color: active ? BRAND_TOKENS.colors.brand : BRAND_TOKENS.colors.onDark,
               transform: active ? "scale(1.08)" : "scale(1)",
             }}
           >
@@ -200,7 +200,7 @@ export function SlideShortComposition(props: Record<string, unknown>) {
         >
           <p
             className="text-6xl font-semibold leading-tight"
-            style={{ color: "#ffffff", fontFamily: BRAND_TOKENS.fonts.display }}
+            style={{ color: BRAND_TOKENS.colors.onDark, fontFamily: BRAND_TOKENS.fonts.display }}
           >
             {spec.hookText}
           </p>
@@ -215,7 +215,7 @@ export function SlideShortComposition(props: Record<string, unknown>) {
       {/* persistent watermark */}
       <p
         className="absolute bottom-[64px] w-full text-center font-mono text-2xl tracking-wide"
-        style={{ color: "rgba(255,255,255,0.55)" }}
+        style={{ color: BRAND_TOKENS.colors.onDarkMuted }}
       >
         {watermarkText(spec.creatorHandle)}
       </p>
@@ -229,7 +229,7 @@ export function SlideShortComposition(props: Record<string, unknown>) {
         >
           <p
             className="text-5xl font-medium leading-tight"
-            style={{ color: "#ffffff", fontFamily: BRAND_TOKENS.fonts.display }}
+            style={{ color: BRAND_TOKENS.colors.onDark, fontFamily: BRAND_TOKENS.fonts.display }}
           >
             {spec.endCardCta ??
               (spec.preset === "bofu_preview"
@@ -241,7 +241,7 @@ export function SlideShortComposition(props: Record<string, unknown>) {
               ? "Enroll — link in bio"
               : "Comment the keyword and I'll send it"}
           </p>
-          <p className="font-mono text-2xl" style={{ color: "rgba(255,255,255,0.6)" }}>
+          <p className="font-mono text-2xl" style={{ color: BRAND_TOKENS.colors.onDarkMuted }}>
             {watermarkText(spec.creatorHandle)}
           </p>
         </AbsoluteFill>
