@@ -1,0 +1,5 @@
+/* The composition's stylesheet = the APP'S OWN globals (one Tailwind theme,
+ * one brand ramp — the D-1 no-second-source rule). The next/font CSS vars
+ * are absent in the render Chrome and fall back to the declared system
+ * stacks; Fraunces/Geist specifics ride BRAND_TOKENS.fonts inline. */
+@import "../../../../../app/globals.css";

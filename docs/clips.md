@@ -301,6 +301,47 @@ uses the SAME function).
   (`{creator}/clips/{jobId}.mp4`), written by the service-role tick; reads
   go through author-gated signed URLs (M-E).
 
+## Slide-short provider (M-F, `render/slideShort/*`)
+
+`slide_short` renders IN-HOUSE via a Remotion composition (`provider =
+'wisesel_slides'`, the SAME `clip_render_job` table/state machine — the tick's
+`rendering_local` branch calls `renderSlideShort` through the injectable
+`renderSlideShortImpl` seam):
+
+- **Composition** (`SlideShortComposition.tsx`, 1080×1920 @30fps): hook
+  overlay (≤2s) → the lesson's REAL slides advancing on their **M-R sync
+  timestamps** (`buildSlideShortSpec` clips `recording.slideSync` to the span
+  via `slidesForSpan`, joins the real deck JSON) → kinetic word-level
+  captions from the transcript (clip-relative) → a preset-appropriate end
+  card → a persistent creator watermark. Audio = the pre-cut span's own
+  media URL (render Chrome fetches it).
+- **Slide rendering** = a PURE mirror of StructuredSlide's dispatch over the
+  `renderToStaticMarkup`-proven layout components + DiagramView — never
+  SlideStage (browser-measurement-gated). Freeform ELEMENT slides render
+  through a pure text-extraction card (honest fallback — the element canvas
+  is editor territory; structured decks are the slide-short home turf).
+- **Styling**: the bundle imports `app/globals.css` (ONE Tailwind theme, one
+  brand ramp — D-1); brand values inline via `BRAND_TOKENS` (this folder is
+  divergence-scanned). The `@remotion/tailwind-v4` webpack override + an
+  `@` alias make the app's components bundle as-is.
+- **Workers**: renders run in a pool of `CLIP_RENDER_WORKERS` (default 1) —
+  OUTSIDE the two-concurrent LLM ceiling. **Footprint per render:** headless
+  Chrome ~400–800 MB RSS + one CPU-bound H.264 encode; the first-ever render
+  downloads Remotion's Chrome Headless Shell (~150 MB, cached).
+- **⚖ Remotion license trigger — 4th hire.** Remotion is free for companies
+  under 4 employees (The HB Duo qualifies today). Revisit the license at the
+  4th hire.
+- **Cost**: in-house minutes × `CLIP_INHOUSE_MINUTE_RATE` on the ONE ledger.
+- **Deps note**: runtime dependencies grew to 20 (`remotion`,
+  `@remotion/bundler`, `@remotion/renderer`, `@remotion/tailwind-v4` — the
+  FR-6 mandate; plus M-B's `ffmpeg-static`). The historic "14 deps" pin in
+  CLAUDE.md is superseded by this documented list.
+- **Tests**: `verify:clips:slideshort` (REAL renders: frame-sample
+  assertions for hook/slide-advance/captions/element-fallback/end-card +
+  a full probed H.264 render; artifact
+  `artifacts/m-f-slide-short-fixture.mp4`) · the lifecycle/cost/ingest
+  proofs ride `verify:clips:int` with an injected renderer.
+
 ## Posting kit + short links (M-D, migration `20260710100000_clip_posting_kit.sql`)
 
 A rendered clip's copy bundle for MANUAL posting (`generate_posting_kit`,

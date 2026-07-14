@@ -742,8 +742,8 @@ async function clipsUiSpec() {
     !/supabase|createClient/.test(view)
   );
   check(
-    "slide_short candidates honestly gated until the renderer ships",
-    view.includes("Slide-short rendering is coming next")
+    "slide_short candidates render like every other layout (the M-F provider is live)",
+    !view.includes("Slide-short rendering is coming next")
   );
 }
 

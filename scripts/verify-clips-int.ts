@@ -428,6 +428,37 @@ async function main() {
     order: 4,
   });
   const videoBlock5 = crypto.randomUUID();
+  // The deck the sync points at (REAL structured-slide JSON shape — the
+  // M-F spec builder joins sync windows to these by slide id).
+  const deckBlock5 = crypto.randomUUID();
+  const mkSlide = (id: string, order: number, title: string, body: string) => ({
+    id,
+    order,
+    layout: "structured",
+    style: { background: { kind: "solid", color: "#ffffff" }, theme: { id: "editorial-warm" } },
+    elements: [],
+    template: {
+      layoutId: "prose",
+      content: { title: { text: title }, body: { text: body } },
+    },
+    speakerNotes: "",
+    ai: { purpose: "" },
+  });
+  await A.supabase.from("blocks").insert({
+    id: deckBlock5,
+    course_id: courseId,
+    lesson_id: lesson5,
+    type: "slide_deck",
+    order: 1,
+    content: {
+      slides: [
+        mkSlide("slide-intro", 0, "Indexing Deep Dive", "What an index actually is."),
+        mkSlide("slide-sorted-copy", 1, "A sorted copy", "An index is a second, physically separate, sorted copy."),
+        mkSlide("slide-planner", 2, "The planner", "Why the planner ignores your index."),
+        mkSlide("slide-tradeoffs", 3, "The trade", "Faster reads, slower writes."),
+      ],
+    } as unknown as Json,
+  });
   // What the studio persists after a screen_only recording with the
   // minimized-pill presenting flow: recording.mode + the captured slideSync.
   await A.supabase.from("blocks").insert({
@@ -928,13 +959,84 @@ async function main() {
   const { data: clipEnroll2 } = await admin
     .from("analytics_event")
     .select("id")
+    .eq("course_id", courseId)
     .eq("type", "enrollment")
     .eq("source", "clip_short_link");
-  check("a foreign course's ref records NOTHING (no cross-course credit)", (clipEnroll2 ?? []).length === 1);
+  const { data: foreignEnroll } = await admin
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", "00000000-0000-0000-0000-000000000000")
+    .eq("type", "enrollment");
+  check(
+    "a foreign course's ref records NOTHING (no cross-course credit)",
+    (clipEnroll2 ?? []).length === 1 && (foreignEnroll ?? []).length === 0
+  );
 
   const { data: bKits } = await B.supabase.from("posting_kit").select("id");
   const { data: bLinks } = await B.supabase.from("short_link").select("id");
   check("RLS: B sees NO kits and NO short links", (bKits ?? []).length === 0 && (bLinks ?? []).length === 0);
+
+  /* ── M-F: slideShortProvider.lifecycle.spec (same table, injected render) ── */
+
+  console.log("\n# slideShortProvider.lifecycle.spec (M-F: the SAME job table + write path)");
+  // lesson5 is the synced screen recording — its candidates are slide_short.
+  const { data: ssCandidates } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id, layout")
+    .eq("lesson_id", lesson5)
+    .order("rank");
+  check("slide_short candidates exist from the M-R proof", (ssCandidates ?? []).length > 0 && ssCandidates![0].layout === "slide_short");
+  const ssGen = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: ssCandidates![0].id, preset: "bofu_preview" },
+    ctxFor()
+  );
+  const ssJobId = ssGen.target!.id;
+  const { data: ssJobRow } = await A.supabase
+    .from("clip_render_job")
+    .select("provider, layout, status")
+    .eq("id", ssJobId)
+    .single();
+  check(
+    "slide_short job: provider wisesel_slides, queued in the SAME table",
+    ssJobRow?.provider === "wisesel_slides" && ssJobRow?.layout === "slide_short" && ssJobRow?.status === "queued"
+  );
+
+  let slideShortRendered = 0;
+  const ssTickDeps = {
+    ...tickDeps,
+    nowIso: new Date().toISOString(),
+    // FR-6 injection point — the REAL Remotion render lives in
+    // verify-clips-slideshort; the lifecycle here proves the shared machine.
+    renderSlideShortImpl: async (_spec: unknown, outputPath: string) => {
+      slideShortRendered++;
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(outputPath, Buffer.from("ftyp-fake-slide-short-bytes"));
+    },
+  };
+  for (let i = 0; i < 4; i++) {
+    const j = (await getRenderJob(admin as never, ssJobId))!;
+    if (j.status === "completed" || j.status === "failed") break;
+    await advanceRenderJob({ ...ssTickDeps, nowIso: new Date().toISOString() }, j);
+  }
+  const ssJob = (await getRenderJob(admin as never, ssJobId))!;
+  check(
+    "lifecycle: queued → precutting → rendering_local → completed through transitionRenderJob",
+    ssJob.status === "completed" && slideShortRendered === 1
+  );
+  check(
+    "cost: in-house minutes on the ONE ledger (ceil(span/60) × rate)",
+    ssJob.costMinutes === Math.ceil((ssJob.source.endMs - ssJob.source.startMs) / 60_000)
+  );
+  const { data: ssPost } = await A.supabase
+    .from("social_post")
+    .select("post_type, ai_metadata")
+    .eq("clip_job_id", ssJobId)
+    .maybeSingle();
+  check(
+    "slide_short output rides the SAME ingest path (social_post post_type='clip')",
+    ssPost?.post_type === "clip" && (ssPost?.ai_metadata as Record<string, unknown>)?.layout === "slide_short"
+  );
 
   console.log("\n# M-B token bucket: held when the minute budget is spent");
   process.env.CLIP_RENDER_TOKENS_PER_MIN = "1";

@@ -426,12 +426,6 @@ export function ClipsView({
                               ? "Render cancelled"
                               : "Rendering in the background…"}
                       </span>
-                    ) : c.layout === "slide_short" ? (
-                      // The slide-short renderer is the next milestone — honest
-                      // gating beats a button that errors.
-                      <span className="text-xs text-stone-400">
-                        Slide-short rendering is coming next — this candidate stays selectable.
-                      </span>
                     ) : (
                       <button
                         type="button"

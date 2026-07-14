@@ -54,6 +54,8 @@ import {
   type PipRect,
 } from "./ffmpegArgs";
 import { FfmpegError, runFfmpeg } from "./localRender";
+import { renderSlideShort } from "./slideShort/renderSlideShort";
+import { buildSlideShortSpec } from "./slideShort/buildSpec";
 import type { PrecutOps } from "./precut";
 import {
   createRenderJob,
@@ -244,12 +246,6 @@ export async function createClipRenderJob(
   const { candidate } = args;
   const cfg = clipRenderConfig();
   const provider = providerForLayout(candidate.layout);
-  if (provider === "wisesel_slides") {
-    throw new ClipRenderError(
-      "unrenderable_layout",
-      "Slide-short rendering arrives with the slide-sync milestone — this candidate stays selectable until then."
-    );
-  }
   // Multi-segment candidates (the §7.3 EXCEPTION shape) need segment-wise
   // pre-cut + stitch; enveloping their span would silently render the
   // unwanted middle — refuse loudly instead (surfaced at the M-B checkpoint;
@@ -346,6 +342,8 @@ export interface RenderTickDeps {
   fetchImpl?: typeof fetch;
   /** Injectable for tests — the real one spawns ffmpeg-static. */
   runFfmpegImpl?: typeof runFfmpeg;
+  /** Injectable for tests — the real one drives Remotion's headless Chrome. */
+  renderSlideShortImpl?: typeof renderSlideShort;
 }
 
 export interface RenderTickResult {
@@ -405,6 +403,17 @@ async function renderLocal(
 ): Promise<void> {
   const run = deps.runFfmpegImpl ?? runFfmpeg;
   const durationSeconds = (job.source.endMs - job.source.startMs) / 1000;
+  if (job.layout === "slide_short") {
+    // FR-6: the Remotion provider — spec built from the M-R sync + the real
+    // deck; audio = the precut span's own media URL (Chrome fetches it).
+    const candidate = await getCandidate(deps.supabase, job.candidateId);
+    if (!candidate) throw new Error("slide_short job's candidate is gone");
+    if (!job.precut?.mp4Url) throw new Error("slide_short job has no precut media url");
+    const spec = await buildSlideShortSpec(deps.supabase, job, candidate, job.precut.mp4Url);
+    const render = deps.renderSlideShortImpl ?? renderSlideShort;
+    await render(spec, outputPath);
+    return;
+  }
   if (job.layout === "stacked_split") {
     // D-4: the full-res camera track beats the PiP crop when captured.
     if (cameraInputPath) {
@@ -588,7 +597,11 @@ export async function advanceRenderJob(
         try {
           const inputPath = join(dir, "input.mp4");
           const outputPath = join(dir, "output.mp4");
-          writeFileSync(inputPath, await downloadBytes(job.precut.mp4Url, fetchImpl));
+          if (job.layout !== "slide_short") {
+            // slide_short streams the precut URL straight into the render
+            // Chrome — no local input bytes needed.
+            writeFileSync(inputPath, await downloadBytes(job.precut.mp4Url, fetchImpl));
+          }
           let cameraInputPath: string | null = null;
           if (job.precut.cameraMp4Url) {
             cameraInputPath = join(dir, "camera.mp4");
