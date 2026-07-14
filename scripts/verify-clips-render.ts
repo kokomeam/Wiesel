@@ -711,6 +711,42 @@ async function postingKitSpec() {
   );
 }
 
+async function clipsUiSpec() {
+  console.log("# momentPicker.layoutChips.spec + clipCard.audiogramCaveat.spec (M-E, FR-9)");
+  const view = readFileSync(join(ROOT, "components", "marketing", "clips", "ClipsView.tsx"), "utf8");
+  check(
+    "layout chips IMPORT CLIP_LAYOUT_LABELS (never copy the human copy)",
+    view.includes("CLIP_LAYOUT_LABELS") && !view.includes('"Split screen + camera"')
+  );
+  check(
+    "audiogram caveat IMPORTS CLIP_AUDIOGRAM_CAVEAT and renders it visibly",
+    view.includes("CLIP_AUDIOGRAM_CAVEAT") && view.includes('c.layout === "audiogram"')
+  );
+  check("ManualPublishNotice is REUSED (the one language component)", view.includes("ManualPublishNotice"));
+  const { BANNED_UI_PHRASES } = await import("@/lib/marketing/clips/constants");
+  const uiFiles = [
+    view,
+    readFileSync(join(ROOT, "app", "(app)", "marketing", "clips", "page.tsx"), "utf8"),
+    readFileSync(join(ROOT, "app", "preview", "[code]", "page.tsx"), "utf8"),
+  ];
+  check(
+    "no banned publish-language anywhere in the clips UI",
+    uiFiles.every((src) => BANNED_UI_PHRASES.every((p) => !src.toLowerCase().includes(p)))
+  );
+  check(
+    "usage meter renders both quotas (jobs/day + minutes/month)",
+    view.includes("jobsPerDay") && view.includes("minutesPerMonth")
+  );
+  check(
+    "every mutation rides the REST surface (fetch → gate), no direct supabase writes in the view",
+    !/supabase|createClient/.test(view)
+  );
+  check(
+    "slide_short candidates honestly gated until the renderer ships",
+    view.includes("Slide-short rendering is coming next")
+  );
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -724,6 +760,7 @@ async function main() {
   dualStackedSpec();
   await packagingLayoutSpec();
   await postingKitSpec();
+  await clipsUiSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

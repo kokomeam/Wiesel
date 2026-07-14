@@ -70,3 +70,26 @@ export async function GET(req: Request, ctx: { params: Promise<{ lessonId: strin
     return clipErrorResponse(err);
   }
 }
+
+/** PATCH — candidate status lifecycle (selected/dismissed/candidate) via the
+ *  update_clip_moment_status tool (M-E's dismiss/restore buttons). */
+export async function PATCH(req: Request) {
+  let body: Record<string, unknown> = {};
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Expected a JSON body" }, { status: 400 });
+  }
+  const auth = await socialRouteAuth((body.courseId as string | undefined) ?? null);
+  if (auth instanceof NextResponse) return auth;
+  try {
+    const outcome = await executeMarketingTool(
+      "update_clip_moment_status",
+      { candidateId: body.candidateId, status: body.status },
+      auth.ctx
+    );
+    return NextResponse.json({ summary: outcome.summary, data: outcome.data ?? null });
+  } catch (err) {
+    return clipErrorResponse(err);
+  }
+}
