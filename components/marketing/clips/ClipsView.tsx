@@ -15,7 +15,7 @@
  * ManualPublishNotice is THE language component (reused, not re-worded).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -316,12 +316,21 @@ export function ClipsView({
     [course.id]
   );
 
+  // Hydration-safe origin: this text RENDERS (and the page SSRs client
+  // components), so bare `window` threw "window is not defined" the moment
+  // a persisted kit loaded with the page. Server snapshot renders the
+  // relative /l/ link; the client pass fills the absolute origin in.
+  const origin = useSyncExternalStore(
+    () => () => {},
+    () => window.location.origin,
+    () => ""
+  );
   const kitFullText = (kit: KitView & { fullText?: string }): string =>
     kit.fullText ??
     [
       kit.caption,
       kit.commentKeyword ? `Comment "${kit.commentKeyword}" and I'll DM you the link.` : null,
-      kit.shortCode ? `${window.location.origin}/l/${kit.shortCode}` : null,
+      kit.shortCode ? `${origin}/l/${kit.shortCode}` : null,
       kit.disclosureLine,
       kit.hashtags.length ? kit.hashtags.map((h) => `#${h}`).join(" ") : null,
     ]

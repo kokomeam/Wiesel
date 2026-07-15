@@ -12,9 +12,12 @@ import { ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import {
-  PLATFORM_LIMITS,
+  PLATFORMS,
+  platformLimitsFor,
+  POST_PLATFORMS,
   POST_STATUSES,
   type SocialPlatform,
+  type SocialPostPlatform,
   type SocialPostStatus,
 } from "@/lib/marketing/social/constants";
 import type { SocialBatch } from "@/lib/marketing/social/repository";
@@ -23,7 +26,7 @@ import { StageChip } from "./StageChip";
 
 export interface QueueFilters {
   status?: SocialPostStatus;
-  platform?: SocialPlatform;
+  platform?: SocialPostPlatform;
   funnelStage?: string;
 }
 
@@ -98,7 +101,7 @@ function PostCard(props: {
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="rounded-md border border-stone-200 bg-stone-50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-stone-600">
-          {PLATFORM_LIMITS[post.platform].label}
+          {platformLimitsFor(post.platform).label}
         </span>
         <StageChip stage={post.funnelStage} />
         <StatusPill status={post.status} />
@@ -182,11 +185,13 @@ export function PostQueue(props: {
         ))}
         <span className="mx-1 h-4 w-px bg-stone-200" />
         <FilterChip active={!filters.platform} label="All platforms" onClick={() => props.onFilters({ ...filters, platform: undefined })} />
-        {(["linkedin", "facebook"] as const).map((p) => (
+        {POST_PLATFORMS.filter(
+          (p) => PLATFORMS.includes(p as SocialPlatform) || props.posts.some((post) => post.platform === p)
+        ).map((p) => (
           <FilterChip
             key={p}
             active={filters.platform === p}
-            label={PLATFORM_LIMITS[p].label}
+            label={platformLimitsFor(p).label}
             onClick={() => props.onFilters({ ...filters, platform: filters.platform === p ? undefined : p })}
           />
         ))}

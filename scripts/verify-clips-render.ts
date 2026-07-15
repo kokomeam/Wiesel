@@ -751,6 +751,17 @@ async function clipsUiSpec() {
     "slide_short candidates render like every other layout (the M-F provider is live)",
     !view.includes("Slide-short rendering is coming next")
   );
+  // 2026-07-15: the page SSRs client components — a bare `window` in the kit
+  // full text threw "window is not defined" the moment a persisted kit
+  // loaded. The origin must ride useSyncExternalStore (server snapshot "")
+  // and window may appear ONLY inside its client snapshot getter.
+  const windowUses = view.match(/window\./g) ?? [];
+  check(
+    "kit text is SSR-safe: origin via useSyncExternalStore, no other window access",
+    view.includes("useSyncExternalStore") &&
+      windowUses.length === 1 &&
+      view.includes("() => window.location.origin")
+  );
 }
 
 async function chaosAndWerSpec() {

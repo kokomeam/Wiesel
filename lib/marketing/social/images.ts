@@ -14,7 +14,7 @@ import type { Database } from "@/lib/database.types";
 import {
   IMAGE_MAX_BYTES,
   IMAGE_SIGNED_URL_TTL_SECONDS,
-  PLATFORM_LIMITS,
+  platformLimitsFor,
   SOCIAL_IMAGES_BUCKET,
 } from "./constants";
 import { emitSocialEvent } from "./events";
@@ -86,8 +86,9 @@ export async function finalizeImageAttachment(
     meta: { mime: meta.mime, width: meta.width, height: meta.height, bytes: blob.size },
   });
 
-  const norm = PLATFORM_LIMITS[args.post.platform].imageNorm;
-  const warning = imageNormWarning(meta, norm, PLATFORM_LIMITS[args.post.platform].label);
+  const limits = platformLimitsFor(args.post.platform);
+  const norm = limits.imageNorm;
+  const warning = imageNormWarning(meta, norm, limits.label);
 
   await emitSocialEvent(deps.supabase, deps.courseIdForEvents, "social_post_image_attached", {
     postId: post.id,

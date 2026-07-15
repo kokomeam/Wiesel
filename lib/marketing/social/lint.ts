@@ -10,7 +10,7 @@
  * verify-social.ts.
  */
 
-import { PLATFORM_LIMITS, type SocialPlatform } from "./constants";
+import { platformLimitsFor, type SocialPostPlatform } from "./constants";
 
 export interface LintViolation {
   rule: string;
@@ -21,7 +21,7 @@ export interface LintViolation {
 }
 
 export interface LintablePost {
-  platform: SocialPlatform;
+  platform: SocialPostPlatform;
   body: string;
   cta: string | null;
   hashtags: string[];
@@ -121,7 +121,7 @@ export function lintGeneratedPost(post: LintablePost, sourceContext: string): Li
   const text = [post.body, post.cta ?? ""].join("\n");
   const violations = lintFreeText(text, sourceContext);
 
-  const limits = PLATFORM_LIMITS[post.platform];
+  const limits = platformLimitsFor(post.platform);
   if (post.hashtags.length > limits.hashtagMax) {
     violations.push({
       rule: "hashtag_overflow",

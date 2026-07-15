@@ -508,6 +508,32 @@ REPOSITORY (`insertSocialPost`) — the M-C direct `.from("social_post")
 suite failure had been masked by output piping; the chain now runs with an
 honest exit code).
 
+Two more, found the moment real clip posts hit the surfaces (same day):
+
+6. **The social queue crashed on the first ingested clip post.**
+   `PLATFORM_LIMITS` is the TEXT-generation contract (deliberately closed at
+   LinkedIn+Facebook), but clip posts legally carry
+   instagram/tiktok/youtube_shorts — `PLATFORM_LIMITS[post.platform].label`
+   threw for every clip row (queue card, editor counters, revise/hashtag/
+   image paths would all have followed). Fix: `CLIP_POST_PLATFORMS` +
+   `CAPTION_LIMITS` (generous EDIT guards, never generation targets) +
+   **`platformLimitsFor()`** — the TOTAL lookup every loaded-post path now
+   uses; `SocialPostSchema.platform` widened to the row union
+   (`PostPlatformSchema` — clip rows used to fail parse under a hiding
+   cast); the queue's platform filter shows clip-platform chips only when
+   such posts exist. Text generation still iterates `PLATFORMS` — the
+   closed-at-2 fence holds (grep-tested). `clipPostPlatforms.spec` in
+   verify-social: totality, fence, ingest-platforms ⊆ row union drift guard,
+   clip-row parse, and a repo-wide grep banning unguarded
+   `PLATFORM_LIMITS[post.platform]` indexing.
+7. **`/marketing/clips` crashed with "window is not defined"** once a
+   persisted posting kit loaded with the page: `kitFullText` interpolated
+   `window.location.origin` and Next SSRs client components. The origin now
+   rides `useSyncExternalStore` (server snapshot renders the relative `/l/`
+   link; the client pass fills the absolute origin) — the repo's standard
+   hydration-safe pattern. SSR check added to `clipsUi` in
+   verify-clips-render.
+
 ## Tests
 
 - `npm run verify:clips` — **199 pure checks** (no key/DB), in the `npm test`

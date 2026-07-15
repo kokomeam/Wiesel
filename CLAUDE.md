@@ -1691,7 +1691,19 @@ compliant footers (8 locales, `language.ts`).
   + retry button). ALSO: clip ingest now inserts via the social REPOSITORY
   (`insertSocialPost`) — the M-C direct insert violated verify-social's
   single-write-module grep and the failure had been masked by piped exit
-  codes; verify:social 127 + verify:video 162 (backgroundTicker.spec).
+  codes; verify:social + verify:video 162 (backgroundTicker.spec). (6) the
+  social queue crashed on the FIRST ingested clip post: clip rows carry
+  instagram/tiktok/youtube_shorts but `PLATFORM_LIMITS` is the text contract
+  (closed at 2) — every loaded-post path now uses **`platformLimitsFor()`**
+  (total over `POST_PLATFORMS` = text ∪ `CLIP_POST_PLATFORMS`, backed by
+  `CAPTION_LIMITS` edit-guards); `SocialPostSchema.platform` = the row union
+  (`PostPlatformSchema`); direct `PLATFORM_LIMITS[x]` stays ONLY for
+  request-validated text platforms (repo-wide grep bans
+  `PLATFORM_LIMITS[post.platform]`); the text fence holds. (7)
+  `/marketing/clips` "window is not defined": `kitFullText` read
+  `window.location.origin` and Next SSRs client components — origin now
+  rides `useSyncExternalStore` (SSR renders the relative /l/ link).
+  verify:social 133 · verify:clips:render 115 (SSR check).
 
 ## Where things live
 
