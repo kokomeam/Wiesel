@@ -25,6 +25,7 @@ import {
   slideIdFromSelection,
   type SlideSyncCaptureEntry,
 } from "@/lib/editor/recordingSlideSync";
+import { createBackgroundTicker, type TickerHandle } from "@/lib/editor/backgroundTicker";
 
 /** D-4 (M-R): also persist the raw camera stream alongside the composited
  *  canvas for screen_camera sessions. Default OFF — a storage-cost decision
@@ -209,7 +210,7 @@ export function useVideoRecorder(opts?: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
-  const compositeRafRef = useRef<number | null>(null);
+  const compositeTickerRef = useRef<TickerHandle | null>(null);
   const meterRafRef = useRef<number | null>(null);
   const meterCtxRef = useRef<AudioContext | null>(null);
   const mixCtxRef = useRef<AudioContext | null>(null);
@@ -512,15 +513,19 @@ export function useVideoRecorder(opts?: {
         roundedRectPath(ctx, r.x, r.y, r.w, r.h, r.radius);
         ctx.stroke();
       }
-      compositeRafRef.current = requestAnimationFrame(draw);
     };
-    compositeRafRef.current = requestAnimationFrame(draw);
+    // NOT requestAnimationFrame: rAF suspends in a backgrounded tab, and
+    // recording another window/app is exactly when this tab is backgrounded —
+    // a rAF-driven compositor froze a real 6-minute lesson recording on its
+    // first frame (audio kept going). Worker-interval ticks are exempt from
+    // visibility throttling, so the canvas keeps repainting off-screen.
+    compositeTickerRef.current = createBackgroundTicker(30, draw);
     return canvas.captureStream(30);
   }, []);
 
   const stopComposite = useCallback(() => {
-    if (compositeRafRef.current != null) cancelAnimationFrame(compositeRafRef.current);
-    compositeRafRef.current = null;
+    compositeTickerRef.current?.stop();
+    compositeTickerRef.current = null;
     if (screenVideoRef.current) {
       screenVideoRef.current.srcObject = null;
       screenVideoRef.current = null;

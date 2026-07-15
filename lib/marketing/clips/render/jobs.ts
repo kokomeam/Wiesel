@@ -173,13 +173,17 @@ export async function createRenderJob(supabase: DB, input: CreateRenderJobInput)
     .single();
   if (!error) return rowToRenderJob(data);
 
-  // unique violation on (creator, idempotency_key) → replay
+  // unique violation on (creator, idempotency_key) → replay. The index is
+  // PARTIAL over live/completed jobs (failed/cancelled don't consume the
+  // key — retry must stay possible), so the replay read filters the same
+  // way: exactly one such row can exist.
   if (input.idempotencyKey && /duplicate key|23505/.test(error.message + (error.code ?? ""))) {
     const { data: existing, error: readErr } = await supabase
       .from("clip_render_job")
       .select("*")
       .eq("creator_id", input.creatorId)
       .eq("idempotency_key", input.idempotencyKey)
+      .not("status", "in", '("failed","cancelled")')
       .single();
     if (readErr) throw new Error(`clip_render_job idempotent replay read: ${readErr.message}`);
     return rowToRenderJob(existing);
@@ -244,13 +248,19 @@ export async function getRenderJob(supabase: DB, id: string): Promise<ClipRender
   return data ? rowToRenderJob(data) : null;
 }
 
-export async function listActiveRenderJobs(supabase: DB, limit: number): Promise<ClipRenderJob[]> {
-  const { data, error } = await supabase
+export async function listActiveRenderJobs(
+  supabase: DB,
+  limit: number,
+  creatorId?: string
+): Promise<ClipRenderJob[]> {
+  let query = supabase
     .from("clip_render_job")
     .select("*")
     .in("status", ["queued", "precutting", "submitted", "rendering_local"])
     .order("created_at", { ascending: true })
     .limit(limit);
+  if (creatorId) query = query.eq("creator_id", creatorId);
+  const { data, error } = await query;
   if (error) throw new Error(`clip_render_job active list: ${error.message}`);
   return (data ?? []).map(rowToRenderJob);
 }

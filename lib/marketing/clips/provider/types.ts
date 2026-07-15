@@ -80,3 +80,15 @@ export interface ClipRenderProvider {
   /** Best-effort cancel (revert path); resolving after terminal is a no-op. */
   cancel(providerRef: string): Promise<void>;
 }
+
+/**
+ * A provider error retrying the SAME request can never fix (bad ref,
+ * rejected payload, bad credentials). Adapters mark these with
+ * `permanent: true`; the job step handler FAILS the job instead of
+ * re-polling the same 4xx every tick forever (found live: a leaked test
+ * job's fake project id 422'd on every pass, silently, as "[object
+ * Object]"). Duck-typed so the service never imports an adapter.
+ */
+export function isPermanentProviderError(err: unknown): err is Error & { permanent: true } {
+  return err instanceof Error && (err as { permanent?: unknown }).permanent === true;
+}

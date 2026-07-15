@@ -5,7 +5,10 @@
 > (2026-07-14): Task 0 · M-A(+amendment) · M-B · M-C · M-R · M-D · M-E ·
 > M-F · M-G.** Task 0 findings: `docs/reap-task0-findings.md` (live-verified
 > against the real Reap API + a real lesson recording). Phase 1 foundation:
-> `docs/social-posts.md`.
+> `docs/social-posts.md`. **Live-usage fix pass 2026-07-15** — see
+> § First-live-usage fixes below (recorder hidden-tab freeze, delivery-loop
+> polling, frozen-source guard, permanent provider errors, idempotency
+> retry).
 
 ## What this is
 
@@ -447,9 +450,67 @@ M-B adds `REAP_API_KEY` + quota knobs (`CLIP_MINUTES_PER_MONTH`,
   (length-weighted within each cue) — plenty for 20–90s span selection;
   frame-accurate caption timing is the render provider's job (§9).
 
+## First-live-usage fixes (2026-07-15)
+
+The creator's first real render session surfaced five defects — all fixed,
+all regression-tested:
+
+1. **Recorder hidden-tab freeze (the root product bug — NOT a clips bug).**
+   The screen+camera compositor drew to its canvas with
+   `requestAnimationFrame`, which Chrome fully suspends in a backgrounded
+   tab — and recording another window/app is exactly when the studio tab is
+   backgrounded. Result: `canvas.captureStream()` got no new frames and
+   MediaRecorder encoded ONE frozen frame with live audio for the whole
+   take (verified: byte-identical Mux thumbnails from t=5s → t=370s on the
+   real lesson). Fix: `lib/editor/backgroundTicker.ts` — a dedicated-Worker
+   interval ticker (worker timers are exempt from visibility throttling)
+   drives the draw loop at 30fps; rAF remains only as a degraded fallback
+   when the worker can't be built. `backgroundTicker.spec` in verify:video.
+   **Recordings made before this fix are unfixable — re-record.**
+2. **Nothing delivered renders in dev ("Cutting the exact span…" forever).**
+   Job progression is a reconciliation sweep (Reap has no webhooks), but dev
+   has no cron — each manual "Process renders now" click advanced exactly
+   one edge and then nothing ever ticked again (the job's Mux precut sat
+   ready for hours). Fix: `POST /api/marketing/clips/tick` — a
+   creator-scoped sweep (`processClipRenderTick({creatorId})`) the clips
+   page now polls every 5s while jobs are active (in-flight-guarded; the
+   button reuses it). Prod cron is unchanged and remains the unattended
+   path; this is user-triggered polling, not a scheduler (the no-cron fence
+   holds).
+3. **Frozen-source guard (`static_video`).** Job creation samples 3 Mux
+   thumbnails across the candidate span; byte-identical frames on a
+   camera-bearing format (a webcam frame is never pixel-identical twice)
+   refuse the render with a re-record message instead of billing minutes
+   for a frozen clip. screen_only is exempt (static slides under narration
+   are legitimate); a thumbnail fetch hiccup skips the guard. `staticGuard.
+   spec` in verify:clips:render.
+4. **Permanent provider errors poisoned the sweep silently.** A leaked
+   int-test job with fake refs 422'd against the real Reap API on every
+   tick, logged as `[object Object]`, forever. Fixes: structured 4xx detail
+   is stringified into `ReapError`; reap-api 4xx (not 408/429/upload-put)
+   carries `permanent: true`; the step handler FAILS the job on
+   `isPermanentProviderError` (seam-level duck-type — the service still
+   never imports an adapter); `failJob` now also cleans temp precut assets
+   (a failed job used to leak its Mux clip asset); the int suite scopes its
+   sweeps to the test creator and registers a leak guard that cancels its
+   active rows on success AND crash. `providerErrors.spec`.
+5. **A dead job blocked retry forever.** The `(creator, idempotency_key)`
+   unique index made a failed/cancelled job consume `gen:{cand}:{preset}`
+   permanently — "queue again" was impossible. Migration
+   `20260715100000_clip_job_idem_partial.sql` scopes uniqueness to
+   live/completed rows; the replay read filters the same way; the candidate
+   card now shows the failure reason + a "Render again" button, and active
+   job rows surface their last retry error.
+
+Also in this pass: `ingestCompletedClipJob` now inserts through the social
+REPOSITORY (`insertSocialPost`) — the M-C direct `.from("social_post")
+.insert` had violated verify-social's single-write-module invariant (the
+suite failure had been masked by output piping; the chain now runs with an
+honest exit code).
+
 ## Tests
 
-- `npm run verify:clips` — **198 pure checks** (no key/DB), in the `npm test`
+- `npm run verify:clips` — **199 pure checks** (no key/DB), in the `npm test`
   chain: constants/taxonomy/rubric, Zod gates (incl. the multi-segment
   exception rules), VTT→word interpolation, anchors/chunking, every
   deterministic validation rule, verdict application (±8s bound, hook
@@ -463,14 +524,28 @@ M-B adds `REAP_API_KEY` + quota knobs (`CLIP_MINUTES_PER_MONTH`,
   `routing.matrix.spec` (matrix + precedence + sync helpers),
   `actionDensity.lexicon/Diff/degraded.spec`, `rubric.formatAware.spec`
   (boost matrix), `hookIntegrity.slideRef.spec`.
-- `npm run verify:clips:int` — **44 checks** vs live Supabase + the mock
+- `npm run verify:clips:int` — **85 checks** vs live Supabase + the mock
   model: platform/cache/provider/no-source acquisition, gate-staged selection
   with persisted ranks + prompt versions + events, byte-for-byte status
   revert, whole-set revert (transcript cache survives), zero-survivor
   nothing-persisted, the full creator-B RLS matrix, and the amendment's DB
   halves: block-metadata short-circuit (inspector-never-built spy),
   upload-path classification, the creator-override flip + cache persistence,
-  layout on every candidate row + in ai_metadata + on the generated event.
+  layout on every candidate row + in ai_metadata + on the generated event;
+  plus the M-B→M-G additions (gate-staged render jobs, idempotent replay,
+  retry-after-cancel via the partial index, revert-cancel, the full
+  queued→precutting→submitted/rendering_local→completed lifecycle vs real
+  DB/storage with fakes, token-bucket hold, ingest + kit + attribution,
+  slide-short lifecycle, RLS). Sweeps are creator-scoped and a leak guard
+  cancels the run's active job rows on success and on crash.
+- `npm run verify:clips:render` — **114 checks** (pure/local; REAL ffmpeg
+  renders): provider contract, state machine, golden args, brand divergence,
+  D-3 provenance spies, recorder slide-sync, posting kit, UI greps,
+  reconciliation chaos + WER, `providerErrors.spec` (permanent 4xx →
+  terminal fail + precut cleanup; stringified detail), `staticGuard.spec`
+  (frozen-source detection).
+- `npm run verify:clips:slideshort` — **14 checks**, REAL Remotion renders
+  (in `npm test`).
 - `npm run eval:clips` — the §20 eval (see above; 5 fixtures + layout gates;
   `--live --control` records the FR-8 pre-amendment delta artifact).
 - `npm run smoke:reap` — Task 0 ((a)–(c) done vs the live API; (d)/(e) need

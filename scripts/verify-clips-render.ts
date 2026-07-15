@@ -18,6 +18,12 @@
  *     audiogram REALLY render via ffmpeg-static; outputs are playable mp4s
  *   - routing/provider mapping + pip provenance (D-3/D-5)
  *   - hardening greps            — no publish-clip/schedule-clips, no cron
+ *   - providerErrors.spec        — structured 4xx detail stringified (no
+ *     "[object Object]"), permanent-vs-transient flags, permanent poll
+ *     rejection FAILS the job + cleans the temp precut (2026-07-15 live
+ *     fixes: a leaked fake-ref job 422'd silently on every tick forever)
+ *   - staticGuard.spec           — frozen-source detection (byte-identical
+ *     span thumbnails) blocks camera-bearing renders, exempts screen_only
  *
  * Run: `npx tsx scripts/verify-clips-render.ts`
  */
@@ -802,6 +808,130 @@ async function chaosAndWerSpec() {
   // no provider configured → noop, never a crash
   const noProvider = await advanceRenderJob(chaosDeps as never, baseJob as never);
   check("provider unconfigured → noop (a held job, not a crash)", noProvider === "noop");
+
+  console.log("# providerErrors.spec (permanent 4xx → terminal fail + precut cleanup)");
+  const { ReapError } = await import("@/lib/marketing/clips/provider/reapClient");
+  const { isPermanentProviderError } = await import("@/lib/marketing/clips/provider/types");
+  check(
+    "reap-api 4xx is PERMANENT; 408/429/upload-put/5xx are transient",
+    new ReapError("get-project-status", 422, "x").permanent === true &&
+      new ReapError("get-project-status", 404, "x").permanent === true &&
+      new ReapError("get-project-status", 408, "x").permanent === false &&
+      new ReapError("get-project-status", 429, "x").permanent === false &&
+      new ReapError("upload-put", 403, "x").permanent === false &&
+      new ReapError("get-project-status", 500, "x").permanent === false
+  );
+  check(
+    "isPermanentProviderError: duck-typed, adapter-agnostic",
+    isPermanentProviderError(new ReapError("get-project-status", 422, "x")) &&
+      !isPermanentProviderError(new ReapError("get-project-status", 500, "x")) &&
+      !isPermanentProviderError(new Error("plain")) &&
+      !isPermanentProviderError({ permanent: true })
+  );
+  const { createReapProvider: mkReap } = await import("@/lib/marketing/clips/provider/reapClient");
+  const objDetailFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ detail: { msg: "Invalid projectId", loc: ["query", "projectId"] } }), { status: 422 });
+  let polled: unknown = null;
+  try {
+    await mkReap({ apiKey: "k", fetchImpl: objDetailFetch }).getJob("bad-ref");
+  } catch (err) {
+    polled = err;
+  }
+  check(
+    "structured 4xx detail is STRINGIFIED into the message (no [object Object])",
+    polled instanceof Error &&
+      polled.message.includes("Invalid projectId") &&
+      !polled.message.includes("[object Object]")
+  );
+
+  // Permanent rejection on the submitted poll → the job FAILS (terminal) and
+  // the temp precut asset is cleaned — never an eternal silent noop.
+  const snakeBase = {
+    id: baseJob.id, creator_id: baseJob.creatorId, course_id: baseJob.courseId,
+    lesson_id: baseJob.lessonId, candidate_id: baseJob.candidateId, layout: baseJob.layout,
+    provider: baseJob.provider, preset: baseJob.preset, status: baseJob.status,
+    source: baseJob.source, precut: baseJob.precut, provider_ref: baseJob.providerRef,
+    upload_ref: baseJob.uploadRef, crop_provenance: null, output: null, cost_minutes: 1,
+    error: null, attempts: 0, idempotency_key: null, submitted_at: baseJob.submittedAt,
+    created_at: baseJob.createdAt, updated_at: baseJob.updatedAt,
+  };
+  const writes: Record<string, unknown>[] = [];
+  const chainResolving = (result: unknown) => {
+    const c: Record<string, unknown> = {};
+    for (const m of ["select", "eq", "gte", "not", "order", "in", "limit"]) c[m] = () => c;
+    c.maybeSingle = async () => result;
+    c.single = async () => result;
+    (c as { then: (res: (v: unknown) => void) => void }).then = (res) => res(result);
+    return c;
+  };
+  const failDb = {
+    from: (table: string) => ({
+      update: (u: Record<string, unknown>) => {
+        writes.push({ table, ...u });
+        return chainResolving({ data: { ...snakeBase, ...u }, error: null });
+      },
+      insert: (row: Record<string, unknown>) => {
+        writes.push({ table, ...row });
+        return chainResolving({ data: row, error: null });
+      },
+      select: () => chainResolving({ data: [], count: 0, error: null }),
+    }),
+  };
+  const cleaned: string[] = [];
+  const permanentErr = Object.assign(
+    new Error('reap get-project-status [422]: {"msg":"Invalid projectId"}'),
+    { permanent: true }
+  );
+  const permanentOutcome = await advanceRenderJob(
+    {
+      supabase: failDb as never,
+      precut: {
+        start: async () => ({ muxAssetId: "x" }),
+        check: async () => ({ status: "preparing" as const, playbackId: null, mp4Url: null, error: null }),
+        cleanup: async (id: string) => { cleaned.push(id); },
+      },
+      nowIso: new Date().toISOString(),
+      provider: {
+        id: "reap" as const,
+        submit: async () => { throw new Error("unused"); },
+        getJob: async () => { throw permanentErr; },
+        cancel: async () => {},
+      },
+    },
+    baseJob as never
+  );
+  check(
+    "permanent provider rejection → job FAILED with the diagnosable message",
+    permanentOutcome === "failed" &&
+      writes.some((w) => w.table === "clip_render_job" && w.status === "failed" && String(w.error).includes("[422]"))
+  );
+  check("failJob cleans the temp precut asset (the leak fix)", cleaned.includes("pre1"));
+
+  console.log("# staticGuard.spec (frozen-source detection — the rAF-freeze incident)");
+  const { detectStaticSpan } = await import("@/lib/marketing/clips/render/service");
+  const frozenFetch: typeof fetch = async () => new Response(Buffer.from("same-frame-bytes"), { status: 200 });
+  check(
+    "byte-identical span thumbnails → frozen",
+    (await detectStaticSpan({ playbackId: "pb", startMs: 0, endMs: 60_000, fetchImpl: frozenFetch })) === true
+  );
+  const movingFetch: typeof fetch = async (input) =>
+    new Response(Buffer.from(`frame-at-${new URL(String(input)).searchParams.get("time")}`), { status: 200 });
+  check(
+    "differing thumbnails → not frozen",
+    (await detectStaticSpan({ playbackId: "pb", startMs: 0, endMs: 60_000, fetchImpl: movingFetch })) === false
+  );
+  const brokenFetch: typeof fetch = async () => new Response("nope", { status: 500 });
+  check(
+    "thumbnail fetch failure → guard SKIPS (never blocks a render on a hiccup)",
+    (await detectStaticSpan({ playbackId: "pb", startMs: 0, endMs: 60_000, fetchImpl: brokenFetch })) === false
+  );
+  const svc = readFileSync(join(ROOT, "lib", "marketing", "clips", "render", "service.ts"), "utf8");
+  check(
+    "createClipRenderJob wires the guard with the screen_only exemption + static_video code",
+    svc.includes('recordingFormat !== "screen_only"') &&
+      svc.includes("detectStaticSpan(") &&
+      svc.includes('"static_video"')
+  );
 
   console.log("# wer.spec (M-G: transcription quality measure through the adapter seam)");
   const { wordErrorRate } = await import("@/lib/marketing/clips/transcripts");

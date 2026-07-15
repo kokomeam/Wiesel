@@ -1122,7 +1122,17 @@ status lifecycle, a source-of-truth row, and a denormalized snapshot on the bloc
   Commits on release (one autosave/undo step). The "Done trimming" button is now a filled
   brand **"Save changes"** (was a ghost button that blended in). Handles use `role="slider"`
   + arrow-key nudge; refs are synced in an effect (React 19 forbids ref writes in render).
-- **Tests:** `npm run verify:video` (153 checks, no key/DB/browser) — schema +
+- **⚠ Compositor must NOT be rAF-driven (2026-07-15, found on a real frozen
+  lesson):** `requestAnimationFrame` is fully suspended in a backgrounded tab,
+  and screen-mode recording means the studio tab IS backgrounded — the canvas
+  stopped repainting and MediaRecorder encoded one frozen frame + live audio
+  for the whole take. The draw loop now runs on `lib/editor/
+  backgroundTicker.ts` (a dedicated-Worker `setInterval` at 30fps — worker
+  timers are visibility-throttle-exempt; rAF only as a degraded fallback).
+  Never revert the compositor (or any recording-critical loop) to rAF.
+- **Tests:** `npm run verify:video` (162 checks, no key/DB/browser — incl.
+  `backgroundTicker.spec`: worker ticks/stop/fallback + the grep pinning the
+  compositor to the ticker) — schema +
   persistence round-trip, the `UPDATE_VIDEO_LESSON` reducer, status machine +
   `reconcileMuxState`, trim validation + `trimmedDurationSeconds`/`hasTrim`, playback
   URLs, row→view mapping, recorder config/geometry, the Mux adapter (create/get/delete
@@ -1656,8 +1666,32 @@ compliant footers (8 locales, `language.ts`).
   CLIP_RENDER_WORKERS pool outside the LLM ceiling; license trigger = 4th
   hire; deps now 20) · M-G hardening (reconciliation chaos, wordErrorRate,
   seed:clips, full-chain green). Suites: verify:clips 199 ·
-  verify:clips:render 105 · verify:clips:slideshort 14 (REAL renders, in
-  npm test) · verify:clips:int 84 · eval replay PASS.
+  verify:clips:render 114 · verify:clips:slideshort 14 (REAL renders, in
+  npm test) · verify:clips:int 85 · eval replay PASS.
+- **First-live-usage fix pass (2026-07-15, docs/clips.md § First-live-usage
+  fixes):** (1) the ROOT bug was the RECORDER — the screen+camera compositor
+  was rAF-driven and Chrome suspends rAF in backgrounded tabs (recording
+  another window = tab always hidden) → 6 min of ONE frozen frame + live
+  audio; fixed with `lib/editor/backgroundTicker.ts` (dedicated-Worker
+  interval, visibility-immune; rAF only as fallback) — pre-fix recordings
+  are unfixable, re-record. (2) dev delivery: jobs only advanced on manual
+  clicks → `POST /api/marketing/clips/tick` (creator-scoped sweep) polled
+  by the clips page every 5s while jobs are active (prod cron unchanged;
+  user-triggered polling ≠ cron). (3) `static_video` guard at job creation
+  (3 span thumbnails byte-identical on a camera-bearing format ⇒ refuse
+  before billing; screen_only exempt — static slides are legit). (4)
+  provider 4xx: ReapError stringifies structured detail (was "[object
+  Object]") + carries `permanent` (not 408/429/upload-put); the step
+  handler FAILS the job via seam-level `isPermanentProviderError`; failJob
+  now cleans temp precut assets; the int suite creator-scopes its sweeps +
+  a leak guard cancels its rows even on crash (a leaked fake-ref job had
+  been 422-polling the real Reap API on every prod tick). (5) idempotency
+  index made PARTIAL over live/completed (migration `20260715100000`) —
+  failed/cancelled jobs no longer block "Render again" (UI shows the error
+  + retry button). ALSO: clip ingest now inserts via the social REPOSITORY
+  (`insertSocialPost`) — the M-C direct insert violated verify-social's
+  single-write-module grep and the failure had been masked by piped exit
+  codes; verify:social 127 + verify:video 162 (backgroundTicker.spec).
 
 ## Where things live
 

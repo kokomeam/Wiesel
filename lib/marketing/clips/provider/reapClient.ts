@@ -67,6 +67,13 @@ export function normalizeReapStatus(status: string | undefined): ProviderJobStat
 }
 
 export class ReapError extends Error {
+  /** True when retrying the SAME request can never succeed (a 4xx from
+   *  Reap's own API — bad project id, rejected payload, bad key). The job
+   *  step handler fails the job instead of re-polling forever. NOT set for
+   *  408/429 (transient by definition) or the S3 `upload-put` (presigned
+   *  URLs expire; the whole submit step re-runs fresh on the next tick). */
+  readonly permanent: boolean;
+
   constructor(
     readonly op: string,
     readonly status: number,
@@ -74,6 +81,8 @@ export class ReapError extends Error {
   ) {
     super(`reap ${op} [${status}]: ${detail}`);
     this.name = "ReapError";
+    this.permanent =
+      status >= 400 && status < 500 && status !== 408 && status !== 429 && op !== "upload-put";
   }
 }
 
@@ -102,9 +111,19 @@ export function createReapProvider(
       json = { detail: text.slice(0, 400) };
     }
     if (!res.ok) {
+      // `detail` can be a STRING or a structured object (FastAPI-style 422
+      // bodies) — String() on an object prints "[object Object]" and buries
+      // the diagnosis; stringify whatever shape arrives.
+      const rawDetail = (json as { detail?: unknown })?.detail;
       const detail =
-        (json as { detail?: string })?.detail ?? (typeof json === "string" ? json : JSON.stringify(json).slice(0, 400));
-      throw new ReapError(op, res.status, String(detail));
+        typeof rawDetail === "string"
+          ? rawDetail
+          : rawDetail !== undefined
+            ? JSON.stringify(rawDetail).slice(0, 400)
+            : typeof json === "string"
+              ? json
+              : JSON.stringify(json).slice(0, 400);
+      throw new ReapError(op, res.status, detail);
     }
     return json as T;
   }

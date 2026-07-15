@@ -15,7 +15,7 @@
  * ManualPublishNotice is THE language component (reused, not re-worded).
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -163,6 +163,33 @@ export function ClipsView({
   const activeJobs = initialJobs.filter((j) => ACTIVE_JOB_STATUSES.has(j.status));
   const doneJobs = initialJobs.filter((j) => j.status === "completed");
 
+  // While jobs are in flight, THIS PAGE is the delivery loop: Reap has no
+  // webhooks and dev has no cron, so nothing advances a job unless someone
+  // runs the reconciliation sweep. Poll the creator-scoped tick (one edge
+  // per active job per pass, idempotent — the same sweep the prod cron
+  // runs), then refresh the server data. Without this a job sits at
+  // "Cutting the exact span…" forever once its Mux precut is ready.
+  const hasActiveJobs = activeJobs.length > 0;
+  const tickBusyRef = useRef(false);
+  const runTick = useCallback(async () => {
+    if (tickBusyRef.current) return;
+    tickBusyRef.current = true;
+    try {
+      await fetch("/api/marketing/clips/tick", { method: "POST" });
+      router.refresh();
+    } catch {
+      // transient — the next poll retries
+    } finally {
+      tickBusyRef.current = false;
+    }
+  }, [router]);
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    void runTick();
+    const id = setInterval(() => void runTick(), 5_000);
+    return () => clearInterval(id);
+  }, [hasActiveJobs, runTick]);
+
   const findMoments = useCallback(async () => {
     if (!lessonId) return;
     setFinding(true);
@@ -246,12 +273,11 @@ export function ClipsView({
   const processNow = useCallback(async () => {
     setTicking(true);
     try {
-      await fetch("/api/marketing/scheduler/tick", { method: "POST" });
-      router.refresh();
+      await runTick();
     } finally {
       setTicking(false);
     }
-  }, [router]);
+  }, [runTick]);
 
   const loadMedia = useCallback(
     async (jobId: string) => {
@@ -415,16 +441,17 @@ export function ClipsView({
                   {c.layout === "audiogram" && (
                     <p className="text-[11px] italic text-stone-400">{CLIP_AUDIOGRAM_CAVEAT}</p>
                   )}
+                  {job?.status === "failed" && (
+                    <p className="text-xs text-rose-600">
+                      Render failed{job.error ? ` — ${job.error}` : ""}
+                    </p>
+                  )}
                   <div className="mt-1 flex items-center gap-2">
-                    {job ? (
+                    {job && job.status !== "failed" && job.status !== "cancelled" ? (
                       <span className="text-xs text-stone-500">
                         {job.status === "completed"
                           ? "Rendered — see below"
-                          : job.status === "failed"
-                            ? "Render failed — queue again"
-                            : job.status === "cancelled"
-                              ? "Render cancelled"
-                              : "Rendering in the background…"}
+                          : "Rendering in the background…"}
                       </span>
                     ) : (
                       <button
@@ -438,7 +465,7 @@ export function ClipsView({
                         ) : (
                           <Clapperboard className="size-3.5" />
                         )}
-                        Render this clip
+                        {job ? "Render again" : "Render this clip"}
                       </button>
                     )}
                     <button
@@ -488,13 +515,18 @@ export function ClipsView({
                   <LayoutChip layout={j.layout} />
                   <span className="text-xs text-stone-500">
                     {j.status === "queued"
-                      ? "Queued — waiting for the next processing pass"
+                      ? "Queued — starting shortly"
                       : j.status === "precutting"
                         ? "Cutting the exact span…"
                         : j.status === "submitted"
                           ? "Rendering at the provider…"
                           : "Rendering…"}
                   </span>
+                  {j.error && (
+                    <span className="text-xs text-amber-600">
+                      Retrying — last attempt: {j.error}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"

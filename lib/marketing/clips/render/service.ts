@@ -42,7 +42,7 @@ import { getLessonTranscript } from "../transcripts";
 import { ingestCompletedClipJob } from "../ingest";
 import { getCandidate } from "../repository";
 import type { ClipMomentCandidate } from "../schemas";
-import type { ClipRenderProvider } from "../provider/types";
+import { isPermanentProviderError, type ClipRenderProvider } from "../provider/types";
 import {
   buildAudiogramArgs,
   buildStackedSplitArgs,
@@ -77,6 +77,7 @@ export class ClipRenderError extends Error {
       | "quota_jobs"
       | "quota_minutes"
       | "no_video"
+      | "static_video"
       | "unrenderable_layout"
       | "multi_segment"
       | "candidate_not_found",
@@ -84,6 +85,47 @@ export class ClipRenderError extends Error {
   ) {
     super(message);
     this.name = "ClipRenderError";
+  }
+}
+
+/* ───────────────────── frozen-source guard (static_video) ──────────────── */
+
+/**
+ * Detect a FROZEN video track over the candidate span: three Mux thumbnails
+ * (span start / middle / end) that are BYTE-IDENTICAL. A webcam frame is
+ * never pixel-identical twice (sensor noise), so for camera-bearing formats
+ * identical bytes mean the recording froze — the exact failure a
+ * backgrounded-tab rAF compositor produced on a real lesson (one frame +
+ * live audio for 6 minutes). Rendering that span would bill minutes for a
+ * frozen clip, so job creation refuses with a clear re-record message.
+ *
+ * screen_only is exempt: a static slide under narration is legitimate
+ * content and CAN yield identical frames. Best-effort: any fetch hiccup
+ * skips the guard rather than blocking a render.
+ */
+export async function detectStaticSpan(args: {
+  playbackId: string;
+  startMs: number;
+  endMs: number;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const times = [
+    args.startMs / 1000,
+    (args.startMs + args.endMs) / 2000,
+    args.endMs / 1000,
+  ];
+  try {
+    const bufs = await Promise.all(
+      times.map(async (time) => {
+        const res = await fetchImpl(thumbnailUrl(args.playbackId, { time, width: 320 }));
+        if (!res.ok) throw new Error(`thumbnail ${res.status}`);
+        return Buffer.from(await res.arrayBuffer());
+      })
+    );
+    return bufs[0].equals(bufs[1]) && bufs[1].equals(bufs[2]);
+  } catch {
+    return false; // can't sample ⇒ don't block the render
   }
 }
 
@@ -163,6 +205,8 @@ export interface CreateClipJobDeps {
   courseIdForEvents: string;
   model?: ModelClient;
   nowIso: string;
+  /** Injectable for tests (the static-span guard samples Mux thumbnails). */
+  fetchImpl?: typeof fetch;
 }
 
 /** The lesson's renderable video: the same picker order the transcript path
@@ -281,6 +325,25 @@ export async function createClipRenderJob(
   const transcript = await getLessonTranscript(deps.supabase, candidate.lessonId);
   const recordingFormat = transcript?.recordingFormat ?? "camera_only";
 
+  // Frozen-source guard: camera-bearing formats can never legitimately
+  // produce byte-identical frames across the span — refuse before billing
+  // render minutes for a frozen clip. screen_only is exempt (static slides
+  // under narration are real content).
+  if (recordingFormat !== "screen_only" && asset.mux_playback_id) {
+    const frozen = await detectStaticSpan({
+      playbackId: asset.mux_playback_id,
+      startMs: candidate.startMs,
+      endMs: candidate.endMs,
+      fetchImpl: deps.fetchImpl,
+    });
+    if (frozen) {
+      throw new ClipRenderError(
+        "static_video",
+        "This recording's video track is frozen across this moment (identical frames with running audio) — usually a screen+camera recording made while the studio tab was hidden, before the fix. Re-record the lesson and the clip will render from the new take."
+      );
+    }
+  }
+
   let pipRect: PipRect | null = null;
   let cropProvenance: "deterministic" | "detected" | null = null;
   let dualCamera: { videoAssetRowId: string; sourceMuxAssetId: string } | null = null;
@@ -382,6 +445,10 @@ async function failJob(
   message: string
 ): Promise<void> {
   await transitionRenderJob(deps.supabase, job.id, job.status, "failed", { error: message.slice(0, 500) });
+  // Temp precut assets must not outlive the job (found live: a failed job
+  // leaked its Mux clip asset — cleanup only ran on the success edges).
+  if (job.precut?.muxAssetId) await deps.precut.cleanup(job.precut.muxAssetId);
+  if (job.precut?.cameraMuxAssetId) await deps.precut.cleanup(job.precut.cameraMuxAssetId);
   await emitClipEvent(deps.supabase, job.courseId ?? "", "clip_job_failed", {
     jobId: job.id,
     candidateId: job.candidateId,
@@ -694,9 +761,16 @@ export async function advanceRenderJob(
         return "noop";
     }
   } catch (err) {
-    // A step exception (network, provider 5xx) leaves the job where it was —
-    // the next tick retries the same edge. Terminal failures happen only
-    // through failJob above.
+    // A PERMANENT provider rejection (4xx — bad ref, rejected payload, bad
+    // key) can never succeed on retry: fail the job now instead of silently
+    // re-polling the same 4xx every tick forever.
+    if (isPermanentProviderError(err)) {
+      await failJob(deps, job, `provider rejected the job: ${err.message.slice(0, 300)}`);
+      return "failed";
+    }
+    // Anything else (network, provider 5xx, 429) leaves the job where it
+    // was — the next tick retries the same edge. Terminal failures happen
+    // only through failJob.
     console.log(
       JSON.stringify({
         tag: "clip_render_step_error",
@@ -709,12 +783,13 @@ export async function advanceRenderJob(
   }
 }
 
-/** One pass over every active job (the scheduler-tick entry point). */
+/** One pass over active jobs (the scheduler-tick entry point; the clips
+ *  page's poll passes `creatorId` to sweep only the caller's own jobs). */
 export async function processClipRenderTick(
   deps: RenderTickDeps,
-  opts: { limit?: number } = {}
+  opts: { limit?: number; creatorId?: string } = {}
 ): Promise<RenderTickResult> {
-  const jobs = await listActiveRenderJobs(deps.supabase, opts.limit ?? 25);
+  const jobs = await listActiveRenderJobs(deps.supabase, opts.limit ?? 25, opts.creatorId);
   const result: RenderTickResult = { processed: 0, advanced: 0, completed: 0, failed: 0, heldByBucket: 0 };
   for (const job of jobs) {
     result.processed++;

@@ -730,8 +730,35 @@ async function main() {
   const { data: cancelledRow } = await A.supabase.from("clip_render_job").select("status").eq("id", jobId).single();
   check("revert of the create CANCELS the job (cost-ledger row survives)", cancelledRow?.status === "cancelled");
 
+  // A dead job must not consume its idempotency key: the unique index is
+  // PARTIAL over live/completed rows, so re-queuing the same candidate+preset
+  // after a failure/cancel creates a FRESH job (the old replay returned the
+  // dead row and retry was impossible — found live).
+  const gen1retry = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check(
+    "retry after cancel → a FRESH queued job (dead rows don't hold the idempotency key)",
+    gen1retry.target?.id != null && gen1retry.target.id !== jobId
+  );
+  await rejectMarketingAction(A.supabase as never, gen1retry.actionId!);
+
   console.log("\n# M-B lifecycle: queued → precutting → submitted → completed (fakes, real DB+storage)");
   const admin = createClient<Database>(url, loadServiceKey(), { global: { fetch: retryingFetch } });
+  // A crashed run must not leak ACTIVE job rows into the live DB: the real
+  // cron sweeps ALL creators, so a leaked `submitted` row with this suite's
+  // fake provider refs gets polled against the REAL provider forever (found
+  // live: a leaked proj-int-1 job 422'd on every prod-code tick). Register
+  // the cleanup as soon as jobs can exist.
+  leakGuard = async () => {
+    await admin
+      .from("clip_render_job")
+      .update({ status: "cancelled", error: "verify-clips-int teardown" })
+      .eq("creator_id", A.userId)
+      .in("status", ["queued", "precutting", "submitted", "rendering_local"]);
+  };
   const gen2 = await executeMarketingTool(
     "generate_lesson_clips",
     { candidateId: aCandidates![1].id, preset: "tofu_hook" },
@@ -1057,10 +1084,12 @@ async function main() {
     delete process.env.CLIP_RENDER_TOKENS_PER_MIN;
   }
 
-  // One edge per job per tick — a few sweeps drain the queue (the cron shape).
+  // One edge per job per tick — a few sweeps drain the queue (the cron
+  // shape). SCOPED to the test creator: an unscoped sweep with these FAKE
+  // deps would also advance any real creator's live jobs.
   let sweptCompleted = 0;
   for (let i = 0; i < 3 && sweptCompleted === 0; i++) {
-    const tickResult = await processClipRenderTick(tickDeps, { limit: 10 });
+    const tickResult = await processClipRenderTick(tickDeps, { limit: 10, creatorId: A.userId });
     sweptCompleted += tickResult.completed;
   }
   check("tick sweeps drain the held job to completion (reconciliation IS delivery)", sweptCompleted >= 1);
@@ -1068,6 +1097,7 @@ async function main() {
   const { data: bJobs } = await B.supabase.from("clip_render_job").select("id");
   check("RLS: B sees NO render jobs", (bJobs ?? []).length === 0);
 
+  await leakGuard?.();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -1081,7 +1111,16 @@ function loadServiceKey(): string {
   throw new Error("SUPABASE_SERVICE_ROLE_KEY missing from .env.local (the render tick is admin-driven)");
 }
 
-main().catch((err) => {
+/** Set once the admin client + test user exist; cancels any job rows this
+ *  run created that are still active — on success AND on a crashed run. */
+let leakGuard: (() => Promise<void>) | null = null;
+
+main().catch(async (err) => {
   console.error(err);
+  try {
+    await leakGuard?.();
+  } catch {
+    // teardown is best-effort — the failure above is the real signal
+  }
   process.exit(1);
 });

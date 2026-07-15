@@ -19,6 +19,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
+import { insertSocialPost } from "@/lib/marketing/social/repository";
 import { CLIP_PROMPT_VERSION } from "./prompt";
 import { emitClipEvent } from "./events";
 import type { ClipMomentCandidate } from "./schemas";
@@ -53,44 +54,40 @@ export async function ingestCompletedClipJob(
     .maybeSingle();
 
   const platform = candidate.targetPlatformFit[0] ?? "instagram";
-  const { data, error } = await supabase
-    .from("social_post")
-    .insert({
-      creator_id: job.creatorId,
-      course_id: job.courseId,
-      lesson_id: job.lessonId,
-      source_type: "lesson",
-      source_text: null,
-      platform,
-      post_type: "clip",
-      goal: candidate.funnelStage === "bofu" ? "promo_cta" : "value",
-      funnel_stage: candidate.funnelStage,
-      tone: "educational",
-      body: candidate.captionDraft ?? candidate.hookText,
-      cta: candidate.endCardCta,
-      hashtags: [],
-      status: "draft",
-      clip_job_id: job.id,
-      video_path: job.output.storagePath,
-      regenerated_from_post_id: prior?.id ?? null,
-      ai_metadata: {
-        candidateId: candidate.id,
-        layout: job.layout,
-        preset: job.preset,
-        provider: job.provider,
-        recordingFormat: job.source.recordingFormat,
-        hookText: candidate.hookText,
-        promptVersion: candidate.promptVersion ?? CLIP_PROMPT_VERSION,
-        costMinutes: job.costMinutes,
-        durationSeconds: job.output.durationSeconds,
-      } as unknown as Json,
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(`clip ingest (social_post insert): ${error.message}`);
+  // The insert rides the social REPOSITORY (the single social_post write
+  // module — verify-social greps every other write down), same as UI edits.
+  const post = await insertSocialPost(supabase, job.creatorId, {
+    course_id: job.courseId,
+    lesson_id: job.lessonId,
+    source_type: "lesson",
+    source_text: null,
+    platform,
+    post_type: "clip",
+    goal: candidate.funnelStage === "bofu" ? "promo_cta" : "value",
+    funnel_stage: candidate.funnelStage,
+    tone: "educational",
+    body: candidate.captionDraft ?? candidate.hookText,
+    cta: candidate.endCardCta,
+    hashtags: [],
+    status: "draft",
+    clip_job_id: job.id,
+    video_path: job.output.storagePath,
+    regenerated_from_post_id: prior?.id ?? null,
+    ai_metadata: {
+      candidateId: candidate.id,
+      layout: job.layout,
+      preset: job.preset,
+      provider: job.provider,
+      recordingFormat: job.source.recordingFormat,
+      hookText: candidate.hookText,
+      promptVersion: candidate.promptVersion ?? CLIP_PROMPT_VERSION,
+      costMinutes: job.costMinutes,
+      durationSeconds: job.output.durationSeconds,
+    } as unknown as Json,
+  });
 
   await emitClipEvent(supabase, job.courseId ?? "", "clip_ingested", {
-    postId: data.id,
+    postId: post.id,
     jobId: job.id,
     candidateId: candidate.id,
     lessonId: job.lessonId,
@@ -99,5 +96,5 @@ export async function ingestCompletedClipJob(
     platform,
     regeneratedFrom: prior?.id ?? null,
   });
-  return { postId: data.id, regeneratedFrom: prior?.id ?? null };
+  return { postId: post.id, regeneratedFrom: prior?.id ?? null };
 }
