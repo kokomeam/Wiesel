@@ -434,6 +434,39 @@ class MuxProvider implements VideoProvider {
     await muxFetch<void>(`/video/v1/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
   }
 
+  /** Create a TEMPORARY clip asset from an existing asset (the clips render
+   *  pre-cut). Requests the adaptive MP4 rendition so the pipeline can
+   *  download the exact-span bytes; public policy (the source lesson assets
+   *  are public-policy too). The caller polls getAsset and deletes after
+   *  download. */
+  async createClipAsset(
+    sourceAssetId: string,
+    startSeconds: number,
+    endSeconds: number,
+    opts: { passthrough?: string } = {}
+  ): Promise<{ assetId: string }> {
+    const body = {
+      input: [
+        {
+          url: `mux://assets/${sourceAssetId}`,
+          start_time: startSeconds,
+          end_time: endSeconds,
+        },
+      ],
+      playback_policy: ["public"],
+      static_renditions: [{ resolution: ADAPTIVE_MP4_RESOLUTION }],
+      ...(opts.passthrough ? { passthrough: opts.passthrough } : {}),
+    };
+    const res = await muxFetch<{ data: { id?: string } }>("/video/v1/assets", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!res.data?.id) {
+      throw new VideoProviderError("Mux did not return a clip asset id.", 502);
+    }
+    return { assetId: res.data.id };
+  }
+
   /** Add a static MP4 rendition to an EXISTING asset (self-heal for an older asset
    *  whose only requested rendition was skipped — e.g. a fixed size larger than the
    *  source). Idempotent: a 400 that says the rendition ALREADY EXISTS is treated as

@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/cn";
 
 export function EnrollButton({
@@ -21,6 +21,7 @@ export function EnrollButton({
   onEnrolled?: () => void;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,7 +32,9 @@ export function EnrollButton({
       const res = await fetch("/api/learn/enroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ courseId }),
+        // M-D: thread the clip short-link ref (if this visit came from one)
+        // so enrollment attribution can trace the clip.
+        body: JSON.stringify({ courseId, refCode: searchParams.get("ref") ?? undefined }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;

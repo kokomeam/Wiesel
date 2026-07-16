@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { reportSlideShown } from "@/lib/editor/recordingSlideSync";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { SlideDwellTracker } from "@/lib/analytics/dwell";
@@ -58,6 +59,9 @@ export function LearnSlideDeck({
     }
     const id = slides[index]?.id;
     if (id) dwell.start(id);
+    // M-R (D-2): while a same-tab studio recording is running, the visible
+    // slide feeds the slide-sync capture (no-op outside a session).
+    if (id) reportSlideShown(id);
   }, [index, slides, block.id, dwell]);
   useEffect(() => {
     const onVisibility = () => dwell.handleVisibilityChange();

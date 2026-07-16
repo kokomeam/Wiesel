@@ -105,7 +105,29 @@ export type AnalyticsEventType =
   | "social_post_performance_logged"
   | "social_post_generation_failed"
   | "social_voice_profile_derived"
-  | "social_voice_profile_edited";
+  | "social_voice_profile_edited"
+  // Lesson Clip Repurposing (Marketing Phase 1.5, M-A slice) — same single
+  // stream, snake_case per repo convention. Extended TOGETHER with the DB
+  // check constraint (migration 20260707100000); verify-clips.ts guards the
+  // drift. Later milestones add job/ingest/kit/link events with their tables.
+  | "lesson_transcribed"
+  | "clip_moments_generated"
+  | "clip_moments_generation_failed"
+  | "clip_moment_selected"
+  | "clip_moment_dismissed"
+  // M-B render jobs (migration 20260708130000; payloads carry layout +
+  // recordingFormat per the consequential-updates rule)
+  | "clip_job_submitted"
+  | "clip_job_completed"
+  | "clip_job_failed"
+  // M-C ingest (migration 20260708140000)
+  | "clip_ingested"
+  // M-D posting kit + short links (migration 20260710100000)
+  | "posting_kit_generated"
+  | "short_link_click"
+  // Hook overlay + caption burn (migration 20260716120000): a free local
+  // re-burn of a clip post's burned text from its clean master (H-3)
+  | "clip_hook_reburned";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";

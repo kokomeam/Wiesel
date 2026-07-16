@@ -6,6 +6,75 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## Marketing Phase 1.5 M-A — Lesson Clip Repurposing: transcripts + moment engine, 2026-07-07
+
+Milestone M-A of the clips PRD (guide: `docs/clips.md`). Creators (and the
+agent) can now turn a lesson recording into ranked, validated clip-moment
+CANDIDATES; rendering (Reap) lands in M-B, which is **gated on Task 0** — the
+live smoke test is ready (`npm run smoke:reap` + `docs/reap-task0-findings.md`)
+but **BLOCKED on `REAP_API_KEY`** (absent from `.env.local`).
+
+- **Transcript acquisition** (`lib/marketing/clips/transcripts.ts`): cache
+  (`lesson_transcript`, one row per lesson) → platform (Mux
+  `video_assets.transcript_vtt` → length-weighted word interpolation inside
+  each cue) → the injectable `TranscriptionProvider` seam (Reap fills it in
+  M-B; a mock proves the path). Second request = zero provider calls.
+- **Moment selection engine** (`selection.ts`): ONE mid-tier structured call
+  (sequential small-tier map→reduce when the transcript exceeds
+  `CLIP_TRANSCRIPT_MAX_TOKENS`) → Zod gate + exactly ONE repair (Phase 1
+  semantics; deterministic flags can claim it, a rubric-only failure never
+  wastes it) → deterministic checks (`validate.ts`: bounds, 20-90s,
+  platform-cap pruning, §8.3 rubric bar, ≤20% overlap, numeric hook claims,
+  caption clamp, the SHARED §17.2 safety lint via the new
+  `social/lint.lintFreeText`) → the ONE small-tier validation call
+  (standalone-coherence w/ ±8s adjust-or-drop [multi-segment NEVER adjusted]
+  + hook integrity w/ first-supported-hook promotion) → persist + events.
+  **`runSelectionCore` is DB-free and shared VERBATIM with the eval harness.**
+  Selection is model-REQUIRED (typed 503); fail = typed error, NOTHING
+  persisted, parameters kept.
+- **Course-graph grounding** (`context.ts`): reuses the Phase 1 context
+  assembler + a QUIZ-MISS section (`rollup_question_stats` filtered to the
+  lesson, joined to draft quiz wording via the node-id invariant) — the
+  vertical moat input generic tools can't have. Slide-sync input documented
+  absent (no slide↔video alignment exists on this platform).
+- **Versioned prompts** (`prompt.ts` + `fixtures/exemplars.ts`):
+  `CLIP_PROMPT_VERSION` stamped on every candidate; byte-stable static prefix
+  (role · §8.2 taxonomy · §8.3 rubric · §8.4 hook formulas · §8.5
+  `CLIP_PLATFORM_SPECS` pacing · §8.6 negative constraints · 6 repo-fixture
+  exemplars). **The eval harness immediately earned its keep:** clips-v1's
+  live run scored 1 viable / 11 returned — the coherence validator was
+  killing good spans over boundary sentence-fragments (model timestamps are
+  interpolated guesses) and "this course" self-references. Fixes shipped as
+  clips-v2: deterministic **sentence-boundary snapping**
+  (`snapToSentenceBounds`, applied before validation) + a coherence
+  calibration (judge REFERENCE DEBT outside the clip's time window; the clip
+  carries its own footage, so "watch this" is fine; prefer proposing the ±8s
+  adjustment) + selection told to score transcript-blind enthusiasm honestly.
+- **Governance**: 3 tools (`tools/clips.ts` — `select_clip_moments` +
+  `list_clip_moment_candidates` + `update_clip_moment_status`), ALL
+  reversible-tier, zero approval cards. New gate entities:
+  `clip_moment_set` (composite over `request_id` — rejecting a selection
+  removes the whole candidate set; the transcript cache survives) +
+  `clip_moment_candidate` (byte-for-byte single-row restore). Agent prompt
+  gained a "LESSON CLIPS" section (funnel-balanced default proposal,
+  rationale-not-scores, never claim a clip file exists yet).
+- **DB** (migration `20260707100000_lesson_clips.sql`, applied + types
+  spliced): `lesson_transcript` (no delete policy — cache) +
+  `clip_moment_candidate` (delete policy for revert-of-create; the
+  `social_voice_profile` precedent) + 5 snake_case event types on the single
+  `analytics_event` stream (TS union extended together; drift regex-guarded).
+  ⚠ the live DB carries unmerged-branch drift (`learning_events.
+  feedback_comment` etc.) — types were spliced surgically, NOT full-regen,
+  to keep this branch self-consistent.
+- **REST**: `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`
+  (through the gate; typed 422/502/503 via `clips/routeHelpers.ts`).
+- **Tests**: `npm run verify:clips` (**117** pure, in the `npm test` chain)
+  · `npm run verify:clips:int` (**33** vs live Supabase — acquisition matrix,
+  gate-staged selection + events, byte-for-byte + whole-set reverts,
+  zero-survivor nothing-persisted, full RLS matrix) · `npm run eval:clips`
+  (§20 harness: live/record/replay modes, recorded CI stubs + baseline in
+  `lib/marketing/clips/fixtures/recordings/`).
+
 ## Marketing — the agent hand-wrote fake course URLs (`/courses/{id}`), 2026-07-07
 
 Live incident #4 of the day: a CTA in a SENT broadcast 404'd at

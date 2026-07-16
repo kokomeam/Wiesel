@@ -846,6 +846,73 @@ to the lesson`;
     check("sync: settled captions short-circuit (no re-fetch)", vttFetched === before);
   }
 
+  console.log("\n# backgroundTicker.spec (the hidden-tab compositor freeze fix, 2026-07-15)");
+  {
+    const { createBackgroundTicker } = await import("@/lib/editor/backgroundTicker");
+    // Worker path: the injected worker drives ticks; stop() terminates it.
+    let terminated = 0;
+    const box: { fn: ((ev: unknown) => void) | null } = { fn: null };
+    const fakeWorker = {
+      set onmessage(fn: ((ev: unknown) => void) | null) {
+        box.fn = fn;
+      },
+      get onmessage() {
+        return box.fn;
+      },
+      terminate() {
+        terminated++;
+      },
+    };
+    let intervalMsSeen = 0;
+    let ticks = 0;
+    const t = createBackgroundTicker(30, () => ticks++, {
+      workerFactory: (ms) => {
+        intervalMsSeen = ms;
+        return fakeWorker;
+      },
+    });
+    check("worker mechanism selected when the factory succeeds", t.mechanism === "worker");
+    check("interval derives from fps (30fps → ~33ms)", Math.abs(intervalMsSeen - 1000 / 30) < 0.01);
+    box.fn?.(0);
+    box.fn?.(0);
+    check("worker messages drive ticks", ticks === 2);
+    const lateFn = box.fn;
+    t.stop();
+    lateFn?.(0);
+    check("stop(): worker terminated + late messages ignored", terminated === 1 && ticks === 2);
+
+    // rAF fallback: factory fails → rAF drives ticks (degraded, never broken).
+    let rafTicks = 0;
+    const rafCbs: (() => void)[] = [];
+    const t2 = createBackgroundTicker(30, () => rafTicks++, {
+      workerFactory: () => null,
+      raf: (cb) => {
+        rafCbs.push(cb);
+        return rafCbs.length;
+      },
+      caf: () => {},
+    });
+    check("worker unavailable → rAF fallback mechanism", t2.mechanism === "raf");
+    rafCbs[0]?.();
+    rafCbs[1]?.();
+    check("rAF fallback loops (each frame schedules the next)", rafTicks === 2 && rafCbs.length === 3);
+    t2.stop();
+    rafCbs[2]?.();
+    check("rAF fallback stop() halts the loop", rafTicks === 2);
+
+    // The recorder must drive its compositor through the ticker — a plain
+    // requestAnimationFrame draw loop FREEZES when the tab is backgrounded
+    // (which recording another window guarantees) and MediaRecorder then
+    // encodes one frozen frame with live audio for the whole take.
+    const { readFileSync: rf } = await import("node:fs");
+    const recorderSrc = rf(new URL("../components/editor/lesson/video/useVideoRecorder.ts", import.meta.url), "utf8");
+    check(
+      "useVideoRecorder composites via createBackgroundTicker, NOT a rAF draw loop",
+      recorderSrc.includes("createBackgroundTicker(30, draw)") &&
+        !/compositeRafRef|requestAnimationFrame\(draw\)/.test(recorderSrc)
+    );
+  }
+
   console.log(`\n${pass} passed, ${fail} failed\n`);
   if (fail > 0) process.exit(1);
 }

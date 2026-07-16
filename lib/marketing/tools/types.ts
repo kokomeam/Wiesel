@@ -41,7 +41,10 @@ export type EntityKind =
   | "voice_profile"
   | "social_post"
   | "social_post_batch"
-  | "social_voice_profile";
+  | "social_voice_profile"
+  | "clip_moment_candidate"
+  | "clip_moment_set"
+  | "clip_render_job";
 
 export interface EntityRef {
   entity: EntityKind;

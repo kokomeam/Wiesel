@@ -331,6 +331,9 @@ export async function versionedUpdateSocialPost(
       | "suggested_image_idea"
       | "planned_post_at"
       | "ai_metadata"
+      // H-3: a hook re-burn swaps the burned artifact — content-versioned
+      // (the clean master column never changes after ingest).
+      | "video_path"
     >
   >
 ): Promise<SocialPost> {
@@ -477,8 +480,16 @@ function rowToVoice(row: VoiceRow): VoiceProfileRecord {
   };
 }
 
-export async function loadSocialVoiceProfile(supabase: DB): Promise<VoiceProfileRecord | null> {
-  const { data, error } = await supabase.from("social_voice_profile").select("*").maybeSingle();
+/** `creatorId` scopes explicitly — REQUIRED under a service-role client
+ *  (RLS normally scopes user clients to one row; the admin-driven render
+ *  tick would otherwise see every creator's profile — found live at M-C). */
+export async function loadSocialVoiceProfile(
+  supabase: DB,
+  creatorId?: string
+): Promise<VoiceProfileRecord | null> {
+  let query = supabase.from("social_voice_profile").select("*");
+  if (creatorId) query = query.eq("creator_id", creatorId);
+  const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`loadSocialVoiceProfile: ${error.message}`);
   return data ? rowToVoice(data) : null;
 }
@@ -489,7 +500,7 @@ export async function upsertSocialVoiceProfile(
   profile: SocialVoiceProfile,
   source: "derived" | "creator_edited"
 ): Promise<VoiceProfileRecord> {
-  const existing = await loadSocialVoiceProfile(supabase);
+  const existing = await loadSocialVoiceProfile(supabase, creatorId);
   const { data, error } = await supabase
     .from("social_voice_profile")
     .upsert(

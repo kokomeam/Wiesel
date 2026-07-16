@@ -17,9 +17,11 @@ import {
   GOAL_STAGE_MAP,
   PLATFORMS,
   PLATFORM_LIMITS,
+  platformLimitsFor,
   POST_STATUSES,
   SOCIAL_GOALS,
   SOCIAL_TONES,
+  type SocialPostPlatform,
 } from "../social/constants";
 import { emitSocialEvent } from "../social/events";
 import {
@@ -201,7 +203,7 @@ const suggestHashtagsTool = defineMarketingTool({
   reversibility: "read",
   async execute(args, ctx) {
     let text = args.text ?? "";
-    let platform = args.platform ?? "linkedin";
+    let platform: SocialPostPlatform = args.platform ?? "linkedin";
     if (args.postId) {
       const post = await requirePost(ctx, args.postId);
       text = post.body;
@@ -210,7 +212,7 @@ const suggestHashtagsTool = defineMarketingTool({
     if (!text.trim()) throw new MarketingToolError("Provide postId or text");
     const hashtags = await suggestHashtags(depsFrom(ctx), { text, platform });
     return {
-      summary: `Suggested: ${hashtags.join(" ")} (${PLATFORM_LIMITS[platform].label} range ${PLATFORM_LIMITS[platform].hashtagMin}-${PLATFORM_LIMITS[platform].hashtagMax}).`,
+      summary: `Suggested: ${hashtags.join(" ")} (${platformLimitsFor(platform).label} range ${platformLimitsFor(platform).hashtagMin}-${platformLimitsFor(platform).hashtagMax}).`,
       data: { hashtags, platform },
     };
   },
@@ -532,9 +534,9 @@ const updateSocialPost = defineMarketingTool({
         )
       )
     );
-    if (patch.body && patch.body.length > PLATFORM_LIMITS[post.platform].charCap) {
+    if (patch.body && patch.body.length > platformLimitsFor(post.platform).charCap) {
       throw new MarketingToolError(
-        `body exceeds the ${PLATFORM_LIMITS[post.platform].label} cap of ${PLATFORM_LIMITS[post.platform].charCap} characters`
+        `body exceeds the ${platformLimitsFor(post.platform).label} cap of ${platformLimitsFor(post.platform).charCap} characters`
       );
     }
     try {

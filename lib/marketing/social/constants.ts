@@ -18,6 +18,22 @@ import type { ReasoningEffort } from "@/lib/ai/modelClient";
 export const PLATFORMS = ["linkedin", "facebook"] as const;
 export type SocialPlatform = (typeof PLATFORMS)[number];
 
+/**
+ * Platforms that appear ONLY on clip posts (post_type='clip', Phase 1.5 —
+ * migration 20260708140000 widened the row check; a second check keeps TEXT
+ * posts closed at PLATFORMS). These give DISPLAY/EDIT limits for rows that
+ * already exist — text GENERATION still iterates PLATFORMS and stays closed
+ * at 2 (the Phase 1 fence, grep-tested). Found live 2026-07-15: the queue
+ * crashed on an unguarded PLATFORM_LIMITS index the moment the first
+ * ingested clip post (platform 'instagram') rendered.
+ */
+export const CLIP_POST_PLATFORMS = ["instagram", "tiktok", "youtube_shorts"] as const;
+export type ClipPostPlatform = (typeof CLIP_POST_PLATFORMS)[number];
+
+/** Every platform a social_post ROW can carry (text ∪ clip). */
+export const POST_PLATFORMS = [...PLATFORMS, ...CLIP_POST_PLATFORMS] as const;
+export type SocialPostPlatform = (typeof POST_PLATFORMS)[number];
+
 export const SOCIAL_GOALS = [
   "launch",
   "value",
@@ -88,6 +104,58 @@ export const PLATFORM_LIMITS: Record<SocialPlatform, PlatformLimits> = {
     imageNorm: { width: 1200, height: 630 },
   },
 };
+
+/**
+ * Caption limits for the CLIP-only platforms — display labels + EDIT guards
+ * for clip posts already in the queue (revise/tone/hashtags/counters).
+ * Deliberately GENEROUS: these must never make an ingested caption
+ * uneditable. Text generation never targets these (see PLATFORMS).
+ */
+export const CAPTION_LIMITS: Record<ClipPostPlatform, PlatformLimits> = {
+  instagram: {
+    label: "Instagram",
+    charCap: 2200, // the platform's caption max
+    targetWords: [15, 80],
+    hashtagMin: 0,
+    hashtagMax: 8,
+    register: "visual-first, energetic — the caption supports the clip",
+    structure: "hook line, 1-2 short lines, the CTA, hashtags at the end",
+    emojiPolicy: "moderate",
+    imageNorm: { width: 1080, height: 1350 },
+  },
+  tiktok: {
+    label: "TikTok",
+    charCap: 2200,
+    targetWords: [10, 50],
+    hashtagMin: 0,
+    hashtagMax: 5,
+    register: "casual, punchy, native to the feed",
+    structure: "one-line hook + a short support line, hashtags at the end",
+    emojiPolicy: "moderate",
+    imageNorm: { width: 1080, height: 1920 },
+  },
+  youtube_shorts: {
+    label: "YouTube Shorts",
+    charCap: 5000, // description-style; the first line acts as the title
+    targetWords: [10, 60],
+    hashtagMin: 0,
+    hashtagMax: 3,
+    register: "clear, descriptive, search-aware",
+    structure: "title-style first line, then a short description",
+    emojiPolicy: "sparse",
+    imageNorm: { width: 1080, height: 1920 },
+  },
+};
+
+/**
+ * TOTAL limits lookup over everything a post ROW can carry. Use this for
+ * any platform that came off a LOADED POST; keep direct `PLATFORM_LIMITS[x]`
+ * indexing for request-validated TEXT platforms only. (The unguarded index
+ * on a clip post was the 2026-07-15 queue crash.)
+ */
+export function platformLimitsFor(platform: SocialPostPlatform): PlatformLimits {
+  return (PLATFORM_LIMITS as Partial<Record<SocialPostPlatform, PlatformLimits>>)[platform] ?? CAPTION_LIMITS[platform as ClipPostPlatform];
+}
 
 /** Goal → default funnel stage (PRD §9.4). Creator-overridable per post. */
 export const GOAL_STAGE_MAP: Record<SocialGoal, FunnelStage> = {

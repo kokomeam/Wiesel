@@ -1122,7 +1122,17 @@ status lifecycle, a source-of-truth row, and a denormalized snapshot on the bloc
   Commits on release (one autosave/undo step). The "Done trimming" button is now a filled
   brand **"Save changes"** (was a ghost button that blended in). Handles use `role="slider"`
   + arrow-key nudge; refs are synced in an effect (React 19 forbids ref writes in render).
-- **Tests:** `npm run verify:video` (153 checks, no key/DB/browser) — schema +
+- **⚠ Compositor must NOT be rAF-driven (2026-07-15, found on a real frozen
+  lesson):** `requestAnimationFrame` is fully suspended in a backgrounded tab,
+  and screen-mode recording means the studio tab IS backgrounded — the canvas
+  stopped repainting and MediaRecorder encoded one frozen frame + live audio
+  for the whole take. The draw loop now runs on `lib/editor/
+  backgroundTicker.ts` (a dedicated-Worker `setInterval` at 30fps — worker
+  timers are visibility-throttle-exempt; rAF only as a degraded fallback).
+  Never revert the compositor (or any recording-critical loop) to rAF.
+- **Tests:** `npm run verify:video` (162 checks, no key/DB/browser — incl.
+  `backgroundTicker.spec`: worker ticks/stop/fallback + the grep pinning the
+  compositor to the ticker) — schema +
   persistence round-trip, the `UPDATE_VIDEO_LESSON` reducer, status machine +
   `reconcileMuxState`, trim validation + `trimmedDurationSeconds`/`hasTrim`, playback
   URLs, row→view mapping, recorder config/geometry, the Mux adapter (create/get/delete
@@ -1517,6 +1527,228 @@ compliant footers (8 locales, `language.ts`).
   object separately — TS won't catch it, the build's page-data collection
   does). ⚠ Node prefers supabase.co's broken-here IPv6 — int scripts pin
   `dns.setDefaultResultOrder("ipv4first")`.
+
+## Lesson Clip Repurposing (Marketing Phase 1.5, M-A) — `lib/marketing/clips/*`, 2026-07-07
+
+> Guide: **`docs/clips.md`** · Task 0 findings: `docs/reap-task0-findings.md`.
+> M-A = transcripts + the moment selection engine + eval harness. **Task 0
+> ran vs the LIVE Reap API (2026-07-08)**: contract is camelCase
+> (`sourceUrl`/`uploadId` — the PRD guessed snake_case); explicit
+> `selectedStart/End` exist BUT **Reap enforces a ≥60s window** (our spans
+> are 20-90s — top M-B risk; pre-cut-and-upload recommended); NO webhooks in
+> the API; NO brand-template API; (d)/(e)/(f) still need one real ≥90s video.
+> Hard fences (grep-tested): no platform APIs, no posting/scheduling
+> (`/publish-clip` + `/schedule-clips` never referenced), no cron, no
+> synthetic media, Phase 1 language rules verbatim.
+>
+> **Format-aware amendment (2026-07-08, folded into M-A):** recording format
+> (`camera_only|screen_camera|screen_only` — the literals ARE the platform's
+> `VideoRecordingMode`) is a first-class input: read from the video BLOCK's
+> `recording.mode` via the asset's block_id (metadata short-circuits,
+> spy-tested); uploads never carry a mode → classifier over ≥8 Mux thumbnail
+> frames judged through `ModelClient.inspectImage` (ffprobe NOT installed,
+> no face-detection dep — the vision seam is the zero-dep frame source;
+> degraded default camera_only/'classifier'); persisted on `lesson_transcript`
+> (`recording_format`+`format_source`; `overrideTranscriptFormat` =
+> creator_override, cache never re-classifies). `routing.ts ·
+> resolveClipLayout` = the ONLY facts→decisions map: camera→face_track ·
+> screen_camera→stacked_split · screen_only→ slide_short (sync covers span)
+> ≻ screen_action_zoom (action-dense: `actionDensity.ts`, lexicon
+> `CLIP_ACTION_CUES` ≥2 cues/min OR frame-diff ≥0.15; degraded = cues alone)
+> ≻ audiogram. `layout` on every candidate row (migration `20260708100000`;
+> the DB default 'face_track' exists ONLY for pre-amendment snapshot
+> restores — code always writes explicitly). Prompt = **clips-v3**:
+> ALL formats' visual_interest rules in the STATIC prefix (cache rule), the
+> lesson's format in the request block; demo_payoff +1 visual_interest
+> (screen_only + dense, applied pre-rubric-bar, capped 5, recorded as
+> visualInterestBoosted); hook-slide-ref lint fires ONLY when sync data
+> exists. ⚠ **Slide-sync has NO producer** (recorder captures no slide
+> timings — exhaustively audited): the contract (`SlideSyncEntrySchema`,
+> `loadLessonSlideSync` returns null) + eval fixtures are live, but real
+> lessons can't route slide_short until the recorder captures `{slideId,
+> atMs}` — an M-F prerequisite. ⚠ `screen_camera` recordings are ONE
+> composited canvas track — separate streams never exist on this platform.
+> 5 eval fixtures (screen_slides: ≥2 viable, ALL slide_short — binding;
+> screen_action → screen_action_zoom on the lexicon alone); `eval:clips
+> --live --control` = the FR-8 pre-amendment delta artifact. Milestones
+> renumbered: **M-F = the Remotion slide-short provider (NEW), M-G =
+> hardening.** The amendment's `*.spec.ts` names map to named verify-suite
+> sections (repo has no jest).
+
+- **Pipeline** (`selection.ts`): acquire transcript (cache → Mux caption VTT
+  → `TranscriptionProvider` seam [M-B fills]) → context (Phase 1 assembler +
+  **quiz-miss concepts** from `rollup_question_stats` — it has `lesson_id`
+  directly; question wording joined from draft quiz blocks via the node-id
+  invariant) → **`runSelectionCore`** (DB-free; shared VERBATIM with
+  `scripts/eval-clips.ts`): ONE mid-tier structured call (sequential
+  small-tier map→reduce over `CLIP_TRANSCRIPT_MAX_TOKENS` 24k) → Zod gate +
+  exactly ONE repair (deterministic flags may claim it; rubric-only failures
+  never do) → deterministic checks (`validate.ts`) → the ONE small-tier
+  validation call (coherence ±8s adjust-or-drop, multi-segment NEVER
+  adjusted; hook integrity w/ first-supported promotion) → persist
+  `clip_moment_candidate` (+ 5 snake_case events on the single stream).
+  Selection is model-REQUIRED (typed 503); failures persist NOTHING.
+- **⚠ Sentence snapping is load-bearing** (`snapToSentenceBounds`,
+  clips-v2): model span timestamps are interpolated guesses off 12s anchors —
+  unsnapped spans start mid-sentence and the coherence validator (rightly)
+  kills them. The first live eval scored 1 viable / 11 returned before this +
+  the coherence calibration (judge reference debt OUTSIDE the clip's time
+  window; the clip carries its own footage — "watch this" is fine).
+- **Prompts are versioned artifacts** (§8): `CLIP_PROMPT_VERSION` (now
+  `clips-v3`) stamped on every candidate; exemplars are repo fixtures
+  (`fixtures/exemplars.ts`). ANY prompt change: bump the version → beat the
+  baseline on `npm run eval:clips --live` → re-record CI stubs
+  (`--live --record` → `fixtures/recordings/`).
+- **Governance**: 3 tools in `tools/clips.ts`, ALL reversible (no approval
+  cards). Gate entities: `clip_moment_set` (composite over `request_id`;
+  revert removes the whole run's set, the transcript cache survives) +
+  `clip_moment_candidate` (single-row). `clip_moment_candidate` has a DELETE
+  policy for revert-of-create; `lesson_transcript` deliberately has none.
+- **DB**: migration `20260707100000_lesson_clips.sql` (applied). ⚠ the live
+  DB has unmerged-branch drift (`learning_events.feedback_comment`,
+  `learner_messages.delivery_status`…) — after a migration here, SPLICE the
+  new tables into `lib/database.types.ts` rather than full-regen, or this
+  branch's analytics pages break on foreign nullability changes.
+- **M-B render jobs (2026-07-08, see docs/clips.md § Render jobs):**
+  `clip_render_job` (migration `20260708130000`; SINGLE write path =
+  `transitionRenderJob`, optimistic on `from`; revert = CANCEL never delete —
+  cost-ledger rows survive) advanced ONE edge per marketing scheduler tick
+  (`processClipRenderTick` — reconciliation IS delivery; Reap has NO
+  webhooks). Every job PRE-CUTS the exact span via a temp Mux clip asset
+  (`createClipAsset`, zero-dep trim; Reap re-picks inside create-clips
+  windows AND rejects stream.mux.com as sourceUrl → upload-only +
+  `create-reframe`, whose output rides get-project-clips NOT urls.videoFile).
+  D-5: face_track→Reap; stacked_split/zoom/audiogram→in-house ffmpeg
+  (`ffmpegArgs.ts` pure builders, REAL renders in verify:clips:render;
+  `ffmpeg-static` is a real dependency — ~75MB binary, serverless needs
+  outputFileTracingIncludes); slide_short→M-F. stacked_split face band =
+  the recorder's OWN `bubbleRect` when metadata exists (provenance
+  'deterministic', D-3) else one vision call ('detected'). D-1:
+  `lib/marketing/brand/tokens.ts` = the ONE brand-constant module
+  (divergence-checked). Quotas server-side: 10 submits/min bucket
+  (submitted_at), CLIP_JOBS_PER_DAY 20, CLIP_MINUTES_PER_MONTH 60 (ONE
+  ledger: provider billedDuration verbatim + in-house minutes×rate).
+  Tools: generate_lesson_clips (idempotency `gen:{cand}:{preset}`,
+  "QUEUED IS NOT RENDERED") · cancel_clip_job · list_clip_jobs — all
+  reversible/read. Burned captions on in-house layouts arrive with M-F's
+  Remotion caption engine (deliberate; provider face_track ships captioned).
+- **Tests**: `verify:clips` (199 pure, in `npm test` — incl. the amendment's
+  named spec sections) · `verify:clips:render` (52 — provider contract vs
+  the T0 findings, state machine, golden ffmpeg args, brand divergence,
+  REAL ffmpeg renders of all 3 in-house layouts, D-3 provenance spies,
+  fences) · `verify:clips:int` (64, live Supabase + mock model — incl.
+  metadata-short-circuit spy, upload classification, override flip, layout
+  round-trip, gate-staged render jobs + idempotent replay + revert-cancel +
+  the full queued→precutting→submitted→completed lifecycle vs real
+  DB/storage with fake provider/precut/ffmpeg + token-bucket hold + RLS) ·
+  `eval:clips` (live/record/replay/control; the flat-affect ≥2-viable gate
+  is the differentiator claim + the FR-8 layout gates). REST:
+  `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
+- **ALL MILESTONES SHIPPED (2026-07-14)** — Task 0 (live: camelCase,
+  ≥60s-window = Reap RE-PICKS → pre-cut + create-reframe only; sourceUrl
+  rejects stream.mux.com → upload-only; billedDuration = selected minutes;
+  faces-only tracker pan-crops PiP → in-house layouts) · M-C ingest
+  (`social_post.post_type='clip'`, platform enum extended w/ a text-posts
+  row gate, lineage `regenerated_from_post_id`, artifacts/
+  m-c-in1-stacked-split.mp4 = the real cs61b lesson end-to-end) · **M-R
+  recorder capture** (slideSync producer + minimized REC pill, pipGeometry
+  D-3, dual-track flag D-4 — recording.slideSync/pipGeometry/
+  dualCameraAssetRowId, all optional/back-compat; loadLessonSlideSync is
+  REAL) · M-D posting kit (`postingKit.ts` — disclosure CODE-inserted,
+  keyword suffix-walk + partial unique index, /l/{code} re-resolves at
+  CLICK time + threads ?ref → recordClipEnrollment, /preview/{code} w/ the
+  answer-key-invariant grep) · M-E `/marketing/clips` UI (FR-9 chips,
+  audiogram caveat, signed-URL player, kit panel, usage meter) · **M-F
+  Remotion slide-short provider** (`render/slideShort/*` — pure
+  StructuredSlide-dispatch mirror + element-fallback card, kinetic captions,
+  hook/end-card, app globals.css via @remotion/tailwind-v4 + @ alias;
+  serverExternalPackages keeps the stack out of the Next bundle;
+  CLIP_RENDER_WORKERS pool outside the LLM ceiling; license trigger = 4th
+  hire; deps now 20) · M-G hardening (reconciliation chaos, wordErrorRate,
+  seed:clips, full-chain green). Suites: verify:clips 199 ·
+  verify:clips:render 114 · verify:clips:slideshort 14 (REAL renders, in
+  npm test) · verify:clips:int 85 · eval replay PASS.
+- **First-live-usage fix pass (2026-07-15, docs/clips.md § First-live-usage
+  fixes):** (1) the ROOT bug was the RECORDER — the screen+camera compositor
+  was rAF-driven and Chrome suspends rAF in backgrounded tabs (recording
+  another window = tab always hidden) → 6 min of ONE frozen frame + live
+  audio; fixed with `lib/editor/backgroundTicker.ts` (dedicated-Worker
+  interval, visibility-immune; rAF only as fallback) — pre-fix recordings
+  are unfixable, re-record. (2) dev delivery: jobs only advanced on manual
+  clicks → `POST /api/marketing/clips/tick` (creator-scoped sweep) polled
+  by the clips page every 5s while jobs are active (prod cron unchanged;
+  user-triggered polling ≠ cron). (3) `static_video` guard at job creation
+  (3 span thumbnails byte-identical on a camera-bearing format ⇒ refuse
+  before billing; screen_only exempt — static slides are legit). (4)
+  provider 4xx: ReapError stringifies structured detail (was "[object
+  Object]") + carries `permanent` (not 408/429/upload-put); the step
+  handler FAILS the job via seam-level `isPermanentProviderError`; failJob
+  now cleans temp precut assets; the int suite creator-scopes its sweeps +
+  a leak guard cancels its rows even on crash (a leaked fake-ref job had
+  been 422-polling the real Reap API on every prod tick). (5) idempotency
+  index made PARTIAL over live/completed (migration `20260715100000`) —
+  failed/cancelled jobs no longer block "Render again" (UI shows the error
+  + retry button). ALSO: clip ingest now inserts via the social REPOSITORY
+  (`insertSocialPost`) — the M-C direct insert violated verify-social's
+  single-write-module grep and the failure had been masked by piped exit
+  codes; verify:social + verify:video 162 (backgroundTicker.spec). (6) the
+  social queue crashed on the FIRST ingested clip post: clip rows carry
+  instagram/tiktok/youtube_shorts but `PLATFORM_LIMITS` is the text contract
+  (closed at 2) — every loaded-post path now uses **`platformLimitsFor()`**
+  (total over `POST_PLATFORMS` = text ∪ `CLIP_POST_PLATFORMS`, backed by
+  `CAPTION_LIMITS` edit-guards); `SocialPostSchema.platform` = the row union
+  (`PostPlatformSchema`); direct `PLATFORM_LIMITS[x]` stays ONLY for
+  request-validated text platforms (repo-wide grep bans
+  `PLATFORM_LIMITS[post.platform]`); the text fence holds. (7)
+  `/marketing/clips` "window is not defined": `kitFullText` read
+  `window.location.origin` and Next SSRs client components — origin now
+  rides `useSyncExternalStore` (SSR renders the relative /l/ link).
+  verify:social 133 · verify:clips:render 115 (SSR check). (8, 2026-07-16)
+  **a re-record was invisible**: the new take lands BESIDE the old one and
+  transcript/render/labels were all longest-first → pinned to the dead
+  take. Now **`pickCurrentVideoRow`** (transcripts.ts, pure) = THE shared
+  lesson-video pick (dual excluded → captioned preferred → NEWEST first)
+  used by acquisition + `findRenderSource` + the page labels;
+  `lesson_transcript.video_asset_id` (migration `20260716100000`, types
+  SPLICED) keys the cache to its asset — acquire REBUILDS on a changed take
+  + retires the old take's open candidates (spans live on the old
+  timeline); legacy null rows stamp in place on duration match (±2s) else
+  rebuild; `createClipRenderJob` refuses stale candidates
+  (`stale_candidates` — "run Find clip moments again"). currentTake.spec
+  (verify:clips 203) + currentTake.rebuild.spec (verify:clips:int 88).
+- **Burned text: hook overlay + karaoke captions (2026-07-16, H-1..H-6 +
+  T-1..T-7 — full detail docs/clips.md § Burned text):** ALL burned text is
+  applied IN-HOUSE post-geometry on the final-resolution video (provider
+  renders consumed CLEAN — Reap's create-reframe has no caption params but
+  always delivers clipUrl; adapter + completion step are clean-first, so
+  double captions are impossible). ONE style source `clips/textStyles.ts`
+  (CLIP_TEXT_STYLES sizing/stroke-non-optional, CLIP_TEXT_SAFE_AREAS per
+  platform, CLIP_TEXT_MOTION, beam/block/minimal karaoke presets as pure
+  data; colors only via BRAND_TOKENS — tokens gained `textStroke`), consumed
+  by BOTH the pure ASS builder `textTrack.ts` (PlayRes = actual dims,
+  height-proportional scaling, deterministic wrap ladder 92→72→60 then
+  hook_unfit, 3-4-word one-line-at-a-time karaoke, T-7 lint incl.
+  hook-duplicate caption suppression) AND the Remotion slide-short (native
+  text, divergence-tested — never burned twice). Fonts BUNDLED
+  `assets/clip-fonts/` (OFL: Archivo Black hooks + Inter Bold captions;
+  bake-off sheet docs/clip-text-bakeoff/) via `subtitles=…:fontsdir=`;
+  `textFonts.ts` asserts name-table families pre-burn + a real-render
+  fallback detector (silent DejaVu = release blocker). `render/burn.ts` =
+  the H-2 stage (crf 20 parity, audio copied) at provider ingest + as the
+  in-house final pass; BOTH artifacts stored (video_path burned ·
+  clean_video_path master, migration `20260716120000`, types SPLICED);
+  provenance ai_metadata.textBurn {…, styleVersion clip-text-v1, assHash,
+  seq, history}. `update_clip_hook` (reversible, 8th clip tool) = free local
+  re-burn from the master (no minutes; CLIP_REBURNS_PER_DAY=50
+  ledger-counted; versioned write — video_path joined
+  versionedUpdateSocialPost; artifact rotation keeps 3, job original + clean
+  never purge; revert restores a still-existing file); UI = the clip card's
+  hook editor (altHooks one-tap). Goldens: 48 ASS snapshots (verify:clips) +
+  10 golden frames ≤1.5% (verify:clips:render), regenerate BOTH with
+  CLIP_TEXT_GOLDENS_RECORD=1 on any styling change + bump
+  CLIP_TEXT_STYLE_VERSION. Suites now: verify:clips 252 · render 137 ·
+  slideshort 14 · int 102 (real ffmpeg burns over real fixture media).
+  Demo: artifacts/h-theta-hook-burn-demo.mp4 (the real Theta(N) moment).
 
 ## Where things live
 

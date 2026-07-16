@@ -13,6 +13,9 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { sweepLapsedConsent } from "@/lib/marketing/consent";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { runSchedulerTick } from "@/lib/marketing/scheduler";
+import { createReapProvider, isReapConfigured } from "@/lib/marketing/clips/provider/reapClient";
+import { createMuxPrecutOps } from "@/lib/marketing/clips/render/precut";
+import { processClipRenderTick } from "@/lib/marketing/clips/render/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,7 +42,16 @@ async function handle(req: Request): Promise<Response> {
   // consents past the 30-day lapse window (Amendment 7).
   const result = await runSchedulerTick(admin, services, { limit: 200 });
   const consent = await sweepLapsedConsent(admin);
-  return NextResponse.json({ ok: true, ...result, consentLapsed: consent.lapsed });
+  // Clip renders piggyback the SAME tick (the no-cron fence): the
+  // reconciliation sweep IS the delivery path — Reap has no webhooks
+  // (Task 0 (b)) and the in-house ffmpeg steps run right here.
+  const clips = await processClipRenderTick({
+    supabase: admin as never,
+    provider: isReapConfigured() ? createReapProvider() : undefined,
+    precut: createMuxPrecutOps(),
+    nowIso: services.clock.now(),
+  });
+  return NextResponse.json({ ok: true, ...result, consentLapsed: consent.lapsed, clips });
 }
 
 export const GET = handle;

@@ -28,10 +28,14 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   BANNED_UI_PHRASES,
+  CAPTION_LIMITS,
+  CLIP_POST_PLATFORMS,
   GOAL_STAGE_MAP,
   MANUAL_PUBLISH_NOTICE,
   PLATFORMS,
   PLATFORM_LIMITS,
+  platformLimitsFor,
+  POST_PLATFORMS,
   buildBatchPlan,
 } from "@/lib/marketing/social/constants";
 import {
@@ -624,6 +628,63 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+async function clipPostPlatformChecks() {
+  console.log("\n# clipPostPlatforms.spec (2026-07-15: the queue crashed on the first ingested clip post)");
+  // TEXT generation stays closed at 2 — the label/limit widening must never
+  // reopen it (the Phase 1 fence verify-clips also asserts).
+  check(
+    "text fence holds: PLATFORMS = 2 and PLATFORM_LIMITS covers exactly those",
+    PLATFORMS.length === 2 &&
+      Object.keys(PLATFORM_LIMITS).sort().join(",") === [...PLATFORMS].sort().join(",")
+  );
+  check(
+    "platformLimitsFor is TOTAL over every row platform (text ∪ clip)",
+    POST_PLATFORMS.every((p) => typeof platformLimitsFor(p).label === "string" && platformLimitsFor(p).charCap > 0)
+  );
+  check(
+    "caption limits are edit-guards, never generation targets (separate table, generous caps)",
+    Object.keys(CAPTION_LIMITS).sort().join(",") === [...CLIP_POST_PLATFORMS].sort().join(",") &&
+      CLIP_POST_PLATFORMS.every((p) => CAPTION_LIMITS[p].charCap >= 2200)
+  );
+  // Drift guard: every platform the CLIP pipeline can stamp on an ingested
+  // post must be renderable by the queue.
+  const { CLIP_PLATFORMS } = await import("@/lib/marketing/clips/constants");
+  check(
+    "clip ingest platforms ⊆ POST_PLATFORMS (ingest can never write an unrenderable platform)",
+    CLIP_PLATFORMS.every((p: string) => (POST_PLATFORMS as readonly string[]).includes(p))
+  );
+  // The domain schema accepts a clip row (it FAILED parse under the old
+  // 2-value enum — rowToSocialPost's cast was hiding it).
+  const { SocialPostSchema } = await import("@/lib/marketing/social/schemas");
+  const clipRow = SocialPostSchema.safeParse({
+    id: "6b8f8a56-0000-4000-8000-000000000001",
+    creatorId: "6b8f8a56-0000-4000-8000-000000000002",
+    courseId: null, moduleId: null, lessonId: null, campaignId: null,
+    batchId: null, batchOrder: null,
+    sourceType: "lesson", sourceText: null,
+    platform: "instagram", postType: "clip",
+    goal: "value", funnelStage: "tofu", audience: null, tone: "educational",
+    body: "caption", cta: null, hashtags: [],
+    imageUrl: null, imageStoragePath: null, imageAltText: null,
+    suggestedImageIdea: null, plannedPostAt: null,
+    status: "draft", postedManuallyAt: null, performance: null,
+    externalRef: null, version: 1, aiMetadata: {}, deletedAt: null,
+    createdAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-15T00:00:00.000Z",
+  });
+  check("SocialPostSchema parses a clip-platform row", clipRow.success, JSON.stringify(clipRow.error?.issues?.[0] ?? ""));
+  // The crash class itself: NO unguarded PLATFORM_LIMITS index by a loaded
+  // post's platform anywhere (loaded posts can be clip posts).
+  const rootDir = new URL("..", import.meta.url).pathname;
+  const offenders: string[] = [];
+  for (const dir of [join(rootDir, "lib"), join(rootDir, "components"), join(rootDir, "app")]) {
+    for (const f of walk(dir)) {
+      const content = readFileSync(f, "utf8");
+      if (/PLATFORM_LIMITS\[(?:args\.)?post\.platform\]/.test(content)) offenders.push(f);
+    }
+  }
+  check("no unguarded PLATFORM_LIMITS[post.platform] indexing anywhere", offenders.length === 0, offenders.join("; "));
+}
+
 function grepChecks() {
   console.log("\n# hardening — language rules, no social hosts, no scheduler");
   const root = new URL("..", import.meta.url).pathname;
@@ -698,16 +759,21 @@ function grepChecks() {
 
 /* ────────────────────────────── run ────────────────────────────────── */
 
-schemaChecks();
-planningChecks();
-lintChecks();
-timingChecks();
-exportChecks();
-imageChecks();
-promptChecks();
-templateChecks();
-registryChecks();
-grepChecks();
+async function main() {
+  schemaChecks();
+  planningChecks();
+  lintChecks();
+  timingChecks();
+  exportChecks();
+  imageChecks();
+  promptChecks();
+  templateChecks();
+  registryChecks();
+  await clipPostPlatformChecks();
+  grepChecks();
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail > 0) process.exit(1);
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail > 0) process.exit(1);
+}
+
+void main();
