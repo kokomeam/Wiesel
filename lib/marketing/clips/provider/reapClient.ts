@@ -200,7 +200,11 @@ export function createReapProvider(
       return {
         status: "completed",
         providerStatus: st.status ?? "completed",
-        outputUrl: clip?.clipWithCaptionsUrl ?? clip?.clipUrl ?? null,
+        // H-6: CLEAN-first — burned text is applied in-house (the burn
+        // stage), so the provider-captioned variant is only ever a fallback
+        // when no clean render exists (never observed live; double captions
+        // are a release blocker, guarded in verify-clips-render).
+        outputUrl: clip?.clipUrl ?? clip?.clipWithCaptionsUrl ?? null,
         cleanOutputUrl: clip?.clipUrl ?? null,
         output:
           meta && meta.width && meta.height

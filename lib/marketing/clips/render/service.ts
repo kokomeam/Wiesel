@@ -54,6 +54,7 @@ import {
   type PipRect,
 } from "./ffmpegArgs";
 import { FfmpegError, runFfmpeg } from "./localRender";
+import { buildJobTextSpec, burnClipText, type TextBurnMeta } from "./burn";
 import { renderSlideShort } from "./slideShort/renderSlideShort";
 import { buildSlideShortSpec } from "./slideShort/buildSpec";
 import type { PrecutOps } from "./precut";
@@ -682,13 +683,39 @@ export async function advanceRenderJob(
             writeFileSync(cameraInputPath, await downloadBytes(job.precut.cameraMp4Url, fetchImpl));
           }
           await renderLocal(deps, job, inputPath, outputPath, cameraInputPath);
-          const out = readFileSync(outputPath);
           const storagePath = `${job.creatorId}/clips/${job.id}.mp4`;
-          await uploadOutput(deps.supabase, storagePath, out);
+          // H-2: the geometry output is the CLEAN MASTER; hook + karaoke
+          // captions burn as the final pass (slide_short's text is native
+          // Remotion — never burned twice, H-6's double-caption blocker).
+          let cleanStoragePath: string | null = null;
+          let textBurn: TextBurnMeta | null = null;
+          let finalPath = outputPath;
+          if (job.layout !== "slide_short") {
+            const candidate = await getCandidate(deps.supabase, job.candidateId);
+            if (candidate) {
+              const burnedPath = join(dir, "burned.mp4");
+              const spec = await buildJobTextSpec(deps.supabase, job, candidate, {
+                width: CLIP_OUT_W,
+                height: CLIP_OUT_H,
+              });
+              textBurn = await burnClipText({
+                inputPath: outputPath,
+                outputPath: burnedPath,
+                spec,
+                runFfmpegImpl: deps.runFfmpegImpl,
+              });
+              cleanStoragePath = `${job.creatorId}/clips/${job.id}.clean.mp4`;
+              await uploadOutput(deps.supabase, cleanStoragePath, readFileSync(outputPath));
+              finalPath = burnedPath;
+            }
+            // candidate gone (deleted since queueing) → no hook/caption
+            // source; the clean geometry render ships unburned, honestly.
+          }
+          await uploadOutput(deps.supabase, storagePath, readFileSync(finalPath));
           const durationSeconds = (job.source.endMs - job.source.startMs) / 1000;
           const costMinutes = Math.ceil(durationSeconds / 60) * cfg.inhouseMinuteRate;
           await transitionRenderJob(deps.supabase, job.id, "rendering_local", "completed", {
-            output: { storagePath, width: CLIP_OUT_W, height: CLIP_OUT_H, durationSeconds },
+            output: { storagePath, width: CLIP_OUT_W, height: CLIP_OUT_H, durationSeconds, cleanStoragePath, textBurn },
             costMinutes,
           });
           await deps.precut.cleanup(job.precut.muxAssetId);
@@ -735,19 +762,54 @@ export async function advanceRenderJob(
           await failJob(deps, job, view.error ?? `provider ${view.status}`);
           return "failed";
         }
-        if (!view.outputUrl) {
+        if (!view.outputUrl && !view.cleanOutputUrl) {
           await failJob(deps, job, "provider completed without an output url");
           return "failed";
         }
-        const bytes = await downloadBytes(view.outputUrl, fetchImpl);
+        // H-6: the provider render is consumed CLEAN — its caption/overlay
+        // variant is never downloaded (create-reframe exposes no suppression
+        // params, but it always delivers the clean clipUrl; the burn below
+        // owns ALL text, so a double-caption output is impossible by
+        // construction). Task 0 addendum: docs/reap-task0-findings.md.
+        const mediaUrl = view.cleanOutputUrl ?? view.outputUrl!;
+        const bytes = await downloadBytes(mediaUrl, fetchImpl);
         const storagePath = `${job.creatorId}/clips/${job.id}.mp4`;
-        await uploadOutput(deps.supabase, storagePath, bytes);
+        const width = view.output?.width ?? CLIP_OUT_W;
+        const height = view.output?.height ?? CLIP_OUT_H;
+        // H-2 (provider path): burn at INGEST on the final-resolution video.
+        let cleanStoragePath: string | null = null;
+        let textBurn: TextBurnMeta | null = null;
+        let storedBytes = bytes;
+        const candidate = await getCandidate(deps.supabase, job.candidateId);
+        if (candidate) {
+          const burnDir = mkdtempSync(join(tmpdir(), "wisesel-clip-burn-"));
+          try {
+            const cleanPath = join(burnDir, "clean.mp4");
+            const burnedPath = join(burnDir, "burned.mp4");
+            writeFileSync(cleanPath, bytes);
+            const spec = await buildJobTextSpec(deps.supabase, job, candidate, { width, height });
+            textBurn = await burnClipText({
+              inputPath: cleanPath,
+              outputPath: burnedPath,
+              spec,
+              runFfmpegImpl: deps.runFfmpegImpl,
+            });
+            cleanStoragePath = `${job.creatorId}/clips/${job.id}.clean.mp4`;
+            await uploadOutput(deps.supabase, cleanStoragePath, bytes);
+            storedBytes = readFileSync(burnedPath);
+          } finally {
+            rmSync(burnDir, { recursive: true, force: true });
+          }
+        }
+        await uploadOutput(deps.supabase, storagePath, storedBytes);
         const completed = await transitionRenderJob(deps.supabase, job.id, "submitted", "completed", {
           output: {
             storagePath,
-            width: view.output?.width ?? CLIP_OUT_W,
-            height: view.output?.height ?? CLIP_OUT_H,
+            width,
+            height,
             durationSeconds: view.output?.durationSeconds ?? (job.source.endMs - job.source.startMs) / 1000,
+            cleanStoragePath,
+            textBurn,
           },
           costMinutes: view.costMinutes ?? job.costMinutes,
         });

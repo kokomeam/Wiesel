@@ -3,3 +3,20 @@
  * are absent in the render Chrome and fall back to the declared system
  * stacks; Fraunces/Geist specifics ride BRAND_TOKENS.fonts inline. */
 @import "../../../../../app/globals.css";
+
+/* The BUNDLED clip text fonts (T-1) — the same OFL files libass burns with
+ * (assets/clip-fonts), so slide-short text is indistinguishable from burned
+ * text (H-4). Family names match the files' name tables (textFonts.ts
+ * asserts them). */
+@font-face {
+  font-family: "Archivo Black";
+  src: url("../../../../../assets/clip-fonts/ArchivoBlack-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("../../../../../assets/clip-fonts/Inter-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+}

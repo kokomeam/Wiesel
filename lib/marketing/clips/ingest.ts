@@ -71,7 +71,10 @@ export async function ingestCompletedClipJob(
     hashtags: [],
     status: "draft",
     clip_job_id: job.id,
+    // H-2: video_path = the BURNED artifact; the clean master rides along so
+    // hook edits are free local re-burns (H-3).
     video_path: job.output.storagePath,
+    clean_video_path: job.output.cleanStoragePath ?? null,
     regenerated_from_post_id: prior?.id ?? null,
     ai_metadata: {
       candidateId: candidate.id,
@@ -80,9 +83,12 @@ export async function ingestCompletedClipJob(
       provider: job.provider,
       recordingFormat: job.source.recordingFormat,
       hookText: candidate.hookText,
+      altHooks: candidate.altHooks,
       promptVersion: candidate.promptVersion ?? CLIP_PROMPT_VERSION,
       costMinutes: job.costMinutes,
       durationSeconds: job.output.durationSeconds,
+      // H-2 provenance (+ the H-3 rotation history, newest last).
+      textBurn: job.output.textBurn ? { ...job.output.textBurn, history: [] } : null,
     } as unknown as Json,
   });
 

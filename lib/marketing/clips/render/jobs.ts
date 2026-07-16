@@ -17,6 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import type { ClipLayout, RecordingFormat } from "../schemas";
 import type { RenderProviderId } from "../provider/types";
+import type { TextBurnMeta } from "./burn";
 
 type DB = SupabaseClient<Database>;
 type JobRow = Database["public"]["Tables"]["clip_render_job"]["Row"];
@@ -82,10 +83,17 @@ export interface ClipJobPrecut {
 }
 
 export interface ClipJobOutput {
+  /** The BURNED artifact (hook + captions) — what creators download/post. */
   storagePath: string;
   width: number;
   height: number;
   durationSeconds: number;
+  /** H-2: the pre-burn CLEAN MASTER (re-burns start here). Null on
+   *  slide_short (native Remotion text) and pre-directive rows. */
+  cleanStoragePath?: string | null;
+  /** H-2 provenance: what was burned (also mirrored to the post's
+   *  ai_metadata.textBurn at ingest). Null when no burn ran. */
+  textBurn?: TextBurnMeta | null;
 }
 
 export interface ClipRenderJob {

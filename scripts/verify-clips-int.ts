@@ -766,6 +766,41 @@ async function main() {
   );
   const job2Id = gen2.target!.id;
 
+  // H-2 makes the tick BURN real text onto completed renders (and H-3's
+  // re-burn tool runs real ffmpeg over the clean master), so the fixture
+  // media must be REAL playable MP4s — generated once with the bundled
+  // ffmpeg-static (distinct tones/colors keep the variants byte-distinct).
+  const { ffmpegBinaryPath: binPath } = await import("@/lib/marketing/clips/render/localRender");
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const ffbin = binPath();
+  if (!ffbin) throw new Error("ffmpeg-static missing — npm install");
+  const mediaDir = mkdtempSync(joinPath(tmpdir(), "wisesel-int-media-"));
+  const makeMedia = (name: string, color: string, hz: number) => {
+    const p = joinPath(mediaDir, name);
+    const r = spawnSync(
+      ffbin,
+      [
+        "-y",
+        "-f", "lavfi", "-i", `color=c=${color}:s=720x1280:r=30:d=6`,
+        "-f", "lavfi", "-i", `sine=frequency=${hz}:duration=6`,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-pix_fmt", "yuv420p",
+        p,
+      ],
+      { encoding: "utf8" }
+    );
+    if (r.status !== 0) throw new Error(`fixture media ${name}: ${r.stderr?.slice(-300)}`);
+    return readFileSync(p);
+  };
+  const servedMedia = new Map<string, Buffer>([
+    ["https://media.example/precut.mp4", makeMedia("precut.mp4", "0x404040", 330)],
+    ["https://media.example/output.mp4", makeMedia("output.mp4", "0x303030", 440)],
+    ["https://media.example/output-clean.mp4", makeMedia("output-clean.mp4", "0x203040", 550)],
+  ]);
+
   const fakePrecut: PrecutOps & { cleaned: string[] } = {
     cleaned: [],
     async start() {
@@ -802,9 +837,14 @@ async function main() {
   };
   const fakeFetch: typeof fetch = async (input) => {
     const u = String(input);
+    const media = servedMedia.get(u);
+    if (media) return new Response(new Uint8Array(media), { status: 200 });
     if (u.includes("media.example")) return new Response(Buffer.from(`bytes-of-${u}`), { status: 200 });
     return fetch(input as never);
   };
+  // No runFfmpegImpl injection: the H-2 burns inside the tick (and H-3's
+  // re-burn tool below) run the REAL bundled ffmpeg over the real fixture
+  // media — the artifacts asserted on are genuine burned videos.
   const tickDeps = {
     supabase: admin as never,
     provider: fakeProvider,
@@ -837,7 +877,29 @@ async function main() {
     job2.status === "completed" && job2.output?.storagePath === `${A.userId}/clips/${job2Id}.mp4` && job2.costMinutes === 1
   );
   const dl = await admin.storage.from("clip-media").download(job2.output!.storagePath);
-  check("output bytes really landed in the private clip-media bucket", !dl.error && (await dl.data!.text()).includes("bytes-of-"));
+  const burnedBytes = dl.data ? Buffer.from(await dl.data.arrayBuffer()) : Buffer.alloc(0);
+  check(
+    "output bytes really landed in the private clip-media bucket (a REAL burned mp4, not the clean bytes)",
+    !dl.error &&
+      burnedBytes.subarray(0, 16).includes(Buffer.from("ftyp")) &&
+      !burnedBytes.equals(servedMedia.get("https://media.example/output-clean.mp4")!)
+  );
+  // textBurn.pipeline.spec (H-2): BOTH artifacts stored — the clean master
+  // is the CLEAN provider variant's bytes VERBATIM (H-6: cleanOutputUrl
+  // consumed, never the provider-captioned URL); provenance on the output.
+  const dlClean = await admin.storage.from("clip-media").download(job2.output!.cleanStoragePath ?? "");
+  const cleanBytes = dlClean.data ? Buffer.from(await dlClean.data.arrayBuffer()) : Buffer.alloc(0);
+  check(
+    "clean master stored beside it (.clean.mp4 = the PROVIDER's clean variant bytes — H-6)",
+    !dlClean.error && cleanBytes.equals(servedMedia.get("https://media.example/output-clean.mp4")!)
+  );
+  check(
+    "burn provenance on the job output (hookText + assHash + styleVersion + burned)",
+    job2.output?.textBurn?.burned === true &&
+      typeof job2.output?.textBurn?.assHash === "string" &&
+      job2.output?.textBurn?.styleVersion === "clip-text-v1" &&
+      typeof job2.output?.textBurn?.hookText === "string"
+  );
 
   const jobEvents = await A.supabase
     .from("analytics_event")
@@ -1002,6 +1064,156 @@ async function main() {
   const { data: bKits } = await B.supabase.from("posting_kit").select("id");
   const { data: bLinks } = await B.supabase.from("short_link").select("id");
   check("RLS: B sees NO kits and NO short links", (bKits ?? []).length === 0 && (bLinks ?? []).length === 0);
+
+  /* ───────── textBurn.reburn.spec (H-3: free local re-burns) ────────────── */
+
+  console.log("\n# textBurn.reburn.spec (H-3: versioned write, rotation, quota, revert)");
+  const readPost = async () => {
+    const { data } = await A.supabase
+      .from("social_post")
+      .select("id, version, video_path, clean_video_path, ai_metadata")
+      .eq("clip_job_id", job2Id)
+      .single();
+    return data!;
+  };
+  const post0 = await readPost();
+  check(
+    "ingest carried the clean master + textBurn provenance onto the post",
+    post0.clean_video_path === `${A.userId}/clips/${job2Id}.clean.mp4` &&
+      (post0.ai_metadata as { textBurn?: { burned?: boolean } })?.textBurn?.burned === true
+  );
+
+  const reburnArgs = (over: Record<string, unknown> = {}) => ({
+    postId: post0.id,
+    expectedVersion: 0,
+    hookText: null,
+    animation: null,
+    holdSeconds: null,
+    captionsEnabled: null,
+    captionStyle: null,
+    ...over,
+  });
+  const doReburn = (over: Record<string, unknown>) =>
+    executeMarketingTool("update_clip_hook", reburnArgs(over), ctxFor());
+
+  const cur0 = await readPost();
+  const rb1 = await doReburn({
+    expectedVersion: cur0.version,
+    hookText: "Watch Theta(N) beat the flashy loop",
+    animation: "fade_in_out",
+    captionStyle: "block",
+  });
+  const post1 = await readPost();
+  const burn1Meta = (post1.ai_metadata as { textBurn?: Record<string, unknown> }).textBurn ?? {};
+  check(
+    "reburn 1: staged reversible, video_path → .burn1.mp4, version bumped",
+    rb1.status === "staged" && post1.video_path === `${A.userId}/clips/${job2Id}.burn1.mp4` && post1.version === cur0.version + 1
+  );
+  check(
+    "reburn 1: textBurn updated (hook + animation + style + seq + history=[original])",
+    burn1Meta.hookText === "Watch Theta(N) beat the flashy loop" &&
+      burn1Meta.animation === "fade_in_out" &&
+      burn1Meta.captionStyle === "block" &&
+      burn1Meta.seq === 1 &&
+      Array.isArray(burn1Meta.history) &&
+      (burn1Meta.history as string[])[0] === `${A.userId}/clips/${job2Id}.mp4`
+  );
+  const rb1Media = await admin.storage.from("clip-media").download(post1.video_path!);
+  check("reburn 1: new burned artifact really in storage", !rb1Media.error);
+  check(
+    "reburn summary says FREE local re-burn (no render minutes)",
+    /no render minutes/i.test(rb1.summary)
+  );
+
+  // Versioned-write conflict: a stale expectedVersion is refused with the
+  // re-read teaching, and NOTHING moved.
+  let conflictMsg = "";
+  try {
+    await doReburn({ expectedVersion: cur0.version, hookText: "Stale write" });
+  } catch (err) {
+    conflictMsg = err instanceof Error ? err.message : String(err);
+  }
+  const postAfterConflict = await readPost();
+  check(
+    "stale expectedVersion → teachable conflict error, post untouched",
+    /re-read/i.test(conflictMsg) && postAfterConflict.video_path === post1.video_path
+  );
+
+  // Rotation: three more re-burns; the window keeps current + 2 priors.
+  // The job's ORIGINAL burn ({jobId}.mp4) and the clean master never purge;
+  // the oldest RE-BURN artifact (burn1) does.
+  for (const n of [2, 3, 4]) {
+    const cur = await readPost();
+    await doReburn({ expectedVersion: cur.version, hookText: `Hook take ${n}` });
+  }
+  const postR4 = await readPost();
+  const burnR4Meta = (postR4.ai_metadata as { textBurn?: Record<string, unknown> }).textBurn ?? {};
+  check(
+    "reburn 4: seq=4, history = the last two priors (burn2, burn3)",
+    burnR4Meta.seq === 4 &&
+      JSON.stringify(burnR4Meta.history) ===
+        JSON.stringify([`${A.userId}/clips/${job2Id}.burn2.mp4`, `${A.userId}/clips/${job2Id}.burn3.mp4`])
+  );
+  const [gone1, kept2, keptOrig, keptClean] = await Promise.all([
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.burn1.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.burn2.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.clean.mp4`),
+  ]);
+  check(
+    "rotation purged burn1; burn2 + the original + the clean master survive",
+    gone1.error !== null && !kept2.error && !keptOrig.error && !keptClean.error
+  );
+
+  // Quota (ledger-counted): with the daily bound at the 4 already spent, the
+  // 5th refuses with the budget message and no write happens.
+  process.env.CLIP_REBURNS_PER_DAY = "4";
+  let quotaMsg = "";
+  try {
+    const cur = await readPost();
+    await doReburn({ expectedVersion: cur.version, hookText: "One too many" });
+  } catch (err) {
+    quotaMsg = err instanceof Error ? err.message : String(err);
+  } finally {
+    delete process.env.CLIP_REBURNS_PER_DAY;
+  }
+  const postAfterQuota = await readPost();
+  check(
+    "reburn quota: the 5th/day is refused (ledger-counted), post untouched",
+    /re-burn budget/i.test(quotaMsg) && postAfterQuota.version === postR4.version
+  );
+
+  // Gate revert: rejecting the LAST re-burn restores the prior burned
+  // artifact reference — and the rotation window guarantees its FILE exists.
+  const cur4 = await readPost();
+  const rb5 = await doReburn({ expectedVersion: cur4.version, hookText: "Revert me" });
+  await rejectMarketingAction(A.supabase as never, rb5.actionId!);
+  const postReverted = await readPost();
+  const revertedMedia = await admin.storage.from("clip-media").download(postReverted.video_path!);
+  check(
+    "gate revert restores the prior burned artifact reference AND its file exists",
+    postReverted.video_path === postR4.video_path && !revertedMedia.error
+  );
+
+  const reburnEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_hook_reburned");
+  check("clip_hook_reburned events on the single stream", (reburnEvents.data ?? []).length >= 4);
+
+  // RLS: creator B cannot re-burn A's clip post (unfindable under B's RLS).
+  let bDenied = false;
+  try {
+    await executeMarketingTool(
+      "update_clip_hook",
+      reburnArgs({ expectedVersion: 1, hookText: "B was here" }),
+      { ...ctxFor(), supabase: B.supabase as never, ownerId: B.userId }
+    );
+  } catch {
+    bDenied = true;
+  }
+  check("RLS: creator B cannot re-burn A's clip post", bDenied);
 
   /* ── M-F: slideShortProvider.lifecycle.spec (same table, injected render) ── */
 

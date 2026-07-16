@@ -2753,6 +2753,7 @@ export type Database = {
           batch_id: string | null
           batch_order: number | null
           body: string
+          clean_video_path: string | null
           clip_job_id: string | null
           campaign_id: string | null
           course_id: string | null
@@ -2791,6 +2792,7 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body: string
+          clean_video_path?: string | null
           clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null
@@ -2829,6 +2831,7 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body?: string
+          clean_video_path?: string | null
           clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null

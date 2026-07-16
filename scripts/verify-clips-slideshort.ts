@@ -125,6 +125,7 @@ async function renderSpec() {
       ],
       hookText: "Profit is an opinion. Cash is a fact.",
       preset: "bofu_preview",
+      platform: "instagram",
       endCardCta: null,
       creatorHandle: "@hbduo",
       courseTitle: "Financial Statements for Founders",

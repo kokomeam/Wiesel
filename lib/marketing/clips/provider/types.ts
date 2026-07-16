@@ -45,10 +45,12 @@ export interface ProviderJobView {
   status: ProviderJobStatus;
   /** Raw provider status string (observability; never branched on). */
   providerStatus: string;
-  /** Downloadable output (signed URL) once completed — the provider-
-   *  captioned variant when available, else the clean render. */
+  /** Downloadable output (signed URL) once completed. H-6: adapters put the
+   *  CLEAN render here (provider captions are never consumed — all burned
+   *  text is applied in-house by the burn stage). */
   outputUrl: string | null;
-  /** The clean (caption-free) variant when the provider renders both. */
+  /** The clean (caption-free) variant when the provider renders both — the
+   *  burn stage's preferred source (falls back to outputUrl). */
   cleanOutputUrl: string | null;
   /** Output stream metadata when the provider reports it. */
   output: { width: number; height: number; durationSeconds: number } | null;

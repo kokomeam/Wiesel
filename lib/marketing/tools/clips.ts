@@ -14,12 +14,22 @@
 import { z } from "zod";
 import {
   CLIP_AUDIOGRAM_CAVEAT,
+  CLIP_HOOK_MAX_WORDS,
   CLIP_LAYOUT_LABELS,
   CLIP_MAX_CANDIDATES,
   CLIP_PLATFORM_SPECS,
   CLIP_PLATFORMS,
   FUNNEL_STAGES,
 } from "../clips/constants";
+import {
+  CLIP_CAPTION_STYLES,
+  CLIP_HOOK_ANIMATION_LABELS,
+  CLIP_HOOK_ANIMATIONS,
+} from "../clips/textStyles";
+import { hookWordCount } from "../clips/schemas";
+import { ClipReburnError, reburnClipPost } from "../clips/render/reburn";
+import { SocialVersionConflictError } from "../social/errors";
+import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { coursePreviewPath } from "../ctaDestination";
 import { generatePostingKit, isClipPlatform } from "../clips/postingKit";
 import { emitClipEvent } from "../clips/events";
@@ -382,6 +392,85 @@ const generatePostingKitTool = defineMarketingTool({
   },
 });
 
+/* ───────────────────── hook re-burn (directive H-3) ───────────────────── */
+
+const updateClipHookTool = defineMarketingTool({
+  name: "update_clip_hook",
+  description:
+    "Edit a rendered clip post's burned hook overlay (text ≤10 words, animation, hold time) or its karaoke captions (on/off, style: beam/block/minimal) — re-burned LOCALLY from the clip's clean master in seconds: no provider job, no render minutes, quota untouched. Pass the post's current version (a conflict means it changed — re-read first). Alternate hooks live in the post's ai_metadata.altHooks. Reversible (revert restores the prior burned artifact).",
+  params: z
+    .object({
+      postId: z.uuid(),
+      /** Optimistic-locking token — the post's current `version`. */
+      expectedVersion: z.number().int().min(1),
+      /** null = keep the current hook text. */
+      hookText: z.string().min(1).nullable(),
+      animation: z.enum(CLIP_HOOK_ANIMATIONS).nullable(),
+      /** Seconds the hook holds before its exit (slide_in_fade/fade_in_out). */
+      holdSeconds: z.number().min(0.5).max(10).nullable(),
+      captionsEnabled: z.boolean().nullable(),
+      captionStyle: z.enum(CLIP_CAPTION_STYLES).nullable(),
+    })
+    .superRefine((v, ctx) => {
+      // The H-1 hard bound, enforced at the schema (never trusted to lint).
+      if (v.hookText && hookWordCount(v.hookText) > CLIP_HOOK_MAX_WORDS) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["hookText"],
+          message: `hook must be ≤${CLIP_HOOK_MAX_WORDS} words (overlay text)`,
+        });
+      }
+    }),
+  reversibility: "reversible",
+  actionKind: "update_clip_hook",
+  existingTarget: (args) => ({ entity: "social_post", id: args.postId }),
+  async execute(args, ctx) {
+    if (!isAdminConfigured()) {
+      throw new MarketingToolError("Clip media storage is unavailable (no server key configured) — re-burns need it.");
+    }
+    try {
+      const result = await reburnClipPost(
+        {
+          supabase: ctx.supabase,
+          admin: createAdminClient(),
+          nowIso: ctx.services.clock.now(),
+        },
+        {
+          postId: args.postId,
+          expectedVersion: args.expectedVersion,
+          changes: {
+            hookText: args.hookText ?? undefined,
+            animation: args.animation ?? undefined,
+            holdSeconds: args.holdSeconds ?? undefined,
+            captionsEnabled: args.captionsEnabled ?? undefined,
+            captionStyle: args.captionStyle ?? undefined,
+          },
+        }
+      );
+      const findingsNote = result.burn.findings.length
+        ? ` Note: ${result.burn.findings.map((f) => f.detail).join("; ")}.`
+        : "";
+      const hookLine = result.burn.hookText
+        ? `hook "${result.burn.hookText}" (${CLIP_HOOK_ANIMATION_LABELS[result.burn.animation ?? "slide_in_fade"]})`
+        : "no hook overlay";
+      const capLine = result.burn.captionsEnabled ? `${result.burn.captionStyle} captions` : "captions off";
+      return {
+        summary: `Re-burned the clip from its clean master — ${hookLine}, ${capLine}. Free local re-burn (no render minutes; ${result.reburnsToday}/${result.reburnsPerDay} today).${findingsNote}`,
+        data: result,
+        target: { entity: "social_post", id: result.postId },
+      };
+    } catch (err) {
+      if (err instanceof SocialVersionConflictError) {
+        throw new MarketingToolError(
+          "The post changed since you read it — re-read it (list_social_posts/get_social_post) and re-apply the hook edit with the fresh version."
+        );
+      }
+      if (err instanceof ClipReburnError) throw new MarketingToolError(err.message);
+      throw err;
+    }
+  },
+});
+
 export const clipTools = [
   selectClipMomentsTool,
   listClipMomentCandidatesTool,
@@ -390,4 +479,5 @@ export const clipTools = [
   cancelClipJobTool,
   listClipJobsTool,
   generatePostingKitTool,
+  updateClipHookTool,
 ];

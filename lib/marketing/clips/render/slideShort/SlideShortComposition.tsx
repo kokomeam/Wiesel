@@ -14,7 +14,7 @@
  * freeform element canvas is editor-measurement territory).
  */
 
-import React from "react";
+import React, { useMemo } from "react";
 import {
   AbsoluteFill,
   Audio,
@@ -23,6 +23,19 @@ import {
   useVideoConfig,
 } from "remotion";
 import { BRAND_TOKENS, watermarkText } from "@/lib/marketing/brand/tokens";
+import {
+  CLIP_CAPTION_STYLE_SPECS,
+  CLIP_TEXT_STYLES,
+  captionAnchor,
+  clipTextPresetDefaults,
+  hookAnchor,
+  usableTextWidth,
+} from "@/lib/marketing/clips/textStyles";
+import {
+  applyCaseRule,
+  groupCaptionWords,
+  planHookFit,
+} from "@/lib/marketing/clips/textTrack";
 import { findTheme } from "@/lib/course/slide/themes";
 import type { Slide, SlideElement } from "@/lib/course/types";
 import type { StructuredCtx } from "@/components/editor/slide/structured/common";
@@ -45,6 +58,8 @@ import { CLIP_PRESET_META } from "../../presets";
 import {
   SLIDE_SHORT_ENDCARD_MS,
   SLIDE_SHORT_HOOK_MS,
+  SLIDE_SHORT_H,
+  SLIDE_SHORT_W,
   type SlideShortSpec,
 } from "./spec";
 
@@ -100,12 +115,12 @@ function PureElementSlide({ slide }: { slide: Slide }) {
       aria-hidden
     >
       {title && (
-        <p style={{ color: BRAND_TOKENS.colors.ink, fontFamily: BRAND_TOKENS.fonts.display }} className="text-6xl font-light leading-tight">
+        <p style={{ color: BRAND_TOKENS.colors.ink, fontFamily: BRAND_TOKENS.fonts.display }} className="text-[60px] font-light leading-tight">
           {title}
         </p>
       )}
       {rest.map((t, i) => (
-        <p key={i} style={{ color: BRAND_TOKENS.colors.ink }} className="text-3xl leading-snug opacity-80">
+        <p key={i} style={{ color: BRAND_TOKENS.colors.ink }} className="text-[30px] leading-snug opacity-80">
           {t}
         </p>
       ))}
@@ -113,41 +128,123 @@ function PureElementSlide({ slide }: { slide: Slide }) {
   );
 }
 
-/* ──────────────────────── kinetic captions ────────────────────────────── */
+/* ──────────── kinetic captions (H-4: shared style constants) ───────────── */
 
-const CAPTION_WINDOW = 5;
-
-function Captions({ spec, tMs }: { spec: SlideShortSpec; tMs: number }) {
-  const words = spec.captionWords;
-  if (words.length === 0) return null;
-  let idx = words.findIndex((w) => tMs >= w.startMs && tMs < w.endMs);
-  if (idx === -1) {
-    idx = words.findIndex((w) => w.startMs > tMs);
-    if (idx === -1) idx = words.length - 1;
+/**
+ * A CSS ring-shadow approximating the libass stroke (12 points on a circle
+ * of the layer's strokePx) — the T-2 non-optional outline, rendered the
+ * browser way. Values come only from CLIP_TEXT_STYLES.
+ */
+function strokeShadow(strokePx: number, withDrop: boolean, dropPx = 0): string {
+  const ring: string[] = [];
+  for (let step = 0; step < 12; step++) {
+    const a = (step / 12) * 2 * Math.PI;
+    const dx = Math.round(Math.cos(a) * strokePx * 10) / 10;
+    const dy = Math.round(Math.sin(a) * strokePx * 10) / 10;
+    ring.push(`${dx}px ${dy}px 0 ${CLIP_TEXT_STYLES.stroke}`);
   }
-  const start = Math.max(0, idx - Math.floor(CAPTION_WINDOW / 2));
-  const visible = words.slice(start, start + CAPTION_WINDOW);
+  if (withDrop && dropPx > 0) {
+    ring.push(`${dropPx}px ${dropPx}px ${Math.round(dropPx * 2)}px rgba(0,0,0,0.45)`);
+  }
+  return ring.join(", ");
+}
+
+/**
+ * Word-level karaoke, ONE line at a time in 3–4 word groups — the SAME
+ * grouping the burn path uses (groupCaptionWords) and the SAME T-3 style
+ * data (CLIP_CAPTION_STYLE_SPECS keyed by the preset's default), so
+ * slide-short captions are indistinguishable from burned ones.
+ */
+function Captions({ spec, tMs }: { spec: SlideShortSpec; tMs: number }) {
+  const groups = useMemo(
+    () => groupCaptionWords(spec.captionWords, spec.durationMs),
+    [spec.captionWords, spec.durationMs]
+  );
+  if (groups.length === 0) return null;
+  const group = groups.find((g) => tMs >= g.startMs && tMs < g.endMs);
+  if (!group) return null;
+  const cap = CLIP_TEXT_STYLES.caption;
+  const styleSpec = CLIP_CAPTION_STYLE_SPECS[clipTextPresetDefaults(spec.preset).captionStyle];
   return (
     <div
       data-zone="captions"
-      className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 px-16 text-center"
+      className="flex flex-wrap items-center justify-center gap-x-4 text-center"
+      style={{
+        fontFamily: `"${CLIP_TEXT_STYLES.fonts.caption.family}"`,
+        fontWeight: 700,
+        fontSize: cap.sizePx,
+        lineHeight: CLIP_TEXT_STYLES.lineHeightFrac,
+        color: CLIP_TEXT_STYLES.fill,
+        textShadow: strokeShadow(cap.strokePx, false),
+      }}
     >
-      {visible.map((w, i) => {
-        const active = start + i === idx && tMs >= w.startMs && tMs < w.endMs;
+      {group.words.map((w, i) => {
+        const active = tMs >= w.startMs && tMs < w.endMs;
+        const scale = active ? styleSpec.activeScalePct / 100 : 1;
         return (
           <span
-            key={`${start + i}`}
-            className="text-5xl font-bold uppercase tracking-tight"
+            key={`${group.startMs}-${i}`}
             style={{
-              fontFamily: BRAND_TOKENS.fonts.sans,
-              color: active ? BRAND_TOKENS.colors.brand : BRAND_TOKENS.colors.onDark,
-              transform: active ? "scale(1.08)" : "scale(1)",
+              color: active && styleSpec.activeFill ? styleSpec.activeFill : CLIP_TEXT_STYLES.fill,
+              transform: `scale(${scale})`,
+              ...(active && styleSpec.activeBox
+                ? {
+                    backgroundColor: styleSpec.boxFill,
+                    borderRadius: Math.round(CLIP_TEXT_STYLES.boxPadPx * 0.8),
+                    padding: `0 ${CLIP_TEXT_STYLES.boxPadPx}px`,
+                    textShadow: "none",
+                  }
+                : {}),
             }}
           >
             {w.w}
           </span>
         );
       })}
+    </div>
+  );
+}
+
+/* ───────────── hook overlay (H-4: shared style constants) ──────────────── */
+
+function HookOverlay({ spec, opacity }: { spec: SlideShortSpec; opacity: number }) {
+  const defaults = clipTextPresetDefaults(spec.preset);
+  const fit = useMemo(() => {
+    const displayText = applyCaseRule(spec.hookText, defaults.hookCase);
+    const wordCount = spec.hookText.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount === 0) return null;
+    return planHookFit({
+      displayText,
+      wordCount,
+      usableWidthPx: usableTextWidth(spec.platform, SLIDE_SHORT_W, SLIDE_SHORT_H),
+      scale: 1, // 1080×1920 IS the reference canvas
+      charFrac:
+        defaults.hookCase === "upper"
+          ? CLIP_TEXT_STYLES.avgCharWidthFrac.hookUpper
+          : CLIP_TEXT_STYLES.avgCharWidthFrac.hookTitle,
+      lowKey: defaults.lowKeyHook,
+    });
+  }, [spec.hookText, spec.platform, defaults]);
+  if (!fit) return null;
+  const blockH = Math.round(fit.lines.length * fit.style.sizePx * CLIP_TEXT_STYLES.lineHeightFrac);
+  const anchor = hookAnchor(spec.platform, spec.preset, SLIDE_SHORT_W, SLIDE_SHORT_H, blockH);
+  return (
+    <div
+      data-zone="hook"
+      className="absolute inset-x-0 text-center"
+      style={{
+        top: anchor.y - blockH / 2,
+        opacity,
+        fontFamily: `"${CLIP_TEXT_STYLES.fonts.hook.family}"`,
+        fontSize: fit.style.sizePx,
+        lineHeight: CLIP_TEXT_STYLES.lineHeightFrac,
+        color: CLIP_TEXT_STYLES.fill,
+        textShadow: strokeShadow(fit.style.strokePx, fit.style.shadowPx > 0, fit.style.shadowPx),
+      }}
+    >
+      {fit.lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
     </div>
   );
 }
@@ -191,24 +288,18 @@ export function SlideShortComposition(props: Record<string, unknown>) {
         </div>
       </div>
 
-      {/* hook overlay (≤2s) */}
-      {hookOpacity > 0 && (
-        <div
-          data-zone="hook"
-          className="absolute inset-x-0 top-[120px] px-14 text-center"
-          style={{ opacity: hookOpacity }}
-        >
-          <p
-            className="text-6xl font-semibold leading-tight"
-            style={{ color: BRAND_TOKENS.colors.onDark, fontFamily: BRAND_TOKENS.fonts.display }}
-          >
-            {spec.hookText}
-          </p>
-        </div>
-      )}
+      {/* hook overlay (≤2s) — typography/position from CLIP_TEXT_STYLES (H-4) */}
+      {hookOpacity > 0 && <HookOverlay spec={spec} opacity={hookOpacity} />}
 
-      {/* kinetic captions */}
-      <div className="absolute inset-x-0 top-[1030px]">
+      {/* kinetic captions — anchored inside the platform safe area (H-4) */}
+      <div
+        className="absolute inset-x-0"
+        style={{
+          top:
+            captionAnchor(spec.platform, SLIDE_SHORT_W, SLIDE_SHORT_H).bottomY -
+            Math.round(CLIP_TEXT_STYLES.caption.sizePx * CLIP_TEXT_STYLES.lineHeightFrac),
+        }}
+      >
         <Captions spec={spec} tMs={tMs} />
       </div>
 
@@ -228,15 +319,25 @@ export function SlideShortComposition(props: Record<string, unknown>) {
           className="items-center justify-center gap-10 px-16 text-center"
         >
           <p
-            className="text-5xl font-medium leading-tight"
-            style={{ color: BRAND_TOKENS.colors.onDark, fontFamily: BRAND_TOKENS.fonts.display }}
+            className="font-medium leading-tight"
+            style={{
+              color: BRAND_TOKENS.colors.onDark,
+              fontFamily: BRAND_TOKENS.fonts.display,
+              // T-2: the end-card CTA layer consumes the shared table (H-4)
+              fontSize: CLIP_TEXT_STYLES.endCard.sizePx,
+              textShadow: strokeShadow(
+                CLIP_TEXT_STYLES.endCard.strokePx,
+                CLIP_TEXT_STYLES.endCard.shadowPx > 0,
+                CLIP_TEXT_STYLES.endCard.shadowPx
+              ),
+            }}
           >
             {spec.endCardCta ??
               (spec.preset === "bofu_preview"
                 ? `This is one moment from “${spec.courseTitle}” — the full course is open.`
                 : "Want the full lesson? It's in the course.")}
           </p>
-          <p className="text-3xl" style={{ color: BRAND_TOKENS.colors.brand }}>
+          <p className="text-[30px]" style={{ color: BRAND_TOKENS.colors.brand }}>
             {preset.endCardFraming === "enroll / link-in-bio framing"
               ? "Enroll — link in bio"
               : "Comment the keyword and I'll send it"}

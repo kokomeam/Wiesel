@@ -74,7 +74,7 @@ export default async function LessonClipsPage({
         .limit(50),
       supabase
         .from("social_post")
-        .select("id, clip_job_id, platform, body")
+        .select("id, clip_job_id, platform, body, version, clean_video_path, ai_metadata")
         .eq("post_type", "clip")
         .eq("course_id", course.id)
         .is("deleted_at", null),
@@ -129,12 +129,34 @@ export default async function LessonClipsPage({
           lessons={lessons}
           initialCandidates={(candidatesRes.data ?? []).map((r) => rowToCandidate(r))}
           initialJobs={(jobsRes.data ?? []).map((r) => rowToRenderJob(r))}
-          clipPosts={(postsRes.data ?? []).map((p) => ({
-            id: p.id,
-            clipJobId: p.clip_job_id,
-            platform: p.platform,
-            body: p.body,
-          }))}
+          clipPosts={(postsRes.data ?? []).map((p) => {
+            const meta = (p.ai_metadata as Record<string, unknown>) ?? {};
+            const burn = (meta.textBurn as Record<string, unknown> | null) ?? null;
+            return {
+              id: p.id,
+              clipJobId: p.clip_job_id,
+              platform: p.platform,
+              body: p.body,
+              version: p.version,
+              // H-3: hook edits are free local re-burns — only where a clean
+              // master exists (slide_short text is native; legacy clips
+              // predate the burn stage).
+              canReburn: Boolean(p.clean_video_path),
+              altHooks: Array.isArray(meta.altHooks) ? (meta.altHooks as string[]) : [],
+              textBurn: burn
+                ? {
+                    hookText: (burn.hookText as string | null) ?? null,
+                    animation: (burn.animation as string | null) ?? null,
+                    holdSeconds: (burn.holdSeconds as number | null) ?? null,
+                    captionsEnabled: (burn.captionsEnabled as boolean | undefined) ?? true,
+                    captionStyle: (burn.captionStyle as string | undefined) ?? "beam",
+                    findings: Array.isArray(burn.findings)
+                      ? (burn.findings as { kind: string; detail: string }[])
+                      : [],
+                  }
+                : null,
+            };
+          })}
           kits={(kitsRes.data ?? []).map((k) => ({
             postId: k.post_id,
             caption: k.caption,

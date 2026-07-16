@@ -275,10 +275,12 @@ uses the SAME function).
   a piecewise-eased overlay-x expression).
 - **audiogram:** blurred cover backdrop + the footage as a legible 16:9 card
   + a brand-color `showwaves` strip.
-- **Burned captions on in-house layouts arrive with M-F's Remotion caption
-  engine** (deliberate: drawtext/libass font resolution is unreliable across
-  deploy targets; the provider face_track output already ships a captioned
-  variant). Surfaced at the M-B checkpoint.
+- **Burned captions/hook — SUPERSEDED (2026-07-16):** the M-B checkpoint's
+  "no burned captions yet" deferral is closed by the text-burn stage (see
+  § Burned text below) — every in-house geometry render is now the CLEAN
+  MASTER and the hook + karaoke captions burn as the final pass with
+  BUNDLED fonts (the "libass font resolution is unreliable" concern was
+  resolved by shipping the fonts + asserting resolution pre-burn).
 - **Brand tokens (D-1):** `lib/marketing/brand/tokens.ts` is the ONE brand-
   constant module (mirrors globals.css `@theme` + `public/brand/*`); the
   divergence check in `verify-clips-render` fails if any other clips file
@@ -563,9 +565,133 @@ Two more, found the moment real clip posts hit the surfaces (same day):
    `currentTake.rebuild.spec` (verify-clips-int: live stale-refusal →
    rebuild → candidate retirement).
 
+## Burned text: hook overlay + karaoke captions (2026-07-16, directive H-1..H-6 + T-1..T-7)
+
+Every REAL-FOOTAGE clip now ships with a burned **hook overlay** (the moment
+selector's `hookText`) and **word-level karaoke captions** (from the lesson
+transcript). Binding architecture rule: **all burned text is applied
+IN-HOUSE, in a post-geometry pass on the final-resolution video** — provider
+renders are consumed CLEAN (see H-6 below), so typography is identical across
+providers, positioning is geometry-correct, and hook edits are free local
+re-burns.
+
+- **One style source** (`textStyles.ts` — H-4/T-2/T-3/T-4): `CLIP_TEXT_STYLES`
+  (sizing table: hook 92px ≤6 words / 72px two-line / 60px the ONE T-7 shrink
+  step / 64px bofu low-key · captions 64px Inter Bold · end-card 72px; the
+  black stroke is NON-OPTIONAL on both layers — the single constant that
+  keeps text legible over slides, faces, and code), `CLIP_TEXT_SAFE_AREAS`
+  (per-platform UI-avoidance zones, diagram below), `CLIP_TEXT_MOTION` (T-4
+  values with per-number rationale), `CLIP_CAPTION_STYLE_SPECS` (T-3
+  `beam`/`block`/`minimal` — pure data over ONE renderer; adding a style is a
+  data change + snapshot test). Colors ride BRAND_TOKENS only (the D-1 scan
+  still finds zero second sources). `CLIP_TEXT_STYLE_VERSION` (`clip-text-v1`)
+  stamps every burn; ANY styling change bumps it and regenerates both golden
+  sets in the same PR.
+- **Fonts (T-1)**: OFL-licensed files BUNDLED in `assets/clip-fonts/`
+  (Archivo Black for hooks, Inter Bold for captions; Montserrat
+  ExtraBold + Inter SemiBold are the recorded bake-off alternates; licenses
+  ship alongside — OFL obligations: bundle the license, never resell the
+  fonts). libass gets them via `subtitles=…:fontsdir=` (its memory font
+  provider beats fontconfig — never a system-font assumption);
+  `textFonts.ts · assertClipFontsResolvable()` runs before every burn and
+  parses the TTF name tables so a missing/renamed file fails LOUDLY, and
+  verify-clips-render's fallback detector burns the same hook under a real
+  vs. nonsense family and requires the frames to differ (a silent DejaVu
+  fallback is a release blocker). Deploy note: `assets/clip-fonts` must ship
+  with the tick route (serverless: outputFileTracingIncludes — the
+  ffmpeg-static precedent).
+- **The builder** (`textTrack.ts` — H-1, PURE): `buildAssDocument(spec)` /
+  `buildClipTextTrack(spec)` author the ASS at the video's OWN resolution
+  (PlayRes = actual dims; constants scale BY HEIGHT, so 1:1 canvases never
+  stretch). Hook animations are a data-driven enum — `slide_in_fade` (280ms
+  in, 2.5s hold default, 240ms out), `fade_in_out`, `slide_across` (3.2s
+  traverse), `persistent` — creator-selectable, preset defaults per H-5
+  (tofu slide_in_fade+ALL-CAPS+beam · mofu fade_in_out+Title · bofu
+  persistent low-key+minimal). Captions render ONE line at a time in 3–4
+  word groups (≥800ms silence starts a new line; a stranded one-word tail
+  rebalances), per-word karaoke via interval events; `block`'s brand box
+  rides a LOWER layer with per-run alpha so its padding never covers
+  neighboring words. Deterministic wrapping uses MEASURED advance-width
+  ratios (re-measured against real libass renders in CI — drift fails).
+  **T-7 lint** (pre-burn, deterministic): wrap → ONE shrink step → hard fail
+  (`hook_unfit`); width-driven caption regrouping; a first caption line that
+  duplicates the hook is suppressed while the hook shows; accents clamp at 2
+  words; positions re-verified inside the safe area post-layout.
+- **The burn stage** (`render/burn.ts` — H-2): one FFmpeg pass
+  (`subtitles=` + `fontsdir=`), H.264 at the pipeline's own crf 20 (parity),
+  audio stream COPIED. Runs (a) at provider INGEST — the submitted→completed
+  step downloads the CLEAN variant and burns before storage; (b) as the
+  FINAL pass after in-house geometry (stacked_split/zoom/audiogram — the
+  captions land in the brand caption band the M-B layout reserved);
+  (c) NEVER for slide_short (native Remotion text — H-4: the composition
+  consumes the SAME constants + fonts + grouping, divergence-tested, so
+  output is indistinguishable; burning it too would double-caption).
+  **BOTH artifacts stored**: `output.storagePath` (burned — what creators
+  download/post; the post's `video_path`) and `output.cleanStoragePath` /
+  `social_post.clean_video_path` (the pre-burn CLEAN MASTER). Provenance =
+  `ai_metadata.textBurn {hookText, animation, captionStyle, styleVersion,
+  assHash, findings, seq, history}`. Failure honesty: an unfittable hook
+  degrades to a captions-only burn with `hook_omitted_unfit` (an unattended
+  render never strands on typography); nothing-to-draw copies the master
+  through.
+- **Hook edits = free local re-burns** (`render/reburn.ts` + the
+  `update_clip_hook` tool — H-3, reversible): text (≤10 words, Zod-refused
+  beyond) / animation / hold / captions on-off / caption style re-burn from
+  the clean master in seconds — NO provider job, NO clip minutes; the only
+  guard is `CLIP_REBURNS_PER_DAY` (50, ledger-counted on marketing_action).
+  The write is VERSIONED (`versionedUpdateSocialPost` gained `video_path`;
+  stale version ⇒ the teachable re-read error). **Rotation**: re-burns land
+  at `{jobId}.burn{seq}.mp4`; the post keeps the last
+  `CLIP_BURN_HISTORY_KEEP` (3) burned-artifact references so the gate's
+  revert restores a prior reference whose FILE still exists; older re-burn
+  files purge (the job's original burn + the clean master NEVER purge — the
+  job card and future re-burns depend on them). UI: the clip card's "Edit
+  hook & captions" panel (altHooks as one-tap chips; findings surfaced); the
+  job media route serves the POST's current video_path so the player always
+  shows the latest burn. Event: `clip_hook_reburned`.
+- **Provider coordination (H-6)**: Reap's `create-reframe` has NO caption
+  params (T0-verified) but always delivers a clean `clipUrl` — the adapter
+  is clean-first AND the completion step downloads `cleanOutputUrl ??
+  outputUrl`, so the provider-captioned variant is never consumed and a
+  double-caption output is impossible by construction (finding recorded in
+  docs/reap-task0-findings.md; `CLIP_PRESET_META.captionsPresetId` is now
+  vestigial documentation). The semantic frame check asserts the caption
+  band appears exactly once, inside the lower third.
+
+**Platform safe areas (H-4, 1080×1920 reference — sources in textStyles.ts):**
+
+```
+     1080
+┌───────────────┐        top zone (camera hint / header)
+│▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒│ ← 200–240px
+│               │
+│    HOOK       │ ← preset anchor (0.14–0.30 × H), clamped into the frame
+│   (center)    │
+│           ░░░░│
+│           ░░░░│ ← right action rail 128–144px
+│           ░░░░│   (like/comment/share)
+│   CAPTIONS    │ ← one line, bottom-anchored at the safe frame's floor
+│▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒│ ← bottom UI zone 320–500px
+│▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒│   (username / caption / audio / progress)
+└───────────────┘
+ tiktok 240/500/144 · instagram+facebook 220/420/128 · youtube_shorts 200/320/132
+ (+24px edge gap; left margin 60px; all values scale by videoHeight/1920)
+```
+
+**Bake-off (T-5)**: `docs/clip-text-bakeoff/` — the committed comparison
+sheet (2 hook fonts × 3 caption presets over the REAL Theta(N) moment) and
+the recorded defaults (Archivo Black + beam). The checkpoint demo artifact
+is `artifacts/h-theta-hook-burn-demo.mp4` (slide_in_fade + beam over the real
+CS61B stacked_split render).
+
+**Config**: `CLIP_REBURNS_PER_DAY` (50). **Golden workflows**: ASS snapshots
+(48 combos) — `CLIP_TEXT_GOLDENS_RECORD=1 npm run verify:clips`; golden
+frames (T-6, 10 frames, ≤1.5% pixel drift) — `CLIP_TEXT_GOLDENS_RECORD=1 npm
+run verify:clips:render`.
+
 ## Tests
 
-- `npm run verify:clips` — **203 pure checks** (no key/DB), in the `npm test`
+- `npm run verify:clips` — **252 pure checks** (no key/DB), in the `npm test`
   chain: constants/taxonomy/rubric, Zod gates (incl. the multi-segment
   exception rules), VTT→word interpolation, anchors/chunking, every
   deterministic validation rule, verdict application (±8s bound, hook
@@ -579,7 +705,7 @@ Two more, found the moment real clip posts hit the surfaces (same day):
   `routing.matrix.spec` (matrix + precedence + sync helpers),
   `actionDensity.lexicon/Diff/degraded.spec`, `rubric.formatAware.spec`
   (boost matrix), `hookIntegrity.slideRef.spec`.
-- `npm run verify:clips:int` — **88 checks** vs live Supabase + the mock
+- `npm run verify:clips:int` — **102 checks** vs live Supabase + the mock
   model: platform/cache/provider/no-source acquisition, gate-staged selection
   with persisted ranks + prompt versions + events, byte-for-byte status
   revert, whole-set revert (transcript cache survives), zero-survivor
@@ -593,7 +719,7 @@ Two more, found the moment real clip posts hit the surfaces (same day):
   DB/storage with fakes, token-bucket hold, ingest + kit + attribution,
   slide-short lifecycle, RLS). Sweeps are creator-scoped and a leak guard
   cancels the run's active job rows on success and on crash.
-- `npm run verify:clips:render` — **114 checks** (pure/local; REAL ffmpeg
+- `npm run verify:clips:render` — **137 checks** (pure/local; REAL ffmpeg
   renders): provider contract, state machine, golden args, brand divergence,
   D-3 provenance spies, recorder slide-sync, posting kit, UI greps,
   reconciliation chaos + WER, `providerErrors.spec` (permanent 4xx →

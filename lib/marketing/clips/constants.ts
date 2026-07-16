@@ -360,6 +360,13 @@ export const CLIP_INHOUSE_MINUTE_RATE_DEFAULT = 1;
 export const CLIP_JOB_MAX_ATTEMPTS = 3;
 /** A rendering_local row untouched this long is presumed crashed → retried. */
 export const CLIP_LOCAL_RENDER_STALE_MS = 10 * 60_000;
+/** H-3: hook edits re-burn locally from the clean master — zero provider
+ *  cost, so the guard is a cheap abuse bound, not a spend quota. */
+export const CLIP_REBURNS_PER_DAY_DEFAULT = 50;
+/** H-3: burned artifacts kept per post (current + priors) for revert;
+ *  older re-burn artifacts purge from storage. The job's ORIGINAL burn and
+ *  the clean master never purge (the job card / re-burns depend on them). */
+export const CLIP_BURN_HISTORY_KEEP = 3;
 
 export function clipRenderConfig() {
   return {
@@ -367,6 +374,7 @@ export function clipRenderConfig() {
     jobsPerDay: envInt("CLIP_JOBS_PER_DAY", CLIP_JOBS_PER_DAY_DEFAULT),
     minutesPerMonth: envInt("CLIP_MINUTES_PER_MONTH", CLIP_MINUTES_PER_MONTH_DEFAULT),
     inhouseMinuteRate: envInt("CLIP_INHOUSE_MINUTE_RATE", CLIP_INHOUSE_MINUTE_RATE_DEFAULT),
+    reburnsPerDay: envInt("CLIP_REBURNS_PER_DAY", CLIP_REBURNS_PER_DAY_DEFAULT),
   };
 }
 

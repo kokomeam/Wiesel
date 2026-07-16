@@ -50,10 +50,21 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "Media signing unavailable" }, { status: 503 });
   }
+  // H-3: after a hook re-burn the POST's video_path is the current burned
+  // artifact — prefer it over the job's original burn so the player always
+  // shows what the creator will download.
+  let mediaPath = job.output.storagePath;
+  const { data: post } = await auth.ctx.supabase
+    .from("social_post")
+    .select("video_path")
+    .eq("clip_job_id", job.id)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (post?.video_path) mediaPath = post.video_path;
   const admin = createAdminClient();
   const { data: signed, error } = await admin.storage
     .from("clip-media")
-    .createSignedUrl(job.output.storagePath, 3600);
+    .createSignedUrl(mediaPath, 3600);
   if (error || !signed?.signedUrl) {
     return NextResponse.json({ error: "Could not sign the clip" }, { status: 502 });
   }

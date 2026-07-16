@@ -28,7 +28,19 @@
  * Run: `npx tsx scripts/verify-clips-render.ts`
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +70,10 @@ import { createReapProvider, normalizeReapStatus } from "@/lib/marketing/clips/p
 import { providerForLayout, resolvePipRect } from "@/lib/marketing/clips/render/service";
 import { actionCueTimes } from "@/lib/marketing/clips/actionDensity";
 import { wordsFromSegments } from "@/lib/marketing/clips/fixtures/lessons";
+import { CLIP_TEXT_FONTS, CLIP_TEXT_STYLES } from "@/lib/marketing/clips/textStyles";
+import { buildClipTextTrack, type ClipTextTrackSpec } from "@/lib/marketing/clips/textTrack";
+import { assertClipFontsResolvable, parseTtfFamilies } from "@/lib/marketing/clips/textFonts";
+import { buildBurnArgs, buildSubtitlesFilter, burnClipText } from "@/lib/marketing/clips/render/burn";
 import { bubbleRect } from "@/lib/video/recorderConfig";
 
 let pass = 0,
@@ -159,8 +175,8 @@ async function providerContractSpec() {
 
   const view = await provider.getJob("proj-1");
   check(
-    "getJob: output from get-project-clips (captioned preferred), NEVER urls.videoFile",
-    view.outputUrl === "https://cdn/captioned.mp4" &&
+    "getJob: output from get-project-clips (CLEAN preferred — H-6), NEVER urls.videoFile",
+    view.outputUrl === "https://cdn/clean.mp4" &&
       view.cleanOutputUrl === "https://cdn/clean.mp4" &&
       view.output?.width === 720 &&
       view.costMinutes === 1
@@ -953,6 +969,379 @@ async function chaosAndWerSpec() {
   check("insertions counted", Math.abs(wordErrorRate("a b c", "a x b c") - 1 / 3) < 1e-9);
 }
 
+/* ══════════ Hook Overlay + Karaoke Caption Burn — REAL-render halves ═══════
+ * textBurn.fonts.spec (T-1) · textBurn.real.spec (H-2 semantic frames) ·
+ * textBurn.goldens.spec (T-6 golden frames) · textBurn.divergence.spec
+ * (H-4 shared constants + the H-6 clean-variant pick).                     */
+
+function burnFixtureWords() {
+  return [
+    { w: "the", startMs: 500, endMs: 700 },
+    { w: "reason", startMs: 700, endMs: 1_100 },
+    { w: "your", startMs: 1_100, endMs: 1_350 },
+    { w: "code", startMs: 1_350, endMs: 1_700 },
+    { w: "is", startMs: 1_900, endMs: 2_050 },
+    { w: "slow", startMs: 2_050, endMs: 2_500 },
+    { w: "is", startMs: 2_500, endMs: 2_650 },
+    { w: "hiding", startMs: 2_650, endMs: 3_100 },
+    { w: "in", startMs: 3_100, endMs: 3_250 },
+    { w: "this", startMs: 3_250, endMs: 3_500 },
+    { w: "loop", startMs: 3_500, endMs: 3_900 },
+  ];
+}
+
+function burnSpecFixture(over: Partial<ClipTextTrackSpec> = {}): ClipTextTrackSpec {
+  return {
+    platform: "tiktok",
+    preset: "tofu_hook",
+    videoWidth: 720,
+    videoHeight: 1280,
+    clipDurationMs: 10_000,
+    hook: { text: "This is why Theta(N) actually matters" },
+    captionsEnabled: true,
+    captionStyle: null,
+    captionWords: burnFixtureWords(),
+    ...over,
+  };
+}
+
+/** Synthesize the deterministic burn input: flat dark canvas + tone. */
+async function makeBurnInput(dir: string): Promise<string> {
+  const input = join(dir, "burn-input.mp4");
+  await runFfmpeg([
+    "-y",
+    "-f", "lavfi", "-i", "color=c=0x404040:s=720x1280:r=30:d=10",
+    "-f", "lavfi", "-i", "sine=frequency=330:duration=10",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    "-c:a", "aac", "-pix_fmt", "yuv420p",
+    input,
+  ]);
+  return input;
+}
+
+/** Decode ONE frame (or a PNG) to raw RGB24 for pixel math. */
+async function rawFrame(src: string, atSeconds: number | null, w: number, h: number, dir: string): Promise<Buffer> {
+  const out = join(dir, `frame-${Math.random().toString(36).slice(2)}.rgb`);
+  const seek = atSeconds === null ? [] : ["-ss", atSeconds.toFixed(3)];
+  await runFfmpeg(["-y", ...seek, "-i", src, "-frames:v", "1", "-s", `${w}x${h}`, "-f", "rawvideo", "-pix_fmt", "rgb24", out]);
+  return readFileSync(out);
+}
+
+/** Fraction of pixels differing by >8/255 in any channel + the diff's row range. */
+function pixelDiff(a: Buffer, b: Buffer, w: number): { frac: number; minRow: number; maxRow: number } {
+  const pixels = Math.min(a.length, b.length) / 3;
+  let diff = 0,
+    minRow = Infinity,
+    maxRow = -1;
+  for (let p = 0; p < pixels; p++) {
+    const i = p * 3;
+    if (Math.abs(a[i] - b[i]) > 8 || Math.abs(a[i + 1] - b[i + 1]) > 8 || Math.abs(a[i + 2] - b[i + 2]) > 8) {
+      diff++;
+      const row = Math.floor(p / w);
+      if (row < minRow) minRow = row;
+      if (row > maxRow) maxRow = row;
+    }
+  }
+  return { frac: diff / pixels, minRow, maxRow };
+}
+
+async function textBurnFontsSpec() {
+  console.log("# textBurn.fonts.spec (T-1: bundled OFL fonts resolve — no silent DejaVu)");
+  const { dir: fontsDir } = assertClipFontsResolvable();
+  check("assertClipFontsResolvable: files + name tables + OFL licenses verified", existsSync(fontsDir));
+  const hookFamilies = parseTtfFamilies(readFileSync(join(fontsDir, CLIP_TEXT_FONTS.hook.file)));
+  const capFamilies = parseTtfFamilies(readFileSync(join(fontsDir, CLIP_TEXT_FONTS.caption.file)));
+  check(
+    "name tables carry the exact families the ASS styles reference",
+    hookFamilies.includes(CLIP_TEXT_FONTS.hook.family) && capFamilies.includes(CLIP_TEXT_FONTS.caption.family)
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), "wisesel-burn-fonts-"));
+  try {
+    const input = await makeBurnInput(dir);
+    // Rendered-frame fallback detection: the SAME hook with the real family
+    // vs. a nonsense family MUST render differently — identical frames mean
+    // the real family didn't resolve and the fallback took both (T-1
+    // release blocker).
+    const track = buildClipTextTrack(burnSpecFixture({ captionsEnabled: false }));
+    const realAss = join(dir, "real.ass");
+    const fakeAss = join(dir, "fake.ass");
+    writeFileSync(realAss, track.ass);
+    writeFileSync(fakeAss, track.ass.replaceAll(CLIP_TEXT_FONTS.hook.family, "WiseselNoSuchFont"));
+    const realOut = join(dir, "real.mp4");
+    const fakeOut = join(dir, "fake.mp4");
+    await runFfmpeg(buildBurnArgs({ inputPath: input, assPath: realAss, fontsDir, outputPath: realOut }));
+    await runFfmpeg(buildBurnArgs({ inputPath: input, assPath: fakeAss, fontsDir, outputPath: fakeOut }));
+    const fReal = await rawFrame(realOut, 1.0, 720, 1280, dir);
+    const fFake = await rawFrame(fakeOut, 1.0, 720, 1280, dir);
+    check(
+      "fallback detector: real family renders differently from a nonsense family",
+      pixelDiff(fReal, fFake, 720).frac > 0.001
+    );
+
+    // avgCharWidthFrac provenance: re-measure the real ink width and assert
+    // the constants still hold their safety margin (drift trips here).
+    const measure = async (family: string, bold: boolean, text: string): Promise<number> => {
+      const W = 2400, H = 300, FS = 100;
+      const ass = [
+        "[Script Info]", "ScriptType: v4.00+", `PlayResX: ${W}`, `PlayResY: ${H}`, "WrapStyle: 2", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        `Style: M,${family},${FS},&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,&H00000000,${bold ? -1 : 0},0,0,0,100,100,0,0,1,0,0,5,0,0,0,1`,
+        "", "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        `Dialogue: 0,0:00:00.00,0:00:02.00,M,,0,0,0,,{\\an5\\pos(${W / 2},${H / 2})}${text}`,
+      ].join("\n");
+      const assPath = join(dir, `measure-${family.replace(/\W/g, "")}.ass`);
+      writeFileSync(assPath, ass);
+      const raw = join(dir, `measure-${family.replace(/\W/g, "")}.rgb`);
+      await runFfmpeg([
+        "-y", "-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:d=1:r=1`,
+        "-vf", buildSubtitlesFilter(assPath, fontsDir),
+        "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", raw,
+      ]);
+      const buf = readFileSync(raw);
+      let minX = W, maxX = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (buf[(y * W + x) * 3] > 40) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+          }
+        }
+      }
+      return (maxX - minX + 1) / text.length / FS;
+    };
+    const upper = await measure(CLIP_TEXT_FONTS.hook.family, false, "THIS IS WHY THETA(N) ACTUALLY MATTERS FOR YOU");
+    const title = await measure(CLIP_TEXT_FONTS.hook.family, false, "This Is Why Theta(N) Actually Matters For You");
+    const caption = await measure(CLIP_TEXT_FONTS.caption.family, true, "the reason your code is slow is hiding in this loop");
+    const frac = CLIP_TEXT_STYLES.avgCharWidthFrac;
+    check(
+      `avgCharWidthFrac still bounds real ink (upper ${upper.toFixed(3)}≤${frac.hookUpper}, title ${title.toFixed(3)}≤${frac.hookTitle}, caption ${caption.toFixed(3)}≤${frac.caption})`,
+      upper <= frac.hookUpper && title <= frac.hookTitle && caption <= frac.caption
+    );
+    check(
+      "…and isn't overly conservative (constants within +0.12 of measured)",
+      frac.hookUpper - upper <= 0.12 && frac.hookTitle - title <= 0.12 && frac.caption - caption <= 0.12
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function textBurnRealSpec() {
+  console.log("# textBurn.real.spec (H-2: REAL burn — semantic frame checks)");
+  const { dir: fontsDir } = assertClipFontsResolvable();
+  void fontsDir;
+  const dir = mkdtempSync(join(tmpdir(), "wisesel-burn-real-"));
+  try {
+    const input = await makeBurnInput(dir);
+    const W = 720, H = 1280;
+
+    const burned = join(dir, "burned.mp4");
+    const meta = await burnClipText({ inputPath: input, outputPath: burned, spec: burnSpecFixture() });
+    check(
+      "burn ran: provenance carries burned=true + a sha256 assHash + the style version",
+      meta.burned === true && /^[0-9a-f]{64}$/.test(meta.assHash ?? "") && meta.styleVersion === "clip-text-v1"
+    );
+
+    const captionsOnly = join(dir, "captions-only.mp4");
+    await burnClipText({ inputPath: input, outputPath: captionsOnly, spec: burnSpecFixture({ hook: null }) });
+
+    // Hook present in the early window, absent after the fade window.
+    const hookWindowEnd = (280 + 2_500 + 240) / 1000;
+    const early = { a: await rawFrame(burned, 1.0, W, H, dir), b: await rawFrame(captionsOnly, 1.0, W, H, dir) };
+    const late = { a: await rawFrame(burned, hookWindowEnd + 1, W, H, dir), b: await rawFrame(captionsOnly, hookWindowEnd + 1, W, H, dir) };
+    const earlyDiff = pixelDiff(early.a, early.b, W);
+    // Compare the HOOK REGION only (upper 55%) at the late timestamp —
+    // x264 inter-frame drift from the differing earlier content can leave
+    // sub-visible ringing elsewhere; the semantic claim is about the hook.
+    const topRows = Math.floor(0.55 * H) * W * 3;
+    const lateDiff = pixelDiff(late.a.subarray(0, topRows), late.b.subarray(0, topRows), W);
+    check("hook text present in the early frames (differs from a captions-only burn)", earlyDiff.frac > 0.002);
+    check(
+      "hook ABSENT after the slide_in_fade window (hook region converges to captions-only)",
+      lateDiff.frac < 0.002
+    );
+    check(
+      "the hook's pixels sit in the UPPER region (safe-area anchor, not mid-frame)",
+      earlyDiff.minRow >= 0.1 * H && earlyDiff.maxRow <= 0.55 * H
+    );
+
+    // Captions mid-clip in the lower third — and ONLY there (the H-6
+    // double-caption blocker's visual half: exactly one caption band).
+    const inputFrame = await rawFrame(input, 3.3, W, H, dir);
+    const capFrame = await rawFrame(captionsOnly, 3.3, W, H, dir);
+    const capDiff = pixelDiff(inputFrame, capFrame, W);
+    check("captions present mid-clip (differ from the clean master)", capDiff.frac > 0.002);
+    check(
+      "caption band appears exactly ONCE, inside the lower third",
+      capDiff.minRow >= (2 / 3) * H - 40 && capDiff.maxRow <= H - 40
+    );
+
+    // Parity probe: same resolution, h264, audio COPIED (aac survives).
+    const bin = ffmpegBinaryPath()!;
+    const probe = spawnSync(bin, ["-i", burned], { encoding: "utf8" }).stderr;
+    check("re-encode parity: 720×1280 h264 + the aac audio stream (copied)", probe.includes("720x1280") && probe.includes("h264") && /Audio: aac/.test(probe));
+
+    // Clean-master reuse: a re-burn from the SAME clean input with a new
+    // hook produces a different artifact; the master itself is untouched.
+    const masterHash = createHash("sha256").update(readFileSync(input)).digest("hex");
+    const reburned = join(dir, "reburned.mp4");
+    await burnClipText({ inputPath: input, outputPath: reburned, spec: burnSpecFixture({ hook: { text: "A different hook entirely" } }) });
+    check(
+      "re-burn from the clean master: new artifact differs, master byte-identical",
+      !readFileSync(reburned).equals(readFileSync(burned)) &&
+        createHash("sha256").update(readFileSync(input)).digest("hex") === masterHash
+    );
+
+    // Degrades, never strands: an unfittable hook burns captions-only with
+    // the finding; nothing-to-draw copies the master through.
+    const degraded = join(dir, "degraded.mp4");
+    const degradedMeta = await burnClipText({
+      inputPath: input,
+      outputPath: degraded,
+      spec: burnSpecFixture({
+        hook: { text: "incomprehensibilities counterrevolutionaries institutionalization intercontinentalism telecommunications" },
+      }),
+    });
+    check(
+      "unfittable hook → captions-only burn + hook_omitted_unfit finding (job never strands)",
+      degradedMeta.burned === true &&
+        degradedMeta.hookText === null &&
+        degradedMeta.findings.some((f) => f.kind === "hook_omitted_unfit")
+    );
+    const passthrough = join(dir, "passthrough.mp4");
+    const ptMeta = await burnClipText({
+      inputPath: input,
+      outputPath: passthrough,
+      spec: burnSpecFixture({ hook: null, captionsEnabled: false }),
+    });
+    check(
+      "nothing to draw → master copied through (burned=false, byte-identical)",
+      ptMeta.burned === false && readFileSync(passthrough).equals(readFileSync(input))
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function textBurnGoldensSpec() {
+  console.log("# textBurn.goldens.spec (T-6: golden frames, pixel drift ≤1.5%)");
+  const { dir: fontsDir } = assertClipFontsResolvable();
+  void fontsDir;
+  const goldensDir = join(ROOT, "lib", "marketing", "clips", "fixtures", "goldens");
+  const record = process.env.CLIP_TEXT_GOLDENS_RECORD === "1";
+  if (record) mkdirSync(goldensDir, { recursive: true });
+  const dir = mkdtempSync(join(tmpdir(), "wisesel-burn-goldens-"));
+  try {
+    const input = await makeBurnInput(dir);
+    const W = 720, H = 1280;
+    const cases: { name: string; spec: ClipTextTrackSpec; atSeconds: number }[] = [
+      // hook layer × animation (captions off isolates the layer)
+      ...(["slide_in_fade", "fade_in_out", "slide_across", "persistent"] as const).map((animation) => ({
+        name: `hook-${animation}-tiktok`,
+        spec: burnSpecFixture({ captionsEnabled: false, hook: { text: "This is why Theta(N) actually matters", animation } }),
+        atSeconds: 1.0,
+      })),
+      // caption layer × style × platform (hook off isolates the layer)
+      ...(["beam", "block", "minimal"] as const).flatMap((style) =>
+        (["tiktok", "youtube_shorts"] as const).map((platform) => ({
+          name: `captions-${style}-${platform}`,
+          spec: burnSpecFixture({ hook: null, captionStyle: style, platform }),
+          atSeconds: 3.3,
+        }))
+      ),
+    ];
+    check("golden matrix covers layer × style preset × platform (4 hook + 6 caption frames)", cases.length === 10);
+    let allWithin = true;
+    const failures: string[] = [];
+    for (const c of cases) {
+      const out = join(dir, `${c.name}.mp4`);
+      await burnClipText({ inputPath: input, outputPath: out, spec: c.spec });
+      const framePng = join(dir, `${c.name}.png`);
+      await runFfmpeg(["-y", "-ss", c.atSeconds.toFixed(3), "-i", out, "-frames:v", "1", framePng]);
+      const goldenPath = join(goldensDir, `${c.name}.png`);
+      if (record) {
+        copyFileSync(framePng, goldenPath);
+        continue;
+      }
+      if (!existsSync(goldenPath)) {
+        allWithin = false;
+        failures.push(`${c.name} (golden missing)`);
+        continue;
+      }
+      const current = await rawFrame(framePng, null, W, H, dir);
+      const golden = await rawFrame(goldenPath, null, W, H, dir);
+      const d = pixelDiff(current, golden, W);
+      if (d.frac > 0.015) {
+        allWithin = false;
+        failures.push(`${c.name} (${(d.frac * 100).toFixed(2)}%)`);
+      }
+    }
+    if (record) {
+      console.log(`  … recorded ${cases.length} golden frames → ${goldensDir}`);
+      check("goldens recorded (re-run without CLIP_TEXT_GOLDENS_RECORD to verify)", true);
+    } else {
+      check(
+        "every burned frame matches its committed golden within 1.5% (styling change ⇒ regenerate goldens in the same PR)",
+        allWithin,
+        failures.join(", ")
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function textBurnDivergenceSpec() {
+  console.log("# textBurn.divergence.spec (H-4 one style source · H-6 clean-variant pick)");
+  const composition = readFileSync(
+    join(ROOT, "lib", "marketing", "clips", "render", "slideShort", "SlideShortComposition.tsx"),
+    "utf8"
+  );
+  check(
+    "SlideShortComposition consumes CLIP_TEXT_STYLES + the shared karaoke grouping (H-4)",
+    composition.includes("CLIP_TEXT_STYLES") &&
+      composition.includes("groupCaptionWords") &&
+      composition.includes("CLIP_CAPTION_STYLE_SPECS") &&
+      composition.includes("hookAnchor")
+  );
+  check(
+    "…and defines no ad-hoc caption/hook type sizes (the old text-5xl/6xl classes are gone)",
+    !/text-[56]xl/.test(composition)
+  );
+  const styleCss = readFileSync(join(ROOT, "lib", "marketing", "clips", "render", "slideShort", "style.css"), "utf8");
+  check(
+    "the composition bundles the SAME OFL font files libass burns with (T-1/H-4)",
+    styleCss.includes("assets/clip-fonts/ArchivoBlack-Regular.ttf") && styleCss.includes("assets/clip-fonts/Inter-Bold.ttf")
+  );
+
+  // H-6: the adapter serves the CLEAN render first; the captioned variant is
+  // fallback-only — so a double-caption output is impossible by construction.
+  const fetchImpl: typeof fetch = async (input) => {
+    const u = String(input);
+    if (u.includes("get-project-status")) return Response.json({ status: "completed" });
+    if (u.includes("get-project-details")) return Response.json({ billedDuration: 1 });
+    if (u.includes("get-project-clips"))
+      return Response.json({
+        clips: [{ clipUrl: "https://cdn/clean.mp4", clipWithCaptionsUrl: "https://cdn/captioned.mp4", metadata: { width: 1080, height: 1920, duration: 40 } }],
+      });
+    throw new Error(`unexpected ${u}`);
+  };
+  const provider = createReapProvider({ apiKey: "k", fetchImpl });
+  const view = await provider.getJob("proj-1");
+  check(
+    "reap adapter: outputUrl AND cleanOutputUrl are the CLEAN clipUrl (H-6)",
+    view.outputUrl === "https://cdn/clean.mp4" && view.cleanOutputUrl === "https://cdn/clean.mp4"
+  );
+  const grepBurn = readFileSync(join(ROOT, "lib", "marketing", "clips", "render", "service.ts"), "utf8");
+  check(
+    "the completion step downloads cleanOutputUrl ?? outputUrl (never the captioned URL)",
+    grepBurn.includes("view.cleanOutputUrl ?? view.outputUrl")
+  );
+}
+
 async function main() {
   await providerContractSpec();
   await stateMachineSpec();
@@ -968,6 +1357,10 @@ async function main() {
   await postingKitSpec();
   await clipsUiSpec();
   await chaosAndWerSpec();
+  await textBurnFontsSpec();
+  await textBurnRealSpec();
+  await textBurnGoldensSpec();
+  await textBurnDivergenceSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

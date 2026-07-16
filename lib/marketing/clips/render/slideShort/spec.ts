@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { CLIP_PLATFORMS } from "../../constants";
 import { CLIP_PACKAGING_PRESETS } from "../../presets";
 
 /** One slide's visible window within the clip (CLIP-relative ms). The slide
@@ -38,6 +39,9 @@ export const SlideShortSpecSchema = z.object({
   captionWords: z.array(SlideShortCaptionWordSchema),
   hookText: z.string(),
   preset: z.enum(CLIP_PACKAGING_PRESETS),
+  /** H-4: the primary target platform — hook/caption positions honor its
+   *  safe area (CLIP_TEXT_SAFE_AREAS), same as the burn path. */
+  platform: z.enum(CLIP_PLATFORMS),
   /** End-card CTA line (the candidate's own, else preset framing). */
   endCardCta: z.string().nullable(),
   creatorHandle: z.string().nullable(),

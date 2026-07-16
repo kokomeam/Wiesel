@@ -331,6 +331,9 @@ export async function versionedUpdateSocialPost(
       | "suggested_image_idea"
       | "planned_post_at"
       | "ai_metadata"
+      // H-3: a hook re-burn swaps the burned artifact — content-versioned
+      // (the clean master column never changes after ingest).
+      | "video_path"
     >
   >
 ): Promise<SocialPost> {

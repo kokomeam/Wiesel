@@ -5,11 +5,11 @@
  * executes; these are golden-tested string builders.
  *
  * Output contract for every layout: 720×1280 (9:16), H.264 + AAC, the
- * span's own audio verbatim. Burned captions are NOT in the M-B in-house
- * outputs (deliberate, surfaced at the checkpoint): the caption engine with
- * real font infrastructure arrives with M-F's Remotion composition and will
- * caption these layouts too; drawtext/libass font resolution is unreliable
- * across dev/deploy targets and a wrong-font burn is worse than none.
+ * span's own audio verbatim. These builders produce the CLEAN MASTER —
+ * the hook overlay + karaoke captions burn as the FINAL pass in
+ * render/burn.ts (H-2, 2026-07-16: bundled fonts via libass `fontsdir=`,
+ * asserted resolvable pre-burn — the historical "font resolution is
+ * unreliable" concern is closed by shipping the fonts).
  *
  * Layouts:
  *   stacked_split — face band (the PiP crop, deterministic via bubbleRect
@@ -71,7 +71,7 @@ export function buildStackedSplitArgs(input: StackedSplitArgsInput): string[] {
       `crop=${CLIP_OUT_W}:${STACKED_FACE_BAND_H},setsar=1[face]`,
     // screen band: the FULL frame, legible (720 wide, 16:9 → 405)
     `[0:v]scale=${CLIP_OUT_W}:${STACKED_SCREEN_BAND_H},setsar=1[screen]`,
-    // caption zone: brand backdrop (M-F's caption engine draws here)
+    // caption zone: brand backdrop (the H-2 burn stage draws captions here)
     `color=c=${fc(BRAND_TOKENS.colors.backdrop)}:s=${CLIP_OUT_W}x${STACKED_CAPTION_BAND_H}:d=${input.durationSeconds}[pad]`,
     `[face][screen]vstack=inputs=2[fs]`,
     `[fs][pad]vstack=inputs=2[v]`,

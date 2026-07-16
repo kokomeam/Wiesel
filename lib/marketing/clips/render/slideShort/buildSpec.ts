@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { burnPlatformFor } from "../burn";
 import { loadLessonSlideSync, slidesForSpan } from "../../routing";
 import { getLessonTranscript } from "../../transcripts";
 import type { ClipMomentCandidate } from "../../schemas";
@@ -98,6 +99,8 @@ export async function buildSlideShortSpec(
     captionWords,
     hookText: candidate.hookText,
     preset,
+    // H-4: the same platform rule as the burn path (ingest's post platform).
+    platform: burnPlatformFor(candidate),
     endCardCta: candidate.endCardCta,
     creatorHandle: profile?.display_name ?? null,
     courseTitle: course?.title ?? "my course",

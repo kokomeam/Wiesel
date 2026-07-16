@@ -28,7 +28,9 @@ export type ClipPackagingPreset = (typeof CLIP_PACKAGING_PRESETS)[number];
 
 export interface ClipPresetMeta {
   label: string;
-  /** Reap system caption style for provider-rendered output (Task 0 (c)). */
+  /** Reap system caption style (Task 0 (c)). VESTIGIAL since the burn stage
+   *  (H-6): provider output is consumed CLEAN and all text burns in-house —
+   *  kept as documentation of Reap's system styles, applied nowhere. */
   captionsPresetId: string;
   /** The hook framing the posting kit leans on (M-D copy input). */
   hookFraming: string;

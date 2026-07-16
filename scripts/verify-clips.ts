@@ -41,7 +41,8 @@
  * Run: `npx tsx scripts/verify-clips.ts`
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
@@ -61,6 +62,28 @@ import {
   clipConfig,
 } from "@/lib/marketing/clips/constants";
 import { matchActionCues, scoreActionDensity } from "@/lib/marketing/clips/actionDensity";
+import {
+  CLIP_CAPTION_STYLE_SPECS,
+  CLIP_HOOK_ANIMATIONS,
+  CLIP_TEXT_FONTS,
+  CLIP_TEXT_MOTION,
+  CLIP_TEXT_PRESET_DEFAULTS,
+  CLIP_TEXT_STYLES,
+  CLIP_TEXT_STYLE_VERSION,
+  captionAnchor,
+  clipTextScale,
+  hookAnchor,
+  safeTextFrame,
+} from "@/lib/marketing/clips/textStyles";
+import {
+  applyCaseRule,
+  assColor,
+  buildClipTextTrack,
+  ClipTextTrackError,
+  groupCaptionWords,
+  type ClipTextTrackSpec,
+} from "@/lib/marketing/clips/textTrack";
+import { buildBurnArgs, burnPlatformFor, escapeFilterPath } from "@/lib/marketing/clips/render/burn";
 import {
   classifyRecordingFormat,
   resolveRecordingFormat,
@@ -929,12 +952,12 @@ function fixtureChecks() {
 }
 
 function registryChecks() {
-  console.log("# tool registry (§13; M-B adds the render trio)");
-  check("exactly 7 clip tools (M-A's 3 + M-B's render trio + M-D's kit)", clipTools.length === 7);
+  console.log("# tool registry (§13; M-B adds the render trio; H-3 the hook re-burn)");
+  check("exactly 8 clip tools (M-A's 3 + M-B's render trio + M-D's kit + H-3's re-burn)", clipTools.length === 8);
   check(
-    "2 read + 5 reversible, ZERO irreversible (the reversible-only carryover)",
+    "2 read + 6 reversible, ZERO irreversible (the reversible-only carryover)",
     clipTools.filter((t) => t.reversibility === "read").length === 2 &&
-      clipTools.filter((t) => t.reversibility === "reversible").length === 5 &&
+      clipTools.filter((t) => t.reversibility === "reversible").length === 6 &&
       clipTools.filter((t) => t.reversibility === "irreversible").length === 0
   );
   check(
@@ -951,6 +974,7 @@ function registryChecks() {
       "cancel_clip_job",
       "list_clip_jobs",
       "generate_posting_kit",
+      "update_clip_hook",
     ].every((n) => MARKETING_GENERATE_TOOLS.has(n))
   );
   check(
@@ -961,6 +985,34 @@ function registryChecks() {
   );
   const select = clipTools.find((t) => t.name === "select_clip_moments");
   check("select_clip_moments targets the clip_moment_set entity", select?.existingTarget?.({} as never, {} as never) === null);
+
+  // H-3: update_clip_hook — reversible, versioned, honest about being free.
+  const hookTool = clipTools.find((t) => t.name === "update_clip_hook");
+  const hookTarget = hookTool?.existingTarget?.({ postId: "p1" } as never, {} as never) as {
+    entity?: string;
+  } | null;
+  check(
+    "update_clip_hook is reversible and targets the social_post entity",
+    hookTool?.reversibility === "reversible" && hookTarget?.entity === "social_post"
+  );
+  check(
+    "update_clip_hook description teaches: local re-burn, no minutes, version conflict → re-read",
+    /no provider job/i.test(hookTool?.description ?? "") &&
+      /no render minutes/i.test(hookTool?.description ?? "") &&
+      /re-read/i.test(hookTool?.description ?? "")
+  );
+  check(
+    "update_clip_hook Zod hard-fails an 11-word hook (the H-1 bound)",
+    hookTool?.params.safeParse({
+      postId: "0e2e6f9e-7a72-4be1-9f10-6a70b58c2f01",
+      expectedVersion: 1,
+      hookText: "one two three four five six seven eight nine ten eleven",
+      animation: null,
+      holdSeconds: null,
+      captionsEnabled: null,
+      captionStyle: null,
+    }).success === false
+  );
 }
 
 function driftAndGrepChecks() {
@@ -984,6 +1036,18 @@ function driftAndGrepChecks() {
   check(
     "every clip event type is in the AnalyticsEventType union",
     CLIP_EVENTS.every((e) => typesSrc.includes(`"${e}"`))
+  );
+  const burnMigration = readFileSync(
+    join(ROOT, "supabase", "migrations", "20260716120000_clip_text_burn.sql"),
+    "utf8"
+  );
+  check(
+    "clip_hook_reburned in the burn migration's check constraint AND the TS union (drift guard)",
+    burnMigration.includes("'clip_hook_reburned'") && typesSrc.includes('"clip_hook_reburned"')
+  );
+  check(
+    "the burn migration adds social_post.clean_video_path (H-2's second artifact)",
+    burnMigration.includes("add column clean_video_path text")
   );
 
   const clipDir = join(ROOT, "lib", "marketing", "clips");
@@ -1383,6 +1447,425 @@ function hookSlideRefSpecs() {
   );
 }
 
+/* ══════════════ Hook Overlay + Karaoke Caption Burn (H-1..H-6, T-1..T-7) ══
+ * The directive's named specs, pure halves. The REAL-render halves (frame
+ * samples, goldens, font fallback) live in verify-clips-render; the DB
+ * halves (re-burn flow, rotation, quota, revert) in verify-clips-int.     */
+
+const TEXT_FIXTURE_WORDS = [
+  { w: "the", startMs: 500, endMs: 700 },
+  { w: "reason", startMs: 700, endMs: 1_100 },
+  { w: "your", startMs: 1_100, endMs: 1_350 },
+  { w: "code", startMs: 1_350, endMs: 1_700 },
+  { w: "is", startMs: 1_900, endMs: 2_050 },
+  { w: "slow", startMs: 2_050, endMs: 2_500 },
+  { w: "is", startMs: 2_500, endMs: 2_650 },
+  { w: "hiding", startMs: 2_650, endMs: 3_100 },
+  { w: "in", startMs: 3_100, endMs: 3_250 },
+  { w: "this", startMs: 3_250, endMs: 3_500 },
+  { w: "loop", startMs: 3_500, endMs: 3_900 },
+  // ≥800ms silence → a new group starts here
+  { w: "watch", startMs: 4_900, endMs: 5_200 },
+  { w: "what", startMs: 5_200, endMs: 5_400 },
+  { w: "happens", startMs: 5_400, endMs: 5_900 },
+  { w: "when", startMs: 5_900, endMs: 6_100 },
+  { w: "N", startMs: 6_100, endMs: 6_400 },
+  { w: "doubles", startMs: 6_400, endMs: 6_900 },
+];
+
+function textSpecFixture(over: Partial<ClipTextTrackSpec> = {}): ClipTextTrackSpec {
+  return {
+    platform: "tiktok",
+    preset: "tofu_hook",
+    videoWidth: 1080,
+    videoHeight: 1920,
+    clipDurationMs: 12_000,
+    hook: { text: "This is why Theta(N) actually matters" },
+    captionsEnabled: true,
+    captionStyle: null,
+    captionWords: TEXT_FIXTURE_WORDS,
+    ...over,
+  };
+}
+
+interface ParsedDialogue {
+  layer: number;
+  startMs: number;
+  endMs: number;
+  style: string;
+  text: string;
+}
+function parseDialogues(ass: string): ParsedDialogue[] {
+  const toMs = (t: string) => {
+    const m = /^(\d+):(\d+):(\d+)\.(\d+)$/.exec(t)!;
+    return ((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000 + Number(m[4]) * 10);
+  };
+  return ass
+    .split("\n")
+    .filter((l) => l.startsWith("Dialogue: "))
+    .map((l) => {
+      const m = /^Dialogue: (\d+),([^,]+),([^,]+),([^,]+),,0,0,0,,(.*)$/.exec(l)!;
+      return { layer: Number(m[1]), startMs: toMs(m[2]), endMs: toMs(m[3]), style: m[4], text: m[5] };
+    });
+}
+
+function textStylesSpec() {
+  console.log("# textStyles.spec (H-4/T-2/T-4: safe areas, sizing, motion — single source)");
+  // T-2 pins (the addendum's numbers WIN — a change here is a deliberate
+  // restyle and must regenerate the T-6 goldens in the same PR).
+  check(
+    "T-2 sizing table pinned (hook 92/72, shrink 60, low-key 64, captions 64)",
+    CLIP_TEXT_STYLES.hookSingleLine.sizePx === 92 &&
+      CLIP_TEXT_STYLES.hookTwoLine.sizePx === 72 &&
+      CLIP_TEXT_STYLES.hookShrunk.sizePx === 60 &&
+      CLIP_TEXT_STYLES.hookLowKey.sizePx === 64 &&
+      CLIP_TEXT_STYLES.caption.sizePx === 64
+  );
+  check(
+    "stroke is NON-OPTIONAL on both layers (hook 5px, captions 4px, >0 everywhere)",
+    CLIP_TEXT_STYLES.hookSingleLine.strokePx === 5 &&
+      CLIP_TEXT_STYLES.caption.strokePx === 4 &&
+      [
+        CLIP_TEXT_STYLES.hookSingleLine,
+        CLIP_TEXT_STYLES.hookTwoLine,
+        CLIP_TEXT_STYLES.hookShrunk,
+        CLIP_TEXT_STYLES.hookLowKey,
+        CLIP_TEXT_STYLES.caption,
+        CLIP_TEXT_STYLES.endCard,
+      ].every((s) => s.strokePx > 0)
+  );
+  check(
+    "captions carry NO shadow; hooks carry the soft 3px drop (T-2)",
+    CLIP_TEXT_STYLES.caption.shadowPx === 0 && CLIP_TEXT_STYLES.hookSingleLine.shadowPx === 3
+  );
+  check(
+    "T-4 motion values pinned (280/18%/2.5s/240 · 200/200 · 3.2s · 200)",
+    CLIP_TEXT_MOTION.slideInFade.slideMs === 280 &&
+      CLIP_TEXT_MOTION.slideInFade.travelFrac === 0.18 &&
+      CLIP_TEXT_MOTION.slideInFade.holdMsDefault === 2_500 &&
+      CLIP_TEXT_MOTION.slideInFade.fadeOutMs === 240 &&
+      CLIP_TEXT_MOTION.fadeInOut.fadeInMs === 200 &&
+      CLIP_TEXT_MOTION.slideAcross.traverseMs === 3_200 &&
+      CLIP_TEXT_MOTION.persistent.fadeInMs === 200
+  );
+  check(
+    "H-5 preset defaults (tofu slide_in_fade+beam+CAPS · mofu fade+beam · bofu persistent+minimal+low-key)",
+    CLIP_TEXT_PRESET_DEFAULTS.tofu_hook.animation === "slide_in_fade" &&
+      CLIP_TEXT_PRESET_DEFAULTS.tofu_hook.captionStyle === "beam" &&
+      CLIP_TEXT_PRESET_DEFAULTS.tofu_hook.hookCase === "upper" &&
+      CLIP_TEXT_PRESET_DEFAULTS.mofu_story.animation === "fade_in_out" &&
+      CLIP_TEXT_PRESET_DEFAULTS.bofu_preview.animation === "persistent" &&
+      CLIP_TEXT_PRESET_DEFAULTS.bofu_preview.captionStyle === "minimal" &&
+      CLIP_TEXT_PRESET_DEFAULTS.bofu_preview.lowKeyHook === true
+  );
+  check(
+    "T-3 style presets are pure data (beam brand-fill @106% · block box · minimal none)",
+    CLIP_CAPTION_STYLE_SPECS.beam.activeFill !== null &&
+      CLIP_CAPTION_STYLE_SPECS.beam.activeScalePct === 106 &&
+      CLIP_CAPTION_STYLE_SPECS.block.activeBox === true &&
+      CLIP_CAPTION_STYLE_SPECS.minimal.activeFill === null &&
+      CLIP_CAPTION_STYLE_SPECS.minimal.activeBox === false
+  );
+
+  // H-4 position math: every platform × {9:16 reference, 1:1, the in-house
+  // 720×1280 output} keeps anchors inside the safe frame.
+  const canvases = [
+    { w: 1080, h: 1920 },
+    { w: 1080, h: 1080 },
+    { w: 720, h: 1280 },
+  ];
+  let contained = true;
+  for (const platform of CLIP_PLATFORMS) {
+    for (const { w, h } of canvases) {
+      const frame = safeTextFrame(platform, w, h);
+      if (!(frame.x0 > 0 && frame.y0 > 0 && frame.x1 < w && frame.y1 < h && frame.x0 < frame.x1 && frame.y0 < frame.y1)) contained = false;
+      const cap = captionAnchor(platform, w, h);
+      if (!(cap.x >= frame.x0 && cap.x <= frame.x1 && cap.bottomY <= frame.y1 && cap.bottomY >= frame.y0)) contained = false;
+      // captions land in the LOWER THIRD by construction
+      if (h >= w && cap.bottomY < (2 / 3) * h) contained = false;
+      for (const preset of ["tofu_hook", "mofu_story", "bofu_preview"]) {
+        const blockH = Math.round(CLIP_TEXT_STYLES.hookTwoLine.sizePx * 2 * CLIP_TEXT_STYLES.lineHeightFrac * clipTextScale(h));
+        const hook = hookAnchor(platform, preset, w, h, blockH);
+        if (!(hook.y - blockH / 2 >= frame.y0 - 1 && hook.y + blockH / 2 <= frame.y1 + 1)) contained = false;
+      }
+    }
+  }
+  check("H-4: hook + caption anchors stay inside every platform safe area at 9:16, 1:1, and 720×1280", contained);
+  check(
+    "1:1 scales proportionally BY HEIGHT (T-2: 1080×1080 → 1080/1920 of reference)",
+    clipTextScale(1080) === 1080 / 1920 && clipTextScale(1920) === 1
+  );
+}
+
+function textTrackAssSpec() {
+  console.log("# textTrack.ass.spec (H-1: snapshots per animation × preset × platform)");
+  const doc = buildClipTextTrack(textSpecFixture());
+  const ass = doc.ass;
+  check("header: PlayRes = the ACTUAL video dims (libass never rescales anamorphically)", ass.includes("PlayResX: 1080") && ass.includes("PlayResY: 1920"));
+  check("header: WrapStyle 2 (WE control line breaks) + ScaledBorderAndShadow", ass.includes("WrapStyle: 2") && ass.includes("ScaledBorderAndShadow: yes"));
+  check(
+    "styles reference the BUNDLED families (Archivo Black hook, Inter Bold captions)",
+    ass.includes(`Style: WiseHook,${CLIP_TEXT_FONTS.hook.family},`) &&
+      ass.includes(`Style: WiseCaption,${CLIP_TEXT_FONTS.caption.family},`)
+  );
+  check("style version stamped in the document header", ass.includes(CLIP_TEXT_STYLE_VERSION));
+  check("tofu hook renders ALL CAPS with \\move slide + \\fad out (slide_in_fade)", /THIS IS WHY THETA\(N\)/.test(ass) && /\\move\(/.test(ass) && /\\fad\(0,240\)/.test(ass));
+
+  // animation variants — the data-driven enum, one dialogue each (H-1)
+  const hookEventFor = (animation: (typeof CLIP_HOOK_ANIMATIONS)[number]) => {
+    const d = buildClipTextTrack(textSpecFixture({ hook: { text: "Short hook", animation } }));
+    return parseDialogues(d.ass).filter((e) => e.style === "WiseHook");
+  };
+  const fade = hookEventFor("fade_in_out");
+  check("fade_in_out: \\fad both ends over in+hold+out", fade.length === 1 && /\\fad\(200,200\)/.test(fade[0].text) && fade[0].endMs === 200 + 2_500 + 200);
+  const across = hookEventFor("slide_across");
+  check("slide_across: off-frame left → off-frame right over 3.2s", across.length === 1 && /\\move\(-\d+/.test(across[0].text) && across[0].endMs === 3_200);
+  const persistent = hookEventFor("persistent");
+  check("persistent: \\pos, no exit — covers the whole clip", persistent.length === 1 && /\\pos\(/.test(persistent[0].text) && persistent[0].endMs === 12_000);
+  const slideIn = hookEventFor("slide_in_fade");
+  check("slide_in_fade window = slide + hold + fade-out", slideIn[0].endMs === 280 + 2_500 + 240);
+  const held = buildClipTextTrack(textSpecFixture({ hook: { text: "Short hook", animation: "slide_in_fade", holdSeconds: 3 } }));
+  check("creator holdSeconds overrides the default hold", parseDialogues(held.ass).find((e) => e.style === "WiseHook")!.endMs === 280 + 3_000 + 240);
+
+  // The committed snapshot table: sha256 per (animation × preset × platform).
+  // Regenerate deliberately: CLIP_TEXT_GOLDENS_RECORD=1 npm run verify:clips
+  // (drift without a bump = a silent restyle — exactly what this catches).
+  const goldenPath = join(ROOT, "lib", "marketing", "clips", "fixtures", "textTrackGoldens.json");
+  const table: Record<string, string> = {};
+  for (const animation of CLIP_HOOK_ANIMATIONS) {
+    for (const preset of ["tofu_hook", "mofu_story", "bofu_preview"]) {
+      for (const platform of CLIP_PLATFORMS) {
+        const out = buildClipTextTrack(
+          textSpecFixture({ platform, preset, hook: { text: "This is why Theta(N) actually matters", animation } })
+        );
+        table[`${animation}|${preset}|${platform}`] = createHash("sha256").update(out.ass).digest("hex");
+      }
+    }
+  }
+  if (process.env.CLIP_TEXT_GOLDENS_RECORD === "1") {
+    writeFileSync(goldenPath, JSON.stringify({ styleVersion: CLIP_TEXT_STYLE_VERSION, table }, null, 2) + "\n");
+    console.log(`  … recorded ${Object.keys(table).length} ASS snapshots → ${goldenPath}`);
+  }
+  const golden = JSON.parse(readFileSync(goldenPath, "utf8")) as { styleVersion: string; table: Record<string, string> };
+  check("ASS snapshot table covers the full 4×3×4 matrix", Object.keys(golden.table).length === 48);
+  const drifted = Object.entries(table).filter(([k, v]) => golden.table[k] !== v);
+  check(
+    `ASS output matches the committed snapshots for all 48 combos (${golden.styleVersion})`,
+    golden.styleVersion === CLIP_TEXT_STYLE_VERSION && drifted.length === 0,
+    drifted.slice(0, 3).map(([k]) => k).join(", ")
+  );
+}
+
+function textTrackKaraokeSpec() {
+  console.log("# textTrack.karaoke.spec (word-level timing math over fixture words)");
+  const groups = groupCaptionWords(TEXT_FIXTURE_WORDS, 12_000);
+  check(
+    "grouping: 3-4 words per line, ≥800ms silence starts a new group",
+    groups.every((g) => g.words.length <= 4) &&
+      groups.some((g) => g.words[0].w === "watch") // the gap split
+  );
+  check(
+    "group windows: start at the first word, linger ≤1200ms, never overlap the next",
+    groups.every((g, i) => {
+      const next = groups[i + 1];
+      const lastEnd = g.words[g.words.length - 1].endMs;
+      return g.startMs === g.words[0].startMs && g.endMs <= Math.min(next?.startMs ?? Infinity, lastEnd + 1_200);
+    })
+  );
+  // Stranded single-word tail rebalances (…4+1 → …3+2).
+  const tail = groupCaptionWords(
+    [
+      { w: "a", startMs: 0, endMs: 200 },
+      { w: "b", startMs: 200, endMs: 400 },
+      { w: "c", startMs: 400, endMs: 600 },
+      { w: "d", startMs: 600, endMs: 800 },
+      { w: "e", startMs: 800, endMs: 1_000 },
+    ],
+    5_000
+  );
+  check("a stranded 1-word tail rebalances from the previous group (3+2, never 4+1)", tail.length === 2 && tail[0].words.length === 3 && tail[1].words.length === 2);
+
+  // beam: per-word interval events tile each group window exactly.
+  const beam = buildClipTextTrack(textSpecFixture({ hook: null, captionStyle: "beam" }));
+  const beamEvents = parseDialogues(beam.ass).filter((e) => e.style === "WiseCaption");
+  const tiled = groups.every((g) => {
+    const evs = beamEvents.filter((e) => e.startMs >= g.startMs - 10 && e.endMs <= g.endMs + 10).sort((a, b) => a.startMs - b.startMs);
+    if (evs.length === 0) return false;
+    if (Math.abs(evs[0].startMs - g.startMs) > 10 || Math.abs(evs[evs.length - 1].endMs - g.endMs) > 10) return false;
+    return evs.every((e, i) => i === 0 || Math.abs(e.startMs - evs[i - 1].endMs) <= 10);
+  });
+  check("beam: interval events tile every group window (no gaps, no overlaps, cs precision)", tiled);
+  const brandTag = assColor(CLIP_TEXT_STYLES.accent);
+  check(
+    "beam: exactly one active word per spoken interval (brand fill + 106% scale)",
+    beamEvents.some((e) => e.text.includes(`\\1c${brandTag}`) && e.text.includes("\\fscx106")) &&
+      beamEvents.every((e) => (e.text.match(/\\fscx106/g) ?? []).length <= 1)
+  );
+
+  // minimal: ONE event per group, no active-word styling at all.
+  const minimal = buildClipTextTrack(textSpecFixture({ hook: null, captionStyle: "minimal" }));
+  const minEvents = parseDialogues(minimal.ass).filter((e) => e.style === "WiseCaption");
+  check(
+    "minimal: one event per group, zero active-word tags",
+    minEvents.length === groups.length && minEvents.every((e) => !e.text.includes("\\fscx") && !e.text.includes(`\\1c${brandTag}`))
+  );
+
+  // block: brand box rides the LOWER layer only while a word is spoken; the
+  // stroked base line renders once per group ABOVE it.
+  const block = buildClipTextTrack(textSpecFixture({ hook: null, captionStyle: "block" }));
+  const blockEvents = parseDialogues(block.ass);
+  const boxEvents = blockEvents.filter((e) => e.style === "WiseCaptionBox");
+  const baseEvents = blockEvents.filter((e) => e.style === "WiseCaption");
+  check(
+    "block: box events only during spoken words (layer 0), one base line per group (layer 1)",
+    boxEvents.length === TEXT_FIXTURE_WORDS.length &&
+      boxEvents.every((e) => e.layer === 0 && e.text.includes("\\3a&H00&")) &&
+      baseEvents.length === groups.length &&
+      baseEvents.every((e) => e.layer === 1)
+  );
+  check(
+    "block: the box layer's TEXT is invisible everywhere (only the run-box shows)",
+    boxEvents.every((e) => !e.text.includes("\\1a&H00&"))
+  );
+
+  // captions disabled / no words ⇒ zero caption events
+  const off = buildClipTextTrack(textSpecFixture({ captionsEnabled: false }));
+  check("captionsEnabled=false ⇒ zero caption events (hook only)", parseDialogues(off.ass).every((e) => e.style === "WiseHook"));
+}
+
+function textTrackWrapSpec() {
+  console.log("# textTrack.wrap.spec (T-2 ladder: 1-line → 2-line → ONE shrink → hard fail)");
+  const short = buildClipTextTrack(textSpecFixture({ hook: { text: "Big O is a lie" } }));
+  check("≤6 words that fit → ONE line at 92px", short.hookPlan?.lines.length === 1 && short.hookPlan?.sizePx === 92);
+  const eight = buildClipTextTrack(textSpecFixture({ hook: { text: "Why your sorting code slows down at scale" } }));
+  check(
+    "7-10 words → two BALANCED lines at 72px",
+    eight.hookPlan?.lines.length === 2 &&
+      eight.hookPlan?.sizePx === 72 &&
+      Math.abs(eight.hookPlan!.lines[0].length - eight.hookPlan!.lines[1].length) <= 8
+  );
+  const longWords = buildClipTextTrack(
+    textSpecFixture({ hook: { text: "extraordinary complexity mathematics of sorting" } })
+  );
+  check(
+    "an overflowing hook takes the ONE shrink step (60px) with a hook_shrunk finding",
+    longWords.hookPlan?.sizePx === 60 && longWords.findings.some((f) => f.kind === "hook_shrunk")
+  );
+  let unfit = false;
+  try {
+    buildClipTextTrack(
+      textSpecFixture({ hook: { text: "incomprehensibilities counterrevolutionaries institutionalization intercontinentalism telecommunications" } })
+    );
+  } catch (err) {
+    unfit = err instanceof ClipTextTrackError && err.code === "hook_unfit";
+  }
+  check("past the shrink step → HARD FAIL (hook_unfit — T-7)", unfit);
+  let tooMany = false;
+  try {
+    buildClipTextTrack(textSpecFixture({ hook: { text: "one two three four five six seven eight nine ten eleven" } }));
+  } catch (err) {
+    tooMany = err instanceof ClipTextTrackError && err.code === "hook_too_many_words";
+  }
+  check("an 11-word hook hard-fails at the builder too (defense under the Zod bound)", tooMany);
+  const lowKey = buildClipTextTrack(textSpecFixture({ preset: "bofu_preview", hook: { text: "Inside the real course lesson" } }));
+  check(
+    "bofu low-key hook renders at 64px (H-5) in Title Case",
+    lowKey.hookPlan?.sizePx === 64 && lowKey.hookPlan?.lines.join(" ") === "Inside The Real Course Lesson"
+  );
+  const square = buildClipTextTrack(textSpecFixture({ videoWidth: 1080, videoHeight: 1080, hook: { text: "Big O is a lie" } }));
+  check("1:1 canvas scales hook size by height (92 → 52)", square.hookPlan?.sizePx === Math.round(92 * (1080 / 1920)));
+  check("case rule preserves existing capitals (Theta(N) survives Title Case)", applyCaseRule("why Theta(N) matters for USACO", "title") === "Why Theta(N) Matters For USACO");
+}
+
+function textTrackLintSpec() {
+  console.log("# textTrack.lint.spec (T-7: deterministic pre-burn legibility)");
+  // Hook-duplicate caption suppression: the first caption line reads the
+  // hook back within its hold window → suppressed while the hook shows.
+  const echoWords = [
+    { w: "this", startMs: 300, endMs: 500 },
+    { w: "is", startMs: 500, endMs: 650 },
+    { w: "why", startMs: 650, endMs: 900 },
+    { w: "it", startMs: 2_000, endMs: 2_200 },
+    { w: "matters", startMs: 2_200, endMs: 2_700 },
+  ];
+  const echo = buildClipTextTrack(
+    textSpecFixture({ hook: { text: "This is why" }, captionWords: echoWords, captionStyle: "minimal" })
+  );
+  const echoCaptions = parseDialogues(echo.ass).filter((e) => e.style === "WiseCaption");
+  const hookEnd = echo.hookPlan!.windowMs[1];
+  check(
+    "hook-duplicate first caption line suppressed while the hook is visible",
+    echo.findings.some((f) => f.kind === "caption_suppressed_under_hook") &&
+      echoCaptions.every((e) => e.startMs >= hookEnd || !/this is why/i.test(e.text.replace(/\{[^}]*\}/g, "")))
+  );
+
+  // Width regroup: narrow 1:1 canvas + long words → regrouped finding.
+  const wide = buildClipTextTrack(
+    textSpecFixture({
+      videoWidth: 720,
+      videoHeight: 1280,
+      hook: null,
+      captionWords: [
+        { w: "extraordinarily", startMs: 0, endMs: 500 },
+        { w: "sophisticated", startMs: 500, endMs: 1_000 },
+        { w: "implementations", startMs: 1_000, endMs: 1_500 },
+        { w: "everywhere", startMs: 1_500, endMs: 2_000 },
+      ],
+    })
+  );
+  check("over-wide caption lines regroup at fewer words (finding recorded)", wide.findings.some((f) => f.kind === "caption_regrouped_for_width"));
+
+  // Accent clamp: >2 accent words clamps with a finding; ≤2 paint.
+  const accent = buildClipTextTrack(
+    textSpecFixture({ hook: { text: "Theta matters more than speed", accentWordIndices: [0, 1, 2] } })
+  );
+  const accentTag = assColor(CLIP_TEXT_STYLES.accent);
+  const hookEvent = parseDialogues(accent.ass).find((e) => e.style === "WiseHook")!;
+  const accentCount = hookEvent.text.split(`\\1c${accentTag}`).length - 1;
+  check(
+    "hook accent clamps at 2 words (T-2) with a finding",
+    accent.findings.some((f) => f.kind === "hook_accent_clamped") && accentCount === 2
+  );
+
+  // Safe-area clamp: bofu's 0.14 anchor sits above tiktok's top zone → clamped.
+  const clamped = buildClipTextTrack(textSpecFixture({ preset: "bofu_preview", platform: "tiktok", hook: { text: "Inside the course" } }));
+  check("hook anchor clamps INTO the safe area with a finding (bofu on tiktok)", clamped.findings.some((f) => f.kind === "safe_area_clamped"));
+
+  // Burn degrade: an unfit hook burns captions-only with hook_omitted_unfit
+  // (the pipeline half is proven in verify-clips-render with real ffmpeg).
+}
+
+function textBurnArgsSpec() {
+  console.log("# textBurn.args.spec (H-2: golden ffmpeg args, escaping, platform pick)");
+  const args = buildBurnArgs({
+    inputPath: "/tmp/in.mp4",
+    assPath: "/tmp/track.ass",
+    fontsDir: "/repo/assets/clip-fonts",
+    outputPath: "/tmp/out.mp4",
+  });
+  check(
+    "golden burn args: single subtitles pass, crf 20 parity, audio COPIED, faststart",
+    JSON.stringify(args) ===
+      JSON.stringify([
+        "-y",
+        "-i", "/tmp/in.mp4",
+        "-vf", "subtitles=filename='/tmp/track.ass':fontsdir='/repo/assets/clip-fonts'",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "/tmp/out.mp4",
+      ])
+  );
+  check("filter path escaping: a quote splices out as '\\''", escapeFilterPath("a'b") === "a'\\''b");
+  check(
+    "burn platform mirrors ingest (primary targetPlatformFit; instagram fallback)",
+    burnPlatformFor({ targetPlatformFit: ["tiktok", "instagram"] }) === "tiktok" &&
+      burnPlatformFor({ targetPlatformFit: [] }) === "instagram"
+  );
+}
+
 /* ─────────────────────────────── run ───────────────────────────────────── */
 
 async function main() {
@@ -1401,6 +1884,12 @@ async function main() {
   actionDensitySpecs();
   rubricFormatAwareSpecs();
   hookSlideRefSpecs();
+  textStylesSpec();
+  textTrackAssSpec();
+  textTrackKaraokeSpec();
+  textTrackWrapSpec();
+  textTrackLintSpec();
+  textBurnArgsSpec();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

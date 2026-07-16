@@ -319,3 +319,24 @@ truth.** The vision-seam classifier works on real footage.
 **Task 0 status: COMPLETE.** All of (a)–(g) answered against the live API
 with a real lesson recording; the `create-reframe` autoSplit probe's output
 refines (but cannot reverse) decision 6. M-B is unblocked on these findings.
+
+## Addendum (2026-07-16) — H-6 caption suppression, verified in code paths
+
+The Hook Overlay + Caption Burn directive (H-6) requires provider renders to
+be requested CLEAN. Finding, from the live contract above and re-checked
+against the adapter:
+
+- **`create-reframe` exposes NO caption/overlay parameters** — provider
+  captioning can't be disabled at request time. It CAN'T be enabled either:
+  the project always renders BOTH variants and `get-project-clips` returns
+  `clipUrl` (clean) alongside `clipWithCaptionsUrl`.
+- **Resolution: the pipeline consumes the CLEAN variant only.** The adapter
+  puts `clipUrl` first (`outputUrl` clean-first + `cleanOutputUrl`) and the
+  render tick's completion step downloads `cleanOutputUrl ?? outputUrl`,
+  then burns hook + karaoke captions in-house (`render/burn.ts`). The
+  provider-captioned variant is never downloaded, so a double-caption
+  output is impossible by construction (the release-blocker check rides
+  verify-clips-render's burn spec).
+- `CLIP_PRESET_META.captionsPresetId` (the system caption-style lookup from
+  finding 3) is therefore VESTIGIAL for provider output — retained as
+  documentation of Reap's system styles, applied nowhere.

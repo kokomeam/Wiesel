@@ -40,6 +40,13 @@ export interface BrandTokens {
     onDark: string;
     /** Muted text on dark video surfaces (watermarks/footnotes). */
     onDarkMuted: string;
+    /**
+     * The burned-text stroke (T-2): PURE black, deliberately darker than
+     * `backdrop` — the non-optional outline is the single constant that keeps
+     * white text legible over slides, faces, and code alike, and it must not
+     * warm-shift with the brand ramp.
+     */
+    textStroke: string;
   };
   fonts: {
     /** UI/body family stack (Geist Sans). */
@@ -67,6 +74,7 @@ export const BRAND_TOKENS: BrandTokens = {
     backdrop: "#0c0a09",
     onDark: "#ffffff",
     onDarkMuted: "rgba(255,255,255,0.6)",
+    textStroke: "#000000",
   },
   fonts: {
     sans: "Geist Sans, system-ui, sans-serif",

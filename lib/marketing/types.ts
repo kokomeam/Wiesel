@@ -124,7 +124,10 @@ export type AnalyticsEventType =
   | "clip_ingested"
   // M-D posting kit + short links (migration 20260710100000)
   | "posting_kit_generated"
-  | "short_link_click";
+  | "short_link_click"
+  // Hook overlay + caption burn (migration 20260716120000): a free local
+  // re-burn of a clip post's burned text from its clean master (H-3)
+  | "clip_hook_reburned";
 
 /** The governance grade the gate routes on. `read` tools never mutate. */
 export type Reversibility = "read" | "reversible" | "irreversible";

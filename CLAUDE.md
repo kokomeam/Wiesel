@@ -1716,6 +1716,39 @@ compliant footers (8 locales, `language.ts`).
   rebuild; `createClipRenderJob` refuses stale candidates
   (`stale_candidates` — "run Find clip moments again"). currentTake.spec
   (verify:clips 203) + currentTake.rebuild.spec (verify:clips:int 88).
+- **Burned text: hook overlay + karaoke captions (2026-07-16, H-1..H-6 +
+  T-1..T-7 — full detail docs/clips.md § Burned text):** ALL burned text is
+  applied IN-HOUSE post-geometry on the final-resolution video (provider
+  renders consumed CLEAN — Reap's create-reframe has no caption params but
+  always delivers clipUrl; adapter + completion step are clean-first, so
+  double captions are impossible). ONE style source `clips/textStyles.ts`
+  (CLIP_TEXT_STYLES sizing/stroke-non-optional, CLIP_TEXT_SAFE_AREAS per
+  platform, CLIP_TEXT_MOTION, beam/block/minimal karaoke presets as pure
+  data; colors only via BRAND_TOKENS — tokens gained `textStroke`), consumed
+  by BOTH the pure ASS builder `textTrack.ts` (PlayRes = actual dims,
+  height-proportional scaling, deterministic wrap ladder 92→72→60 then
+  hook_unfit, 3-4-word one-line-at-a-time karaoke, T-7 lint incl.
+  hook-duplicate caption suppression) AND the Remotion slide-short (native
+  text, divergence-tested — never burned twice). Fonts BUNDLED
+  `assets/clip-fonts/` (OFL: Archivo Black hooks + Inter Bold captions;
+  bake-off sheet docs/clip-text-bakeoff/) via `subtitles=…:fontsdir=`;
+  `textFonts.ts` asserts name-table families pre-burn + a real-render
+  fallback detector (silent DejaVu = release blocker). `render/burn.ts` =
+  the H-2 stage (crf 20 parity, audio copied) at provider ingest + as the
+  in-house final pass; BOTH artifacts stored (video_path burned ·
+  clean_video_path master, migration `20260716120000`, types SPLICED);
+  provenance ai_metadata.textBurn {…, styleVersion clip-text-v1, assHash,
+  seq, history}. `update_clip_hook` (reversible, 8th clip tool) = free local
+  re-burn from the master (no minutes; CLIP_REBURNS_PER_DAY=50
+  ledger-counted; versioned write — video_path joined
+  versionedUpdateSocialPost; artifact rotation keeps 3, job original + clean
+  never purge; revert restores a still-existing file); UI = the clip card's
+  hook editor (altHooks one-tap). Goldens: 48 ASS snapshots (verify:clips) +
+  10 golden frames ≤1.5% (verify:clips:render), regenerate BOTH with
+  CLIP_TEXT_GOLDENS_RECORD=1 on any styling change + bump
+  CLIP_TEXT_STYLE_VERSION. Suites now: verify:clips 252 · render 137 ·
+  slideshort 14 · int 102 (real ffmpeg burns over real fixture media).
+  Demo: artifacts/h-theta-hook-burn-demo.mp4 (the real Theta(N) moment).
 
 ## Where things live
 

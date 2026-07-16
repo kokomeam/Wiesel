@@ -30,9 +30,16 @@ import {
 import { cn } from "@/lib/cn";
 import {
   CLIP_AUDIOGRAM_CAVEAT,
+  CLIP_HOOK_MAX_WORDS,
   CLIP_LAYOUT_LABELS,
 } from "@/lib/marketing/clips/constants";
-import type { ClipLayout, ClipMomentCandidate } from "@/lib/marketing/clips/schemas";
+import {
+  CLIP_CAPTION_STYLE_LABELS,
+  CLIP_CAPTION_STYLES,
+  CLIP_HOOK_ANIMATION_LABELS,
+  CLIP_HOOK_ANIMATIONS,
+} from "@/lib/marketing/clips/textStyles";
+import { hookWordCount, type ClipLayout, type ClipMomentCandidate } from "@/lib/marketing/clips/schemas";
 import type { ClipRenderJob } from "@/lib/marketing/clips/render/jobs";
 import { ManualPublishNotice } from "@/components/marketing/social/ManualPublishNotice";
 
@@ -49,6 +56,18 @@ interface ClipPostRef {
   clipJobId: string | null;
   platform: string;
   body: string;
+  version: number;
+  /** H-3: a clean master exists — hook edits are free local re-burns. */
+  canReburn: boolean;
+  altHooks: string[];
+  textBurn: {
+    hookText: string | null;
+    animation: string | null;
+    holdSeconds: number | null;
+    captionsEnabled: boolean;
+    captionStyle: string;
+    findings: { kind: string; detail: string }[];
+  } | null;
 }
 
 interface KitView {
@@ -114,6 +133,162 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "precutting", "submitted", "rendering_local"]);
+
+/* ───────────────── hook & caption editor (directive H-3) ───────────────── */
+
+/**
+ * Editing burned text re-burns LOCALLY from the clip's clean master — no
+ * provider job, no render minutes (the copy below says so). altHooks are the
+ * moment selector's one-tap alternates.
+ */
+function HookEditor({
+  post,
+  courseId,
+  onReburned,
+}: {
+  post: ClipPostRef;
+  courseId: string;
+  onReburned: () => void;
+}) {
+  const burn = post.textBurn;
+  const [hookText, setHookText] = useState(burn?.hookText ?? "");
+  const [animation, setAnimation] = useState(burn?.animation ?? "slide_in_fade");
+  const [captionStyle, setCaptionStyle] = useState(burn?.captionStyle ?? "beam");
+  const [captionsEnabled, setCaptionsEnabled] = useState(burn?.captionsEnabled ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const words = hookWordCount(hookText);
+  const tooLong = words > CLIP_HOOK_MAX_WORDS;
+
+  const reburn = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const res = await fetch(`/api/marketing/clips/posts/${post.id}/reburn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          courseId,
+          expectedVersion: post.version,
+          hookText: hookText.trim() || null,
+          animation,
+          captionStyle,
+          captionsEnabled,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        data?: { burn?: { findings?: { detail: string }[] } };
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? "Re-burn failed — try again.");
+      const findings = body?.data?.burn?.findings ?? [];
+      if (findings.length) setNote(findings.map((f) => f.detail).join(" · "));
+      onReburned();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Re-burn failed — try again.");
+    } finally {
+      setBusy(false);
+    }
+  }, [post.id, post.version, courseId, hookText, animation, captionStyle, captionsEnabled, onReburned]);
+
+  return (
+    <details className="rounded-xl border border-stone-200/80 bg-stone-50/60 px-3 py-2 text-xs">
+      <summary className="cursor-pointer select-none font-medium text-stone-600">
+        Edit hook &amp; captions{" "}
+        <span className="font-normal text-stone-400">— re-burns in seconds, no render minutes</span>
+      </summary>
+      <div className="mt-3 space-y-3">
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-stone-400">
+            Hook text
+          </label>
+          <input
+            type="text"
+            value={hookText}
+            onChange={(e) => setHookText(e.target.value)}
+            placeholder="No hook overlay"
+            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800"
+          />
+          <p className={cn("mt-1 text-[11px]", tooLong ? "text-rose-600" : "text-stone-400")}>
+            {words}/{CLIP_HOOK_MAX_WORDS} words
+          </p>
+          {post.altHooks.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {post.altHooks.map((alt) => (
+                <button
+                  key={alt}
+                  type="button"
+                  onClick={() => setHookText(alt)}
+                  className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-[11px] text-stone-600 transition-colors hover:border-brand-200 hover:bg-brand-50"
+                >
+                  “{alt}”
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-stone-400">Animation</span>
+            <select
+              value={animation}
+              onChange={(e) => setAnimation(e.target.value)}
+              className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs text-stone-700"
+            >
+              {CLIP_HOOK_ANIMATIONS.map((a) => (
+                <option key={a} value={a}>
+                  {CLIP_HOOK_ANIMATION_LABELS[a]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-stone-400">Captions</span>
+            <select
+              value={captionStyle}
+              onChange={(e) => setCaptionStyle(e.target.value)}
+              disabled={!captionsEnabled}
+              className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs text-stone-700 disabled:opacity-50"
+            >
+              {CLIP_CAPTION_STYLES.map((s) => (
+                <option key={s} value={s}>
+                  {CLIP_CAPTION_STYLE_LABELS[s]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-stone-600">
+            <input
+              type="checkbox"
+              checked={captionsEnabled}
+              onChange={(e) => setCaptionsEnabled(e.target.checked)}
+              className="accent-brand-600"
+            />
+            On
+          </label>
+        </div>
+        {error && (
+          <p className="rounded-lg bg-rose-50 px-3 py-2 text-[11px] text-rose-600 ring-1 ring-inset ring-rose-100">
+            {error}
+          </p>
+        )}
+        {note && <p className="text-[11px] text-amber-600">{note}</p>}
+        <button
+          type="button"
+          disabled={busy || tooLong}
+          onClick={() => void reburn()}
+          className="inline-flex items-center gap-1.5 rounded-full bg-stone-900 px-4 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          {busy ? "Re-burning…" : "Re-burn"}
+        </button>
+      </div>
+    </details>
+  );
+}
 
 /* ─────────────────────────────── view ─────────────────────────────────── */
 
@@ -587,6 +762,22 @@ export function ClipsView({
                     >
                       ▶ Load preview
                     </button>
+                  )}
+                  {post?.canReburn && (
+                    <HookEditor
+                      post={post}
+                      courseId={course.id}
+                      onReburned={() => {
+                        // the signed URL points at the OLD artifact — drop it
+                        // so the next load signs the fresh burn.
+                        setMediaUrls((m) => {
+                          const next = { ...m };
+                          delete next[j.id];
+                          return next;
+                        });
+                        router.refresh();
+                      }}
+                    />
                   )}
                   {post ? (
                     kit ? (
