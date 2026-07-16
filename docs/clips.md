@@ -533,10 +533,39 @@ Two more, found the moment real clip posts hit the surfaces (same day):
    link; the client pass fills the absolute origin) — the repo's standard
    hydration-safe pattern. SSR check added to `clipsUi` in
    verify-clips-render.
+8. **A re-record was invisible to the whole pipeline (2026-07-16).** The
+   creator re-recorded a lesson and the new take landed BESIDE the dead one
+   — but the transcript picker, the render source, and the page labels were
+   all "longest-first", so the abandoned take stayed the lesson's clip
+   source forever, and the transcript cache (asset-blind) never re-checked.
+   Fix, three parts:
+   - **`pickCurrentVideoRow`** (`transcripts.ts`, pure, exported) is THE
+     lesson-video pick — dual-tracks excluded → captioned preferred →
+     **newest first** — shared by transcript acquisition, `findRenderSource`,
+     and the clips page's lesson labels, so all three always agree on the
+     same asset (the label now shows the duration clips will actually be
+     cut from).
+   - **The transcript cache is keyed to its asset**: `lesson_transcript.
+     video_asset_id` (migration `20260716100000`, types spliced). When the
+     current take is a different asset, `acquireLessonTranscript` REBUILDS
+     from the new take and **retires the old take's open candidates**
+     (their spans live on the old timeline; `clip_transcript_rebuild` log).
+     A legacy null row is stamped in place when its duration matches the
+     current take (±2s), else rebuilt. A creator format override belongs to
+     the take it was set on — a rebuild re-resolves format from the NEW
+     take's metadata, by design.
+   - **Stale-render guard** (`stale_candidates`): `createClipRenderJob`
+     refuses a candidate whose transcript was built from a different asset
+     than the current render source — with the remedy ("run Find clip
+     moments again") instead of silently cutting the new footage at
+     old-timeline spans.
+   Tests: `currentTake.spec` (pure ordering, verify-clips) +
+   `currentTake.rebuild.spec` (verify-clips-int: live stale-refusal →
+   rebuild → candidate retirement).
 
 ## Tests
 
-- `npm run verify:clips` — **199 pure checks** (no key/DB), in the `npm test`
+- `npm run verify:clips` — **203 pure checks** (no key/DB), in the `npm test`
   chain: constants/taxonomy/rubric, Zod gates (incl. the multi-segment
   exception rules), VTT→word interpolation, anchors/chunking, every
   deterministic validation rule, verdict application (±8s bound, hook
@@ -550,7 +579,7 @@ Two more, found the moment real clip posts hit the surfaces (same day):
   `routing.matrix.spec` (matrix + precedence + sync helpers),
   `actionDensity.lexicon/Diff/degraded.spec`, `rubric.formatAware.spec`
   (boost matrix), `hookIntegrity.slideRef.spec`.
-- `npm run verify:clips:int` — **85 checks** vs live Supabase + the mock
+- `npm run verify:clips:int` — **88 checks** vs live Supabase + the mock
   model: platform/cache/provider/no-source acquisition, gate-staged selection
   with persisted ranks + prompt versions + events, byte-for-byte status
   revert, whole-set revert (transcript cache survives), zero-survivor

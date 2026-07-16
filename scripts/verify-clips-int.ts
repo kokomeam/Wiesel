@@ -1097,6 +1097,67 @@ async function main() {
   const { data: bJobs } = await B.supabase.from("clip_render_job").select("id");
   check("RLS: B sees NO render jobs", (bJobs ?? []).length === 0);
 
+  /* ─────── currentTake.rebuild.spec (2026-07-16: re-record beside the old take) ─────── */
+
+  console.log("\n# currentTake.rebuild.spec (a NEWER captioned take replaces the lesson's source)");
+  const { data: newTakeRow, error: newTakeErr } = await A.supabase
+    .from("video_assets")
+    .insert({
+      owner_id: A.userId,
+      course_id: courseId,
+      lesson_id: lesson1,
+      status: "ready",
+      duration_seconds: 200,
+      mux_asset_id: "int-source-asset-v2",
+      mux_playback_id: "int-source-playback-v2",
+      transcript_vtt: fixtureVtt(),
+      transcript: FLAT.segments.map((s) => s.text).join(" "),
+      caption_status: "ready",
+    })
+    .select("id")
+    .single();
+  if (newTakeErr) throw new Error(`v2 take insert: ${newTakeErr.message}`);
+
+  // (a) BEFORE any re-acquire: rendering an old-take candidate must refuse —
+  // its spans live on the old take's timeline, and the render source now
+  // picks the new take.
+  const { data: openBefore } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1)
+    .neq("status", "dismissed");
+  let staleMsg = "";
+  try {
+    await executeMarketingTool(
+      "generate_lesson_clips",
+      { candidateId: openBefore![0].id, preset: null },
+      ctxFor()
+    );
+  } catch (err) {
+    staleMsg = err instanceof Error ? err.message : String(err);
+  }
+  check(
+    "render on an old-take candidate REFUSES with the re-find remedy (stale guard)",
+    /changed since these moments were found/i.test(staleMsg)
+  );
+
+  // (b) Re-acquiring rebuilds the cache from the new take and retires the
+  // old take's open candidates.
+  const rebuilt = await acquireLessonTranscript(transcriptDeps(), lesson1, { courseId });
+  check(
+    "transcript REBUILT from the new take (asset re-keyed, duration follows)",
+    rebuilt.videoAssetId === newTakeRow!.id && Math.abs(rebuilt.durationSeconds - 200) < 1
+  );
+  const { data: openAfter } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1)
+    .neq("status", "dismissed");
+  check(
+    "old take's open candidates retired on rebuild (spans were on the old timeline)",
+    (openBefore ?? []).length > 0 && (openAfter ?? []).length === 0
+  );
+
   await leakGuard?.();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

@@ -38,7 +38,7 @@ import type { CameraBubblePosition } from "@/lib/course/types";
 import { actionCueTimes } from "../actionDensity";
 import { clipRenderConfig, CLIP_JOB_MAX_ATTEMPTS, CLIP_LOCAL_RENDER_STALE_MS } from "../constants";
 import { emitClipEvent } from "../events";
-import { getLessonTranscript } from "../transcripts";
+import { getLessonTranscript, pickCurrentVideoRow } from "../transcripts";
 import { ingestCompletedClipJob } from "../ingest";
 import { getCandidate } from "../repository";
 import type { ClipMomentCandidate } from "../schemas";
@@ -78,6 +78,7 @@ export class ClipRenderError extends Error {
       | "quota_minutes"
       | "no_video"
       | "static_video"
+      | "stale_candidates"
       | "unrenderable_layout"
       | "multi_segment"
       | "candidate_not_found",
@@ -209,24 +210,18 @@ export interface CreateClipJobDeps {
   fetchImpl?: typeof fetch;
 }
 
-/** The lesson's renderable video: the same picker order the transcript path
- *  uses (captioned first, longest first) but carrying the Mux ASSET id the
- *  pre-cut needs. */
+/** The lesson's renderable video: THE shared current-take pick
+ *  (pickCurrentVideoRow — newest ready captioned take; the transcript path
+ *  and the page labels use the same rule) restricted to rows carrying the
+ *  Mux ASSET id the pre-cut needs. */
 async function findRenderSource(supabase: DB, lessonId: string) {
   const { data, error } = await supabase
     .from("video_assets")
-    .select("id,block_id,mux_asset_id,mux_playback_id,duration_seconds,transcript_vtt,metadata")
+    .select("id,block_id,mux_asset_id,mux_playback_id,duration_seconds,transcript_vtt,metadata,created_at")
     .eq("lesson_id", lessonId)
-    .eq("status", "ready")
-    .order("duration_seconds", { ascending: false, nullsFirst: false });
+    .eq("status", "ready");
   if (error) throw new Error(`video_assets read: ${error.message}`);
-  const rows = (data ?? []).filter(
-    (r) =>
-      r.mux_asset_id &&
-      (r.metadata as { role?: string } | null)?.role !== "camera_dual_track"
-  );
-  if (rows.length === 0) return null;
-  return rows.find((r) => r.transcript_vtt) ?? rows[0];
+  return pickCurrentVideoRow((data ?? []).filter((r) => r.mux_asset_id));
 }
 
 /** D-4: the block's linked raw-camera asset (full-res face band), if the
@@ -324,6 +319,18 @@ export async function createClipRenderJob(
 
   const transcript = await getLessonTranscript(deps.supabase, candidate.lessonId);
   const recordingFormat = transcript?.recordingFormat ?? "camera_only";
+
+  // Stale-candidate guard: candidate spans live on the timeline of the video
+  // the transcript was built from. If the lesson's CURRENT take is a
+  // different asset (a re-record landed beside the old one), cutting the new
+  // footage at old-timeline spans yields the wrong moments — refuse with the
+  // remedy instead.
+  if (transcript?.videoAssetId && transcript.videoAssetId !== asset.id) {
+    throw new ClipRenderError(
+      "stale_candidates",
+      'This lesson\'s video changed since these moments were found — run "Find clip moments" again and render from the fresh set.'
+    );
+  }
 
   // Frozen-source guard: camera-bearing formats can never legitimately
   // produce byte-identical frames across the span — refuse before billing

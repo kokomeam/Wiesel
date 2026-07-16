@@ -123,6 +123,7 @@ export function rowToTranscript(row: TranscriptRow): LessonTranscript {
     words: (row.words as unknown as TranscriptWord[]) ?? [],
     text: row.text,
     providerRef: row.provider_ref,
+    videoAssetId: row.video_asset_id,
     recordingFormat: row.recording_format as RecordingFormat,
     formatSource: row.format_source as FormatSource,
     createdAt: row.created_at,
@@ -150,24 +151,45 @@ interface VideoAssetSource {
   mediaUrl: string | null;
 }
 
-/** The lesson's best transcript-bearing (or transcribable) video: prefer a
- *  captioned asset, longest duration first (the primary lecture recording). */
+/** The minimal row shape the current-take pick needs. */
+export interface PickableVideoRow {
+  created_at?: string | null;
+  transcript_vtt?: string | null;
+  metadata: unknown;
+}
+
+/**
+ * THE lesson-video pick — the lesson's CURRENT take. Shared by transcript
+ * acquisition, the render source, and the clips-page lesson labels so all
+ * three always agree on the same asset.
+ *
+ * Order: dual-tracks excluded (D-4) → captioned preferred → NEWEST first.
+ * Newest-first replaced longest-first on 2026-07-16 (found live): a creator
+ * re-records to REPLACE, and the new take lands BESIDE the old one — a
+ * longest-first pick stayed pinned to a dead 6:19 take while the creator's
+ * current 6:07 take was invisible to the whole clips pipeline.
+ */
+export function pickCurrentVideoRow<T extends PickableVideoRow>(rows: T[]): T | null {
+  const usable = rows.filter(
+    (r) => (r.metadata as { role?: string } | null)?.role !== "camera_dual_track"
+  );
+  if (usable.length === 0) return null;
+  const byNewest = [...usable].sort((a, b) =>
+    String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))
+  );
+  return byNewest.find((r) => r.transcript_vtt) ?? byNewest[0];
+}
+
+/** The lesson's transcript-bearing (or transcribable) CURRENT take. */
 async function findLessonVideoAsset(supabase: DB, lessonId: string): Promise<VideoAssetSource | null> {
   const { data, error } = await supabase
     .from("video_assets")
-    .select("id,block_id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status,metadata")
+    .select("id,block_id,transcript,transcript_vtt,duration_seconds,mp4_url,mux_playback_id,status,metadata,created_at")
     .eq("lesson_id", lessonId)
-    .eq("status", "ready")
-    .order("duration_seconds", { ascending: false, nullsFirst: false });
+    .eq("status", "ready");
   if (error) throw new Error(`video_assets read: ${error.message}`);
-  // D-4: auxiliary camera dual-tracks are NOT lesson videos (same duration as
-  // the primary — a naive longest-first pick would grab one).
-  const rows = (data ?? []).filter(
-    (r) => (r.metadata as { role?: string } | null)?.role !== "camera_dual_track"
-  );
-  if (rows.length === 0) return null;
-  const withCaptions = rows.find((r) => r.transcript_vtt);
-  const row = withCaptions ?? rows[0];
+  const row = pickCurrentVideoRow(data ?? []);
+  if (!row) return null;
   return {
     id: row.id,
     blockId: row.block_id,
@@ -205,6 +227,7 @@ async function persistTranscript(
     words: TranscriptWord[];
     text: string;
     providerRef: string | null;
+    videoAssetId: string | null;
     recordingFormat: RecordingFormat;
     formatSource: FormatSource;
   }
@@ -222,6 +245,7 @@ async function persistTranscript(
         words: input.words as unknown as Json,
         text: input.text,
         provider_ref: input.providerRef,
+        video_asset_id: input.videoAssetId,
         recording_format: input.recordingFormat,
         format_source: input.formatSource,
       },
@@ -269,17 +293,60 @@ export async function overrideTranscriptFormat(
  * Acquire the lesson's transcript: cache → platform captions → provider.
  * Throws ClipTranscriptUnavailableError when no source exists (the creator-
  * facing message explains both remedies).
+ *
+ * The cache is keyed to the ASSET it was built from: when the lesson's
+ * current take (pickCurrentVideoRow) is a different video, the transcript
+ * REBUILDS from the new take and the old take's still-open candidates are
+ * dismissed (their spans live on the old timeline — rendering them against
+ * the new footage would cut the wrong moments). A legacy row (null
+ * video_asset_id) is stamped in place when its duration matches the current
+ * take; a mismatch rebuilds.
  */
 export async function acquireLessonTranscript(
   deps: TranscriptDeps,
   lessonId: string,
   opts: { courseId?: string | null } = {}
 ): Promise<LessonTranscript> {
-  const cached = await getLessonTranscript(deps.supabase, lessonId);
-  if (cached) return cached; // classification ran once; overrides survive
-
   const courseId = opts.courseId ?? deps.courseIdForEvents ?? null;
   const asset = await findLessonVideoAsset(deps.supabase, lessonId);
+
+  const cached = await getLessonTranscript(deps.supabase, lessonId);
+  if (cached) {
+    // No usable video anymore — the cache is the best (only) truth.
+    if (!asset) return cached;
+    if (cached.videoAssetId === asset.id) return cached; // same take; overrides survive
+    if (cached.videoAssetId === null) {
+      // Legacy row (pre-asset-keying): same take iff the durations agree.
+      const same =
+        cached.durationSeconds > 0 &&
+        asset.durationSeconds != null &&
+        Math.abs(cached.durationSeconds - asset.durationSeconds) < 2;
+      if (same) {
+        await deps.supabase
+          .from("lesson_transcript")
+          .update({ video_asset_id: asset.id })
+          .eq("id", cached.id);
+        return { ...cached, videoAssetId: asset.id };
+      }
+    }
+    // The lesson's current take changed → rebuild below + retire the old
+    // take's open candidates (spans on the old timeline).
+    const { data: retired } = await deps.supabase
+      .from("clip_moment_candidate")
+      .update({ status: "dismissed" })
+      .eq("lesson_id", lessonId)
+      .neq("status", "dismissed")
+      .select("id");
+    console.log(
+      JSON.stringify({
+        tag: "clip_transcript_rebuild",
+        lessonId,
+        fromAsset: cached.videoAssetId,
+        toAsset: asset.id,
+        retiredCandidates: (retired ?? []).length,
+      })
+    );
+  }
 
   // FR-1: format resolution — metadata short-circuits; the classifier
   // (frame inspector) runs ONLY when the block carries no recording.mode
@@ -311,6 +378,7 @@ export async function acquireLessonTranscript(
         words,
         text: asset.transcriptText ?? plainTextFromVtt(asset.transcriptVtt),
         providerRef: null,
+        videoAssetId: asset.id,
         recordingFormat: fmt.format,
         formatSource: fmt.source,
       });
@@ -327,6 +395,7 @@ export async function acquireLessonTranscript(
       words: result.words,
       text: result.text,
       providerRef: result.providerRef,
+      videoAssetId: asset.id,
       recordingFormat: fmt.format,
       formatSource: fmt.source,
     });

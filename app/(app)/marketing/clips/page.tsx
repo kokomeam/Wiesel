@@ -15,6 +15,7 @@ import { listAuthorCourses, selectCourseForAuthor } from "@/lib/marketing/persis
 import { clipRenderConfig } from "@/lib/marketing/clips/constants";
 import { costMinutesThisMonth, jobsCreatedToday, rowToRenderJob } from "@/lib/marketing/clips/render/jobs";
 import { rowToCandidate } from "@/lib/marketing/clips/repository";
+import { pickCurrentVideoRow } from "@/lib/marketing/clips/transcripts";
 import { ClipsView } from "@/components/marketing/clips/ClipsView";
 
 export const dynamic = "force-dynamic";
@@ -55,7 +56,7 @@ export default async function LessonClipsPage({
       supabase.from("lessons").select("id,title,module_id").eq("course_id", course.id).order("order"),
       supabase
         .from("video_assets")
-        .select("lesson_id,duration_seconds,metadata")
+        .select("lesson_id,duration_seconds,metadata,transcript_vtt,created_at")
         .eq("course_id", course.id)
         .eq("status", "ready"),
       supabase
@@ -88,11 +89,20 @@ export default async function LessonClipsPage({
   const codeByLinkId = new Map((linkRows ?? []).map((l) => [l.id, l.code]));
 
   // Lessons with a renderable (non-dual-track) ready video ≥ the span floor.
-  const videoByLesson = new Map<string, number>();
+  // The label shows the lesson's CURRENT take — the SAME pick the transcript
+  // and render paths make (newest ready captioned video), so the duration the
+  // creator sees is the video clips will actually be cut from.
+  const rowsByLesson = new Map<string, (typeof videosRes.data & object)[number][]>();
   for (const v of videosRes.data ?? []) {
-    if ((v.metadata as { role?: string } | null)?.role === "camera_dual_track") continue;
-    if (!v.lesson_id || !v.duration_seconds) continue;
-    videoByLesson.set(v.lesson_id, Math.max(videoByLesson.get(v.lesson_id) ?? 0, v.duration_seconds));
+    if (!v.lesson_id) continue;
+    const list = rowsByLesson.get(v.lesson_id) ?? [];
+    list.push(v);
+    rowsByLesson.set(v.lesson_id, list);
+  }
+  const videoByLesson = new Map<string, number>();
+  for (const [lessonId, rows] of rowsByLesson) {
+    const current = pickCurrentVideoRow(rows);
+    if (current?.duration_seconds) videoByLesson.set(lessonId, current.duration_seconds);
   }
   const lessons = (lessonsRes.data ?? [])
     .filter((l) => (videoByLesson.get(l.id) ?? 0) >= 20)

@@ -1550,6 +1550,7 @@ export type Database = {
           source: string
           text: string
           updated_at: string
+          video_asset_id: string | null
           words: Json
         }
         Insert: {
@@ -1566,6 +1567,7 @@ export type Database = {
           source: string
           text: string
           updated_at?: string
+          video_asset_id?: string | null
           words: Json
         }
         Update: {
@@ -1582,6 +1584,7 @@ export type Database = {
           source?: string
           text?: string
           updated_at?: string
+          video_asset_id?: string | null
           words?: Json
         }
         Relationships: [
@@ -1590,6 +1593,13 @@ export type Database = {
             columns: ["course_id"]
             isOneToOne: false
             referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lesson_transcript_video_asset_id_fkey"
+            columns: ["video_asset_id"]
+            isOneToOne: false
+            referencedRelation: "video_assets"
             referencedColumns: ["id"]
           },
           {

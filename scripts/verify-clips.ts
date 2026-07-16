@@ -112,6 +112,7 @@ import {
 import { runSelectionCore } from "@/lib/marketing/clips/selection";
 import {
   chunkTranscript,
+  pickCurrentVideoRow,
   renderTranscriptForPrompt,
   snapToSentenceBounds,
   transcriptSlice,
@@ -363,6 +364,40 @@ function transcriptChecks() {
   const slice = transcriptSlice(WORDS, 55_000, 95_000);
   check("span slice contains its content", slice.includes("expression") && slice.includes("planner"));
   check("span slice excludes outside content", !slice.includes("covering"));
+
+  console.log("# currentTake.spec (2026-07-16: newest captioned take wins — the re-record fix)");
+  const take = (
+    id: string,
+    over: Partial<{ created_at: string; transcript_vtt: string | null; metadata: unknown }> = {}
+  ) => ({
+    id,
+    created_at: "2026-07-01T00:00:00Z",
+    transcript_vtt: null as string | null,
+    metadata: {} as unknown,
+    ...over,
+  });
+  const oldTake = take("old", { created_at: "2026-07-08T00:00:00Z", transcript_vtt: "WEBVTT" });
+  const newTake = take("new", { created_at: "2026-07-15T00:00:00Z", transcript_vtt: "WEBVTT" });
+  const dualTake = take("dual", { created_at: "2026-07-16T00:00:00Z", transcript_vtt: "WEBVTT", metadata: { role: "camera_dual_track" } });
+  const uncaptioned = take("uncap", { created_at: "2026-07-16T00:00:00Z" });
+  check(
+    "newest CAPTIONED take wins (a re-record replaces the old take)",
+    pickCurrentVideoRow([oldTake, newTake])?.id === "new"
+  );
+  check(
+    "captioned beats newer-but-uncaptioned",
+    pickCurrentVideoRow([oldTake, uncaptioned])?.id === "old"
+  );
+  check(
+    "dual-track camera aux is never the lesson video (D-4)",
+    pickCurrentVideoRow([oldTake, dualTake])?.id === "old" &&
+      pickCurrentVideoRow([dualTake]) === null
+  );
+  check(
+    "no captions anywhere → newest raw take; empty → null",
+    pickCurrentVideoRow([take("a"), uncaptioned])?.id === "uncap" &&
+      pickCurrentVideoRow([]) === null
+  );
 
   console.log("# sentence snapping (the clips-v2 live-eval fix)");
   // A start 1.5s early drags in the previous sentence's tail — snaps forward.

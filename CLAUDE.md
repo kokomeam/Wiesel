@@ -1703,7 +1703,19 @@ compliant footers (8 locales, `language.ts`).
   `/marketing/clips` "window is not defined": `kitFullText` read
   `window.location.origin` and Next SSRs client components — origin now
   rides `useSyncExternalStore` (SSR renders the relative /l/ link).
-  verify:social 133 · verify:clips:render 115 (SSR check).
+  verify:social 133 · verify:clips:render 115 (SSR check). (8, 2026-07-16)
+  **a re-record was invisible**: the new take lands BESIDE the old one and
+  transcript/render/labels were all longest-first → pinned to the dead
+  take. Now **`pickCurrentVideoRow`** (transcripts.ts, pure) = THE shared
+  lesson-video pick (dual excluded → captioned preferred → NEWEST first)
+  used by acquisition + `findRenderSource` + the page labels;
+  `lesson_transcript.video_asset_id` (migration `20260716100000`, types
+  SPLICED) keys the cache to its asset — acquire REBUILDS on a changed take
+  + retires the old take's open candidates (spans live on the old
+  timeline); legacy null rows stamp in place on duration match (±2s) else
+  rebuild; `createClipRenderJob` refuses stale candidates
+  (`stale_candidates` — "run Find clip moments again"). currentTake.spec
+  (verify:clips 203) + currentTake.rebuild.spec (verify:clips:int 88).
 
 ## Where things live
 

@@ -84,6 +84,10 @@ export const LessonTranscriptSchema = z.object({
   words: z.array(TranscriptWordSchema),
   text: z.string(),
   providerRef: z.string().nullable(),
+  /** The video asset this transcript was built FROM (null = legacy row).
+   *  A lesson can hold several takes; the cache rebuilds when the lesson's
+   *  CURRENT take (newest ready captioned video) is a different asset. */
+  videoAssetId: z.uuid().nullable(),
   /** FR-1: the recording format FACT + where it came from. Creator override
    *  lands here (format_source='creator_override') via overrideTranscriptFormat. */
   recordingFormat: RecordingFormatSchema,
