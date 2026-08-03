@@ -136,7 +136,7 @@ export function Sidebar({
               <span className="block text-xs font-semibold text-stone-700 group-hover:text-learn-800">
                 Switch to learner home
               </span>
-              <span className="block text-meta text-stone-400">
+              <span className="block text-meta text-stone-500">
                 Your courses, progress, and reviews
               </span>
             </span>
