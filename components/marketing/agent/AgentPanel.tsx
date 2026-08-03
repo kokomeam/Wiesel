@@ -23,6 +23,7 @@ import {
   PUBLISH_CAPABILITY_BLURB,
 } from "@/components/marketing/publish/ChatPublishCards";
 import type { PublishCardPayload } from "@/components/marketing/publish/PublishApprovalCard";
+import { marketingToolLabel, marketingToolRunningCopy, toolStatusLabel } from "./toolCopy";
 
 type Item =
   | { kind: "user"; text: string }
@@ -33,60 +34,6 @@ type Item =
   | { kind: "question"; questionId: string; question: QuestionSpec }
   | { kind: "publishCards"; cards: PublishCardPayload[] }
   | { kind: "error"; text: string };
-
-// UI polish (2026-07-08): render-only humanized tool labels — stored item data,
-// event shapes, and the 'run' matching status are untouched.
-const TOOL_LABELS: Record<string, string> = {
-  generate_email_sequence: "Drafting the email sequence",
-  generate_landing_page: "Drafting the landing page",
-  generate_followup: "Drafting a follow-up email",
-  generate_email_variants: "Drafting email variants",
-  build_audience_list: "Building the audience list",
-  add_leads_to_list: "Adding contacts to the list",
-  remove_leads_from_list: "Removing contacts from the list",
-  import_leads: "Importing contacts",
-  create_campaign: "Creating the campaign",
-  launch_campaign: "Launching the campaign",
-  pause_campaign: "Pausing the campaign",
-  resume_campaign: "Resuming the campaign",
-  cancel_campaign: "Cancelling the campaign",
-  pause_sequence: "Pausing the sequence",
-  resume_sequence: "Resuming the sequence",
-  activate_sequence: "Activating the sequence",
-  send_broadcast: "Sending a broadcast",
-  send_test_email: "Sending a test email",
-  send_consent_confirmations: "Asking contacts to confirm consent",
-  publish_landing_page: "Publishing the landing page",
-  review_campaign_compliance: "Checking compliance",
-  analyze_course_for_marketing: "Analyzing your course",
-  get_analytics_summary: "Reading your analytics",
-  create_sender_identity: "Setting up the sender identity",
-};
-
-// UI polish (2026-07-08): snake_case → sentence-case fallback for unmapped tools.
-function marketingToolLabel(tool: string): string {
-  const mapped = TOOL_LABELS[tool];
-  if (mapped) return mapped;
-  const words = tool.replace(/_/g, " ").trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-// UI polish (2026-07-08): tool-aware in-progress copy (display only; the stored
-// summary/status strings are unchanged).
-function marketingToolRunningCopy(tool: string): string {
-  if (/^(get_|list_|query_|analyze_|review_)/.test(tool)) return "Looking at your current setup…";
-  if (/^generate_/.test(tool)) return "Writing a draft for you…";
-  return "Working on it…";
-}
-
-// UI polish (2026-07-08): accessible label for the status glyph.
-function toolStatusLabel(status: string): string {
-  if (status === "needs_clarification") return "Needs your input";
-  if (status === "pending_approval") return "Waiting for approval";
-  if (status === "error") return "Couldn't finish";
-  return "Done";
-}
-
 
 // The connected-publishing suggestion strings are imported from the
 // allowlisted publish module — this file carries no publish vocabulary of

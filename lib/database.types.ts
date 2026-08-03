@@ -629,6 +629,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
       comms_suppressions: {
         Row: {
           created_at: string
@@ -1705,17 +1706,17 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "lesson_transcript_video_asset_id_fkey"
-            columns: ["video_asset_id"]
-            isOneToOne: false
-            referencedRelation: "video_assets"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "lesson_transcript_lesson_id_fkey"
             columns: ["lesson_id"]
             isOneToOne: true
             referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lesson_transcript_video_asset_id_fkey"
+            columns: ["video_asset_id"]
+            isOneToOne: false
+            referencedRelation: "video_assets"
             referencedColumns: ["id"]
           },
         ]
@@ -3011,9 +3012,9 @@ export type Database = {
           batch_id: string | null
           batch_order: number | null
           body: string
+          campaign_id: string | null
           clean_video_path: string | null
           clip_job_id: string | null
-          campaign_id: string | null
           course_id: string | null
           created_at: string
           creator_id: string
@@ -3044,7 +3045,6 @@ export type Database = {
           updated_at: string
           version: number
           video_path: string | null
-          regenerated_from_post_id: string | null
         }
         Insert: {
           ai_metadata?: Json
@@ -3052,9 +3052,9 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body: string
+          campaign_id?: string | null
           clean_video_path?: string | null
           clip_job_id?: string | null
-          campaign_id?: string | null
           course_id?: string | null
           created_at?: string
           creator_id: string
@@ -3085,7 +3085,6 @@ export type Database = {
           updated_at?: string
           version?: number
           video_path?: string | null
-          regenerated_from_post_id?: string | null
         }
         Update: {
           ai_metadata?: Json
@@ -3093,9 +3092,9 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body?: string
+          campaign_id?: string | null
           clean_video_path?: string | null
           clip_job_id?: string | null
-          campaign_id?: string | null
           course_id?: string | null
           created_at?: string
           creator_id?: string
@@ -3126,16 +3125,8 @@ export type Database = {
           updated_at?: string
           version?: number
           video_path?: string | null
-          regenerated_from_post_id?: string | null
         }
         Relationships: [
-          {
-            foreignKeyName: "social_post_regenerated_from_post_id_fkey"
-            columns: ["regenerated_from_post_id"]
-            isOneToOne: false
-            referencedRelation: "social_post"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "social_post_batch_id_fkey"
             columns: ["batch_id"]
@@ -3148,6 +3139,13 @@ export type Database = {
             columns: ["campaign_id"]
             isOneToOne: false
             referencedRelation: "marketing_campaign"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_clip_job_id_fkey"
+            columns: ["clip_job_id"]
+            isOneToOne: false
+            referencedRelation: "clip_render_job"
             referencedColumns: ["id"]
           },
           {
@@ -3169,6 +3167,13 @@ export type Database = {
             columns: ["module_id"]
             isOneToOne: false
             referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_post_regenerated_from_post_id_fkey"
+            columns: ["regenerated_from_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
             referencedColumns: ["id"]
           },
         ]
@@ -3470,7 +3475,7 @@ export type Database = {
           {
             foreignKeyName: "social_publish_manifest_approval_id_fkey"
             columns: ["approval_id"]
-            isOneToOne: true
+            isOneToOne: false
             referencedRelation: "social_publish_approval"
             referencedColumns: ["id"]
           },
@@ -3748,19 +3753,23 @@ export type Database = {
         Args: { p_entry: Json; p_message_id: string; p_status: string }
         Returns: Json
       }
+      course_analytics_bundle: {
+        Args: { p_course_id: string; p_reviews_from?: number; p_tab: string }
+        Returns: Json
+      }
       course_analytics_overview: { Args: { cid: string }; Returns: Json }
       course_landing_extras: {
         Args: { p_course_id: string }
         Returns: {
-          course_avg_rating: number | null
+          course_avg_rating: number
           course_review_count: number
           course_student_count: number
-          cover_image_url: string | null
-          creator_avatar_url: string | null
-          creator_avg_rating: number | null
-          creator_bio: string | null
+          cover_image_url: string
+          creator_avatar_url: string
+          creator_avg_rating: number
+          creator_bio: string
           creator_course_count: number
-          creator_headline: string | null
+          creator_headline: string
           creator_id: string
           creator_name: string
           creator_review_count: number
@@ -3782,17 +3791,32 @@ export type Database = {
           user_id: string
         }[]
       }
+      creator_dashboard: { Args: never; Returns: Json }
       dismiss_review_prompt: { Args: { p_course_id: string }; Returns: boolean }
       ingest_learning_events: { Args: { p_events: Json }; Returns: number }
+      learn_lesson_state: {
+        Args: {
+          p_lesson_id: string
+          p_publication_id: string
+          p_video_asset_ids?: string[]
+        }
+        Returns: Json
+      }
+      learner_detail_bundle: {
+        Args: { p_before?: string; p_course_id: string; p_user_id: string }
+        Returns: Json
+      }
+      marketing_account_counts: { Args: never; Returns: Json }
+      marketing_hub_bundle: { Args: { p_course_id: string }; Returns: Json }
       marketplace_listings: {
         Args: never
         Returns: {
           audience: string
-          avg_rating: number | null
+          avg_rating: number
           course_id: string
-          cover_image_url: string | null
-          creator_avatar_url: string | null
-          creator_headline: string | null
+          cover_image_url: string
+          creator_avatar_url: string
+          creator_headline: string
           creator_name: string
           description: string
           lesson_count: number
@@ -3808,15 +3832,17 @@ export type Database = {
       }
       my_activity_days: {
         Args: { p_days?: number }
-        Returns: { activity_date: string }[]
+        Returns: {
+          activity_date: string
+        }[]
       }
       my_learning: {
         Args: never
         Returns: {
-          avg_rating: number | null
+          avg_rating: number
           completed_lessons: number
           course_id: string
-          cover_image_url: string | null
+          cover_image_url: string
           description: string
           enrolled_at: string
           enrollment_id: string
@@ -3851,6 +3877,7 @@ export type Database = {
         Args: { p_batch: Json; p_posts: Json }
         Returns: Json
       }
+      studio_course_bundle: { Args: { p_course_id: string }; Returns: Json }
       submit_course_review: {
         Args: { p_course_id: string; p_rating: number; p_review_text: string }
         Returns: Json

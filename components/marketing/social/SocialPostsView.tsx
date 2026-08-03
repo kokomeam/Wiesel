@@ -81,7 +81,7 @@ export function SocialPostsView(props: {
       const page = await socialApi.list({ withBatches: "true", limit: "100", courseId: props.course.id });
       setPosts(page.posts);
       // Prune full-row hydrations the fresh list has outdated (or dropped) —
-      // the selection effect re-hydrates the open editor's post if needed.
+      // the selection effect re-hydrates the open editor post if needed.
       setFullPosts((prev) => {
         const next: Record<string, SocialPost> = {};
         for (const p of page.posts) {

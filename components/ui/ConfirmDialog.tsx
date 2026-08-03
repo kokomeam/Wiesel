@@ -98,7 +98,7 @@ export function ConfirmDialog({
         aria-hidden
         tabIndex={-1}
         onClick={() => !busy && onCancel()}
-        className="absolute inset-0 cursor-default bg-stone-900/40 backdrop-blur-[2px]"
+        className="absolute inset-0 cursor-default bg-stone-900/40 backdrop-blur-xs"
       />
       <div
         role="alertdialog"

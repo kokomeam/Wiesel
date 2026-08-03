@@ -51,8 +51,8 @@ const STATUS_CLS: Record<SocialPostStatus, string> = {
   unpublished_local: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
-// M-C labels stay inside this surface's language rules (no publish/schedule
-// vocabulary here — that lives on the card surface): posted_api reads as
+// M-C labels stay inside the surface language fence (the connected
+// vocabulary lives on the card surface only): posted_api reads as
 // "Posted via account", distinct from the manual copy-out.
 export const STATUS_LABELS: Record<SocialPostStatus, string> = {
   draft: "Draft",

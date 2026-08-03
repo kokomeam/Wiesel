@@ -3,8 +3,7 @@ import { cn } from "@/lib/cn";
 type CardVariant = "default" | "elevated" | "interactive" | "tinted";
 type CardTone = "brand" | "learn";
 
-const ELEVATED_SHADOW =
-  "shadow-[0_1px_2px_rgba(68,48,28,0.05),0_8px_24px_-12px_rgba(68,48,28,0.12)]";
+const ELEVATED_SHADOW = "shadow-lifted";
 
 export function Card({
   variant = "default",
@@ -26,7 +25,7 @@ export function Card({
           cn(
             "shadow-card transition-all",
             "hover:-translate-y-0.5 hover:border-stone-300",
-            "hover:shadow-[0_1px_2px_rgba(68,48,28,0.05),0_8px_24px_-12px_rgba(68,48,28,0.12)]",
+            "hover:shadow-lifted",
             tone === "brand"
               ? "hover:ring-1 hover:ring-brand-200/60"
               : "hover:ring-1 hover:ring-learn-200/60"

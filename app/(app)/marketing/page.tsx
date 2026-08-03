@@ -92,17 +92,22 @@ export default async function MarketingPage({
     pending.filter((a) => a.targetRef?.entity === "landing_page").map((a) => a.targetRef!.id)
   );
 
+  const pendingVms: PendingActionPayload[] = pending.map((a) => ({
+    actionId: a.id,
+    toolName: a.toolName,
+    summary: a.summary ?? a.actionKind,
+    preview: null,
+    editableParams: getMarketingTool(a.toolName)?.editableParams ?? null,
+    requestedBy: a.requestedBy,
+  }));
+
   // Live, truthful previews for the one-card inbox (never persisted — counts
-  // must reflect the CURRENT audience, not the moment of the request).
-  const pendingVms: PendingActionPayload[] = await Promise.all(
-    pending.map(async (a) => ({
-      actionId: a.id,
-      toolName: a.toolName,
-      summary: a.summary ?? a.actionKind,
-      preview: await previewMarketingAction(a, { supabase, ownerId: user!.id, services }),
-      editableParams: getMarketingTool(a.toolName)?.editableParams ?? null,
-      requestedBy: a.requestedBy,
-    }))
+  // must reflect the CURRENT audience, not the moment of the request). Built
+  // WITHOUT awaiting (PERF-1 C1): the promise streams into the rendered cards;
+  // deny / approve never wait on it (previewMarketingAction never rejects — a
+  // failed preview resolves null and the card degrades to its stored summary).
+  const previews: Promise<(Record<string, unknown> | null)[]> = Promise.all(
+    pending.map((a) => previewMarketingAction(a, { supabase, ownerId: user!.id, services }))
   );
 
   const questionVms: QuestionVM[] = questions.map((q) => ({
@@ -188,6 +193,7 @@ export default async function MarketingPage({
       campaign={campaignVm}
       pages={pageVms}
       pending={pendingVms}
+      previews={previews}
       questions={questionVms}
       activity={activityVms}
       autonomy={autonomy}

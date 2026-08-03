@@ -18,8 +18,8 @@ export function PageHeader({
           <p
             className={
               tone === "learn"
-                ? "mb-2 font-mono text-[11px] uppercase tracking-[0.2em] text-learn-700"
-                : "mb-2 font-mono text-[11px] uppercase tracking-[0.2em] text-brand-700"
+                ? "mb-2 font-mono text-meta uppercase tracking-eyebrow text-learn-700"
+                : "mb-2 font-mono text-meta uppercase tracking-eyebrow text-brand-700"
             }
           >
             {eyebrow}

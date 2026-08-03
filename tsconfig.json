@@ -54,6 +54,10 @@
     "scripts/e2e-inngest-live.ts",
     "scripts/e2e-inngest-cancel.ts",
     "scripts/e2e-agentic-publish.ts",
-    "scripts/screenshot-publish-queue.ts"
+    "scripts/screenshot-publish-queue.ts",
+    "scripts/verify-perf-browser.ts",
+    "scripts/verify-portal-browser.ts",
+    "scripts/verify-bundle-budgets.ts",
+    "scripts/verify-lighthouse-budgets.ts"
   ]
 }

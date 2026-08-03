@@ -20,7 +20,7 @@
  */
 
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -174,6 +174,8 @@ async function renderSpec() {
     check(`duration ≈ 8s (probed ${seconds.toFixed(2)}s)`, Math.abs(seconds - 8) < 0.5);
     check("audio track present (the span's own sound)", /Stream #.*Audio/.test(probe));
 
+    // artifacts/ is gitignored media output — a fresh clone doesn't have it.
+    mkdirSync(join(process.cwd(), "artifacts"), { recursive: true });
     writeFileSync(join(process.cwd(), "artifacts", "m-f-slide-short-fixture.mp4"), readFileSync(outPath));
     console.log("  … artifact → artifacts/m-f-slide-short-fixture.mp4");
   } finally {
