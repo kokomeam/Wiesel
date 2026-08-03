@@ -1644,6 +1644,47 @@ export type Database = {
           },
         ]
       }
+      learner_mastery: {
+        Row: {
+          computed_at: string
+          course_id: string
+          decayed_p: number
+          evidence_count: number
+          last_positive_at: string | null
+          node_id: string
+          p_learned: number
+          user_id: string
+        }
+        Insert: {
+          computed_at?: string
+          course_id: string
+          decayed_p: number
+          evidence_count?: number
+          last_positive_at?: string | null
+          node_id: string
+          p_learned: number
+          user_id: string
+        }
+        Update: {
+          computed_at?: string
+          course_id?: string
+          decayed_p?: number
+          evidence_count?: number
+          last_positive_at?: string | null
+          node_id?: string
+          p_learned?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "learner_mastery_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       learner_messages: {
         Row: {
           body: Json
@@ -1716,6 +1757,7 @@ export type Database = {
       learning_events: {
         Row: {
           attempt_id: string | null
+          attempt_ordinal: number | null
           block_id: string | null
           cached_input_tokens: number | null
           client_event_id: string
@@ -1725,7 +1767,9 @@ export type Database = {
           device_class: string | null
           dwell_ms: number | null
           event_type: string
+          evidence_correct: boolean | null
           feedback_comment: string | null
+          hint_rung: number | null
           id: string
           input_tokens: number | null
           job_type: string | null
@@ -1738,7 +1782,9 @@ export type Database = {
           metric_value: number | null
           model: string | null
           navigation_type: string | null
+          node_id: string | null
           output_tokens: number | null
+          practice_item_ref: string | null
           publication_id: string | null
           quartile: number | null
           reaction: string | null
@@ -1750,6 +1796,7 @@ export type Database = {
         }
         Insert: {
           attempt_id?: string | null
+          attempt_ordinal?: number | null
           block_id?: string | null
           cached_input_tokens?: number | null
           client_event_id: string
@@ -1759,7 +1806,9 @@ export type Database = {
           device_class?: string | null
           dwell_ms?: number | null
           event_type: string
+          evidence_correct?: boolean | null
           feedback_comment?: string | null
+          hint_rung?: number | null
           id?: string
           input_tokens?: number | null
           job_type?: string | null
@@ -1772,7 +1821,9 @@ export type Database = {
           metric_value?: number | null
           model?: string | null
           navigation_type?: string | null
+          node_id?: string | null
           output_tokens?: number | null
+          practice_item_ref?: string | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
@@ -1784,6 +1835,7 @@ export type Database = {
         }
         Update: {
           attempt_id?: string | null
+          attempt_ordinal?: number | null
           block_id?: string | null
           cached_input_tokens?: number | null
           client_event_id?: string
@@ -1793,7 +1845,9 @@ export type Database = {
           device_class?: string | null
           dwell_ms?: number | null
           event_type?: string
+          evidence_correct?: boolean | null
           feedback_comment?: string | null
+          hint_rung?: number | null
           id?: string
           input_tokens?: number | null
           job_type?: string | null
@@ -1806,7 +1860,9 @@ export type Database = {
           metric_value?: number | null
           model?: string | null
           navigation_type?: string | null
+          node_id?: string | null
           output_tokens?: number | null
+          practice_item_ref?: string | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
@@ -2296,6 +2352,88 @@ export type Database = {
           },
         ]
       }
+      mastery_course_aggregate: {
+        Row: {
+          avg_decayed_p: number | null
+          below_threshold_count: number
+          computed_at: string
+          course_id: string
+          learner_count: number
+          node_id: string
+          p25: number | null
+          p50: number | null
+          p75: number | null
+        }
+        Insert: {
+          avg_decayed_p?: number | null
+          below_threshold_count?: number
+          computed_at?: string
+          course_id: string
+          learner_count: number
+          node_id: string
+          p25?: number | null
+          p50?: number | null
+          p75?: number | null
+        }
+        Update: {
+          avg_decayed_p?: number | null
+          below_threshold_count?: number
+          computed_at?: string
+          course_id?: string
+          learner_count?: number
+          node_id?: string
+          p25?: number | null
+          p50?: number | null
+          p75?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mastery_course_aggregate_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mastery_review_queue: {
+        Row: {
+          computed_at: string
+          course_id: string
+          node_id: string
+          rank: number
+          reason: Json
+          score: number
+          user_id: string
+        }
+        Insert: {
+          computed_at?: string
+          course_id: string
+          node_id: string
+          rank: number
+          reason?: Json
+          score: number
+          user_id: string
+        }
+        Update: {
+          computed_at?: string
+          course_id?: string
+          node_id?: string
+          rank?: number
+          reason?: Json
+          score?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mastery_review_queue_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           content: Json
@@ -2542,6 +2680,53 @@ export type Database = {
             columns: ["publication_id"]
             isOneToOne: false
             referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      quiz_attempt_detail: {
+        Row: {
+          attempt_id: string
+          block_id: string
+          correct: boolean
+          course_id: string
+          created_at: string
+          id: string
+          publication_id: string
+          question_id: string
+          response_summary: Json
+          user_id: string
+        }
+        Insert: {
+          attempt_id: string
+          block_id: string
+          correct: boolean
+          course_id: string
+          created_at?: string
+          id?: string
+          publication_id: string
+          question_id: string
+          response_summary?: Json
+          user_id: string
+        }
+        Update: {
+          attempt_id?: string
+          block_id?: string
+          correct?: boolean
+          course_id?: string
+          created_at?: string
+          id?: string
+          publication_id?: string
+          question_id?: string
+          response_summary?: Json
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "quiz_attempt_detail_attempt_id_fkey"
+            columns: ["attempt_id"]
+            isOneToOne: false
+            referencedRelation: "quiz_attempts"
             referencedColumns: ["id"]
           },
         ]
@@ -4102,6 +4287,19 @@ export type Database = {
         Args: { p_entry: Json; p_message_id: string; p_status: string }
         Returns: Json
       }
+      concept_mastery_aggregate: {
+        Args: { p_course_id: string }
+        Returns: {
+          avg_decayed_p: number
+          below_threshold_count: number
+          learner_count: number
+          node_id: string
+          p25: number
+          p50: number
+          p75: number
+          suppressed: boolean
+        }[]
+      }
       course_analytics_bundle: {
         Args: { p_course_id: string; p_reviews_from?: number; p_tab: string }
         Returns: Json
@@ -4207,6 +4405,28 @@ export type Database = {
           version: number
         }[]
       }
+      my_quiz_detail: {
+        Args: { p_course_id: string }
+        Returns: {
+          attempt_id: string
+          block_id: string
+          correct: boolean
+          created_at: string
+          question_id: string
+          response_summary: Json
+        }[]
+      }
+      my_review_queue: {
+        Args: { p_course_id: string }
+        Returns: {
+          computed_at: string
+          node_id: string
+          rank: number
+          reason: Json
+          score: number
+          title: string
+        }[]
+      }
       my_slide_feedback: { Args: { p_course_id: string }; Returns: Json }
       publish_course: {
         Args: {
@@ -4218,6 +4438,10 @@ export type Database = {
           p_snapshot: Json
           p_visibility?: string
         }
+        Returns: Json
+      }
+      record_quiz_attempt: {
+        Args: { p_attempt: Json; p_detail: Json; p_responses: Json }
         Returns: Json
       }
       refresh_course_analytics: { Args: { cid: string }; Returns: undefined }

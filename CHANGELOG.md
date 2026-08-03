@@ -1,5 +1,60 @@
 # Changelog — Course Studio editor upgrade
 
+## TUTOR-1 Wave 2 — learner mastery model (BKT · evidence contract · strict regime), 2026-08-03
+
+Deterministic math and SQL only — ZERO model calls (grep-guarded + proven by
+the cost-telemetry query in the checkpoint). Docs: `docs/tutor/mastery.md`;
+report: `TUTOR-1-wave2-checkpoint.md`.
+
+- **Evidence contract (migration `20260803110000`):** five new event members
+  on the ONE stream — practice_answer / hint_request / self_report /
+  tutor_inference SERVER-ONLY (the ingest RPC rejects them from the client
+  batch; tutor_inference's {node_id, direction, strength, turn_ref} metadata
+  is the FROZEN Wave-3 side-channel), content_engagement the one client
+  member (rewatch/scrub_back/completed — a browser can't know node ids).
+  Five typed CHECKed columns with bidirectional per-member isolation;
+  dwell_over_median is NOT an event (derived in the refold vs the cohort
+  rollup).
+- **Quiz attempt detail (migration `20260803110100`):** per-question
+  correctness + selections-only response_summary under STRICT-regime RLS
+  (zero policies; learner-own reads via my_quiz_detail; deliberately NO
+  author policy). The grading write is now genuinely ATOMIC — the
+  record_quiz_attempt service-role RPC folds attempt + responses + detail
+  into one transaction (attempt_number max+1 in SQL with bounded retry +
+  replay adoption), replacing the old sequential inserts. verify:learn:int
+  (61) green on the rewired path. No backfill is possible — detail accrues
+  forward; historical attempts fold as weaker block-level evidence (the
+  cold-start story).
+- **BKT mastery engine (`lib/tutor/mastery/`):** 4-parameter BKT with
+  weighted observations (hand-computed goldens to 4 decimals); the weights
+  table with retry-contamination ordinals 1.0/0.5/0.15 (A1.2), hint rungs,
+  capped tutor-inference; exponential decay toward the prior with
+  volume-scaled half-life; the deterministic refold — byte-identical replay
+  (R-22), LINEAGE-AWARE (split parents redistribute to children at the
+  recorded 0.75 factor, merges map to survivors, chains resolve, retired ids
+  never error — AC-T1.7b closed). learner_mastery under the strict regime
+  (one own-rows select policy; service-role writer).
+- **Graph-aware queries + materialization:** weakest_nodes / root_cause
+  (deepest below-threshold ancestor) / review_queue (decay-gap × downstream
+  leverage) as pure golden-mirrored TS, materialized nightly
+  (tutor-mastery-nightly, 04:00) into result tables; my_review_queue
+  (learner-own, titled) + concept_mastery_aggregate (author-gated, cohort
+  floor 5 INSIDE the SQL — below floor: suppressed with every value AND the
+  count null; TS mirror drift-guarded). On-demand
+  tutor/mastery.refold.requested handled now, emitted by Wave 3.
+- **Student home:** "Worth a review" consumes the learner's mastery queue
+  when rows exist (concept titles + below-mastery reasons) and falls back to
+  the legacy heuristic on cold start; server-side data swap, zero bundle
+  impact; verify:portal untouched-green.
+- **Fixture cohort:** six scripted learners (strong / upstream-gap / decayed
+  / retry-heavy / two average) on a deterministic 10-node graph, crossing
+  the cohort floor, goldens documented in the seeder.
+- **Tests:** verify:tutor now chains EIGHT pure suites — 493 checks
+  (48+36+70+83+63+70+77+46); verify:tutor:int adds evidence (int) +
+  mastery-cohort (47) live; verify-mastery-home-browser drives the real UI.
+  Refold perf on the cohort: 6 learners / 26 evidence items / 16.0s
+  (network-bound per-learner round-trips; linear in learners).
+
 ## TUTOR-1 Wave 1 — concept graph subsystem (extraction · review rail · reconciliation), 2026-08-03
 
 The first wave of the Learner Tutor Agent: the course's knowledge model, built

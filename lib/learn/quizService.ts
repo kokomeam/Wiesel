@@ -23,7 +23,7 @@ import {
   type PublicationSnapshot,
 } from "@/lib/course/publish/schemas";
 import { LearnError } from "./errors";
-import { gradeQuiz } from "./grading";
+import { buildResponseSummary, gradeQuiz } from "./grading";
 import { recomputeLessonProgress } from "./progressService";
 import type { QuizGradeResult, QuizSubmissionRequest } from "./schemas";
 
@@ -109,63 +109,57 @@ export async function submitQuizAttempt(
   const now = new Date();
   const startedAt = clampStartedAt(request.startedAt, now);
 
-  let attemptId: string | null = null;
-  let attemptNumber = 0;
-  for (let tries = 0; tries < 2 && attemptId === null; tries += 1) {
-    const prev = await admin
-      .from("quiz_attempts")
-      .select("attempt_number")
-      .eq("user_id", userId)
-      .eq("block_id", request.blockId)
-      .order("attempt_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (prev.error) throw prev.error;
-    attemptNumber = (prev.data?.attempt_number ?? 0) + 1;
-    const inserted = await admin
-      .from("quiz_attempts")
-      .insert({
-        publication_id: publication.id,
-        version: publication.version,
-        course_id: courseId,
-        block_id: request.blockId,
-        user_id: userId,
-        attempt_number: attemptNumber,
-        score: grade.score,
-        max_score: grade.maxScore,
-        started_at: startedAt,
-        submitted_at: now.toISOString(),
-      })
-      .select("id")
-      .single();
-    if (inserted.error) {
-      // 23505 = unique violation (attempt-number race) → re-read and retry once.
-      if (inserted.error.code === "23505") continue;
-      throw inserted.error;
-    }
-    attemptId = inserted.data.id;
-  }
-  if (attemptId === null) {
-    throw new LearnError("conflict", "Could not record the attempt — please retry.");
-  }
-
-  // Only ANSWERED questions get response rows (the table records responses;
-  // an unanswered question is the absence of one — it still counts against
-  // the attempt's score above).
+  // Only ANSWERED questions get response + detail rows (an unanswered question
+  // is the absence of a row — it still counts against the attempt's score
+  // above). response_summary carries the learner's SELECTIONS only — never any
+  // answer-key material.
   const responsesByQuestion = new Map(request.responses.map((r) => [r.questionId, r]));
-  const responseRows = grade.perQuestion
-    .filter((q) => q.answered && responsesByQuestion.has(q.questionId))
-    .map((q) => ({
-      attempt_id: attemptId as string,
+  const answered = grade.perQuestion.filter(
+    (q) => q.answered && responsesByQuestion.has(q.questionId)
+  );
+  const responsePayload = answered.map((q) => {
+    const response = responsesByQuestion.get(q.questionId)!;
+    return {
       question_id: q.questionId,
-      response: responsesByQuestion.get(q.questionId) as unknown as Json,
+      response: response as unknown as Json,
       correct: q.correct,
       time_ms: request.timeMsByQuestion?.[q.questionId] ?? null,
-    }));
-  if (responseRows.length > 0) {
-    const responses = await admin.from("question_responses").insert(responseRows);
-    if (responses.error) throw responses.error;
+    };
+  });
+  const detailPayload = answered.map((q) => {
+    const response = responsesByQuestion.get(q.questionId)!;
+    return {
+      question_id: q.questionId,
+      correct: q.correct,
+      response_summary: buildResponseSummary(response),
+    };
+  });
+
+  // ONE transaction: attempt (attempt_number computed in SQL, per (user, block)
+  // across all versions, with a bounded retry) + response rows + strict-regime
+  // detail rows. Idempotent on replay of the same attempt id.
+  const recorded = await admin.rpc("record_quiz_attempt", {
+    p_attempt: {
+      publication_id: publication.id,
+      version: publication.version,
+      course_id: courseId,
+      block_id: request.blockId,
+      user_id: userId,
+      score: grade.score,
+      max_score: grade.maxScore,
+      started_at: startedAt,
+      submitted_at: now.toISOString(),
+    } as unknown as Json,
+    p_responses: responsePayload as unknown as Json,
+    p_detail: detailPayload as unknown as Json,
+  });
+  if (recorded.error) throw recorded.error;
+  const recordedResult = recorded.data as { attempt_id: string; attempt_number: number } | null;
+  if (!recordedResult) {
+    throw new LearnError("conflict", "Could not record the attempt — please retry.");
   }
+  const attemptId = recordedResult.attempt_id;
+  const attemptNumber = recordedResult.attempt_number;
 
   // Server-emitted analytics event (hybrid model): fires the moment the
   // attempt row exists, keyed by the attempt id — a retry can't double-count

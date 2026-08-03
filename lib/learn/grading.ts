@@ -18,6 +18,33 @@
 import type { AnswerKeyEntry, QuizBlockAnswerKeys } from "@/lib/course/publish/schemas";
 import type { QuestionGrade, QuizQuestionResponse } from "./schemas";
 
+/**
+ * Build the strict-regime `quiz_attempt_detail.response_summary` for one graded
+ * response — SELECTED OPTION IDS ONLY (or the trimmed submitted text for short
+ * answer). This NEVER contains answer-key material (expected/accepted answers,
+ * correct choice ids): it is derived exclusively from the learner's OWN
+ * submission, so the mastery refold can read what was picked without ever
+ * touching the key. Shapes:
+ *   multiple_choice → { selected: "<choiceId>" }
+ *   multi_select    → { selected: ["<choiceId>", …] }
+ *   true_false      → { selected: <boolean> }
+ *   short_answer    → { text: "<trimmed submitted text>" }
+ */
+export function buildResponseSummary(
+  response: QuizQuestionResponse
+): Record<string, unknown> {
+  switch (response.kind) {
+    case "multiple_choice":
+      return { selected: response.choiceId };
+    case "multi_select":
+      return { selected: response.choiceIds };
+    case "true_false":
+      return { selected: response.answer };
+    case "short_answer":
+      return { text: response.text.trim() };
+  }
+}
+
 export function normalizeShortAnswer(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }

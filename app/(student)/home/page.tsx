@@ -29,9 +29,14 @@ import type { PublicationSnapshot } from "@/lib/course/publish/schemas";
 import {
   computeStreak,
   latestAttemptsPerBlock,
+  masteryReviewItems,
+  pickReviewSource,
   quizAccuracyPct,
   reviewQueue,
   summarizeLearning,
+  type HomeReviewItem,
+  type MasteryLevelRow,
+  type MasteryReviewRow,
 } from "@/lib/learn/studentHome";
 import { getLivePublicationByCourse, parsePublicationSnapshot } from "@/lib/learn/resolve";
 import {
@@ -258,7 +263,7 @@ export default async function StudentHomePage() {
     [...snapshotByCourse].map(([courseId, snapshot]) => [courseId, indexQuizzes(snapshot)])
   );
 
-  const reviewItems = reviewCandidates.flatMap((item) => {
+  const heuristicItems: HomeReviewItem[] = reviewCandidates.flatMap((item) => {
     const info = quizIndexByCourse.get(item.course_id)?.get(item.block_id);
     const row = learningByCourse.get(item.course_id);
     // Skip anything unresolvable (e.g. the quiz left the current version).
@@ -274,7 +279,44 @@ export default async function StudentHomePage() {
       },
     ];
   });
-  const shownReviewItems = reviewItems.slice(0, 4);
+
+  // ── Graph-aware mastery review queue (TUTOR-1 W2) ──
+  // When the learner has any materialized mastery review rows, they SUPERSEDE the
+  // quiz heuristic (the tutor now knows which concepts are fading + high-leverage).
+  // Zero rows → the heuristic stays (cold start / day one). Best-effort: any RPC
+  // error degrades silently to the heuristic (the queue tables may be unmaterialized).
+  const liveCourseRows = learning.filter((row) => row.is_live ?? true);
+  const masteryReviewCourseIds = liveCourseRows.map((row) => row.course_id).slice(0, 3);
+  const masteryItems: HomeReviewItem[] = (
+    await Promise.all(
+      masteryReviewCourseIds.map(async (courseId): Promise<HomeReviewItem[]> => {
+        const row = learningByCourse.get(courseId);
+        if (!row) return [];
+        try {
+          const [queueRes, levelsRes] = await Promise.all([
+            supabase.rpc("my_review_queue", { p_course_id: courseId }),
+            supabase
+              .from("learner_mastery")
+              .select("node_id, decayed_p")
+              .eq("user_id", user.id)
+              .eq("course_id", courseId),
+          ]);
+          if (queueRes.error || !queueRes.data) return [];
+          // The definer RPC joins concept_nodes.title; `title` may be absent on a
+          // DB where the title column hasn't been re-applied — the mapper tolerates it.
+          const queueRows = queueRes.data as unknown as MasteryReviewRow[];
+          const levels = (levelsRes.data ?? []) as MasteryLevelRow[];
+          return masteryReviewItems(queueRows, row.title, `/learn/${row.slug}`, levels);
+        } catch (err) {
+          console.error("[home] mastery review queue failed", err);
+          return [];
+        }
+      })
+    )
+  ).flat();
+
+  const reviewSource = pickReviewSource(masteryItems, heuristicItems);
+  const shownReviewItems = reviewSource.rows.slice(0, 4);
   const homeworkPending = homework.filter((row) => row.status === "submitted").length;
 
   /* ── Stats ── */

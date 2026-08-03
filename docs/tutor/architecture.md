@@ -109,3 +109,35 @@ never a silent half-run.
 - Accept/Reject extended, never weakened: the reject partition computes BOTH
   domain plans before any write; one bad item aborts the whole reject.
 - No mocked numbers in any UI (no tutor UI ships in Wave 1).
+
+## Wave 2 — the mastery layer (appended 2026-08-03)
+
+**Evidence flow:** graded quiz answers land per-question in
+`quiz_attempt_detail` through the `record_quiz_attempt` single-transaction
+RPC (the grading write is now atomic — attempt + responses + detail);
+tutor-emitted evidence (`practice_answer`, `hint_request`, `self_report`,
+`tutor_inference`) joins `learning_events` as SERVER-ONLY members (the ingest
+RPC rejects them from the client batch); `content_engagement` is the one
+client member (rewatch/scrub_back/completed — a browser cannot know node
+ids). The `tutor_inference` metadata shape ({node_id, direction, strength,
+turn_ref}) is FROZEN now as Wave 3's side-channel contract.
+
+**Refold + scheduling:** `refoldLearnerCourse` (deterministic, lineage-aware
+— split parents redistribute at the recorded 0.75 factor) → `writeMastery`
+(full-replace) → `materializeMasteryResults` (review queues + cohort
+aggregates). Nightly `tutor-mastery-nightly` (04:00) + on-demand
+`tutor/mastery.refold.requested` (handled now, emitted by Wave 3). Zero model
+calls anywhere in the layer — grep-guarded.
+
+**The strict-regime boundary (drawn in Wave 2):** everything mastery-shaped
+is invisible to creators except `concept_mastery_aggregate` (cohort floor 5
+inside the SQL; suppressed rows disclose nothing, not even the count).
+Learners read their own mastery/queue/detail through own-row policies and
+definer RPCs only. The legacy analytics regime (roster, raw timelines) is
+untouched — the two regimes coexist by table, exactly per the two-regime
+resolution.
+
+**Sequencing honesty:** Wave 2 defines every evidence member and handles
+every schedule, but wires client emission for NONE of them — the engine is
+proven on day-one historical data (block-level attempts at 0.30 weight +
+dwell), which IS the cold-start story, tested as such.

@@ -57,6 +57,7 @@
     "scripts/screenshot-publish-queue.ts",
     "scripts/verify-perf-browser.ts",
     "scripts/verify-portal-browser.ts",
+    "scripts/verify-mastery-home-browser.ts",
     "scripts/verify-bundle-budgets.ts",
     "scripts/verify-lighthouse-budgets.ts"
   ]

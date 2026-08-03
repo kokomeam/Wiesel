@@ -76,8 +76,8 @@
     "verify:ui": "tsx scripts/verify-ui.ts",
     "verify:ui:browser": "tsx scripts/verify-ui-browser.ts",
     "verify:publish-path:int": "tsx scripts/verify-publish-path-int.ts",
-    "verify:tutor": "tsx scripts/verify-tutor-models.ts && tsx scripts/verify-tutor-telemetry.ts && tsx scripts/verify-tutor-graph.ts && tsx scripts/verify-tutor-extraction.ts && tsx scripts/verify-tutor-reconcile.ts",
-    "verify:tutor:int": "tsx scripts/verify-tutor-graph-int.ts && tsx scripts/verify-tutor-extraction-int.ts && tsx scripts/verify-tutor-reconcile-int.ts",
+    "verify:tutor": "tsx scripts/verify-tutor-models.ts && tsx scripts/verify-tutor-telemetry.ts && tsx scripts/verify-tutor-graph.ts && tsx scripts/verify-tutor-extraction.ts && tsx scripts/verify-tutor-reconcile.ts && tsx scripts/verify-tutor-evidence.ts && tsx scripts/verify-tutor-mastery.ts && tsx scripts/verify-tutor-queries.ts",
+    "verify:tutor:int": "tsx scripts/verify-tutor-graph-int.ts && tsx scripts/verify-tutor-extraction-int.ts && tsx scripts/verify-tutor-reconcile-int.ts && tsx scripts/verify-tutor-evidence-int.ts",
     "smoke:tutor": "tsx scripts/smoke-tutor-models.ts"
   },
   "dependencies": {

@@ -40,6 +40,17 @@
  * RPC independently rejects any tutor_% row. Per-call rows are author-INVISIBLE
  * (R-9); the only read surface is the service-role-only tutor_model_costs_daily
  * view (migration 20260803100000).
+ *
+ * TUTOR LEARNING EVIDENCE (TUTOR-1 Wave 2): five new types carry the tutor's
+ * learning-evidence signal onto this SAME table (migration 20260803110000).
+ * Four are SERVER-emitted (practice_answer / hint_request / self_report /
+ * tutor_inference) — course+publication scoped with the lesson OPTIONAL (a
+ * tutor conversation spans lessons); a browser can never forge learning
+ * evidence, so they are ABSENT from the client batch and the ingest RPC rejects
+ * them. ONE — content_engagement — is a CLIENT member (the perf_vital
+ * precedent): full course envelope, its signal rides metadata (a browser cannot
+ * know concept node ids). tutor_inference's direction/strength/turnRef ride
+ * metadata as the frozen Wave-3 contract (TutorInferencePayloadSchema).
  */
 
 import { z } from "zod";
@@ -181,6 +192,105 @@ const tutorModelCall = z.object({
 export const TutorModelCallEventSchema = tutorModelCall;
 export type TutorModelCallEvent = z.infer<typeof tutorModelCall>;
 
+/* ─────────────────── TUTOR-1 Wave 2: learning evidence ──────────────────────
+ * Five new event types carrying the tutor's learning-EVIDENCE signal onto the
+ * SAME learning_events table (never a parallel path). Four are SERVER-emitted
+ * (a browser can never forge learning evidence): practice_answer, hint_request,
+ * self_report, tutor_inference. They are course+publication scoped with the
+ * LESSON OPTIONAL (a tutor conversation spans lessons). ONE — content_engagement
+ * — is the client member (the perf_vital precedent): it joins the client batch
+ * union, carries the FULL course envelope, and rides its signal in metadata (a
+ * browser cannot know concept node ids).
+ *
+ * The derived `dwell_over_median` signal is NOT an event: it is computed in the
+ * refold from the existing dwell events vs the cohort rollup, never emitted. */
+
+/** Context every SERVER tutor-evidence event carries — course + publication,
+ *  lesson OPTIONAL (a tutor conversation spans lessons). */
+const tutorEvidenceBase = {
+  courseId: z.uuid(),
+  publicationId: z.uuid(),
+  version: z.number().int().min(1),
+  lessonId: z.uuid().nullable(),
+  nodeId: z.uuid(),
+  clientEventId: z.uuid(),
+  clientTs: z.string().min(1),
+};
+
+/** A learner answered a tutor practice item (graded). */
+const practiceAnswer = z.object({
+  ...tutorEvidenceBase,
+  eventType: z.literal("practice_answer"),
+  attemptOrdinal: z.number().int().min(1),
+  evidenceCorrect: z.boolean(),
+  practiceItemRef: z.uuid(),
+});
+export const PracticeAnswerEventSchema = practiceAnswer;
+export type PracticeAnswerEvent = z.infer<typeof practiceAnswer>;
+
+/** A learner asked the tutor for a hint (rung 0–4). A hint MAY reference the
+ *  item it was requested for (nullable). */
+const hintRequest = z.object({
+  ...tutorEvidenceBase,
+  eventType: z.literal("hint_request"),
+  hintRung: z.number().int().min(0).max(4),
+  practiceItemRef: z.uuid().nullable(),
+});
+export const HintRequestEventSchema = hintRequest;
+export type HintRequestEvent = z.infer<typeof hintRequest>;
+
+/** A learner self-reported understanding of a concept. */
+const selfReport = z.object({
+  ...tutorEvidenceBase,
+  eventType: z.literal("self_report"),
+  evidenceCorrect: z.boolean(),
+});
+export const SelfReportEventSchema = selfReport;
+export type SelfReportEvent = z.infer<typeof selfReport>;
+
+/** THE frozen Wave-3 tutor-inference side-channel contract. The tutor's mastery
+ *  inference rides METADATA (only node_id is columnar on the row); direction,
+ *  strength, and the conversation turn ref travel here. Frozen — Wave 3 reads
+ *  exactly this shape. */
+export const TutorInferencePayloadSchema = z.object({
+  nodeId: z.uuid(),
+  direction: z.enum(["positive", "negative"]),
+  strength: z.enum(["weak", "moderate"]),
+  turnRef: z.string(),
+});
+export type TutorInferencePayload = z.infer<typeof TutorInferencePayloadSchema>;
+
+/** The tutor inferred a mastery signal for a concept. Only the node is columnar;
+ *  direction/strength/turnRef ride metadata (the frozen Wave-3 contract). */
+const tutorInference = z.object({
+  ...tutorEvidenceBase,
+  eventType: z.literal("tutor_inference"),
+  metadata: TutorInferencePayloadSchema,
+});
+export const TutorInferenceEventSchema = tutorInference;
+export type TutorInferenceEvent = z.infer<typeof tutorInference>;
+
+/** The four SERVER-only tutor-evidence event types (excluded from the client
+ *  batch; the ingest RPC rejects the three non-tutor_% ones by name and
+ *  tutor_inference by the tutor_% guard). */
+export const TUTOR_EVIDENCE_SERVER_EVENT_TYPES = [
+  "practice_answer",
+  "hint_request",
+  "self_report",
+  "tutor_inference",
+] as const;
+
+/** The client engagement signal — the ONE client tutor-evidence member (the
+ *  perf_vital precedent). Full course envelope; the signal rides metadata (a
+ *  browser cannot know concept node ids). */
+const contentEngagement = z.object({
+  ...eventBase,
+  eventType: z.literal("content_engagement"),
+  signal: z.enum(["rewatch", "scrub_back", "completed"]),
+});
+export const ContentEngagementEventSchema = contentEngagement;
+export type ContentEngagementEvent = z.infer<typeof contentEngagement>;
+
 /** perf_vital route cap — mirrored by the DB CHECK
  *  (char_length(route) <= 200, migration 20260718100100). Constants live in
  *  eventConstants.ts (zod-free, client-bundle-safe); re-exported here. */
@@ -229,6 +339,7 @@ export const ClientBatchEventSchema = z.discriminatedUnion("eventType", [
   sessionHeartbeat,
   slideFeedback,
   perfVital,
+  contentEngagement,
 ]);
 export type ClientBatchEvent = z.infer<typeof ClientBatchEventSchema>;
 
@@ -270,6 +381,11 @@ export const AnalyticsEventSchema = z.discriminatedUnion("eventType", [
   commsBounce,
   commsComplaint,
   tutorModelCall,
+  practiceAnswer,
+  hintRequest,
+  selfReport,
+  tutorInference,
+  contentEngagement,
 ]);
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsEventType = AnalyticsEvent["eventType"];
@@ -337,6 +453,34 @@ export function buildCommsDeliveryEvent(
   opts: { clientEventId: string; clientTs?: string }
 ): CommsDeliveryEvent {
   return CommsDeliveryEventSchema.parse({
+    ...input,
+    clientEventId: opts.clientEventId,
+    clientTs: opts.clientTs ?? new Date().toISOString(),
+  });
+}
+
+/** The four SERVER-only tutor-evidence events (Wave 2). */
+export type TutorEvidenceServerEvent =
+  | PracticeAnswerEvent
+  | HintRequestEvent
+  | SelfReportEvent
+  | TutorInferenceEvent;
+export const TutorEvidenceServerEventSchema = z.discriminatedUnion("eventType", [
+  practiceAnswer,
+  hintRequest,
+  selfReport,
+  tutorInference,
+]);
+
+/** Assemble + validate one SERVER tutor-evidence event (server emitters only).
+ *  `clientEventId` is REQUIRED — always a stable, retry-safe uuid so the emit is
+ *  idempotent. Excluded from the client batch (a browser can never forge
+ *  learning evidence); the ingest RPC rejects these by name. */
+export function buildTutorEvidenceEvent(
+  input: DistributiveOmit<TutorEvidenceServerEvent, "clientEventId" | "clientTs">,
+  opts: { clientEventId: string; clientTs?: string }
+): TutorEvidenceServerEvent {
+  return TutorEvidenceServerEventSchema.parse({
     ...input,
     clientEventId: opts.clientEventId,
     clientTs: opts.clientTs ?? new Date().toISOString(),
@@ -438,6 +582,63 @@ export function mapEventToColumns(event: AnalyticsEvent, userId: string): Learni
       latency_ms: event.latencyMs,
       learner_user_id: event.learnerUserId,
       metadata: {},
+      client_ts: event.clientTs,
+    };
+  }
+  if (
+    event.eventType === "practice_answer" ||
+    event.eventType === "hint_request" ||
+    event.eventType === "self_report" ||
+    event.eventType === "tutor_inference"
+  ) {
+    // SERVER tutor-evidence: course+publication scoped, lesson OPTIONAL. Each
+    // carries exactly its own of the five evidence columns (DB CHECK enforces
+    // isolation); tutor_inference's direction/strength/turnRef ride metadata.
+    return {
+      client_event_id: event.clientEventId,
+      user_id: userId,
+      event_type: event.eventType,
+      publication_id: event.publicationId,
+      version: event.version,
+      course_id: event.courseId,
+      lesson_id: event.lessonId,
+      block_id: null,
+      slide_id: null,
+      dwell_ms: null,
+      quartile: null,
+      attempt_id: null,
+      node_id: event.nodeId,
+      attempt_ordinal: event.eventType === "practice_answer" ? event.attemptOrdinal : null,
+      hint_rung: event.eventType === "hint_request" ? event.hintRung : null,
+      evidence_correct:
+        event.eventType === "practice_answer" || event.eventType === "self_report"
+          ? event.evidenceCorrect
+          : null,
+      practice_item_ref:
+        event.eventType === "practice_answer" || event.eventType === "hint_request"
+          ? event.practiceItemRef
+          : null,
+      metadata: event.eventType === "tutor_inference" ? event.metadata : {},
+      client_ts: event.clientTs,
+    };
+  }
+  if (event.eventType === "content_engagement") {
+    // CLIENT engagement signal: full course envelope, NO evidence columns (the
+    // client can't know node ids); the signal rides metadata.
+    return {
+      client_event_id: event.clientEventId,
+      user_id: userId,
+      event_type: event.eventType,
+      publication_id: event.publicationId,
+      version: event.version,
+      course_id: event.courseId,
+      lesson_id: event.lessonId,
+      block_id: null,
+      slide_id: null,
+      dwell_ms: null,
+      quartile: null,
+      attempt_id: null,
+      metadata: { signal: event.signal },
       client_ts: event.clientTs,
     };
   }

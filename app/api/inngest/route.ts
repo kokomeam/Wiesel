@@ -8,10 +8,18 @@ import { serve } from "inngest/next";
 import { inngest } from "@/lib/inngest/client";
 import { publishFire, publishSweep } from "@/lib/inngest/functions/publish";
 import { tutorGraphExtract, tutorGraphReconcile } from "@/lib/inngest/functions/tutorGraph";
+import { tutorMasteryRefold, tutorMasteryNightly } from "@/lib/inngest/functions/tutorMastery";
 
 export const runtime = "nodejs";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [publishFire, publishSweep, tutorGraphExtract, tutorGraphReconcile],
+  functions: [
+    publishFire,
+    publishSweep,
+    tutorGraphExtract,
+    tutorGraphReconcile,
+    tutorMasteryRefold,
+    tutorMasteryNightly,
+  ],
 });
