@@ -11,6 +11,8 @@
 
 import { AUX_RESPONSE_NAME } from "../auxContent";
 import type {
+  EmbedParams,
+  EmbedResult,
   GeneratedImage,
   ImageGenParams,
   ImageInspectParams,
@@ -66,6 +68,8 @@ export interface MockModelClient extends ModelClient {
   getImageCalls(): ImageGenParams[];
   /** Every image-inspection the agent asked for (verification wiring). */
   getInspectCalls(): ImageInspectParams[];
+  /** Every embed batch the caller asked for (retrieval wiring). */
+  getEmbedCalls(): EmbedParams[];
 }
 
 let callSeq = 0;
@@ -73,6 +77,34 @@ let callSeq = 0;
 function chunkWords(text: string): string[] {
   if (!text) return [];
   return text.match(/\S+\s*/g) ?? [text];
+}
+
+/** The mock embedding dimensionality (small + fixed — identity/determinism is what
+ *  the tests exercise, not a real embedding space). */
+const MOCK_EMBED_DIMS = 32;
+
+/** Deterministic 32-dim unit vector from a string: FNV-1a over the char codes seeds
+ *  a mulberry32 PRNG that fills the vector, then L2-normalize. Identical input →
+ *  identical vector; different inputs almost certainly differ. Pure. */
+function mockEmbedVector(input: string): number[] {
+  // FNV-1a (32-bit) hash of the input's char codes → the PRNG seed.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  let state = hash >>> 0;
+  const next = () => {
+    // mulberry32
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const raw = Array.from({ length: MOCK_EMBED_DIMS }, () => next() * 2 - 1);
+  const norm = Math.sqrt(raw.reduce((s, x) => s + x * x, 0)) || 1;
+  return raw.map((x) => x / norm);
 }
 
 export function createMockModelClient(
@@ -85,12 +117,21 @@ export function createMockModelClient(
   const calls: ModelTurnParams[] = [];
   const imageCalls: ImageGenParams[] = [];
   const inspectCalls: ImageInspectParams[] = [];
+  const embedCalls: EmbedParams[] = [];
 
   return {
     model,
     getCalls: () => calls,
     getImageCalls: () => imageCalls,
     getInspectCalls: () => inspectCalls,
+    getEmbedCalls: () => embedCalls,
+    async embed(params: EmbedParams): Promise<EmbedResult> {
+      embedCalls.push(params);
+      const vectors = params.inputs.map(mockEmbedVector);
+      // ~4 chars/token, like a rough tokenizer — deterministic per input.
+      const inputTokens = params.inputs.reduce((s, str) => s + Math.ceil(str.length / 4), 0);
+      return { vectors, usage: { inputTokens } };
+    },
     async generateImage(params: ImageGenParams): Promise<GeneratedImage | null> {
       imageCalls.push(params);
       if (opts.failImages) return null;
@@ -111,6 +152,9 @@ export function createMockModelClient(
       onEvent: (event: ModelStreamEvent) => void
     ): Promise<ModelTurnResult> {
       calls.push(params);
+      // Deterministic per-call response id — the anchor a following turn chains onto
+      // via previousResponseId (accepted here without error, like a real provider).
+      const responseId = `mock-resp-${calls.length - 1}`;
 
       // Route a CONFIGURED structured response by responseFormat name WITHOUT consuming
       // the sequential script — keeps a concurrent structured call (parallel aux) from
@@ -120,12 +164,12 @@ export function createMockModelClient(
         // Decision B retry: fail the FIRST aux call so the deterministic retry fires.
         if (fmt === AUX_RESPONSE_NAME && opts.auxFailFirst && auxAttempts++ === 0) {
           onEvent({ type: "error", message: "mock aux transport failure", kind: "transport" });
-          return { text: "", toolCalls: [], finishReason: "error", errorKind: "transport" };
+          return { text: "", toolCalls: [], finishReason: "error", errorKind: "transport", responseId };
         }
         const v = opts.structured[fmt];
         const text = typeof v === "string" ? v : JSON.stringify(v);
         for (const chunk of chunkWords(text)) onEvent({ type: "text_delta", delta: chunk });
-        return { text, toolCalls: [], finishReason: "stop" };
+        return { text, toolCalls: [], finishReason: "stop", responseId };
       }
 
       const turn = script[turnIndex++];
@@ -134,7 +178,7 @@ export function createMockModelClient(
       // finishReason "error", the given kind — like a real timed-out plan call.
       if (turn?.error) {
         onEvent({ type: "error", message: turn.error.message, kind: turn.error.kind });
-        return { text: "", toolCalls: [], finishReason: "error", errorKind: turn.error.kind };
+        return { text: "", toolCalls: [], finishReason: "error", errorKind: turn.error.kind, responseId };
       }
 
       const text = turn?.text ?? (turn ? "" : opts.finalText ?? "All set — review the changes when you're ready.");
@@ -155,6 +199,7 @@ export function createMockModelClient(
         text,
         toolCalls,
         finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+        responseId,
       };
     },
   };

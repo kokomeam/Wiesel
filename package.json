@@ -42,7 +42,7 @@
     "verify:perf:browser": "tsx scripts/verify-perf-browser.ts",
     "seed:fixtures": "tsx scripts/seed-fixture-analytics.ts",
     "seed:clips": "tsx scripts/seed-clips.ts",
-    "test": "npm run verify:ai && npm run verify:slides && npm run verify:publish && npm run verify:learn && npm run verify:analytics && npm run verify:vitals && npm run verify:maintenance && npm run verify:comms && npm run verify:video && npm run verify:reject && npm run verify:marketing:sync && npm run verify:social && npm run verify:clips && npm run verify:clips:render && npm run verify:clips:slideshort && npm run verify:accounts && npm run verify:publish-path && npm run verify:ui && npm run verify:portal && npm run verify:identity && npm run verify:perf",
+    "test": "npm run verify:ai && npm run verify:slides && npm run verify:publish && npm run verify:learn && npm run verify:analytics && npm run verify:vitals && npm run verify:maintenance && npm run verify:comms && npm run verify:video && npm run verify:reject && npm run verify:marketing:sync && npm run verify:social && npm run verify:clips && npm run verify:clips:render && npm run verify:clips:slideshort && npm run verify:accounts && npm run verify:publish-path && npm run verify:ui && npm run verify:portal && npm run verify:identity && npm run verify:perf && npm run verify:tutor",
     "verify:video": "tsx scripts/verify-video.ts",
     "smoke:openai": "tsx scripts/smoke-openai.ts",
     "worker:deck-imports": "tsx workers/deck-import/runWorker.ts",
@@ -75,7 +75,9 @@
     "verify:publish-path": "tsx scripts/verify-publish-path.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "verify:ui:browser": "tsx scripts/verify-ui-browser.ts",
-    "verify:publish-path:int": "tsx scripts/verify-publish-path-int.ts"
+    "verify:publish-path:int": "tsx scripts/verify-publish-path-int.ts",
+    "verify:tutor": "tsx scripts/verify-tutor-models.ts && tsx scripts/verify-tutor-telemetry.ts",
+    "smoke:tutor": "tsx scripts/smoke-tutor-models.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

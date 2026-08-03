@@ -11,6 +11,8 @@
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import type {
+  EmbedParams,
+  EmbedResult,
   ImageInspectParams,
   ModelClient,
   ModelErrorKind,
@@ -229,6 +231,8 @@ function resultFromResponse(final: OpenAI.Responses.Response, streamedText: stri
     text,
     toolCalls,
     finishReason: toolCalls.length > 0 ? "tool_calls" : final.status === "incomplete" ? "incomplete" : "stop",
+    // The response id — the anchor a following turn chains onto via previousResponseId.
+    responseId: final.id ?? null,
     usage: usage
       ? {
           inputTokens: usage.input_tokens,
@@ -352,6 +356,8 @@ export function createOpenAIModelClient(): ModelClient {
         tools,
         reasoning: { effort: params.effort ?? defaultEffort },
         max_output_tokens: params.maxOutputTokens ?? maxOutputTokens,
+        // Chain server-side onto a prior response when the caller supplies one (D-3).
+        ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
         ...(params.responseFormat
           ? {
               text: {
@@ -365,6 +371,9 @@ export function createOpenAIModelClient(): ModelClient {
             }
           : {}),
       };
+      // Each request path has a default `store` (background stores, others don't);
+      // an explicit params.store OVERRIDES it, undefined preserves the default.
+      const storeOverride = params.store;
 
       try {
         // BACKGROUND mode: create then POLL — never hold one long HTTP request
@@ -376,7 +385,7 @@ export function createOpenAIModelClient(): ModelClient {
           let created: OpenAI.Responses.Response;
           try {
             created = await client.responses.create(
-              { ...body, store: true, background: true, stream: false },
+              { ...body, store: storeOverride ?? true, background: true, stream: false },
               requestOpts
             );
           } catch (createErr) {
@@ -432,7 +441,7 @@ export function createOpenAIModelClient(): ModelClient {
         // NON-STREAMING: a one-shot structured plan doesn't need token streaming.
         if (params.stream === false) {
           const final = await client.responses.create(
-            { ...body, store: false, stream: false },
+            { ...body, store: storeOverride ?? false, stream: false },
             requestOpts
           );
           return resultFromResponse(final, "");
@@ -440,7 +449,7 @@ export function createOpenAIModelClient(): ModelClient {
 
         // STREAMING (default): emit deltas + tool-call starts as they arrive.
         const stream = client.responses.stream(
-          { ...body, store: false },
+          { ...body, store: storeOverride ?? false },
           requestOpts
         );
         let streamedText = "";
@@ -528,6 +537,8 @@ export function createOpenAIModelClient(): ModelClient {
             model: visionModel,
             reasoning: { effort: "low" },
             max_output_tokens: 600,
+            // Verification is ephemeral — never retain the inspected image server-side.
+            store: false,
             input: [
               {
                 role: "user",
@@ -559,6 +570,34 @@ export function createOpenAIModelClient(): ModelClient {
         const { kind, message, status } = classifyError(error);
         console.log(JSON.stringify({ tag: "openai_image_inspect_error", errorKind: kind, status, message, model: visionModel, latencyMs: Date.now() - t0 }));
         return null;
+      }
+    },
+
+    async embed(params: EmbedParams): Promise<EmbedResult> {
+      // One BATCHED call for the whole inputs array. Same HARD-deadline pattern as
+      // runTurn (an AbortController wired to the fetch), since the proxied undici
+      // fetch ignores the SDK `timeout`. Throws on a transport/API error — the caller
+      // owns retry via its maxRetries policy (TUTOR_MODELS.embedding).
+      const deadline = withTimeoutSignal(params.signal, params.timeoutMs);
+      const t0 = Date.now();
+      try {
+        const res = await client.embeddings.create(
+          { model: params.model, input: params.inputs },
+          { signal: deadline.signal, ...(params.timeoutMs ? { timeout: params.timeoutMs } : {}) }
+        );
+        // Preserve request order (the API returns objects carrying their `index`).
+        const vectors = [...res.data]
+          .sort((a, b) => a.index - b.index)
+          .map((d) => d.embedding as number[]);
+        const inputTokens = res.usage?.prompt_tokens ?? 0;
+        console.log(JSON.stringify({ tag: "openai_embed", outcome: "ok", model: params.model, count: vectors.length, inputTokens, latencyMs: Date.now() - t0 }));
+        return { vectors, usage: { inputTokens } };
+      } catch (error) {
+        const { kind, message, status } = classifyError(error);
+        console.log(JSON.stringify({ tag: "openai_embed_error", errorKind: kind, status, message, model: params.model, latencyMs: Date.now() - t0 }));
+        throw error;
+      } finally {
+        deadline.dispose();
       }
     },
   };

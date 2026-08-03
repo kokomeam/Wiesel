@@ -1546,20 +1546,28 @@ export type Database = {
         Row: {
           attempt_id: string | null
           block_id: string | null
+          cached_input_tokens: number | null
           client_event_id: string
           client_ts: string
+          computed_cost_usd: number | null
           course_id: string | null
           device_class: string | null
           dwell_ms: number | null
           event_type: string
           feedback_comment: string | null
           id: string
+          input_tokens: number | null
+          job_type: string | null
+          latency_ms: number | null
+          learner_user_id: string | null
           lesson_id: string | null
           metadata: Json
           metric_name: string | null
           metric_rating: string | null
           metric_value: number | null
+          model: string | null
           navigation_type: string | null
+          output_tokens: number | null
           publication_id: string | null
           quartile: number | null
           reaction: string | null
@@ -1572,20 +1580,28 @@ export type Database = {
         Insert: {
           attempt_id?: string | null
           block_id?: string | null
+          cached_input_tokens?: number | null
           client_event_id: string
           client_ts: string
+          computed_cost_usd?: number | null
           course_id?: string | null
           device_class?: string | null
           dwell_ms?: number | null
           event_type: string
           feedback_comment?: string | null
           id?: string
+          input_tokens?: number | null
+          job_type?: string | null
+          latency_ms?: number | null
+          learner_user_id?: string | null
           lesson_id?: string | null
           metadata?: Json
           metric_name?: string | null
           metric_rating?: string | null
           metric_value?: number | null
+          model?: string | null
           navigation_type?: string | null
+          output_tokens?: number | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
@@ -1598,20 +1614,28 @@ export type Database = {
         Update: {
           attempt_id?: string | null
           block_id?: string | null
+          cached_input_tokens?: number | null
           client_event_id?: string
           client_ts?: string
+          computed_cost_usd?: number | null
           course_id?: string | null
           device_class?: string | null
           dwell_ms?: number | null
           event_type?: string
           feedback_comment?: string | null
           id?: string
+          input_tokens?: number | null
+          job_type?: string | null
+          latency_ms?: number | null
+          learner_user_id?: string | null
           lesson_id?: string | null
           metadata?: Json
           metric_name?: string | null
           metric_rating?: string | null
           metric_value?: number | null
+          model?: string | null
           navigation_type?: string | null
+          output_tokens?: number | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
@@ -3744,6 +3768,21 @@ export type Database = {
           p75: number | null
           p95: number | null
           route: string | null
+        }
+        Relationships: []
+      }
+      tutor_model_costs_daily: {
+        Row: {
+          avg_latency_ms: number | null
+          cached_input_tokens: number | null
+          calls: number | null
+          computed_cost_usd: number | null
+          course_id: string | null
+          day: string | null
+          input_tokens: number | null
+          job_type: string | null
+          model: string | null
+          output_tokens: number | null
         }
         Relationships: []
       }

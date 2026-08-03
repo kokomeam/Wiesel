@@ -30,6 +30,16 @@
  * this type (still pinning user_id to auth.uid()), and the NULL course_id
  * keeps the rows outside the author-select RLS — read surface is the
  * service-role-only perf_vitals_daily view (migration 20260718100100).
+ *
+ * TUTOR COST TELEMETRY (TUTOR-1 Wave 1.1): tutor_model_call records one AI-tutor
+ * model call's token usage, computed USD cost, and latency. It is SERVER-emitted
+ * ONLY (lib/tutor/telemetry.ts, admin client), keyed by a uuid derived from the
+ * provider response id (retry-stable). It carries a COURSE envelope (course-scoped
+ * cost; no publication/version/lesson) with an OPTIONAL learner. Like the comms
+ * types it is deliberately ABSENT from the client batch contract, and the ingest
+ * RPC independently rejects any tutor_% row. Per-call rows are author-INVISIBLE
+ * (R-9); the only read surface is the service-role-only tutor_model_costs_daily
+ * view (migration 20260803100000).
  */
 
 import { z } from "zod";
@@ -134,6 +144,43 @@ const commsBounce = z.object({
 });
 const commsComplaint = z.object({ ...commsEventBase, eventType: z.literal("comms_email_complaint") });
 
+/** TUTOR-1 Wave 1.1: the four AI-tutor model-call job kinds — mirrored by the
+ *  DB CHECK (job_type in (…), migration 20260803100000). The Zod enum derives
+ *  from this const so the two can't drift. */
+export const TUTOR_JOB_TYPES = [
+  "graph_extraction",
+  "reconciliation",
+  "embedding",
+  "tutor_turn",
+] as const;
+export type TutorJobType = (typeof TUTOR_JOB_TYPES)[number];
+
+/** TUTOR-1 Wave 1.1: one AI-tutor model call's cost telemetry. SERVER-emitted
+ *  ONLY (lib/tutor/telemetry.ts) — course-scoped with an OPTIONAL learner; the
+ *  computed cost is null when the model is absent from the pricing table.
+ *  `clientEventId` is REQUIRED — always the provider-response-id-derived uuid,
+ *  so a re-emit for the same call no-ops. Deliberately NOT in the client batch
+ *  contract (a browser can never forge tutor cost). */
+const tutorModelCall = z.object({
+  eventType: z.literal("tutor_model_call"),
+  courseId: z.uuid(),
+  /** Null for a run with no learner (extraction/reconciliation). */
+  learnerUserId: z.uuid().nullable(),
+  jobType: z.enum(TUTOR_JOB_TYPES),
+  model: z.string().min(1),
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  /** USD; null when the model has no pricing entry (computeCostUsd → null). */
+  computedCostUsd: z.number().nonnegative().nullable(),
+  latencyMs: z.number().int().nonnegative(),
+  /** Derived deterministically from the provider response id (retry-stable). */
+  clientEventId: z.uuid(),
+  clientTs: z.string().min(1),
+});
+export const TutorModelCallEventSchema = tutorModelCall;
+export type TutorModelCallEvent = z.infer<typeof tutorModelCall>;
+
 /** perf_vital route cap — mirrored by the DB CHECK
  *  (char_length(route) <= 200, migration 20260718100100). Constants live in
  *  eventConstants.ts (zod-free, client-bundle-safe); re-exported here. */
@@ -222,12 +269,17 @@ export const AnalyticsEventSchema = z.discriminatedUnion("eventType", [
   commsClick,
   commsBounce,
   commsComplaint,
+  tutorModelCall,
 ]);
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsEventType = AnalyticsEvent["eventType"];
 
 export function isCommsEvent(event: AnalyticsEvent): event is CommsDeliveryEvent {
   return (COMMS_EVENT_TYPES as readonly string[]).includes(event.eventType);
+}
+
+export function isTutorModelCallEvent(event: AnalyticsEvent): event is TutorModelCallEvent {
+  return event.eventType === "tutor_model_call";
 }
 
 /** One ingest batch. The cap matches the route's single multi-row insert.
@@ -291,6 +343,20 @@ export function buildCommsDeliveryEvent(
   });
 }
 
+/** Assemble + validate one tutor_model_call event (server emitter only —
+ *  lib/tutor/telemetry.ts). `clientEventId` is REQUIRED — always the
+ *  provider-response-id-derived uuid that makes the emit idempotent. */
+export function buildTutorModelCallEvent(
+  input: Omit<TutorModelCallEvent, "clientEventId" | "clientTs">,
+  opts: { clientEventId: string; clientTs?: string }
+): TutorModelCallEvent {
+  return TutorModelCallEventSchema.parse({
+    ...input,
+    clientEventId: opts.clientEventId,
+    clientTs: opts.clientTs ?? new Date().toISOString(),
+  });
+}
+
 /* ─────────────────────────── Row mapping ───────────────────────────────── */
 
 export type LearningEventRow = Database["public"]["Tables"]["learning_events"]["Insert"];
@@ -343,6 +409,34 @@ export function mapEventToColumns(event: AnalyticsEvent, userId: string): Learni
       route: event.route,
       device_class: event.deviceClass,
       navigation_type: event.navigationType,
+      metadata: {},
+      client_ts: event.clientTs,
+    };
+  }
+  if (event.eventType === "tutor_model_call") {
+    return {
+      client_event_id: event.clientEventId,
+      // user_id is the acting principal (extraction runs pass the course author
+      // id); learner_user_id is the separate, optional learner attribution.
+      user_id: userId,
+      event_type: event.eventType,
+      publication_id: null,
+      version: null,
+      course_id: event.courseId,
+      lesson_id: null,
+      block_id: null,
+      slide_id: null,
+      dwell_ms: null,
+      quartile: null,
+      attempt_id: null,
+      job_type: event.jobType,
+      model: event.model,
+      input_tokens: event.inputTokens,
+      cached_input_tokens: event.cachedInputTokens,
+      output_tokens: event.outputTokens,
+      computed_cost_usd: event.computedCostUsd,
+      latency_ms: event.latencyMs,
+      learner_user_id: event.learnerUserId,
       metadata: {},
       client_ts: event.clientTs,
     };

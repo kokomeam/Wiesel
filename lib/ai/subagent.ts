@@ -26,7 +26,7 @@ import {
   type LoopContext,
   type PhaseUsage,
 } from "./agentLoop";
-import type { ModelClient, ModelTurnParams } from "./modelClient";
+import type { ModelClient, ModelTurnParams, ReasoningEffort } from "./modelClient";
 import { toStrictJsonSchema } from "./schema";
 
 /* ───────────────────────────── Semaphore ───────────────────────────────── */
@@ -83,6 +83,7 @@ export function withSemaphore(
     },
     generateImage: base.generateImage?.bind(base),
     inspectImage: base.inspectImage?.bind(base),
+    embed: base.embed?.bind(base),
   };
 }
 
@@ -117,6 +118,12 @@ export async function runStructuredCall<T>(
     outputSchema: z.ZodType<T>;
     maxOutputTokens?: number;
     signal?: AbortSignal;
+    /** Per-call model/effort/deadline/retries (a tutor job passes its TUTOR_MODELS
+     *  config). Each falls back to the provider's env default when omitted. */
+    model?: string;
+    effort?: ReasoningEffort;
+    timeoutMs?: number;
+    maxRetries?: number;
   }
 ): Promise<StructuredCallResult<T>> {
   const usage: PhaseUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
@@ -127,6 +134,10 @@ export async function runStructuredCall<T>(
     stream: false,
     signal: args.signal,
     maxOutputTokens: args.maxOutputTokens ?? 8000,
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(args.effort !== undefined ? { effort: args.effort } : {}),
+    ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+    ...(args.maxRetries !== undefined ? { maxRetries: args.maxRetries } : {}),
     responseFormat: { name: args.outputName, schema: toStrictJsonSchema(args.outputSchema) },
   };
 

@@ -73,6 +73,10 @@ export interface ModelTurnResult {
     /** Reasoning tokens billed within outputTokens (instrumentation). */
     reasoningTokens?: number;
   };
+  /** The provider's id for THIS response — the anchor a following turn passes as
+   *  `previousResponseId` to chain server-side (D-3, consumed in Wave 3). Null/absent
+   *  when the provider didn't return one (e.g. `store:false` on some providers). */
+  responseId?: string | null;
 }
 
 export interface ModelTurnParams {
@@ -111,6 +115,14 @@ export interface ModelTurnParams {
   /** When set, force a structured-output turn: the model returns JSON matching
    *  this strict JSON Schema as its text (used by the PLAN/classifier turns). */
   responseFormat?: { name: string; schema: JsonSchema };
+  /** Chain server-side onto a prior response (Responses API `previous_response_id`).
+   *  D-3 — dead until Wave 3; lets a tutor turn reuse the provider's retained
+   *  reasoning/context without replaying it. Requires the prior turn was stored. */
+  previousResponseId?: string | null;
+  /** Whether the provider should RETAIN this response (Responses API `store`). When
+   *  explicitly set it OVERRIDES the per-path default (background stores, others
+   *  don't); undefined preserves each path's default. */
+  store?: boolean;
 }
 
 /** Raw bytes produced by the image model (base64, with its mime type). The caller
@@ -159,6 +171,24 @@ export interface ImageInspectParams {
   signal?: AbortSignal;
 }
 
+/** One BATCHED embedding request — the whole `inputs` array in a single API call.
+ *  Provider-neutral; the caller owns retry (via its maxRetries policy) since the
+ *  method throws on a transport error. */
+export interface EmbedParams {
+  model: string;
+  inputs: string[];
+  signal?: AbortSignal;
+  /** Per-call request timeout (ms), overriding the client default. */
+  timeoutMs?: number;
+}
+
+/** The result of one batched embedding call: a vector per input (order-aligned)
+ *  plus the prompt-token usage the provider billed. */
+export interface EmbedResult {
+  vectors: number[][];
+  usage: { inputTokens: number };
+}
+
 /**
  * The single provider seam. Implementations:
  *   - providers/openai.ts — the real OpenAI Responses adapter (only file that
@@ -191,4 +221,11 @@ export interface ModelClient {
    * the model's text/JSON verdict, or null on failure.
    */
   inspectImage?(params: ImageInspectParams): Promise<{ text: string } | null>;
+  /**
+   * Embed `inputs` in ONE batched call (order-aligned vectors + usage). OPTIONAL —
+   * present on the OpenAI client (the embeddings API, same proxy config) and the
+   * mock; absent ⇒ the retrieval layer treats embeddings as unavailable. THROWS on a
+   * transport error — callers own retry via their maxRetries policy (TUTOR_MODELS).
+   */
+  embed?(params: EmbedParams): Promise<EmbedResult>;
 }

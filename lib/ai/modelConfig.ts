@@ -259,3 +259,166 @@ export const DEFAULT_QUALITY_MODE: GenerationQualityMode =
 // Future hook: a premium tier will map `DEFAULT_QUALITY_MODE === "premium"` to
 // stronger per-phase models here. For now every tier resolves to AI_PHASE_MODELS
 // (cheap), so call sites read AI_PHASE_MODELS directly.
+
+/* ─────────────────────────── TUTOR-1 (Wave 1) ──────────────────────────── */
+
+/**
+ * Config for ONE tutor pipeline job (graph extraction, reconciliation, embedding,
+ * or a live tutor turn). Uniform shape across jobs — `effort`/`maxOutputTokens`
+ * are inert for the embedding job (embeddings have no reasoning/output-token
+ * concept) but the shape stays uniform so call sites read one contract.
+ */
+export interface TutorJobModel {
+  model: string;
+  effort: ReasoningEffort;
+  timeoutMs: number;
+  maxRetries: number;
+  maxOutputTokens: number;
+}
+
+/**
+ * The TUTOR-1 job registry — the ONE place the tutor pipeline decides which model,
+ * effort, timeout, retry, and output-token budget each job uses. Every field is
+ * env-overridable so a deployment can dial a job without a code change; effort is
+ * ALWAYS explicit (a tutor job never inherits the provider's env default). Env:
+ *   TUTOR_GRAPH_EXTRACTION_MODEL / _EFFORT / _TIMEOUT_MS / _MAX_RETRIES / _MAX_OUTPUT_TOKENS
+ *   TUTOR_RECONCILIATION_*   TUTOR_EMBEDDING_*   TUTOR_TURN_*
+ */
+export const TUTOR_MODELS = {
+  /** Extract a concept graph from lesson content (Wave 2). Reasoning-heavy structured
+   *  call → medium effort, a generous 180s deadline + a large output budget. */
+  graph_extraction: {
+    model: process.env.TUTOR_GRAPH_EXTRACTION_MODEL ?? "gpt-5.6-terra",
+    effort: effort("TUTOR_GRAPH_EXTRACTION_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_GRAPH_EXTRACTION_TIMEOUT_MS", 180_000),
+    maxRetries: int("TUTOR_GRAPH_EXTRACTION_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_GRAPH_EXTRACTION_MAX_OUTPUT_TOKENS", 32_000),
+  } satisfies TutorJobModel,
+  /** Reconcile a re-extracted graph against the stored one (Wave 2). Same weight
+   *  class as extraction — a structured merge over two graphs. */
+  reconciliation: {
+    model: process.env.TUTOR_RECONCILIATION_MODEL ?? "gpt-5.6-terra",
+    effort: effort("TUTOR_RECONCILIATION_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_RECONCILIATION_TIMEOUT_MS", 180_000),
+    maxRetries: int("TUTOR_RECONCILIATION_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_RECONCILIATION_MAX_OUTPUT_TOKENS", 32_000),
+  } satisfies TutorJobModel,
+  /** Embed concept/text chunks for retrieval (Wave 2). effort + maxOutputTokens are
+   *  INERT for embeddings (kept only so the registry shape stays uniform); the two
+   *  retries ride out a transient blip on a batch that's expensive to re-run. */
+  embedding: {
+    model: process.env.TUTOR_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    effort: effort("TUTOR_EMBEDDING_EFFORT", "low"),
+    timeoutMs: int("TUTOR_EMBEDDING_TIMEOUT_MS", 60_000),
+    maxRetries: int("TUTOR_EMBEDDING_MAX_RETRIES", 2),
+    maxOutputTokens: int("TUTOR_EMBEDDING_MAX_OUTPUT_TOKENS", 0),
+  } satisfies TutorJobModel,
+  /** A live student tutor turn (Wave 3 — consumed later, defined now so the registry
+   *  is complete). A snappier model + a tighter 120s ceiling for interactivity. */
+  tutor_turn: {
+    model: process.env.TUTOR_TURN_MODEL ?? "gpt-5.6-luna",
+    effort: effort("TUTOR_TURN_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_TURN_TIMEOUT_MS", 120_000),
+    maxRetries: int("TUTOR_TURN_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_TURN_MAX_OUTPUT_TOKENS", 8_000),
+  } satisfies TutorJobModel,
+} as const;
+
+/**
+ * Models the TUTOR-1 directive PROHIBITS — a job resolving to one of these (or a
+ * dated snapshot of one, `<denied>-…`) is a configuration error and must not ship.
+ * The load-time guard below throws on any match. Case-exact by directive.
+ */
+const TUTOR_MODEL_DENYLIST = ["gpt-5.6-sol"] as const;
+
+/**
+ * Throw if `model` is a directive-prohibited model (or a dated snapshot of one).
+ * PURE + exported so the load-guard AND the verify suite unit-test the same rule.
+ * A denial matches the bare id OR a `<denied>-…` snapshot (never a substring, so
+ * `gpt-5.6-solstice` would NOT trip `gpt-5.6-sol`).
+ */
+export function assertTutorModelAllowed(model: string, job: string): void {
+  for (const denied of TUTOR_MODEL_DENYLIST) {
+    if (model === denied || model.startsWith(`${denied}-`)) {
+      throw new Error(
+        `TUTOR_MODELS.${job} resolves to "${model}", which the TUTOR-1 directive prohibits (${denied}). ` +
+          `Set a different TUTOR_${job.toUpperCase()}_MODEL.`
+      );
+    }
+  }
+}
+
+// Load-time guard: after env overrides resolve, reject any job pinned to a denied
+// model. Runs at import so a misconfigured deployment fails fast, not mid-pipeline.
+for (const [job, cfg] of Object.entries(TUTOR_MODELS)) {
+  assertTutorModelAllowed(cfg.model, job);
+}
+
+/**
+ * Per-model USD pricing (per 1M tokens) for tutor-pipeline cost accounting.
+ *
+ * ⚠ The gpt-5.6-terra / gpt-5.6-luna values are PLACEHOLDERS pending the provider's
+ * published price sheet — override the whole table (or any entry) at load via the
+ * `TUTOR_PRICING_JSON` env var (a JSON `Record<string, ModelPricing>`, shallow-
+ * merged OVER these defaults; malformed JSON is ignored with one console.warn and
+ * the defaults stand). text-embedding-3-small carries no output cost.
+ */
+export interface ModelPricing {
+  inputPerMTok: number;
+  cachedInputPerMTok: number;
+  outputPerMTok: number;
+}
+
+const TUTOR_MODEL_PRICING_DEFAULTS: Record<string, ModelPricing> = {
+  "gpt-5.6-terra": { inputPerMTok: 1.25, cachedInputPerMTok: 0.125, outputPerMTok: 10 },
+  "gpt-5.6-luna": { inputPerMTok: 0.25, cachedInputPerMTok: 0.025, outputPerMTok: 2 },
+  "text-embedding-3-small": { inputPerMTok: 0.02, cachedInputPerMTok: 0.02, outputPerMTok: 0 },
+};
+
+/** Parse `TUTOR_PRICING_JSON` and shallow-merge it over the defaults. Malformed
+ *  JSON (or a non-object) → one warn, defaults stand. */
+function resolveTutorPricing(): Record<string, ModelPricing> {
+  const raw = process.env.TUTOR_PRICING_JSON;
+  if (!raw) return { ...TUTOR_MODEL_PRICING_DEFAULTS };
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("TUTOR_PRICING_JSON is not a JSON object");
+    }
+    return { ...TUTOR_MODEL_PRICING_DEFAULTS, ...(parsed as Record<string, ModelPricing>) };
+  } catch (e) {
+    console.warn(
+      JSON.stringify({
+        tag: "tutor_pricing_json_ignored",
+        message: e instanceof Error ? e.message : String(e),
+      })
+    );
+    return { ...TUTOR_MODEL_PRICING_DEFAULTS };
+  }
+}
+
+export const TUTOR_MODEL_PRICING: Record<string, ModelPricing> = resolveTutorPricing();
+
+/**
+ * Compute the USD cost of one call from its token usage. PURE. Returns null for a
+ * model absent from the (merged) pricing table.
+ *
+ * ⚠ Responses API `output_tokens` ALREADY INCLUDES reasoning tokens — never add
+ * reasoningTokens separately here. `cachedTokens` is clamped to [0, inputTokens]
+ * defensively (a provider quirk can't push cost negative or double-count).
+ */
+export function computeCostUsd(
+  usage: { inputTokens: number; cachedTokens: number; outputTokens: number },
+  model: string
+): number | null {
+  const price = TUTOR_MODEL_PRICING[model];
+  if (!price) return null;
+  const cached = Math.min(Math.max(usage.cachedTokens, 0), usage.inputTokens);
+  const uncached = usage.inputTokens - cached;
+  return (
+    (uncached * price.inputPerMTok +
+      cached * price.cachedInputPerMTok +
+      usage.outputTokens * price.outputPerMTok) /
+    1_000_000
+  );
+}
