@@ -86,7 +86,7 @@ export function ConfirmDialog({
     <div
       data-state={open ? "open" : "closed"}
       className={cn(
-        "fixed inset-0 z-[100] grid place-items-center p-4 transition-opacity duration-150 ease-out",
+        "fixed inset-0 z-100 grid place-items-center p-4 transition-opacity duration-150 ease-out",
         // While the exit fade plays the dialog is still mounted — make sure the
         // invisible overlay can't swallow clicks.
         open ? "opacity-100 starting:opacity-0" : "pointer-events-none opacity-0"
