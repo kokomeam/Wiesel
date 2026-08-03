@@ -52,36 +52,36 @@ const SUGGESTIONS = [
 const ItemRow = memo(function ItemRow({ it }: { it: Item }) {
   if (it.kind === "user")
     return (
-      <div className="ml-auto max-w-[85%] rounded-2xl bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
+      <div className="ml-auto max-w-[85%] rounded-card bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
         {it.text}
       </div>
     );
   if (it.kind === "assistant")
     return (
-      <div className="max-w-[90%] whitespace-pre-wrap rounded-2xl bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
+      <div className="max-w-[90%] whitespace-pre-wrap rounded-card bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
         {it.text}
       </div>
     );
   if (it.kind === "observation")
     return (
-      <div className="flex items-center gap-2 px-1 text-xs text-stone-400">
+      <div className="flex items-center gap-2 px-1 text-xs text-stone-500">
         <Sparkles className="size-3.5" /> {it.text}
       </div>
     );
   if (it.kind === "tool")
     return (
-      <div className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
+      <div className="flex items-start gap-2 rounded-panel border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
         <span
           className={
             "mt-0.5 grid size-4 place-items-center rounded " +
             (it.status === "run"
               ? "bg-amber-100 text-amber-700"
               : it.status === "error"
-                ? "bg-red-100 text-red-700"
+                ? "bg-status-destructive-bg text-status-destructive"
                 : it.status === "pending_approval"
-                  ? "bg-red-100 text-red-700"
+                  ? "bg-status-destructive-bg text-status-destructive"
                   : it.status === "needs_clarification"
-                    ? "bg-sky-100 text-sky-700"
+                    ? "bg-status-pending-bg text-status-pending"
                     : "bg-emerald-100 text-emerald-700")
           }
         >
@@ -98,7 +98,7 @@ const ItemRow = memo(function ItemRow({ it }: { it: Item }) {
         <span className="font-medium text-stone-600">{marketingToolLabel(it.tool)}</span>
         <span className="text-stone-500">— {it.status === "run" ? marketingToolRunningCopy(it.tool) : it.summary}</span>
         {it.status === "executed" ? (
-          <span className="ml-auto shrink-0 rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700 ring-1 ring-inset ring-sky-100">
+          <span className="ml-auto shrink-0 rounded-full bg-status-pending-bg px-2 py-0.5 font-medium text-status-pending ring-1 ring-inset ring-status-pending-ring">
             auto · policy
           </span>
         ) : null}
@@ -116,7 +116,7 @@ const ItemRow = memo(function ItemRow({ it }: { it: Item }) {
       />
     );
   return (
-    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+    <div className="rounded-panel border border-status-destructive-ring bg-status-destructive-bg px-3 py-2 text-xs text-status-destructive">
       {it.text}
     </div>
   );
