@@ -10,7 +10,7 @@
  * output quality can be compared across prompt revisions.
  */
 
-import { PLATFORMS, PLATFORM_LIMITS, type SocialPlatform } from "./constants";
+import { PLATFORMS, PLATFORM_LIMITS, platformLimitsFor, type SocialPlatform, type SocialPostPlatform } from "./constants";
 import type { BatchPlanSlot } from "./constants";
 import type { SocialVoiceProfile } from "./schemas";
 
@@ -124,7 +124,7 @@ export function buildRepairInput(args: {
 export function buildRevisionInput(args: {
   voice: SocialVoiceProfile;
   sourceContext: string;
-  post: { platform: SocialPlatform; body: string; cta: string | null; hashtags: string[]; tone: string };
+  post: { platform: SocialPostPlatform; body: string; cta: string | null; hashtags: string[]; tone: string };
   instruction: string;
   targetPlatform?: SocialPlatform;
 }): string {
@@ -142,6 +142,6 @@ export function buildRevisionInput(args: {
     `hashtags: ${args.post.hashtags.join(" ") || "(none)"}`,
     "",
     `INSTRUCTION: ${args.instruction}`,
-    `Target platform: ${PLATFORM_LIMITS[platform].label} — follow its style guide.`,
+    `Target platform: ${platformLimitsFor(platform).label} — follow its style guide.`,
   ].join("\n");
 }

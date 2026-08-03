@@ -9,6 +9,7 @@ import { Suspense } from "react";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { selectCourseForAuthorCached } from "@/lib/marketing/persistence";
 import { AgentDock } from "@/components/marketing/agent/AgentDock";
+import { DockClearance } from "@/components/marketing/agent/DockClearance";
 
 export default async function MarketingLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
@@ -19,7 +20,9 @@ export default async function MarketingLayout({ children }: { children: React.Re
 
   return (
     <>
-      {children}
+      <Suspense fallback={children}>
+        <DockClearance>{children}</DockClearance>
+      </Suspense>
       {course ? (
         <Suspense fallback={null}>
           <AgentDock defaultCourseId={course.id} />

@@ -19,12 +19,12 @@ export function Card({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-stone-200/80 bg-white",
-        variant === "default" && "shadow-[0_1px_2px_rgba(68,48,28,0.05)]",
+        "rounded-card border border-stone-200/80 bg-white",
+        variant === "default" && "shadow-card",
         variant === "elevated" && ELEVATED_SHADOW,
         variant === "interactive" &&
           cn(
-            "shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-all",
+            "shadow-card transition-all",
             "hover:-translate-y-0.5 hover:border-stone-300",
             "hover:shadow-[0_1px_2px_rgba(68,48,28,0.05),0_8px_24px_-12px_rgba(68,48,28,0.12)]",
             tone === "brand"
@@ -33,7 +33,7 @@ export function Card({
           ),
         variant === "tinted" &&
           cn(
-            "shadow-[0_1px_2px_rgba(68,48,28,0.05)] bg-gradient-to-b from-white",
+            "shadow-card bg-gradient-to-b from-white",
             tone === "brand" ? "to-brand-50/40" : "to-learn-50/40"
           ),
         className
@@ -50,21 +50,25 @@ export function CardHeader({
   subtitle,
   action,
   className,
+  as: Heading = "h3",
 }: {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
   action?: React.ReactNode;
   className?: string;
+  /** Heading level — pass "h2" when the card is a page-level section so the
+   *  document outline never skips a level (axe heading-order). */
+  as?: "h2" | "h3" | "h4";
 }) {
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 border-b border-stone-200/70 px-5 py-4",
+        "flex items-start justify-between gap-4 border-b border-stone-200/70 px-card-pad py-4",
         className
       )}
     >
       <div>
-        <h3 className="text-sm font-semibold text-stone-900">{title}</h3>
+        <Heading className="text-sm font-semibold text-stone-900">{title}</Heading>
         {subtitle && <p className="mt-0.5 text-xs text-stone-500">{subtitle}</p>}
       </div>
       {action}

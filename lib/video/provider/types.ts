@@ -130,6 +130,18 @@ export interface VideoProvider {
   /** Fetch a caption track as raw WebVTT text (public playback). Returns null if
    *  it isn't available yet / on a transient error. Optional (caller guards). */
   fetchCaptionVtt?(playbackId: string, trackId: string): Promise<string | null>;
+  /** Create a NEW asset that is a time-clip of an EXISTING asset (Mux:
+   *  `input: [{url: "mux://assets/{id}", start_time, end_time}]`). The clips
+   *  render pipeline's pre-cut (zero-dependency server-side trim — Task 0
+   *  resolved that exact spans must be pre-cut before the render provider
+   *  sees them). The returned asset is TEMPORARY — the caller deletes it
+   *  after downloading its MP4. Optional (caller guards). */
+  createClipAsset?(
+    sourceAssetId: string,
+    startSeconds: number,
+    endSeconds: number,
+    opts?: { passthrough?: string }
+  ): Promise<{ assetId: string }>;
   /** True if the raw body is authentic (or no secret configured). */
   verifyWebhookSignature(rawBody: string, signatureHeader: string | null): boolean;
   parseWebhookEvent(rawBody: string): ProviderWebhookEvent | null;

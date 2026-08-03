@@ -7,7 +7,7 @@
  */
 
 import Link from "next/link";
-import { Reveal } from "@/components/marketing/motion";
+import { Reveal } from "@/components/educators/motion";
 import { UnderlineScribble } from "./Annotate";
 import { RippleArcs } from "./backgrounds";
 

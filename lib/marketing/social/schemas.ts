@@ -11,7 +11,8 @@ import { z } from "zod";
 import {
   FUNNEL_STAGES,
   PLATFORMS,
-  PLATFORM_LIMITS,
+  platformLimitsFor,
+  POST_PLATFORMS,
   POST_STATUSES,
   SOCIAL_GOALS,
   SOCIAL_TONES,
@@ -20,6 +21,11 @@ import {
 } from "./constants";
 
 export const PlatformSchema = z.enum(PLATFORMS);
+/** The ROW platform union — text platforms ∪ clip-post platforms. The domain
+ *  post schema uses THIS: since M-C, clip posts (post_type='clip') legally
+ *  carry instagram/tiktok/youtube_shorts, and the old 2-value enum made every
+ *  clip row fail parse / lie under a cast. */
+export const PostPlatformSchema = z.enum(POST_PLATFORMS);
 export const GoalSchema = z.enum(SOCIAL_GOALS);
 export const FunnelStageSchema = z.enum(FUNNEL_STAGES);
 export const ToneSchema = z.enum(SOCIAL_TONES);
@@ -34,7 +40,7 @@ function checkPlatformLimits(
   post: { platform: SocialPlatform; body: string; hashtags: string[] },
   ctx: z.RefinementCtx
 ) {
-  const limits = PLATFORM_LIMITS[post.platform];
+  const limits = platformLimitsFor(post.platform);
   if (post.body.length > limits.charCap) {
     ctx.addIssue({
       code: "custom",
@@ -182,8 +188,8 @@ export const SocialPostSchema = z.object({
   batchOrder: z.number().int().min(1).max(5).nullable(),
   sourceType: z.enum(["course", "module", "lesson", "manual"]),
   sourceText: z.string().nullable(),
-  platform: PlatformSchema,
-  postType: z.string(), // 'text' in Phase 1; [FWD] 'clip','carousel' in 1.5
+  platform: PostPlatformSchema,
+  postType: z.string(), // 'text' (Phase 1) or 'clip' (Phase 1.5 ingest)
   goal: GoalSchema,
   funnelStage: FunnelStageSchema,
   audience: z.string().nullable(),

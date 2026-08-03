@@ -14,7 +14,7 @@ import type { ModelClient } from "@/lib/ai/modelClient";
 import { z } from "zod";
 import { toStrictJsonSchema } from "@/lib/ai/schema";
 import { withSemaphore } from "@/lib/ai/subagent";
-import { socialConfig, type SocialPlatform, type SocialTone, PLATFORM_LIMITS } from "./constants";
+import { socialConfig, type SocialPlatform, type SocialPostPlatform, type SocialTone, PLATFORM_LIMITS, platformLimitsFor } from "./constants";
 import { assembleSourceContext } from "./contextAssembly";
 import { emitSocialEvent } from "./events";
 import {
@@ -94,8 +94,8 @@ async function sourceContextForPost(deps: SocialPipelineDeps, post: SocialPost):
   return ctx.text;
 }
 
-function cleanHashtags(tags: string[], platform: SocialPlatform): string[] {
-  const max = PLATFORM_LIMITS[platform].hashtagMax;
+function cleanHashtags(tags: string[], platform: SocialPostPlatform): string[] {
+  const max = platformLimitsFor(platform).hashtagMax;
   return tags
     .map((t) => t.replace(HASHTAG_STRIP, ""))
     .filter((t) => t.replace("#", "").length > 0)
@@ -166,8 +166,8 @@ async function runRevisionCall(
         ...parsed.data,
         hashtags: cleanHashtags(parsed.data.hashtags, platform),
       };
-      if (revised.body.length > PLATFORM_LIMITS[platform].charCap) {
-        lastIssues = `body exceeds the ${PLATFORM_LIMITS[platform].label} cap`;
+      if (revised.body.length > platformLimitsFor(platform).charCap) {
+        lastIssues = `body exceeds the ${platformLimitsFor(platform).label} cap`;
         continue;
       }
       const violations = lintGeneratedPost(
@@ -481,11 +481,11 @@ export async function createPostVariants(
  *  list; writes nothing (the caller decides). */
 export async function suggestHashtags(
   deps: SocialPipelineDeps,
-  args: { text: string; platform: SocialPlatform }
+  args: { text: string; platform: SocialPostPlatform }
 ): Promise<string[]> {
   if (!deps.model) return suggestHashtagsDeterministic(args.text, args.platform);
   const cfg = socialConfig();
-  const max = PLATFORM_LIMITS[args.platform].hashtagMax;
+  const max = platformLimitsFor(args.platform).hashtagMax;
   const schema = toStrictJsonSchema(z.object({ hashtags: z.array(z.string()).max(8) }));
   try {
     const result = await withSemaphore(deps.model).runTurn(

@@ -41,8 +41,8 @@ const STATUS_TONE: Record<string, "slate" | "sky" | "amber" | "green" | "rose" |
 export function CampaignCard({ campaign, courseId }: { campaign: CampaignVM | null; courseId: string }) {
   if (!campaign) {
     return (
-      <Card className="p-5">
-        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">Campaign</p>
+      <Card className="p-card-pad">
+        <p className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">Campaign</p>
         <p className="mt-2 text-sm text-stone-600">No campaign yet — pick a goal and the AI drafts the full email sequence for review.</p>
         <Link
           href={`/marketing/email/new?course=${courseId}`}
@@ -55,9 +55,9 @@ export function CampaignCard({ campaign, courseId }: { campaign: CampaignVM | nu
   }
 
   return (
-    <Card className="p-5">
+    <Card className="p-card-pad">
       <div className="flex flex-wrap items-center gap-2.5">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600 ring-1 ring-brand-100">
+        <span className="grid size-9 shrink-0 place-items-center rounded-panel bg-brand-50 text-brand-700 ring-1 ring-brand-100">
           <Megaphone className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
@@ -76,14 +76,14 @@ export function CampaignCard({ campaign, courseId }: { campaign: CampaignVM | nu
         <CampaignLifecycleControls campaignId={campaign.id} status={campaign.status} />
         <Link
           href={`/marketing/email/${campaign.id}`}
-          className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-brand-600 transition-all hover:gap-2"
+          className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-brand-700 transition-all hover:gap-2"
         >
           Open <ArrowRight className="size-3.5" />
         </Link>
       </div>
 
       {campaign.autoPause ? (
-        <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+        <div className="mt-3 flex items-start gap-2.5 rounded-panel border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <p>
             <span className="font-semibold">Auto-paused by a guardrail</span> —{" "}
@@ -93,7 +93,7 @@ export function CampaignCard({ campaign, courseId }: { campaign: CampaignVM | nu
         </div>
       ) : campaign.status === "paused" ? (
         <p className="mt-3 flex items-center gap-1.5 text-xs text-stone-500">
-          <PauseCircle className="size-3.5 text-stone-400" />
+          <PauseCircle className="size-3.5 text-stone-500" />
           Paused — the {campaign.queued} queued send{campaign.queued === 1 ? " is" : "s are"} held, not deleted.
           Resume continues exactly where it stopped.
         </p>

@@ -98,6 +98,7 @@ function actionRowToDomain(row: ActionRow): MarketingActionRow {
     beforeSnapshot: row.before_snapshot ?? null,
     targetRef: (row.target_ref as { entity: string; id: string } | null) ?? null,
     summary: row.summary,
+    summaryFields: row.summary_fields ?? null,
     requestedBy: row.requested_by as "user" | "agent",
     resolvedAt: row.resolved_at,
     createdAt: row.created_at,
@@ -114,6 +115,7 @@ async function insertAction(
     status: ActionStatus;
     params: unknown;
     summary: string;
+    summaryFields?: Record<string, unknown> | null;
     target: EntityRef | null;
     beforeSnapshot: Json | null;
     revertExpiresAt?: string | null;
@@ -134,6 +136,7 @@ async function insertAction(
       before_snapshot: fields.beforeSnapshot,
       target_ref: (fields.target as unknown as Json) ?? null,
       summary: fields.summary,
+      summary_fields: (fields.summaryFields as Json) ?? null,
       requested_by: ctx.requestedBy,
       conversation_id: ctx.conversationId ?? null,
       revert_expires_at: fields.revertExpiresAt ?? null,
@@ -230,6 +233,7 @@ export async function runThroughGate(
       status: "auto_approved",
       params: a,
       summary: outcome.summary,
+      summaryFields: outcome.summaryFields ?? null,
       target,
       beforeSnapshot: before,
       revertExpiresAt,
@@ -310,6 +314,7 @@ export async function runThroughGate(
       status: "pending",
       params: a,
       summary: preview.summary,
+      summaryFields: preview.summaryFields ?? null,
       target: preview.target ?? null,
       beforeSnapshot: null,
       autonomyDecision: decision,
@@ -336,6 +341,7 @@ export async function runThroughGate(
     status: "executed",
     params: a,
     summary: outcome.summary,
+    summaryFields: outcome.summaryFields ?? null,
     target: outcome.target ?? null,
     beforeSnapshot: null,
     autonomyDecision: decision,

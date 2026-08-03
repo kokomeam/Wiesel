@@ -1,0 +1,65 @@
+{
+  "title": "WiseSel API verification test 2026-07-23T07:14:58.336Z \u2014 please ignore, will be removed.",
+  "firstComment": "First comment via API \ud83e\uddea (2026-07-23T07:14:58.336Z) \u2014 part of the same verification test.",
+  "firstCommentParamNote": "generic first_comment (linkedin_first_comment only exists on /api/upload video) \u2014 visual check of the live post decides whether it landed",
+  "call1": {
+    "status": 200,
+    "elapsedMs": 10575,
+    "linkedin": {
+      "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/",
+      "post_id": "urn:li:share:7485955623193542656",
+      "raw": {
+        "success": true,
+        "post_id": "urn:li:share:7485955623193542656",
+        "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/",
+        "platform_post_id": "urn:li:share:7485955623193542656",
+        "target_linkedin_page_id": null,
+        "status": "completed",
+        "attempts": 1
+      }
+    },
+    "usage": {
+      "count": 1,
+      "limit": 10,
+      "last_reset": "2026-07-17T08:12:40.651623"
+    }
+  },
+  "call2": {
+    "status": 200,
+    "elapsedMs": 4598,
+    "linkedin": {
+      "url": null,
+      "post_id": null,
+      "raw": {
+        "success": false,
+        "error": "Duplicate post detected. LinkedIn prevents posting the same content consecutively. If this issue persists, please contact support at [REDACTED_EMAIL]. Learn more: https://docs.upload-post.com/resources/common-errors.",
+        "status": "failed",
+        "attempts": 1
+      }
+    },
+    "usage": {
+      "count": 1,
+      "limit": 10,
+      "last_reset": "2026-07-17T08:12:40.651623"
+    }
+  },
+  "usageDelta": 0,
+  "historyMatches": 2,
+  "retrievedRefs": [
+    {
+      "source": "sync",
+      "post_id": "urn:li:share:7485955623193542656",
+      "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/"
+    },
+    {
+      "source": "history",
+      "post_id": "urn:li:share:7485955623193542656",
+      "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/"
+    }
+  ],
+  "verdict": {
+    "resultRetrieval": "PASS \u2014 post ID/URL retrievable via API",
+    "idempotency": "NOT double-posted \u2014 second identical call REJECTED with 'Duplicate post detected. LinkedIn prevents posting the same content consecutively.' (success:false, status:failed). Provider surfaces LinkedIn's own consecutive-duplicate check; only ONE post live. NOTE: script's original heuristic mislabeled this from the 2 history rows (one is the failed attempt).",
+    "quotaSemantics": "usage.count stayed 1 after both calls \u2014 FAILED uploads do NOT consume monthly quota"
+  }
+}

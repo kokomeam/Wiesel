@@ -1,0 +1,1399 @@
+/**
+ * Lesson Clip Repurposing (Phase 1.5, M-A) — INTEGRATION suite (live Supabase
+ * + the mock model, no OpenAI key needed). Self-provisions throwaway users.
+ *
+ *   - transcript acquisition: platform path from a Mux-captioned video_assets
+ *     row (cue → interpolated words); CACHE (second request = zero provider
+ *     calls — acceptance §17.1); provider path through the injected seam
+ *     (provider_ref persisted); no-source lesson → typed 422-class error
+ *   - selection through the GATE: staged reversible action (never an approval
+ *     card), candidates persisted with rank 1..N + prompt_version + rubric
+ *     scores, events on the single stream (lesson_transcribed +
+ *     clip_moments_generated)
+ *   - reverts: rejecting select_clip_moments removes the WHOLE candidate set
+ *     (composite snapshotter over request_id); rejecting a status change
+ *     restores the row byte-for-byte (modulo the moddatetime re-stamp);
+ *     the transcript CACHE survives a revert (it's not the gate target)
+ *   - zero-survivors: nothing persisted, generation_failed on the stream
+ *   - RLS matrix: creator B sees/edits NOTHING of creator A's transcripts or
+ *     candidates
+ *
+ *   AMENDMENT (recording-format routing) — the DB halves of the named specs:
+ *   - recordingFormat.metadata.spec: a lesson whose video BLOCK carries
+ *     recording.mode resolves from 'platform' and the frame inspector is
+ *     NEVER constructed (spy)
+ *   - recordingFormat.classifier.spec: an upload (no block metadata)
+ *     classifies through the injected inspector; no inspector → the degraded
+ *     camera_only default
+ *   - recordingFormat.override.spec: overrideTranscriptFormat flips the row
+ *     to 'creator_override' and the cache returns it untouched
+ *   - routing.matrix.spec (test_layout_persisted_on_candidate_and_job —
+ *     candidate half): layout lands on every clip_moment_candidate row and
+ *     round-trips reads; the clip_render_jobs half folds into M-B's CREATE
+ *
+ * Run: `npx tsx scripts/verify-clips-int.ts`
+ */
+
+import { readFileSync } from "node:fs";
+import dns from "node:dns";
+import { createClient } from "@supabase/supabase-js";
+
+// Node prefers supabase.co's IPv6 record; on IPv6-broken networks (this dev
+// machine's Clash setup) the TLS socket resets before the handshake.
+dns.setDefaultResultOrder("ipv4first");
+
+const retryingFetch: typeof fetch = async (input, init) => {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+};
+
+import type { Database, Json } from "@/lib/database.types";
+import { createMockModelClient } from "@/lib/ai/providers/mock";
+import { createMarketingServices } from "@/lib/marketing/services/factory";
+import { executeMarketingTool, rejectMarketingAction } from "@/lib/marketing/tools";
+import { advanceRenderJob, processClipRenderTick } from "@/lib/marketing/clips/render/service";
+import { getRenderJob, submissionsInLastMinute } from "@/lib/marketing/clips/render/jobs";
+import type { ClipRenderProvider } from "@/lib/marketing/clips/provider/types";
+import type { PrecutOps } from "@/lib/marketing/clips/render/precut";
+import type { MarketingToolContext } from "@/lib/marketing/tools/types";
+import { ClipTranscriptUnavailableError, ClipGenerationError } from "@/lib/marketing/clips/errors";
+import {
+  acquireLessonTranscript,
+  overrideTranscriptFormat,
+  type TranscriptionProvider,
+} from "@/lib/marketing/clips/transcripts";
+import type { FrameInspector, FrameSignal } from "@/lib/marketing/clips/format";
+import { selectClipMoments } from "@/lib/marketing/clips/selection";
+import { CLIP_PROMPT_VERSION } from "@/lib/marketing/clips/prompt";
+import { fixtureByKey } from "@/lib/marketing/clips/fixtures/lessons";
+import type { ModelMoment, RubricScores } from "@/lib/marketing/clips/schemas";
+
+let pass = 0,
+  fail = 0;
+function check(name: string, cond: boolean, detail = "") {
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail++;
+    console.log(`  ✗ ${name} ${detail}`);
+  }
+}
+
+function loadEnv() {
+  const raw = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  const env: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m) {
+      env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+      // tsx doesn't auto-load .env.local; modules that read process.env
+      // directly (createAdminClient in the attribution path) need it there.
+      if (process.env[m[1]] === undefined) process.env[m[1]] = env[m[1]];
+    }
+  }
+  return { url: env.NEXT_PUBLIC_SUPABASE_URL, anon: env.NEXT_PUBLIC_SUPABASE_ANON_KEY };
+}
+
+async function provisionUser(url: string, anon: string, tag: string) {
+  const email = `clips-${tag}-${crypto.randomUUID().slice(0, 8)}@example.com`;
+  const password = "test-password-1234";
+  const signup = await retryingFetch(`${url}/auth/v1/signup`, {
+    method: "POST",
+    headers: { apikey: anon, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!signup.ok) throw new Error(`signup: ${await signup.text()}`);
+  const supabase = createClient<Database>(url, anon, { global: { fetch: retryingFetch } });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) throw new Error(`signin: ${error?.message}`);
+  return { supabase, userId: data.user.id, email };
+}
+
+/* ───────────────────────── fixtures ────────────────────────────────── */
+
+const FLAT = fixtureByKey("flat_affect");
+
+/** Segment-level VTT (the same shape Mux produces at cue granularity). */
+function fixtureVtt(): string {
+  const toTs = (ms: number) => {
+    const t = Math.floor(ms / 1000);
+    const mm = String(Math.floor(t / 60)).padStart(2, "0");
+    const ss = String(t % 60).padStart(2, "0");
+    return `${mm}:${ss}.${String(ms % 1000).padStart(3, "0")}`;
+  };
+  const cues = FLAT.segments.map((s) => `${toTs(s.atMs)} --> ${toTs(s.endMs)}\n${s.text}`);
+  return `WEBVTT\n\n${cues.join("\n\n")}`;
+}
+
+const GOOD_SCORES: RubricScores = {
+  hook_potential: 4,
+  standalone: 5,
+  specificity: 4,
+  curiosity_gap: 4,
+  pedagogical_value: 5,
+  visual_interest: 3,
+  brand_safety: 5,
+};
+
+function fixtureMoment(overrides: Partial<ModelMoment> & { rank: number }): ModelMoment {
+  return {
+    startMs: 20_000,
+    endMs: 55_000,
+    momentType: "definition_reframe",
+    hookText: "Your index is a sorted copy",
+    altHooks: ["What a database index really is", "Indexes are copies, not magic"],
+    funnelStage: "tofu",
+    targetPlatformFit: ["instagram", "tiktok"],
+    rationale: "Reframes the core concept so every later rule is derivable.",
+    rubricScores: GOOD_SCORES,
+    captionDraft: "An index is a second sorted copy of your column.",
+    endCardCta: "Follow for the full indexing series",
+    segments: null,
+    stitchedScript: null,
+    ...overrides,
+  } as ModelMoment;
+}
+
+const BATCH = {
+  candidates: [
+    fixtureMoment({ rank: 1 }),
+    fixtureMoment({
+      rank: 2,
+      startMs: 55_000,
+      endMs: 95_000,
+      momentType: "misconception_buster",
+      hookText: "Why the planner ignores your index",
+      altHooks: ["The index you made is invisible", "Index the expression, not the column"],
+    }),
+    fixtureMoment({
+      rank: 3,
+      startMs: 130_000,
+      endMs: 175_000,
+      momentType: "counterintuitive_reveal",
+      hookText: "An index can slow your app down",
+      altHooks: ["Indexes are not free", "Faster reads, slower writes"],
+      funnelStage: "mofu",
+    }),
+  ],
+};
+
+const VERDICTS = {
+  verdicts: BATCH.candidates.map((c) => ({
+    rank: c.rank,
+    coherence: { pass: true, offendingPhrase: null, adjustedStartMs: null, adjustedEndMs: null },
+    hooks: [c.hookText, ...c.altHooks].map((h) => ({ hook: h, supported: true, unsupportedClaim: null })),
+  })),
+};
+
+async function main() {
+  const { url, anon } = loadEnv();
+  if (!url || !anon) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL / ANON_KEY in .env.local");
+
+  const A = await provisionUser(url, anon, "a");
+  const B = await provisionUser(url, anon, "b");
+  console.log("# provisioned two throwaway creators");
+
+  const courseId = crypto.randomUUID();
+  const moduleId = crypto.randomUUID();
+  const lesson1 = crypto.randomUUID(); // captioned video → platform transcript
+  const lesson2 = crypto.randomUUID(); // uncaptioned video → provider seam
+  const lesson3 = crypto.randomUUID(); // no video → typed error
+  const lesson4 = crypto.randomUUID(); // captioned video WITH block recording.mode
+  await A.supabase.from("courses").insert({
+    id: courseId,
+    author_id: A.userId,
+    title: "Practical SQL Performance",
+    description: "Make real production queries fast.",
+    plan: {
+      outcomes: ["Read a query plan", "Choose the right index"],
+      prerequisites: [],
+      teachingStyle: "dry, precise",
+    } as unknown as Json,
+  });
+  await A.supabase.from("modules").insert({ id: moduleId, course_id: courseId, title: "The Query Planner Is Not Magic", order: 0 });
+  await A.supabase.from("lessons").insert([
+    { id: lesson1, course_id: courseId, module_id: moduleId, title: "Indexing Deep Dive", order: 0 },
+    { id: lesson2, course_id: courseId, module_id: moduleId, title: "Join Strategies", order: 1 },
+    { id: lesson3, course_id: courseId, module_id: moduleId, title: "Planning Ahead", order: 2 },
+    { id: lesson4, course_id: courseId, module_id: moduleId, title: "Recorded In Studio", order: 3 },
+  ]);
+
+  // lesson4: a studio-recorded video — the BLOCK carries recording.mode
+  // (screen_camera), the platform metadata FR-1 must read verbatim.
+  const videoBlock4 = crypto.randomUUID();
+  await A.supabase.from("blocks").insert({
+    id: videoBlock4,
+    course_id: courseId,
+    lesson_id: lesson4,
+    type: "video",
+    order: 0,
+    content: {
+      asset: { provider: "mux", status: "ready" },
+      recording: { mode: "screen_camera", layout: "screen_with_camera_bubble", includeMic: true },
+      edit: { trimStartSeconds: null, trimEndSeconds: null },
+      settings: { autoplay: false, showChapters: false },
+    } as unknown as Json,
+  });
+
+  // Captioned ready video on lesson1 (the platform-transcript source; the
+  // mux ids make it a renderable M-B source too — fakes stand in for Mux).
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson1,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    mux_asset_id: "int-source-asset",
+    mux_playback_id: "int-source-playback",
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
+  // Uncaptioned ready video with an MP4 on lesson2 (the provider path).
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson2,
+    status: "ready",
+    duration_seconds: 120,
+    mp4_url: "https://example.com/lesson2.mp4",
+  });
+  // Captioned ready video on lesson4, LINKED to the metadata-carrying block.
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson4,
+    block_id: videoBlock4,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
+
+  const services = createMarketingServices();
+  const ctxFor = (model?: ReturnType<typeof createMockModelClient>): MarketingToolContext => ({
+    supabase: A.supabase as never,
+    courseId,
+    campaignId: null,
+    ownerId: A.userId,
+    services,
+    model,
+    requestedBy: "user",
+  });
+  const transcriptDeps = (
+    provider?: TranscriptionProvider,
+    frameInspectorFor?: (asset: {
+      playbackId: string | null;
+      durationSeconds: number | null;
+    }) => FrameInspector | null
+  ) => ({
+    supabase: A.supabase as never,
+    ownerId: A.userId,
+    courseIdForEvents: courseId,
+    transcriptionProvider: provider,
+    frameInspectorFor,
+  });
+
+  /* ───────────────── transcript acquisition ─────────────────────────── */
+
+  console.log("\n# transcript acquisition (platform · cache · provider · none)");
+  const t1 = await acquireLessonTranscript(transcriptDeps(), lesson1, { courseId });
+  check("platform path: source=platform, words interpolated", t1.source === "platform" && t1.words.length > 100);
+  check("platform path: duration from the asset", Math.abs(t1.durationSeconds - FLAT.durationMs / 1000) < 1);
+  check("platform path: plain text persisted", t1.text.includes("sorted copy"));
+
+  console.log("\n# recordingFormat.metadata.spec / classifier.spec (DB halves)");
+  // lesson1's video has NO block metadata and NO inspector → degraded default.
+  check(
+    "no metadata + no inspector → camera_only from 'classifier' (degraded default)",
+    t1.recordingFormat === "camera_only" && t1.formatSource === "classifier"
+  );
+  // lesson4's video block carries recording.mode — read verbatim; the spy
+  // inspector factory must NEVER be constructed (metadata short-circuits).
+  let inspectorBuilt = 0;
+  const spyFactory = () => {
+    inspectorBuilt++;
+    return {
+      async sampleFrames(count: number): Promise<FrameSignal[]> {
+        return Array.from({ length: count }, () => ({ facePresent: true, screenContentPresent: false }));
+      },
+    };
+  };
+  const t4 = await acquireLessonTranscript(transcriptDeps(undefined, spyFactory), lesson4, { courseId });
+  check(
+    "block recording.mode read verbatim → screen_camera from 'platform'",
+    t4.recordingFormat === "screen_camera" && t4.formatSource === "platform"
+  );
+  check("classifier NEVER invoked when metadata exists (spy)", inspectorBuilt === 0);
+
+  let providerCalled = 0;
+  const throwingProvider: TranscriptionProvider = {
+    async transcribe() {
+      providerCalled++;
+      throw new Error("must not be called");
+    },
+  };
+  const t1again = await acquireLessonTranscript(transcriptDeps(throwingProvider), lesson1, { courseId });
+  check("CACHE: second request returns the same transcript row", t1again.id === t1.id);
+  check("CACHE: zero provider calls on a cached lesson (§17.1)", providerCalled === 0);
+
+  const mockProvider: TranscriptionProvider = {
+    async transcribe({ mediaUrl }) {
+      providerCalled++;
+      check("provider gets the asset's media URL", mediaUrl === "https://example.com/lesson2.mp4");
+      return {
+        words: [
+          { w: "join", startMs: 0, endMs: 400, speaker: "S1" },
+          { w: "strategies", startMs: 400, endMs: 900, speaker: "S1" },
+          { w: "matter", startMs: 900, endMs: 1400, speaker: "S1" },
+        ],
+        text: "join strategies matter",
+        language: "en",
+        durationSeconds: 120,
+        providerRef: "mock-transcription-1",
+      };
+    },
+  };
+  // lesson2 = an upload (no block metadata) — the injected inspector
+  // classifies it screen_only through the pure decision.
+  const t2 = await acquireLessonTranscript(
+    transcriptDeps(mockProvider, () => ({
+      async sampleFrames(count: number): Promise<FrameSignal[]> {
+        return Array.from({ length: count }, () => ({ facePresent: false, screenContentPresent: true }));
+      },
+    })),
+    lesson2,
+    { courseId }
+  );
+  check("provider path: source=provider + providerRef persisted", t2.source === "provider" && t2.providerRef === "mock-transcription-1");
+  check("provider path: diarized words survive", t2.words[0].speaker === "S1");
+  check(
+    "upload classified through the inspector → screen_only from 'classifier'",
+    t2.recordingFormat === "screen_only" && t2.formatSource === "classifier"
+  );
+
+  let noSourceErr: unknown = null;
+  try {
+    await acquireLessonTranscript(transcriptDeps(), lesson3, { courseId });
+  } catch (err) {
+    noSourceErr = err;
+  }
+  check("no video → ClipTranscriptUnavailableError (422-class)", noSourceErr instanceof ClipTranscriptUnavailableError);
+
+  const transcribedEvents = await A.supabase
+    .from("analytics_event")
+    .select("id,props")
+    .eq("course_id", courseId)
+    .eq("type", "lesson_transcribed");
+  check("lesson_transcribed events on the single stream (3 lessons)", (transcribedEvents.data ?? []).length === 3);
+  check(
+    "lesson_transcribed events carry recordingFormat + formatSource",
+    (transcribedEvents.data ?? []).every((e) => {
+      const p = e.props as Record<string, unknown>;
+      return typeof p.recordingFormat === "string" && typeof p.formatSource === "string";
+    })
+  );
+
+  console.log("\n# recordingFormat.override.spec (DB half)");
+  const overridden = await overrideTranscriptFormat(A.supabase as never, lesson2, "screen_camera");
+  check(
+    "override flips format + stamps 'creator_override'",
+    overridden.recordingFormat === "screen_camera" && overridden.formatSource === "creator_override"
+  );
+  const t2cached = await acquireLessonTranscript(transcriptDeps(throwingProvider), lesson2, { courseId });
+  check(
+    "cache returns the override untouched (never re-classified)",
+    t2cached.recordingFormat === "screen_camera" && t2cached.formatSource === "creator_override"
+  );
+
+  /* ─────── M-R: a synced studio recording routes slide_short ──────────── */
+
+  console.log("\n# M-R slide-sync producer → slide_short routing (D-2 end-to-end)");
+  const lesson5 = crypto.randomUUID();
+  await A.supabase.from("lessons").insert({
+    id: lesson5,
+    course_id: courseId,
+    module_id: moduleId,
+    title: "Recorded Slides",
+    order: 4,
+  });
+  const videoBlock5 = crypto.randomUUID();
+  // The deck the sync points at (REAL structured-slide JSON shape — the
+  // M-F spec builder joins sync windows to these by slide id).
+  const deckBlock5 = crypto.randomUUID();
+  const mkSlide = (id: string, order: number, title: string, body: string) => ({
+    id,
+    order,
+    layout: "structured",
+    style: { background: { kind: "solid", color: "#ffffff" }, theme: { id: "editorial-warm" } },
+    elements: [],
+    template: {
+      layoutId: "prose",
+      content: { title: { text: title }, body: { text: body } },
+    },
+    speakerNotes: "",
+    ai: { purpose: "" },
+  });
+  await A.supabase.from("blocks").insert({
+    id: deckBlock5,
+    course_id: courseId,
+    lesson_id: lesson5,
+    type: "slide_deck",
+    order: 1,
+    content: {
+      slides: [
+        mkSlide("slide-intro", 0, "Indexing Deep Dive", "What an index actually is."),
+        mkSlide("slide-sorted-copy", 1, "A sorted copy", "An index is a second, physically separate, sorted copy."),
+        mkSlide("slide-planner", 2, "The planner", "Why the planner ignores your index."),
+        mkSlide("slide-tradeoffs", 3, "The trade", "Faster reads, slower writes."),
+      ],
+    } as unknown as Json,
+  });
+  // What the studio persists after a screen_only recording with the
+  // minimized-pill presenting flow: recording.mode + the captured slideSync.
+  await A.supabase.from("blocks").insert({
+    id: videoBlock5,
+    course_id: courseId,
+    lesson_id: lesson5,
+    type: "video",
+    order: 0,
+    content: {
+      asset: { provider: "mux", status: "ready" },
+      recording: {
+        mode: "screen_only",
+        layout: "screen_full",
+        includeMic: true,
+        slideSync: [
+          { slideId: "slide-intro", atMs: 0 },
+          { slideId: "slide-sorted-copy", atMs: 18_000 },
+          { slideId: "slide-planner", atMs: 60_000 },
+          { slideId: "slide-tradeoffs", atMs: 125_000 },
+        ],
+      },
+      edit: { trimStartSeconds: null, trimEndSeconds: null },
+      settings: { autoplay: false, showChapters: false },
+    } as unknown as Json,
+  });
+  await A.supabase.from("video_assets").insert({
+    owner_id: A.userId,
+    course_id: courseId,
+    lesson_id: lesson5,
+    block_id: videoBlock5,
+    status: "ready",
+    duration_seconds: FLAT.durationMs / 1000,
+    mux_asset_id: "int-source-asset-5",
+    mux_playback_id: "int-source-playback-5",
+    transcript_vtt: fixtureVtt(),
+    transcript: FLAT.segments.map((s) => s.text).join(" "),
+    caption_status: "ready",
+  });
+  const { loadLessonSlideSync } = await import("@/lib/marketing/clips/routing");
+  const loadedSync = await loadLessonSlideSync(A.supabase as never, lesson5);
+  check(
+    "loadLessonSlideSync reads the recorder-persisted capture (sorted, contract shape)",
+    loadedSync?.length === 4 && loadedSync[0].slideId === "slide-intro" && loadedSync[3].atMs === 125_000
+  );
+  const syncMock = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const syncOut = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson5, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(syncMock)
+  );
+  const { data: syncRows } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("layout")
+    .eq("request_id", syncOut.target!.id);
+  check(
+    "a fresh synced screen recording routes EVERY candidate slide_short (D-2 → FR-2)",
+    (syncRows ?? []).length === 3 && syncRows!.every((r) => r.layout === "slide_short")
+  );
+
+  /* ───────────────── selection through the gate ─────────────────────── */
+
+  console.log("\n# selection through the gate (staged, evented, revertible)");
+  const mock = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const out = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson1, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(mock)
+  );
+  check("reversible → staged, never an approval card", out.status === "staged" && out.actionId != null);
+  check("target is the candidate SET (request_id)", out.target?.entity === "clip_moment_set");
+  const requestId = out.target!.id;
+
+  const { data: rows } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("*")
+    .eq("request_id", requestId)
+    .order("rank");
+  check("3 candidates persisted, ranks 1..3", (rows ?? []).length === 3 && rows!.map((r) => r.rank).join(",") === "1,2,3");
+  check("prompt_version stamped on every candidate (§8)", rows!.every((r) => r.prompt_version === CLIP_PROMPT_VERSION));
+  check("ai_metadata carries model + voiceProfileVersion", rows!.every((r) => (r.ai_metadata as Record<string, unknown>).promptVersion === CLIP_PROMPT_VERSION));
+  check("rubric scores + rationale persisted", rows!.every((r) => r.rationale.length > 0 && r.rubric_scores !== null));
+  check("summary explains moments in creator terms", out.summary.includes("worth clipping") && out.summary.includes("sorted copy"));
+  // routing.matrix.spec — test_layout_persisted_on_candidate_and_job
+  // (candidate half; clip_render_jobs folds into M-B's CREATE):
+  check(
+    "layout persisted on every candidate row (camera_only lesson → face_track)",
+    rows!.every((r) => r.layout === "face_track")
+  );
+  check(
+    "ai_metadata carries recordingFormat + formatSource + actionDense",
+    rows!.every((r) => {
+      const m = r.ai_metadata as Record<string, unknown>;
+      return m.recordingFormat === "camera_only" && m.formatSource === "classifier" && typeof m.actionDense === "boolean";
+    })
+  );
+  check(
+    "tool summary shows the layout label on every candidate line",
+    out.summary.includes("Face clip")
+  );
+
+  const genEvents = await A.supabase
+    .from("analytics_event")
+    .select("props")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moments_generated");
+  check("clip_moments_generated event with count + promptVersion", (genEvents.data ?? []).some((e) => {
+    const p = e.props as Record<string, unknown>;
+    return p.count === 3 && p.promptVersion === CLIP_PROMPT_VERSION;
+  }));
+  check("clip_moments_generated event carries recordingFormat + per-candidate layouts", (genEvents.data ?? []).some((e) => {
+    const p = e.props as Record<string, unknown>;
+    return p.recordingFormat === "camera_only" && Array.isArray(p.layouts) && (p.layouts as string[]).every((l) => l === "face_track");
+  }));
+
+  /* ─────────────── status lifecycle + byte-for-byte revert ──────────── */
+
+  console.log("\n# status lifecycle + reverts");
+  const target = rows![0];
+  const before = JSON.stringify({ ...target, updated_at: null });
+  const statusOut = await executeMarketingTool(
+    "update_clip_moment_status",
+    { candidateId: target.id, status: "selected" },
+    ctxFor()
+  );
+  check("status change staged (reversible)", statusOut.status === "staged" && statusOut.actionId != null);
+  const { data: afterSel } = await A.supabase.from("clip_moment_candidate").select("status").eq("id", target.id).single();
+  check("candidate now selected", afterSel?.status === "selected");
+  const selEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moment_selected");
+  check("clip_moment_selected event emitted", (selEvents.data ?? []).length === 1);
+
+  await rejectMarketingAction(A.supabase as never, statusOut.actionId!);
+  const { data: restored } = await A.supabase.from("clip_moment_candidate").select("*").eq("id", target.id).single();
+  check(
+    "reject restores the candidate BYTE-FOR-BYTE (modulo moddatetime)",
+    JSON.stringify({ ...restored, updated_at: null }) === before
+  );
+
+  await rejectMarketingAction(A.supabase as never, out.actionId!);
+  const { data: afterRevert } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("request_id", requestId);
+  check("rejecting the selection removes the WHOLE candidate set", (afterRevert ?? []).length === 0);
+  const t1cached = await A.supabase.from("lesson_transcript").select("id").eq("lesson_id", lesson1).single();
+  check("the transcript cache survives the revert (not the gate target)", t1cached.data?.id === t1.id);
+
+  /* ───────────────────── zero-survivors path ────────────────────────── */
+
+  console.log("\n# zero-survivors: nothing persisted");
+  const weakBatch = {
+    candidates: [fixtureMoment({ rank: 1, rubricScores: { ...GOOD_SCORES, standalone: 2 } })],
+  };
+  const weakMock = createMockModelClient([], {
+    structured: { clip_moment_batch: weakBatch, clip_moment_batch_repair: weakBatch, clip_validation: { verdicts: [] } },
+  });
+  let zeroErr: unknown = null;
+  try {
+    await selectClipMoments(
+      {
+        supabase: A.supabase as never,
+        ownerId: A.userId,
+        model: weakMock,
+        clock: services.clock,
+        courseIdForEvents: courseId,
+      },
+      { lessonId: lesson1, courseId, stages: "balanced", targetPlatforms: ["instagram"], count: 5 }
+    );
+  } catch (err) {
+    zeroErr = err;
+  }
+  check("all-dropped run throws (stage=validation)", zeroErr instanceof ClipGenerationError && zeroErr.stage === "validation");
+  const { data: leftover } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1);
+  check("NOTHING persisted on failure", (leftover ?? []).length === 0);
+  const failEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_moments_generation_failed");
+  check("generation_failed event on the stream", (failEvents.data ?? []).length >= 1);
+
+  /* ─────────────────────────── RLS matrix ───────────────────────────── */
+
+  console.log("\n# RLS matrix (creator B vs. creator A's data)");
+  // Re-create a candidate set for A so B has something to try against.
+  const mock2 = createMockModelClient([], {
+    structured: { clip_moment_batch: BATCH, clip_validation: VERDICTS },
+  });
+  const out2 = await executeMarketingTool(
+    "select_clip_moments",
+    { lessonId: lesson1, stages: null, targetPlatforms: null, count: 5 },
+    ctxFor(mock2)
+  );
+  const { data: aCandidates } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("request_id", out2.target!.id);
+  check("fixture set re-created for the matrix", (aCandidates ?? []).length === 3);
+
+  const { data: bTranscripts } = await B.supabase.from("lesson_transcript").select("id");
+  check("B sees NO transcripts", (bTranscripts ?? []).length === 0);
+  const { data: bCandidates } = await B.supabase.from("clip_moment_candidate").select("id");
+  check("B sees NO candidates", (bCandidates ?? []).length === 0);
+  const { data: bUpdate } = await B.supabase
+    .from("clip_moment_candidate")
+    .update({ status: "dismissed" })
+    .eq("id", aCandidates![0].id)
+    .select("id");
+  check("B cannot update A's candidate", (bUpdate ?? []).length === 0);
+  const { data: bDelete } = await B.supabase
+    .from("clip_moment_candidate")
+    .delete()
+    .eq("id", aCandidates![0].id)
+    .select("id");
+  check("B cannot delete A's candidate", (bDelete ?? []).length === 0);
+  const { data: stillThere } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("status")
+    .eq("id", aCandidates![0].id)
+    .single();
+  check("A's candidate untouched by B's attempts", stillThere?.status === "candidate");
+
+  /* ───────────────── M-B: render jobs through the gate ────────────────── */
+
+  console.log("\n# M-B render jobs: gate staging + idempotency + revert-cancel");
+  const gen1 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check("generate_lesson_clips staged (reversible, no approval card)", gen1.status === "staged" && gen1.actionId != null);
+  check("target is the clip_render_job entity", gen1.target?.entity === "clip_render_job");
+  const jobId = gen1.target!.id;
+  const { data: jobRow } = await A.supabase.from("clip_render_job").select("*").eq("id", jobId).single();
+  check(
+    "job row: queued, face_track via reap (camera_only lesson), preset by funnel stage",
+    jobRow?.status === "queued" && jobRow?.layout === "face_track" && jobRow?.provider === "reap"
+  );
+  const { data: cand0 } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("start_ms,end_ms")
+    .eq("id", aCandidates![0].id)
+    .single();
+  const src = jobRow?.source as { startMs?: number; endMs?: number; recordingFormat?: string };
+  check(
+    "job span = the candidate's validated span, format stamped",
+    src?.startMs === cand0?.start_ms && src?.endMs === cand0?.end_ms && src?.recordingFormat === "camera_only"
+  );
+  check("summary is honest: queued ≠ rendered, manual posting", /queued/i.test(gen1.summary) && /NOT rendered/i.test(gen1.summary));
+
+  const gen1again = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check("idempotent replay returns the SAME job", gen1again.target?.id === jobId);
+
+  await rejectMarketingAction(A.supabase as never, gen1.actionId!);
+  const { data: cancelledRow } = await A.supabase.from("clip_render_job").select("status").eq("id", jobId).single();
+  check("revert of the create CANCELS the job (cost-ledger row survives)", cancelledRow?.status === "cancelled");
+
+  // A dead job must not consume its idempotency key: the unique index is
+  // PARTIAL over live/completed rows, so re-queuing the same candidate+preset
+  // after a failure/cancel creates a FRESH job (the old replay returned the
+  // dead row and retry was impossible — found live).
+  const gen1retry = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![0].id, preset: null },
+    ctxFor()
+  );
+  check(
+    "retry after cancel → a FRESH queued job (dead rows don't hold the idempotency key)",
+    gen1retry.target?.id != null && gen1retry.target.id !== jobId
+  );
+  await rejectMarketingAction(A.supabase as never, gen1retry.actionId!);
+
+  console.log("\n# M-B lifecycle: queued → precutting → submitted → completed (fakes, real DB+storage)");
+  const admin = createClient<Database>(url, loadServiceKey(), { global: { fetch: retryingFetch } });
+  // A crashed run must not leak ACTIVE job rows into the live DB: the real
+  // cron sweeps ALL creators, so a leaked `submitted` row with this suite's
+  // fake provider refs gets polled against the REAL provider forever (found
+  // live: a leaked proj-int-1 job 422'd on every prod-code tick). Register
+  // the cleanup as soon as jobs can exist.
+  leakGuard = async () => {
+    await admin
+      .from("clip_render_job")
+      .update({ status: "cancelled", error: "verify-clips-int teardown" })
+      .eq("creator_id", A.userId)
+      .in("status", ["queued", "precutting", "submitted", "rendering_local"]);
+  };
+  const gen2 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![1].id, preset: "tofu_hook" },
+    ctxFor()
+  );
+  const job2Id = gen2.target!.id;
+
+  // H-2 makes the tick BURN real text onto completed renders (and H-3's
+  // re-burn tool runs real ffmpeg over the clean master), so the fixture
+  // media must be REAL playable MP4s — generated once with the bundled
+  // ffmpeg-static (distinct tones/colors keep the variants byte-distinct).
+  const { ffmpegBinaryPath: binPath } = await import("@/lib/marketing/clips/render/localRender");
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const ffbin = binPath();
+  if (!ffbin) throw new Error("ffmpeg-static missing — npm install");
+  const mediaDir = mkdtempSync(joinPath(tmpdir(), "wisesel-int-media-"));
+  const makeMedia = (name: string, color: string, hz: number) => {
+    const p = joinPath(mediaDir, name);
+    const r = spawnSync(
+      ffbin,
+      [
+        "-y",
+        "-f", "lavfi", "-i", `color=c=${color}:s=720x1280:r=30:d=6`,
+        "-f", "lavfi", "-i", `sine=frequency=${hz}:duration=6`,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-pix_fmt", "yuv420p",
+        p,
+      ],
+      { encoding: "utf8" }
+    );
+    if (r.status !== 0) throw new Error(`fixture media ${name}: ${r.stderr?.slice(-300)}`);
+    return readFileSync(p);
+  };
+  const servedMedia = new Map<string, Buffer>([
+    ["https://media.example/precut.mp4", makeMedia("precut.mp4", "0x404040", 330)],
+    ["https://media.example/output.mp4", makeMedia("output.mp4", "0x303030", 440)],
+    ["https://media.example/output-clean.mp4", makeMedia("output-clean.mp4", "0x203040", 550)],
+  ]);
+
+  const fakePrecut: PrecutOps & { cleaned: string[] } = {
+    cleaned: [],
+    async start() {
+      return { muxAssetId: "precut-asset-1" };
+    },
+    async check() {
+      return { status: "ready", playbackId: "pb", mp4Url: "https://media.example/precut.mp4", error: null };
+    },
+    async cleanup(id) {
+      this.cleaned.push(id);
+    },
+  };
+  const fakeProvider: ClipRenderProvider = {
+    id: "reap",
+    async submit(input) {
+      check(
+        "provider receives the PRE-CUT bytes (never a URL) as a reframe",
+        input.kind === "provider_reframe" && input.bytes.length > 0
+      );
+      return { providerRef: "proj-int-1", uploadRef: "up-int-1", costMinutes: 1 };
+    },
+    async getJob() {
+      return {
+        status: "completed",
+        providerStatus: "completed",
+        outputUrl: "https://media.example/output.mp4",
+        cleanOutputUrl: "https://media.example/output-clean.mp4",
+        output: { width: 720, height: 1280, durationSeconds: 40 },
+        costMinutes: 1,
+        error: null,
+      };
+    },
+    async cancel() {},
+  };
+  const fakeFetch: typeof fetch = async (input) => {
+    const u = String(input);
+    const media = servedMedia.get(u);
+    if (media) return new Response(new Uint8Array(media), { status: 200 });
+    if (u.includes("media.example")) return new Response(Buffer.from(`bytes-of-${u}`), { status: 200 });
+    return fetch(input as never);
+  };
+  // No runFfmpegImpl injection: the H-2 burns inside the tick (and H-3's
+  // re-burn tool below) run the REAL bundled ffmpeg over the real fixture
+  // media — the artifacts asserted on are genuine burned videos.
+  const tickDeps = {
+    supabase: admin as never,
+    provider: fakeProvider,
+    precut: fakePrecut,
+    nowIso: new Date().toISOString(),
+    fetchImpl: fakeFetch,
+  };
+
+  let job2 = (await getRenderJob(admin as never, job2Id))!;
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check("tick 1: queued → precutting (temp clip asset ref stored)", job2.status === "precutting" && job2.precut?.muxAssetId === "precut-asset-1");
+
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check(
+    "tick 2: precutting → submitted (provider refs + submitted_at + create-billed cost)",
+    job2.status === "submitted" && job2.providerRef === "proj-int-1" && job2.submittedAt !== null && job2.costMinutes === 1
+  );
+  check("temp precut asset cleaned after submission", fakePrecut.cleaned.includes("precut-asset-1"));
+  check(
+    "token bucket counts the submission",
+    (await submissionsInLastMinute(admin as never, A.userId, new Date().toISOString())) >= 1
+  );
+
+  await advanceRenderJob(tickDeps, job2);
+  job2 = (await getRenderJob(admin as never, job2Id))!;
+  check(
+    "tick 3: submitted → completed with output + provider cost",
+    job2.status === "completed" && job2.output?.storagePath === `${A.userId}/clips/${job2Id}.mp4` && job2.costMinutes === 1
+  );
+  const dl = await admin.storage.from("clip-media").download(job2.output!.storagePath);
+  const burnedBytes = dl.data ? Buffer.from(await dl.data.arrayBuffer()) : Buffer.alloc(0);
+  check(
+    "output bytes really landed in the private clip-media bucket (a REAL burned mp4, not the clean bytes)",
+    !dl.error &&
+      burnedBytes.subarray(0, 16).includes(Buffer.from("ftyp")) &&
+      !burnedBytes.equals(servedMedia.get("https://media.example/output-clean.mp4")!)
+  );
+  // textBurn.pipeline.spec (H-2): BOTH artifacts stored — the clean master
+  // is the CLEAN provider variant's bytes VERBATIM (H-6: cleanOutputUrl
+  // consumed, never the provider-captioned URL); provenance on the output.
+  const dlClean = await admin.storage.from("clip-media").download(job2.output!.cleanStoragePath ?? "");
+  const cleanBytes = dlClean.data ? Buffer.from(await dlClean.data.arrayBuffer()) : Buffer.alloc(0);
+  check(
+    "clean master stored beside it (.clean.mp4 = the PROVIDER's clean variant bytes — H-6)",
+    !dlClean.error && cleanBytes.equals(servedMedia.get("https://media.example/output-clean.mp4")!)
+  );
+  check(
+    "burn provenance on the job output (hookText + assHash + styleVersion + burned)",
+    job2.output?.textBurn?.burned === true &&
+      typeof job2.output?.textBurn?.assHash === "string" &&
+      job2.output?.textBurn?.styleVersion === "clip-text-v1" &&
+      typeof job2.output?.textBurn?.hookText === "string"
+  );
+
+  const jobEvents = await A.supabase
+    .from("analytics_event")
+    .select("type,props")
+    .eq("course_id", courseId)
+    .in("type", ["clip_job_submitted", "clip_job_completed"]);
+  check(
+    "clip_job_submitted + clip_job_completed on the single stream w/ layout+format",
+    (jobEvents.data ?? []).length === 2 &&
+      (jobEvents.data ?? []).every((e) => {
+        const p = e.props as Record<string, unknown>;
+        return p.layout === "face_track" && p.recordingFormat === "camera_only";
+      })
+  );
+
+  // M-C: the completed job auto-ingested into the social queue.
+  const { data: clipPost } = await A.supabase
+    .from("social_post")
+    .select("post_type, platform, video_path, clip_job_id, ai_metadata, status")
+    .eq("clip_job_id", job2Id)
+    .maybeSingle();
+  check(
+    "M-C ingest: completed render → social_post (post_type='clip', draft, video_path, lineage metadata)",
+    clipPost?.post_type === "clip" &&
+      clipPost?.status === "draft" &&
+      clipPost?.video_path === `${A.userId}/clips/${job2Id}.mp4` &&
+      (clipPost?.ai_metadata as Record<string, unknown>)?.layout === "face_track"
+  );
+  check(
+    "M-C ingest: clip platform enum extension live, text posts still closed",
+    ["instagram", "tiktok", "youtube_shorts", "facebook", "linkedin"].includes(clipPost?.platform ?? "") &&
+      (await A.supabase
+        .from("social_post")
+        .insert({
+          creator_id: A.userId,
+          source_type: "manual",
+          platform: "instagram",
+          post_type: "text",
+          goal: "value",
+          funnel_stage: "tofu",
+          tone: "educational",
+          body: "x",
+        })
+        .then((r) => r.error !== null)) // the text-platform check must reject
+  );
+  const ingestEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_ingested");
+  check("clip_ingested event on the single stream", (ingestEvents.data ?? []).length >= 1);
+
+  /* ─────────────── M-D: posting kit + short link + attribution ─────────── */
+
+  console.log("\n# M-D posting kit through the gate (template path — no model)");
+  const { data: ingestedPost } = await A.supabase
+    .from("social_post")
+    .select("id")
+    .eq("clip_job_id", job2Id)
+    .single();
+  const kitOut = await executeMarketingTool(
+    "generate_posting_kit",
+    { postId: ingestedPost!.id, platform: "instagram" },
+    ctxFor() // no model → the deterministic template kit
+  );
+  check("kit staged (reversible, no approval card)", kitOut.status === "staged");
+  const kitData = kitOut.data as {
+    commentKeyword: string | null;
+    disclosureLine: string;
+    shortCode: string | null;
+    fullText: string;
+  };
+  check(
+    "kit: keyword + code-inserted disclosure + short link + honest manual-post summary",
+    /^[A-Z0-9]{3,12}$/.test(kitData.commentKeyword ?? "") &&
+      kitData.disclosureLine.includes("From my course") &&
+      kitData.shortCode !== null &&
+      /MANUALLY/.test(kitOut.summary)
+  );
+  check(
+    "kit fullText assembles caption + keyword CTA + link + disclosure",
+    kitData.fullText.includes(kitData.disclosureLine) &&
+      kitData.fullText.includes(`/l/${kitData.shortCode}`) &&
+      kitData.fullText.includes(kitData.commentKeyword ?? "∅")
+  );
+  const { data: kitRow } = await A.supabase
+    .from("posting_kit")
+    .select("*")
+    .eq("post_id", ingestedPost!.id)
+    .single();
+  check("posting_kit row persisted (active, keyword indexed)", kitRow?.status === "active" && kitRow?.comment_keyword === kitData.commentKeyword);
+  const { data: linkRow } = await A.supabase
+    .from("short_link")
+    .select("*")
+    .eq("code", kitData.shortCode!)
+    .single();
+  check("short_link row: creator-scoped, course-bound, destination is an app path", linkRow?.creator_id === A.userId && linkRow?.course_id === courseId && linkRow!.destination.startsWith("/"));
+
+  // Keyword uniqueness: a second kit on ANOTHER post walks to a suffix.
+  const gen4 = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: aCandidates![2].id, preset: "tofu_hook" },
+    ctxFor()
+  );
+  // finish it via the fake tick so it ingests
+  for (let i = 0; i < 4; i++) {
+    const j = (await getRenderJob(admin as never, gen4.target!.id))!;
+    if (j.status === "completed") break;
+    await advanceRenderJob({ ...tickDeps, nowIso: new Date().toISOString() }, j);
+  }
+  const { data: post4 } = await A.supabase
+    .from("social_post")
+    .select("id")
+    .eq("clip_job_id", gen4.target!.id)
+    .maybeSingle();
+  if (post4) {
+    const kit2 = await executeMarketingTool(
+      "generate_posting_kit",
+      { postId: post4.id, platform: "instagram" },
+      ctxFor()
+    );
+    const kit2Data = kit2.data as { commentKeyword: string | null };
+    check(
+      "keyword uniqueness: the second kit walks to a suffixed keyword",
+      kit2Data.commentKeyword !== kitData.commentKeyword && kit2Data.commentKeyword?.startsWith((kitData.commentKeyword ?? "").slice(0, 4)) === true
+    );
+  } else {
+    check("keyword uniqueness: the second kit walks to a suffixed keyword", false, "second job never ingested");
+  }
+
+  console.log("\n# M-D attribution: refCode → clip-attributed enrollment event");
+  const { recordClipEnrollment } = await import("@/lib/marketing/clips/attribution");
+  await recordClipEnrollment(courseId, kitData.shortCode!);
+  const { data: clipEnroll } = await admin
+    .from("analytics_event")
+    .select("props")
+    .eq("course_id", courseId)
+    .eq("type", "enrollment")
+    .eq("source", "clip_short_link");
+  check(
+    "enrollment event: source clip_short_link + kit/post lineage in props",
+    (clipEnroll ?? []).length === 1 &&
+      ((clipEnroll![0].props as Record<string, unknown>).kitId === kitRow?.id)
+  );
+  await recordClipEnrollment("00000000-0000-0000-0000-000000000000", kitData.shortCode!);
+  const { data: clipEnroll2 } = await admin
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "enrollment")
+    .eq("source", "clip_short_link");
+  const { data: foreignEnroll } = await admin
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", "00000000-0000-0000-0000-000000000000")
+    .eq("type", "enrollment");
+  check(
+    "a foreign course's ref records NOTHING (no cross-course credit)",
+    (clipEnroll2 ?? []).length === 1 && (foreignEnroll ?? []).length === 0
+  );
+
+  const { data: bKits } = await B.supabase.from("posting_kit").select("id");
+  const { data: bLinks } = await B.supabase.from("short_link").select("id");
+  check("RLS: B sees NO kits and NO short links", (bKits ?? []).length === 0 && (bLinks ?? []).length === 0);
+
+  /* ───────── textBurn.reburn.spec (H-3: free local re-burns) ────────────── */
+
+  console.log("\n# textBurn.reburn.spec (H-3: versioned write, rotation, quota, revert)");
+  const readPost = async () => {
+    const { data } = await A.supabase
+      .from("social_post")
+      .select("id, version, video_path, clean_video_path, ai_metadata")
+      .eq("clip_job_id", job2Id)
+      .single();
+    return data!;
+  };
+  const post0 = await readPost();
+  check(
+    "ingest carried the clean master + textBurn provenance onto the post",
+    post0.clean_video_path === `${A.userId}/clips/${job2Id}.clean.mp4` &&
+      (post0.ai_metadata as { textBurn?: { burned?: boolean } })?.textBurn?.burned === true
+  );
+
+  const reburnArgs = (over: Record<string, unknown> = {}) => ({
+    postId: post0.id,
+    expectedVersion: 0,
+    hookText: null,
+    animation: null,
+    holdSeconds: null,
+    captionsEnabled: null,
+    captionStyle: null,
+    ...over,
+  });
+  const doReburn = (over: Record<string, unknown>) =>
+    executeMarketingTool("update_clip_hook", reburnArgs(over), ctxFor());
+
+  const cur0 = await readPost();
+  const rb1 = await doReburn({
+    expectedVersion: cur0.version,
+    hookText: "Watch Theta(N) beat the flashy loop",
+    animation: "fade_in_out",
+    captionStyle: "block",
+  });
+  const post1 = await readPost();
+  const burn1Meta = (post1.ai_metadata as { textBurn?: Record<string, unknown> }).textBurn ?? {};
+  check(
+    "reburn 1: staged reversible, video_path → .burn1.mp4, version bumped",
+    rb1.status === "staged" && post1.video_path === `${A.userId}/clips/${job2Id}.burn1.mp4` && post1.version === cur0.version + 1
+  );
+  check(
+    "reburn 1: textBurn updated (hook + animation + style + seq + history=[original])",
+    burn1Meta.hookText === "Watch Theta(N) beat the flashy loop" &&
+      burn1Meta.animation === "fade_in_out" &&
+      burn1Meta.captionStyle === "block" &&
+      burn1Meta.seq === 1 &&
+      Array.isArray(burn1Meta.history) &&
+      (burn1Meta.history as string[])[0] === `${A.userId}/clips/${job2Id}.mp4`
+  );
+  const rb1Media = await admin.storage.from("clip-media").download(post1.video_path!);
+  check("reburn 1: new burned artifact really in storage", !rb1Media.error);
+  check(
+    "reburn summary says FREE local re-burn (no render minutes)",
+    /no render minutes/i.test(rb1.summary)
+  );
+
+  // Versioned-write conflict: a stale expectedVersion is refused with the
+  // re-read teaching, and NOTHING moved.
+  let conflictMsg = "";
+  try {
+    await doReburn({ expectedVersion: cur0.version, hookText: "Stale write" });
+  } catch (err) {
+    conflictMsg = err instanceof Error ? err.message : String(err);
+  }
+  const postAfterConflict = await readPost();
+  check(
+    "stale expectedVersion → teachable conflict error, post untouched",
+    /re-read/i.test(conflictMsg) && postAfterConflict.video_path === post1.video_path
+  );
+
+  // Rotation: three more re-burns; the window keeps current + 2 priors.
+  // The job's ORIGINAL burn ({jobId}.mp4) and the clean master never purge;
+  // the oldest RE-BURN artifact (burn1) does.
+  for (const n of [2, 3, 4]) {
+    const cur = await readPost();
+    await doReburn({ expectedVersion: cur.version, hookText: `Hook take ${n}` });
+  }
+  const postR4 = await readPost();
+  const burnR4Meta = (postR4.ai_metadata as { textBurn?: Record<string, unknown> }).textBurn ?? {};
+  check(
+    "reburn 4: seq=4, history = the last two priors (burn2, burn3)",
+    burnR4Meta.seq === 4 &&
+      JSON.stringify(burnR4Meta.history) ===
+        JSON.stringify([`${A.userId}/clips/${job2Id}.burn2.mp4`, `${A.userId}/clips/${job2Id}.burn3.mp4`])
+  );
+  const [gone1, kept2, keptOrig, keptClean] = await Promise.all([
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.burn1.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.burn2.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.mp4`),
+    admin.storage.from("clip-media").download(`${A.userId}/clips/${job2Id}.clean.mp4`),
+  ]);
+  check(
+    "rotation purged burn1; burn2 + the original + the clean master survive",
+    gone1.error !== null && !kept2.error && !keptOrig.error && !keptClean.error
+  );
+
+  // Quota (ledger-counted): with the daily bound at the 4 already spent, the
+  // 5th refuses with the budget message and no write happens.
+  process.env.CLIP_REBURNS_PER_DAY = "4";
+  let quotaMsg = "";
+  try {
+    const cur = await readPost();
+    await doReburn({ expectedVersion: cur.version, hookText: "One too many" });
+  } catch (err) {
+    quotaMsg = err instanceof Error ? err.message : String(err);
+  } finally {
+    delete process.env.CLIP_REBURNS_PER_DAY;
+  }
+  const postAfterQuota = await readPost();
+  check(
+    "reburn quota: the 5th/day is refused (ledger-counted), post untouched",
+    /re-burn budget/i.test(quotaMsg) && postAfterQuota.version === postR4.version
+  );
+
+  // Gate revert: rejecting the LAST re-burn restores the prior burned
+  // artifact reference — and the rotation window guarantees its FILE exists.
+  const cur4 = await readPost();
+  const rb5 = await doReburn({ expectedVersion: cur4.version, hookText: "Revert me" });
+  await rejectMarketingAction(A.supabase as never, rb5.actionId!);
+  const postReverted = await readPost();
+  const revertedMedia = await admin.storage.from("clip-media").download(postReverted.video_path!);
+  check(
+    "gate revert restores the prior burned artifact reference AND its file exists",
+    postReverted.video_path === postR4.video_path && !revertedMedia.error
+  );
+
+  const reburnEvents = await A.supabase
+    .from("analytics_event")
+    .select("id")
+    .eq("course_id", courseId)
+    .eq("type", "clip_hook_reburned");
+  check("clip_hook_reburned events on the single stream", (reburnEvents.data ?? []).length >= 4);
+
+  // RLS: creator B cannot re-burn A's clip post (unfindable under B's RLS).
+  let bDenied = false;
+  try {
+    await executeMarketingTool(
+      "update_clip_hook",
+      reburnArgs({ expectedVersion: 1, hookText: "B was here" }),
+      { ...ctxFor(), supabase: B.supabase as never, ownerId: B.userId }
+    );
+  } catch {
+    bDenied = true;
+  }
+  check("RLS: creator B cannot re-burn A's clip post", bDenied);
+
+  /* ── M-F: slideShortProvider.lifecycle.spec (same table, injected render) ── */
+
+  console.log("\n# slideShortProvider.lifecycle.spec (M-F: the SAME job table + write path)");
+  // lesson5 is the synced screen recording — its candidates are slide_short.
+  const { data: ssCandidates } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id, layout")
+    .eq("lesson_id", lesson5)
+    .order("rank");
+  check("slide_short candidates exist from the M-R proof", (ssCandidates ?? []).length > 0 && ssCandidates![0].layout === "slide_short");
+  const ssGen = await executeMarketingTool(
+    "generate_lesson_clips",
+    { candidateId: ssCandidates![0].id, preset: "bofu_preview" },
+    ctxFor()
+  );
+  const ssJobId = ssGen.target!.id;
+  const { data: ssJobRow } = await A.supabase
+    .from("clip_render_job")
+    .select("provider, layout, status")
+    .eq("id", ssJobId)
+    .single();
+  check(
+    "slide_short job: provider wisesel_slides, queued in the SAME table",
+    ssJobRow?.provider === "wisesel_slides" && ssJobRow?.layout === "slide_short" && ssJobRow?.status === "queued"
+  );
+
+  let slideShortRendered = 0;
+  const ssTickDeps = {
+    ...tickDeps,
+    nowIso: new Date().toISOString(),
+    // FR-6 injection point — the REAL Remotion render lives in
+    // verify-clips-slideshort; the lifecycle here proves the shared machine.
+    renderSlideShortImpl: async (_spec: unknown, outputPath: string) => {
+      slideShortRendered++;
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(outputPath, Buffer.from("ftyp-fake-slide-short-bytes"));
+    },
+  };
+  for (let i = 0; i < 4; i++) {
+    const j = (await getRenderJob(admin as never, ssJobId))!;
+    if (j.status === "completed" || j.status === "failed") break;
+    await advanceRenderJob({ ...ssTickDeps, nowIso: new Date().toISOString() }, j);
+  }
+  const ssJob = (await getRenderJob(admin as never, ssJobId))!;
+  check(
+    "lifecycle: queued → precutting → rendering_local → completed through transitionRenderJob",
+    ssJob.status === "completed" && slideShortRendered === 1
+  );
+  check(
+    "cost: in-house minutes on the ONE ledger (ceil(span/60) × rate)",
+    ssJob.costMinutes === Math.ceil((ssJob.source.endMs - ssJob.source.startMs) / 60_000)
+  );
+  const { data: ssPost } = await A.supabase
+    .from("social_post")
+    .select("post_type, ai_metadata")
+    .eq("clip_job_id", ssJobId)
+    .maybeSingle();
+  check(
+    "slide_short output rides the SAME ingest path (social_post post_type='clip')",
+    ssPost?.post_type === "clip" && (ssPost?.ai_metadata as Record<string, unknown>)?.layout === "slide_short"
+  );
+
+  console.log("\n# M-B token bucket: held when the minute budget is spent");
+  process.env.CLIP_RENDER_TOKENS_PER_MIN = "1";
+  try {
+    const gen3 = await executeMarketingTool(
+      "generate_lesson_clips",
+      { candidateId: aCandidates![2].id, preset: "mofu_story" },
+      ctxFor()
+    );
+    let job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    await advanceRenderJob(tickDeps, job3); // → precutting
+    job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    const outcome = await advanceRenderJob(tickDeps, job3);
+    check("submission HELD by the 10/min bucket (1/min override, 1 already submitted)", outcome === "held");
+    job3 = (await getRenderJob(admin as never, gen3.target!.id))!;
+    check("held job stays in precutting (retried next tick, nothing lost)", job3.status === "precutting");
+  } finally {
+    delete process.env.CLIP_RENDER_TOKENS_PER_MIN;
+  }
+
+  // One edge per job per tick — a few sweeps drain the queue (the cron
+  // shape). SCOPED to the test creator: an unscoped sweep with these FAKE
+  // deps would also advance any real creator's live jobs.
+  let sweptCompleted = 0;
+  for (let i = 0; i < 3 && sweptCompleted === 0; i++) {
+    const tickResult = await processClipRenderTick(tickDeps, { limit: 10, creatorId: A.userId });
+    sweptCompleted += tickResult.completed;
+  }
+  check("tick sweeps drain the held job to completion (reconciliation IS delivery)", sweptCompleted >= 1);
+
+  const { data: bJobs } = await B.supabase.from("clip_render_job").select("id");
+  check("RLS: B sees NO render jobs", (bJobs ?? []).length === 0);
+
+  /* ─────── currentTake.rebuild.spec (2026-07-16: re-record beside the old take) ─────── */
+
+  console.log("\n# currentTake.rebuild.spec (a NEWER captioned take replaces the lesson's source)");
+  const { data: newTakeRow, error: newTakeErr } = await A.supabase
+    .from("video_assets")
+    .insert({
+      owner_id: A.userId,
+      course_id: courseId,
+      lesson_id: lesson1,
+      status: "ready",
+      duration_seconds: 200,
+      mux_asset_id: "int-source-asset-v2",
+      mux_playback_id: "int-source-playback-v2",
+      transcript_vtt: fixtureVtt(),
+      transcript: FLAT.segments.map((s) => s.text).join(" "),
+      caption_status: "ready",
+    })
+    .select("id")
+    .single();
+  if (newTakeErr) throw new Error(`v2 take insert: ${newTakeErr.message}`);
+
+  // (a) BEFORE any re-acquire: rendering an old-take candidate must refuse —
+  // its spans live on the old take's timeline, and the render source now
+  // picks the new take.
+  const { data: openBefore } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1)
+    .neq("status", "dismissed");
+  let staleMsg = "";
+  try {
+    await executeMarketingTool(
+      "generate_lesson_clips",
+      { candidateId: openBefore![0].id, preset: null },
+      ctxFor()
+    );
+  } catch (err) {
+    staleMsg = err instanceof Error ? err.message : String(err);
+  }
+  check(
+    "render on an old-take candidate REFUSES with the re-find remedy (stale guard)",
+    /changed since these moments were found/i.test(staleMsg)
+  );
+
+  // (b) Re-acquiring rebuilds the cache from the new take and retires the
+  // old take's open candidates.
+  const rebuilt = await acquireLessonTranscript(transcriptDeps(), lesson1, { courseId });
+  check(
+    "transcript REBUILT from the new take (asset re-keyed, duration follows)",
+    rebuilt.videoAssetId === newTakeRow!.id && Math.abs(rebuilt.durationSeconds - 200) < 1
+  );
+  const { data: openAfter } = await A.supabase
+    .from("clip_moment_candidate")
+    .select("id")
+    .eq("lesson_id", lesson1)
+    .neq("status", "dismissed");
+  check(
+    "old take's open candidates retired on rebuild (spans were on the old timeline)",
+    (openBefore ?? []).length > 0 && (openAfter ?? []).length === 0
+  );
+
+  await leakGuard?.();
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
+}
+
+function loadServiceKey(): string {
+  const raw = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*(SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SECRET_KEY)\s*=\s*(.*)\s*$/);
+    if (m) return m[2].replace(/^["']|["']$/g, "");
+  }
+  throw new Error("SUPABASE_SERVICE_ROLE_KEY missing from .env.local (the render tick is admin-driven)");
+}
+
+/** Set once the admin client + test user exist; cancels any job rows this
+ *  run created that are still active — on success AND on a crashed run. */
+let leakGuard: (() => Promise<void>) | null = null;
+
+main().catch(async (err) => {
+  console.error(err);
+  try {
+    await leakGuard?.();
+  } catch {
+    // teardown is best-effort — the failure above is the real signal
+  }
+  process.exit(1);
+});

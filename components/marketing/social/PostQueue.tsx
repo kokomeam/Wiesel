@@ -22,18 +22,22 @@ import { ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import {
-  PLATFORM_LIMITS,
+  PLATFORMS,
+  platformLimitsFor,
+  POST_PLATFORMS,
   POST_STATUSES,
   type SocialPlatform,
+  type SocialPostPlatform,
   type SocialPostStatus,
 } from "@/lib/marketing/social/constants";
 import type { SocialBatch } from "@/lib/marketing/social/repository";
 import type { SocialPostListItem } from "@/lib/marketing/social/schemas";
 import { StageChip } from "./StageChip";
+import { PublishStateChip, type PublishState } from "./connected/PublishStates";
 
 export interface QueueFilters {
   status?: SocialPostStatus;
-  platform?: SocialPlatform;
+  platform?: SocialPostPlatform;
   funnelStage?: string;
 }
 
@@ -43,14 +47,21 @@ const STATUS_CLS: Record<SocialPostStatus, string> = {
   planned: "bg-violet-50 text-violet-700 ring-violet-200",
   posted_manual: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   archived: "bg-stone-100 text-stone-500 ring-stone-200",
+  posted_api: "bg-emerald-50 text-emerald-800 ring-emerald-300",
+  unpublished_local: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
+// M-C labels stay inside this surface's language rules (no publish/schedule
+// vocabulary here — that lives on the card surface): posted_api reads as
+// "Posted via account", distinct from the manual copy-out.
 export const STATUS_LABELS: Record<SocialPostStatus, string> = {
   draft: "Draft",
   ready: "Ready",
   planned: "Planned",
   posted_manual: "Posted manually",
   archived: "Archived",
+  posted_api: "Posted via account",
+  unpublished_local: "Withdrawn in WiseSel",
 };
 
 export function StatusPill({ status }: { status: SocialPostStatus }) {
@@ -114,7 +125,7 @@ const PostCard = memo(function PostCard(props: {
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="rounded-md border border-stone-200 bg-stone-50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-stone-600">
-          {PLATFORM_LIMITS[post.platform].label}
+          {platformLimitsFor(post.platform).label}
         </span>
         <StageChip stage={post.funnelStage} />
         <StatusPill status={post.status} />
@@ -140,6 +151,10 @@ export function PostQueue(props: {
   onSelect: (id: string) => void;
   onMarkReady: (ids: string[]) => void;
   empty: boolean;
+  /** M-D: connected-publish state per post (chip is OUTSIDE the row button —
+   *  nested-button hydration rule). */
+  publishState?: PublishState | null;
+  onPublishChanged?: () => void;
 }) {
   const { filters } = props;
 
@@ -208,11 +223,13 @@ export function PostQueue(props: {
         ))}
         <span className="mx-1 h-4 w-px bg-stone-200" />
         <FilterChip active={!filters.platform} label="All platforms" onClick={() => props.onFilters({ ...filters, platform: undefined })} />
-        {(["linkedin", "facebook"] as const).map((p) => (
+        {POST_PLATFORMS.filter(
+          (p) => PLATFORMS.includes(p as SocialPlatform) || props.posts.some((post) => post.platform === p)
+        ).map((p) => (
           <FilterChip
             key={p}
             active={filters.platform === p}
-            label={PLATFORM_LIMITS[p].label}
+            label={platformLimitsFor(p).label}
             onClick={() => props.onFilters({ ...filters, platform: filters.platform === p ? undefined : p })}
           />
         ))}
@@ -248,7 +265,15 @@ export function PostQueue(props: {
           </div>
           <div className="space-y-2">
             {posts.map((p) => (
-              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
+              <div key={p.id}>
+                <PostCard post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
+                <PublishStateChip
+                  postId={p.id}
+                  state={props.publishState ?? null}
+                  onChanged={() => props.onPublishChanged?.()}
+                  onRecard={() => selectPost(p.id)}
+                />
+              </div>
             ))}
           </div>
         </div>
@@ -259,7 +284,15 @@ export function PostQueue(props: {
           <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-stone-400">Individual posts</div>
           <div className="space-y-2">
             {groups.loose.map((p) => (
-              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
+              <div key={p.id}>
+                <PostCard post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
+                <PublishStateChip
+                  postId={p.id}
+                  state={props.publishState ?? null}
+                  onChanged={() => props.onPublishChanged?.()}
+                  onRecard={() => selectPost(p.id)}
+                />
+              </div>
             ))}
           </div>
         </div>

@@ -25,13 +25,13 @@ export function PageHeader({
             {eyebrow}
           </p>
         )}
-        <h1 className="text-3xl font-light tracking-tight text-stone-900 [font-family:var(--font-display)] sm:text-4xl">
+        <h1 className="font-display text-display font-light tracking-tight text-stone-900">
           {title}
         </h1>
         {description && (
-          <p className="mt-1 max-w-2xl text-[15px] text-stone-600">
-            {description}
-          </p>
+          // stone-600: page descriptions sit on the warm canvas, where
+          // stone-500 is 4.47:1 — just under AA.
+          <p className="mt-1 max-w-2xl text-sm text-stone-600">{description}</p>
         )}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

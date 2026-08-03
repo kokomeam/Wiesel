@@ -5,7 +5,7 @@
  * Calm hover micro-motion only; nothing loops off-screen.
  */
 
-import { Reveal, Stagger, StaggerItem } from "@/components/marketing/motion";
+import { Reveal, Stagger, StaggerItem } from "@/components/educators/motion";
 import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/cn";
 import { EASE } from "@/lib/ease";

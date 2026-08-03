@@ -31,6 +31,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   IMAGE_MAX_BYTES,
   PLATFORM_LIMITS,
+  platformLimitsFor,
   SOCIAL_IMAGES_BUCKET,
   type SocialPostStatus,
 } from "@/lib/marketing/social/constants";
@@ -43,6 +44,8 @@ import {
 } from "@/lib/marketing/social/exportText";
 import type { SocialPost } from "@/lib/marketing/social/schemas";
 import { ManualPublishNotice } from "./ManualPublishNotice";
+import { ConnectedScheduler } from "./connected/ConnectedScheduler";
+import type { PublishState } from "./connected/PublishStates";
 import { StageChip } from "./StageChip";
 import { STATUS_LABELS, StatusPill } from "./PostQueue";
 import { SocialApiError, socialApi } from "./api";
@@ -63,9 +66,13 @@ export function PostEditor(props: {
   savePatch: (post: SocialPost, patch: Record<string, unknown>) => Promise<void>;
   onQueueChanged: () => Promise<void>;
   showToast: (m: string) => void;
+  /** M-D: connected-publish affordances (allowlisted vocabulary lives in
+   *  ./connected/*; this file's own copy stays Phase-1). */
+  publishState?: PublishState | null;
+  onPublishChanged?: () => void;
 }) {
   const { post } = props;
-  const limits = PLATFORM_LIMITS[post.platform];
+  const limits = platformLimitsFor(post.platform);
 
   const [body, setBody] = useState(post.body);
   const [cta, setCta] = useState(post.cta ?? "");
@@ -517,7 +524,18 @@ export function PostEditor(props: {
           </Button>
         </div>
 
-        <ManualPublishNotice />
+        <ConnectedScheduler
+          post={{ id: post.id, platform: post.platform, postType: post.postType }}
+          state={props.publishState ?? null}
+          onChanged={() => props.onPublishChanged?.()}
+          showToast={props.showToast}
+        />
+        {/* The Phase-1 notice (bytes unchanged — AC-MD.5) renders only when
+            no connected affordance applies; beside a live publish control its
+            "never publishes" claim would contradict the surface. */}
+        {!(post.platform === "linkedin" || post.platform === "youtube_shorts") && (
+          <ManualPublishNotice />
+        )}
       </div>
     </div>
   );

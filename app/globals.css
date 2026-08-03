@@ -39,6 +39,78 @@
   /* App surface tokens (warm paper) */
   --color-canvas: #faf7f1;
   --color-line: #ece7de;
+
+  /* ── UI-1 design tokens (Wave 1) ──────────────────────────────────────
+   * The single source of truth for the marketing surface. Components use
+   * the generated utilities (text-meta, rounded-card, shadow-card,
+   * bg-status-*-bg …) — never raw hex or bracketed px values (enforced by
+   * `npm run verify:ui`). */
+
+  /* Semantic status colors — one fixed meaning everywhere:
+   *   success     published / completed / live
+   *   pending     queued / processing / held
+   *   attention   needs review / approval / question
+   *   neutral     draft / dismissed / inactive
+   *   destructive cancel / unpublish / failure
+   * Each is a text/bg/ring trio (chip anatomy). */
+  --color-status-success: #047857; /* emerald-700 */
+  --color-status-success-bg: #ecfdf5; /* emerald-50 */
+  --color-status-success-ring: #d1fae5; /* emerald-100 */
+  --color-status-pending: #b45309; /* amber-700 */
+  --color-status-pending-bg: #fffbeb; /* amber-50 */
+  --color-status-pending-ring: #fef3c7; /* amber-100 */
+  --color-status-attention: #be123c; /* rose-700 */
+  --color-status-attention-bg: #fff1f2; /* rose-50 */
+  --color-status-attention-ring: #ffe4e6; /* rose-100 */
+  --color-status-neutral: #57534e; /* stone-600 */
+  --color-status-neutral-bg: #f5f5f4; /* stone-100 */
+  --color-status-neutral-ring: #e7e5e4; /* stone-200 */
+  --color-status-destructive: #b91c1c; /* red-700 */
+  --color-status-destructive-bg: #fef2f2; /* red-50 */
+  --color-status-destructive-ring: #fee2e2; /* red-100 */
+
+  /* Brand gradient endpoints (used by .brand-gradient below). The amber
+   * start is a deliberate brand decision predating the ramp. */
+  --color-gradient-from: #f59e0b;
+  --color-gradient-to: #ea580c;
+
+  /* Type scale — 12/13/14/16/20 + display (page titles only). Two weights
+   * per size max; counts/timestamps add `tabular-nums`. */
+  --text-meta: 0.75rem; /* 12 — eyebrows, chips, timestamps */
+  --text-meta--line-height: 1rem;
+  --text-secondary: 0.8125rem; /* 13 — feed summaries, help text */
+  --text-secondary--line-height: 1.25rem;
+  --text-body: 0.875rem; /* 14 — controls, body copy */
+  --text-body--line-height: 1.25rem;
+  --text-title: 1rem; /* 16 — card titles */
+  --text-title--line-height: 1.5rem;
+  --text-section: 1.25rem; /* 20 — sub-page headings, stat values */
+  --text-section--line-height: 1.75rem;
+  --text-display: 1.7rem; /* page title only */
+  --text-display--line-height: 2.25rem;
+
+  /* Spacing (4px grid) — exactly one token per concept. */
+  --spacing-card-pad: 1.25rem; /* 20 — a card's inner padding */
+  --spacing-gutter: 1.5rem; /* 24 — page/grid gutter */
+  --spacing-section-gap: 1.5rem; /* 24 — vertical rhythm between sections */
+  --spacing-row-h: 2.5rem; /* 40 — list-row minimum height */
+  --spacing-fab-clearance: 5.5rem; /* 88 — reserved dock above the FAB */
+  --spacing-rail: 21rem; /* 336 — the hub's contextual rail column */
+
+  /* Radius — card / inner panel / control; pills stay rounded-full. */
+  --radius-card: 1rem;
+  --radius-panel: 0.75rem;
+  --radius-control: 0.5rem;
+
+  /* Elevation — the warm card whisper + overlay depth. */
+  --shadow-card: 0 1px 2px rgba(68, 48, 28, 0.05);
+  --shadow-overlay: 0 20px 48px -12px rgba(68, 48, 28, 0.25);
+
+  /* Motion — 150–250ms ease-out for disclosure/drawer transitions. */
+  --ease-out-brand: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Eyebrow tracking (mono uppercase labels). */
+  --tracking-eyebrow: 0.12em;
 }
 
 @layer base {
@@ -47,13 +119,13 @@
   }
   body {
     background-color: var(--color-canvas);
-    color: #292524;
+    color: var(--color-stone-800);
     font-feature-settings: "cv11", "ss01";
     text-rendering: optimizeLegibility;
   }
   ::selection {
-    background-color: #fed7aa;
-    color: #431407;
+    background-color: var(--color-brand-200);
+    color: var(--color-brand-950);
   }
 }
 
@@ -92,7 +164,11 @@
   }
 
   .brand-gradient {
-    background-image: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+    background-image: linear-gradient(
+      135deg,
+      var(--color-gradient-from) 0%,
+      var(--color-gradient-to) 100%
+    );
   }
 
   /* Student-portal counterpart to .brand-gradient — same rationing rules:
@@ -194,4 +270,12 @@
       transform: translateX(100%);
     }
   }
+}
+
+/* Display serif utility — the `--font-display` variable itself is installed
+ * at runtime by next/font (components/intro/fonts.ts), so it must NOT be an
+ * @theme token (that would emit a circular :root definition). This replaces
+ * the `[font-family:var(--font-display)]` arbitrary-property idiom. */
+@utility font-display {
+  font-family: var(--font-display);
 }

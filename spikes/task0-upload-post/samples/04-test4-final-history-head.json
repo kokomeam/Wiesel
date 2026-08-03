@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/history?limit=5&page=1",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "26",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:20:29 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "57",
+      "x-ratelimit-reset": "1784791260",
+      "x-request-id": "7a0318c8a7f4475f90ce687d77430454"
+    },
+    "body": {
+      "error": "Invalid limit"
+    }
+  },
+  "elapsedMs": 306,
+  "at": "2026-07-23T07:20:29.228Z"
+}

@@ -106,7 +106,7 @@ export function ConfirmDialog({
         aria-label={title}
         data-state={open ? "open" : "closed"}
         className={cn(
-          "relative w-full max-w-sm rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_20px_60px_rgba(28,25,23,0.22)]",
+          "relative w-full max-w-sm rounded-card border border-stone-200/80 bg-white p-5 shadow-overlay",
           "transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
           open
             ? "translate-y-0 scale-100 opacity-100 starting:translate-y-2 starting:scale-95 starting:opacity-0"
@@ -116,7 +116,7 @@ export function ConfirmDialog({
         <div className="flex gap-3.5">
           <span
             className={cn(
-              "grid size-9 shrink-0 place-items-center rounded-xl",
+              "grid size-9 shrink-0 place-items-center rounded-panel",
               tone === "danger" ? "bg-rose-50 text-rose-600" : "bg-stone-100 text-stone-600"
             )}
           >
@@ -124,7 +124,7 @@ export function ConfirmDialog({
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-stone-900">{title}</h2>
-            <div className="mt-1 text-[13px] leading-relaxed text-stone-500">{message}</div>
+            <div className="mt-1 text-secondary text-stone-500">{message}</div>
           </div>
         </div>
 

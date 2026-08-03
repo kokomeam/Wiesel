@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/facebook/pages?profile=henry",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "54",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:13:53 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "57",
+      "x-ratelimit-reset": "1784790840",
+      "x-request-id": "353e678e97e74a128720156a2a1b3dd7"
+    },
+    "body": {
+      "success": false,
+      "message": "No Facebook pages found"
+    }
+  },
+  "elapsedMs": 562,
+  "at": "2026-07-23T07:13:53.541Z"
+}

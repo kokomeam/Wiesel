@@ -1268,7 +1268,17 @@ status lifecycle, a source-of-truth row, and a denormalized snapshot on the bloc
   Commits on release (one autosave/undo step). The "Done trimming" button is now a filled
   brand **"Save changes"** (was a ghost button that blended in). Handles use `role="slider"`
   + arrow-key nudge; refs are synced in an effect (React 19 forbids ref writes in render).
-- **Tests:** `npm run verify:video` (153 checks, no key/DB/browser) — schema +
+- **⚠ Compositor must NOT be rAF-driven (2026-07-15, found on a real frozen
+  lesson):** `requestAnimationFrame` is fully suspended in a backgrounded tab,
+  and screen-mode recording means the studio tab IS backgrounded — the canvas
+  stopped repainting and MediaRecorder encoded one frozen frame + live audio
+  for the whole take. The draw loop now runs on `lib/editor/
+  backgroundTicker.ts` (a dedicated-Worker `setInterval` at 30fps — worker
+  timers are visibility-throttle-exempt; rAF only as a degraded fallback).
+  Never revert the compositor (or any recording-critical loop) to rAF.
+- **Tests:** `npm run verify:video` (162 checks, no key/DB/browser — incl.
+  `backgroundTicker.spec`: worker ticks/stop/fallback + the grep pinning the
+  compositor to the ticker) — schema +
   persistence round-trip, the `UPDATE_VIDEO_LESSON` reducer, status machine +
   `reconcileMuxState`, trim validation + `trimmedDurationSeconds`/`hasTrim`, playback
   URLs, row→view mapping, recorder config/geometry, the Mux adapter (create/get/delete
@@ -1663,6 +1673,434 @@ compliant footers (8 locales, `language.ts`).
   object separately — TS won't catch it, the build's page-data collection
   does). ⚠ Node prefers supabase.co's broken-here IPv6 — int scripts pin
   `dns.setDefaultResultOrder("ipv4first")`.
+
+## Lesson Clip Repurposing (Marketing Phase 1.5, M-A) — `lib/marketing/clips/*`, 2026-07-07
+
+> Guide: **`docs/clips.md`** · Task 0 findings: `docs/reap-task0-findings.md`.
+> M-A = transcripts + the moment selection engine + eval harness. **Task 0
+> ran vs the LIVE Reap API (2026-07-08)**: contract is camelCase
+> (`sourceUrl`/`uploadId` — the PRD guessed snake_case); explicit
+> `selectedStart/End` exist BUT **Reap enforces a ≥60s window** (our spans
+> are 20-90s — top M-B risk; pre-cut-and-upload recommended); NO webhooks in
+> the API; NO brand-template API; (d)/(e)/(f) still need one real ≥90s video.
+> Hard fences (grep-tested): no platform APIs, no posting/scheduling
+> (`/publish-clip` + `/schedule-clips` never referenced), no cron, no
+> synthetic media, Phase 1 language rules verbatim.
+>
+> **Format-aware amendment (2026-07-08, folded into M-A):** recording format
+> (`camera_only|screen_camera|screen_only` — the literals ARE the platform's
+> `VideoRecordingMode`) is a first-class input: read from the video BLOCK's
+> `recording.mode` via the asset's block_id (metadata short-circuits,
+> spy-tested); uploads never carry a mode → classifier over ≥8 Mux thumbnail
+> frames judged through `ModelClient.inspectImage` (ffprobe NOT installed,
+> no face-detection dep — the vision seam is the zero-dep frame source;
+> degraded default camera_only/'classifier'); persisted on `lesson_transcript`
+> (`recording_format`+`format_source`; `overrideTranscriptFormat` =
+> creator_override, cache never re-classifies). `routing.ts ·
+> resolveClipLayout` = the ONLY facts→decisions map: camera→face_track ·
+> screen_camera→stacked_split · screen_only→ slide_short (sync covers span)
+> ≻ screen_action_zoom (action-dense: `actionDensity.ts`, lexicon
+> `CLIP_ACTION_CUES` ≥2 cues/min OR frame-diff ≥0.15; degraded = cues alone)
+> ≻ audiogram. `layout` on every candidate row (migration `20260708100000`;
+> the DB default 'face_track' exists ONLY for pre-amendment snapshot
+> restores — code always writes explicitly). Prompt = **clips-v3**:
+> ALL formats' visual_interest rules in the STATIC prefix (cache rule), the
+> lesson's format in the request block; demo_payoff +1 visual_interest
+> (screen_only + dense, applied pre-rubric-bar, capped 5, recorded as
+> visualInterestBoosted); hook-slide-ref lint fires ONLY when sync data
+> exists. ⚠ **Slide-sync has NO producer** (recorder captures no slide
+> timings — exhaustively audited): the contract (`SlideSyncEntrySchema`,
+> `loadLessonSlideSync` returns null) + eval fixtures are live, but real
+> lessons can't route slide_short until the recorder captures `{slideId,
+> atMs}` — an M-F prerequisite. ⚠ `screen_camera` recordings are ONE
+> composited canvas track — separate streams never exist on this platform.
+> 5 eval fixtures (screen_slides: ≥2 viable, ALL slide_short — binding;
+> screen_action → screen_action_zoom on the lexicon alone); `eval:clips
+> --live --control` = the FR-8 pre-amendment delta artifact. Milestones
+> renumbered: **M-F = the Remotion slide-short provider (NEW), M-G =
+> hardening.** The amendment's `*.spec.ts` names map to named verify-suite
+> sections (repo has no jest).
+
+- **Pipeline** (`selection.ts`): acquire transcript (cache → Mux caption VTT
+  → `TranscriptionProvider` seam [M-B fills]) → context (Phase 1 assembler +
+  **quiz-miss concepts** from `rollup_question_stats` — it has `lesson_id`
+  directly; question wording joined from draft quiz blocks via the node-id
+  invariant) → **`runSelectionCore`** (DB-free; shared VERBATIM with
+  `scripts/eval-clips.ts`): ONE mid-tier structured call (sequential
+  small-tier map→reduce over `CLIP_TRANSCRIPT_MAX_TOKENS` 24k) → Zod gate +
+  exactly ONE repair (deterministic flags may claim it; rubric-only failures
+  never do) → deterministic checks (`validate.ts`) → the ONE small-tier
+  validation call (coherence ±8s adjust-or-drop, multi-segment NEVER
+  adjusted; hook integrity w/ first-supported promotion) → persist
+  `clip_moment_candidate` (+ 5 snake_case events on the single stream).
+  Selection is model-REQUIRED (typed 503); failures persist NOTHING.
+- **⚠ Sentence snapping is load-bearing** (`snapToSentenceBounds`,
+  clips-v2): model span timestamps are interpolated guesses off 12s anchors —
+  unsnapped spans start mid-sentence and the coherence validator (rightly)
+  kills them. The first live eval scored 1 viable / 11 returned before this +
+  the coherence calibration (judge reference debt OUTSIDE the clip's time
+  window; the clip carries its own footage — "watch this" is fine).
+- **Prompts are versioned artifacts** (§8): `CLIP_PROMPT_VERSION` (now
+  `clips-v3`) stamped on every candidate; exemplars are repo fixtures
+  (`fixtures/exemplars.ts`). ANY prompt change: bump the version → beat the
+  baseline on `npm run eval:clips --live` → re-record CI stubs
+  (`--live --record` → `fixtures/recordings/`).
+- **Governance**: 3 tools in `tools/clips.ts`, ALL reversible (no approval
+  cards). Gate entities: `clip_moment_set` (composite over `request_id`;
+  revert removes the whole run's set, the transcript cache survives) +
+  `clip_moment_candidate` (single-row). `clip_moment_candidate` has a DELETE
+  policy for revert-of-create; `lesson_transcript` deliberately has none.
+- **DB**: migration `20260707100000_lesson_clips.sql` (applied). ⚠ the live
+  DB has unmerged-branch drift (`learning_events.feedback_comment`,
+  `learner_messages.delivery_status`…) — after a migration here, SPLICE the
+  new tables into `lib/database.types.ts` rather than full-regen, or this
+  branch's analytics pages break on foreign nullability changes.
+- **M-B render jobs (2026-07-08, see docs/clips.md § Render jobs):**
+  `clip_render_job` (migration `20260708130000`; SINGLE write path =
+  `transitionRenderJob`, optimistic on `from`; revert = CANCEL never delete —
+  cost-ledger rows survive) advanced ONE edge per marketing scheduler tick
+  (`processClipRenderTick` — reconciliation IS delivery; Reap has NO
+  webhooks). Every job PRE-CUTS the exact span via a temp Mux clip asset
+  (`createClipAsset`, zero-dep trim; Reap re-picks inside create-clips
+  windows AND rejects stream.mux.com as sourceUrl → upload-only +
+  `create-reframe`, whose output rides get-project-clips NOT urls.videoFile).
+  D-5: face_track→Reap; stacked_split/zoom/audiogram→in-house ffmpeg
+  (`ffmpegArgs.ts` pure builders, REAL renders in verify:clips:render;
+  `ffmpeg-static` is a real dependency — ~75MB binary, serverless needs
+  outputFileTracingIncludes); slide_short→M-F. stacked_split face band =
+  the recorder's OWN `bubbleRect` when metadata exists (provenance
+  'deterministic', D-3) else one vision call ('detected'). D-1:
+  `lib/marketing/brand/tokens.ts` = the ONE brand-constant module
+  (divergence-checked). Quotas server-side: 10 submits/min bucket
+  (submitted_at), CLIP_JOBS_PER_DAY 20, CLIP_MINUTES_PER_MONTH 60 (ONE
+  ledger: provider billedDuration verbatim + in-house minutes×rate).
+  Tools: generate_lesson_clips (idempotency `gen:{cand}:{preset}`,
+  "QUEUED IS NOT RENDERED") · cancel_clip_job · list_clip_jobs — all
+  reversible/read. Burned captions on in-house layouts arrive with M-F's
+  Remotion caption engine (deliberate; provider face_track ships captioned).
+- **Tests**: `verify:clips` (199 pure, in `npm test` — incl. the amendment's
+  named spec sections) · `verify:clips:render` (52 — provider contract vs
+  the T0 findings, state machine, golden ffmpeg args, brand divergence,
+  REAL ffmpeg renders of all 3 in-house layouts, D-3 provenance spies,
+  fences) · `verify:clips:int` (64, live Supabase + mock model — incl.
+  metadata-short-circuit spy, upload classification, override flip, layout
+  round-trip, gate-staged render jobs + idempotent replay + revert-cancel +
+  the full queued→precutting→submitted→completed lifecycle vs real
+  DB/storage with fake provider/precut/ffmpeg + token-bucket hold + RLS) ·
+  `eval:clips` (live/record/replay/control; the flat-affect ≥2-viable gate
+  is the differentiator claim + the FR-8 layout gates). REST:
+  `POST/GET /api/marketing/lessons/[lessonId]/clip-moments`.
+- **ALL MILESTONES SHIPPED (2026-07-14)** — Task 0 (live: camelCase,
+  ≥60s-window = Reap RE-PICKS → pre-cut + create-reframe only; sourceUrl
+  rejects stream.mux.com → upload-only; billedDuration = selected minutes;
+  faces-only tracker pan-crops PiP → in-house layouts) · M-C ingest
+  (`social_post.post_type='clip'`, platform enum extended w/ a text-posts
+  row gate, lineage `regenerated_from_post_id`, artifacts/
+  m-c-in1-stacked-split.mp4 = the real cs61b lesson end-to-end) · **M-R
+  recorder capture** (slideSync producer + minimized REC pill, pipGeometry
+  D-3, dual-track flag D-4 — recording.slideSync/pipGeometry/
+  dualCameraAssetRowId, all optional/back-compat; loadLessonSlideSync is
+  REAL) · M-D posting kit (`postingKit.ts` — disclosure CODE-inserted,
+  keyword suffix-walk + partial unique index, /l/{code} re-resolves at
+  CLICK time + threads ?ref → recordClipEnrollment, /preview/{code} w/ the
+  answer-key-invariant grep) · M-E `/marketing/clips` UI (FR-9 chips,
+  audiogram caveat, signed-URL player, kit panel, usage meter) · **M-F
+  Remotion slide-short provider** (`render/slideShort/*` — pure
+  StructuredSlide-dispatch mirror + element-fallback card, kinetic captions,
+  hook/end-card, app globals.css via @remotion/tailwind-v4 + @ alias;
+  serverExternalPackages keeps the stack out of the Next bundle;
+  CLIP_RENDER_WORKERS pool outside the LLM ceiling; license trigger = 4th
+  hire; deps now 20) · M-G hardening (reconciliation chaos, wordErrorRate,
+  seed:clips, full-chain green). Suites: verify:clips 199 ·
+  verify:clips:render 114 · verify:clips:slideshort 14 (REAL renders, in
+  npm test) · verify:clips:int 85 · eval replay PASS.
+- **First-live-usage fix pass (2026-07-15, docs/clips.md § First-live-usage
+  fixes):** (1) the ROOT bug was the RECORDER — the screen+camera compositor
+  was rAF-driven and Chrome suspends rAF in backgrounded tabs (recording
+  another window = tab always hidden) → 6 min of ONE frozen frame + live
+  audio; fixed with `lib/editor/backgroundTicker.ts` (dedicated-Worker
+  interval, visibility-immune; rAF only as fallback) — pre-fix recordings
+  are unfixable, re-record. (2) dev delivery: jobs only advanced on manual
+  clicks → `POST /api/marketing/clips/tick` (creator-scoped sweep) polled
+  by the clips page every 5s while jobs are active (prod cron unchanged;
+  user-triggered polling ≠ cron). (3) `static_video` guard at job creation
+  (3 span thumbnails byte-identical on a camera-bearing format ⇒ refuse
+  before billing; screen_only exempt — static slides are legit). (4)
+  provider 4xx: ReapError stringifies structured detail (was "[object
+  Object]") + carries `permanent` (not 408/429/upload-put); the step
+  handler FAILS the job via seam-level `isPermanentProviderError`; failJob
+  now cleans temp precut assets; the int suite creator-scopes its sweeps +
+  a leak guard cancels its rows even on crash (a leaked fake-ref job had
+  been 422-polling the real Reap API on every prod tick). (5) idempotency
+  index made PARTIAL over live/completed (migration `20260715100000`) —
+  failed/cancelled jobs no longer block "Render again" (UI shows the error
+  + retry button). ALSO: clip ingest now inserts via the social REPOSITORY
+  (`insertSocialPost`) — the M-C direct insert violated verify-social's
+  single-write-module grep and the failure had been masked by piped exit
+  codes; verify:social + verify:video 162 (backgroundTicker.spec). (6) the
+  social queue crashed on the FIRST ingested clip post: clip rows carry
+  instagram/tiktok/youtube_shorts but `PLATFORM_LIMITS` is the text contract
+  (closed at 2) — every loaded-post path now uses **`platformLimitsFor()`**
+  (total over `POST_PLATFORMS` = text ∪ `CLIP_POST_PLATFORMS`, backed by
+  `CAPTION_LIMITS` edit-guards); `SocialPostSchema.platform` = the row union
+  (`PostPlatformSchema`); direct `PLATFORM_LIMITS[x]` stays ONLY for
+  request-validated text platforms (repo-wide grep bans
+  `PLATFORM_LIMITS[post.platform]`); the text fence holds. (7)
+  `/marketing/clips` "window is not defined": `kitFullText` read
+  `window.location.origin` and Next SSRs client components — origin now
+  rides `useSyncExternalStore` (SSR renders the relative /l/ link).
+  verify:social 133 · verify:clips:render 115 (SSR check). (8, 2026-07-16)
+  **a re-record was invisible**: the new take lands BESIDE the old one and
+  transcript/render/labels were all longest-first → pinned to the dead
+  take. Now **`pickCurrentVideoRow`** (transcripts.ts, pure) = THE shared
+  lesson-video pick (dual excluded → captioned preferred → NEWEST first)
+  used by acquisition + `findRenderSource` + the page labels;
+  `lesson_transcript.video_asset_id` (migration `20260716100000`, types
+  SPLICED) keys the cache to its asset — acquire REBUILDS on a changed take
+  + retires the old take's open candidates (spans live on the old
+  timeline); legacy null rows stamp in place on duration match (±2s) else
+  rebuild; `createClipRenderJob` refuses stale candidates
+  (`stale_candidates` — "run Find clip moments again"). currentTake.spec
+  (verify:clips 203) + currentTake.rebuild.spec (verify:clips:int 88).
+- **Burned text: hook overlay + karaoke captions (2026-07-16, H-1..H-6 +
+  T-1..T-7 — full detail docs/clips.md § Burned text):** ALL burned text is
+  applied IN-HOUSE post-geometry on the final-resolution video (provider
+  renders consumed CLEAN — Reap's create-reframe has no caption params but
+  always delivers clipUrl; adapter + completion step are clean-first, so
+  double captions are impossible). ONE style source `clips/textStyles.ts`
+  (CLIP_TEXT_STYLES sizing/stroke-non-optional, CLIP_TEXT_SAFE_AREAS per
+  platform, CLIP_TEXT_MOTION, beam/block/minimal karaoke presets as pure
+  data; colors only via BRAND_TOKENS — tokens gained `textStroke`), consumed
+  by BOTH the pure ASS builder `textTrack.ts` (PlayRes = actual dims,
+  height-proportional scaling, deterministic wrap ladder 92→72→60 then
+  hook_unfit, 3-4-word one-line-at-a-time karaoke, T-7 lint incl.
+  hook-duplicate caption suppression) AND the Remotion slide-short (native
+  text, divergence-tested — never burned twice). Fonts BUNDLED
+  `assets/clip-fonts/` (OFL: Archivo Black hooks + Inter Bold captions;
+  bake-off sheet docs/clip-text-bakeoff/) via `subtitles=…:fontsdir=`;
+  `textFonts.ts` asserts name-table families pre-burn + a real-render
+  fallback detector (silent DejaVu = release blocker). `render/burn.ts` =
+  the H-2 stage (crf 20 parity, audio copied) at provider ingest + as the
+  in-house final pass; BOTH artifacts stored (video_path burned ·
+  clean_video_path master, migration `20260716120000`, types SPLICED);
+  provenance ai_metadata.textBurn {…, styleVersion clip-text-v1, assHash,
+  seq, history}. `update_clip_hook` (reversible, 8th clip tool) = free local
+  re-burn from the master (no minutes; CLIP_REBURNS_PER_DAY=50
+  ledger-counted; versioned write — video_path joined
+  versionedUpdateSocialPost; artifact rotation keeps 3, job original + clean
+  never purge; revert restores a still-existing file); UI = the clip card's
+  hook editor (altHooks one-tap). Goldens: 48 ASS snapshots (verify:clips) +
+  10 golden frames ≤1.5% (verify:clips:render), regenerate BOTH with
+  CLIP_TEXT_GOLDENS_RECORD=1 on any styling change + bump
+  CLIP_TEXT_STYLE_VERSION. Suites now: verify:clips 252 · render 137 ·
+  slideshort 14 · int 102 (real ffmpeg burns over real fixture media).
+  Demo: artifacts/h-theta-hook-burn-demo.mp4 (the real Theta(N) moment).
+
+## Social publishing foundation (M-A) — `lib/marketing/publish/*` + `lib/marketing/accounts/*`, 2026-07-23
+
+> Guide: **`docs/social-accounts.md`** · Provider verification: `spikes/task0-upload-post/FINDINGS.md`
+> (Task 0a live-verified evidence — AUTHORITATIVE over Upload-Post's own spec where they conflict).
+> M-A = the `SocialPublishProvider` seam (Upload-Post adapter), creator account linking,
+> the social_accounts data layer, and the `/marketing/accounts` connect UI. **No publish
+> call exists anywhere in M-A** — publishing ships in M-B.
+
+- **Seam**: `lib/marketing/publish/provider/{types,uploadPostClient,index}.ts` —
+  `createCreatorProfile / getLinkUrl / listConnectedAccounts / publish(clientRef) /
+  verifyPost / deletePost / getComments`. uploadPostClient is the ONLY vendor module
+  (fetch + `Apikey`, no SDK; `UploadPostError.permanent` = 4xx except 408/429;
+  grep-fenced: `api.upload-post.com` nowhere else, NO scheduling params ever sent,
+  NO webhook ingestion — poll-only). The four Task 0a design deltas (no-delete honest
+  refusal [⚠ vendor's NEWER spec documents posts/unpublish — unverified, never probed;
+  M-B may verify], self-tracked quota, poll-only verifyPost [status poll carries
+  platform_post_id+post_url — richer than spec; history limit=10 backstop; "live" is
+  terminal — never wait on Shorts classification], verify-before-republish via
+  persisted clientRef+request_id) are documented in docs/social-accounts.md.
+- **Data** (migration `20260723120000`, types SPLICED): `social_provider_profile`
+  (1/creator, `profile_ref_enc` = AES-256-GCM via `accounts/crypto.ts` +
+  `SOCIAL_ACCOUNTS_ENC_KEY` — NO plaintext fallback, linking hard-disabled when unset) ·
+  `social_account` (per-platform health linked|expired|revoked, unique (creator,
+  provider, platform), `versionedUpdateSocialAccount` is the ONLY mutation —
+  `AccountVersionConflictError` on stale) · `social_publish_ledger` (append-only, no
+  update/delete policy even for the owner; monthly usage = counting it — the provider
+  has NO quota-read endpoint). RLS ×3 creator_id = auth.uid(). Writes confined to
+  `accountsRepository.ts` (grep). Events +3 on the single stream (snake_case):
+  `social_account_linked/expired/revoked` — emission skips when the creator has no
+  course (course_id NOT NULL; rows are truth, events are telemetry).
+- **Flow**: `accountsService.ts` — ensureProviderProfile (idempotent; mints `ws_*`,
+  409 = success) → beginLink (JWT access_url ~48h) → hosted page →
+  `/marketing/accounts?linked=1` → reconcileAccounts (provider truth → rows +
+  transition events; reauth_required→expired, absent→revoked, return→linked) →
+  multi-account import dialog when >1 new platform arrives (keep some, revoke rest —
+  OUR-side revoke: no per-platform provider disconnect API exists). UI =
+  `components/marketing/accounts/*` + hub Explore "Connected accounts". LANGUAGE RULE:
+  no publish/schedule copy on the M-A surface (literal-level grep — import paths can't
+  false-positive).
+- **Tests**: `verify:accounts` (64 pure, in `npm test` — adapter vs the RECORDED Task 0a
+  fixtures in `lib/marketing/accounts/fixtures/task0a/`, crypto, drift guard, language,
+  fences, usage thresholds) · `verify:accounts:int` (live Supabase + mock provider —
+  RLS matrix, reconcile transitions, selection, conflict, events, ledger month-boundary)
+  · `verify:accounts:bundle` (real `next build` → greps all 361 client chunks for env
+  names + vendor host + LIVE key values). Env: `UPLOAD_POST_API_KEY`,
+  `SOCIAL_ACCOUNTS_ENC_KEY` (both in .env.local + .env.example),
+  `SOCIAL_UPLOADS_PER_MONTH`/`_WARN_AT` overrides.
+- **M-B binding decisions (2026-07-29 checkpoint — full text in
+  docs/social-accounts.md § M-B binding decisions):** (1) **NO unpublish
+  re-probe** — `deletePost` honest-refusal stands; cite a specific newly
+  documented endpoint before ANY probe (the Task 0a test posts are cleaned up
+  manually by the creator). (2) **Manifest contract** — manifest row persisted
+  BEFORE the publish call; the provider request ref persisted as its own
+  durable step IMMEDIATELY after the call returns (primary crash-recovery
+  handle; history `limit=10` is fallback-only). (3) **Webhooks = passive
+  experiment only** — poll-verify is the production path; no webhook code in
+  the production workflow. (4) **Ledger on provider-ACCEPT, skipped when
+  `platformError` is set** — accepted ±1 over-count drift (warns early, the
+  safe direction; rationale on `insertLedgerRow`).
+- **M-B — the publish path SHIPPED (2026-07-29, approved plan; guide in
+  docs/social-accounts.md § M-B):** `social_publish_manifest` (migration
+  `20260729100000`, types SPLICED; **row id IS the provider clientRef**;
+  states queued→submitting→submitted→live|verifying, guard-holds self-heal;
+  RLS creator-only, NO delete policy) · single write paths in
+  `lib/marketing/publish/manifestRepository.ts` (grep-fenced; optimistic
+  status+version) · workflow in `publishService.ts` advanced ONE edge per
+  scheduler tick (`processPublishTick` rides `/api/marketing/scheduler/tick`,
+  provider+encryption gated; guards due→health→quota→window; durable
+  `submitting` BEFORE the one `provider.publish` call site; refs persisted
+  immediately after; ledger on ACCEPT skip-on-platformError, idempotent by
+  client_ref) · crash recovery via the new seam method `listRecentPosts`
+  (conservative exact-title match, null title never matches; grace 3 then
+  failed — **the publish call is NEVER re-fired**) · platform gate =
+  `PROVEN_PUBLISH_PLATFORMS` linkedin+youtube only (youtube_shorts→youtube
+  map; the rest honestly refuse until Task 0b) · cancel/reschedule
+  queued/held only (past submission = honest refusal — no provider recall
+  exists) · published text = `composePublishText` (identical to the reviewed
+  manual-copy composition) · clip video bytes from `clip-media`. **Backend
+  only — the M-A language fence holds; publish UI vocabulary arrives with
+  M-C/M-D.** Tests: `verify:publish-path` (50 pure, in `npm test`) ·
+  `verify:publish-path:int` (61 — the approved chaos list end-to-end).
+- **M-C — approval governance SHIPPED (2026-07-30; guide:
+  docs/social-accounts.md § M-C):** the preview-then-decide card is the SOLE
+  publish path. `social_publish_approval` (migration `20260729140000`, types
+  SPLICED; single-use sha256 token minted AT RENDER, 15-min TTL, atomic
+  consume; no delete policy) → `approvalService.approvePublishCard` = the
+  ONLY `requestPublish` caller (grep + runtime assert + `approval_id` NOT
+  NULL **UNIQUE** + `approved_via='card'` check). `content_hash`
+  (body+cta+hashtags+first_comment+video_path+image) binds card→manifest;
+  **edit-voids both directions** (hook in `versionedUpdateSocialPost` +
+  pre-submit re-hash → `voided`, terminal + DB-trigger-immutable). Retry =
+  approval-linked clone from `failed` only (no fresh card while hash
+  matches); `platform_failed` re-cards via edit. Frozen-source re-validated
+  at mint AND pre-submit (`held source_superseded`). **Fire path = Inngest**
+  (dep 22): `social/publish.requested` → `sleepUntil(scheduled_for)` →
+  advance; `social/publish.released` cancels (void/cancel/reschedule); the
+  M-B tick lives on ONLY as the Inngest cron sweep (`lib/inngest/*`,
+  `/api/inngest`; the marketing scheduler tick no longer publishes). Post
+  states: `posted_api` (≠ posted_manual) + `unpublished_local` (valve: local
+  only, platform copy stays live, zero provider calls);
+  `mark_social_post_status` schema-blocked from forging them. Tools:
+  publish/schedule/unpublish_social_post = irreversible + **HARD_DENY** (a
+  card in every mode incl. auto — AC-MC.6) and even approved only FILE
+  cards; `propose_publish_plan` reversible (revert declines — approvals are
+  no-delete). First-comment honesty: LinkedIn proven / YouTube "may be
+  skipped" (`FIRST_COMMENT_SUPPORT`). UI: `components/marketing/publish/*` +
+  `/marketing/publish` (batch j/k, N independent tokens, NO approve-all —
+  grep-fenced; publish vocabulary allowed ONLY there, path-scoped). Suites:
+  `verify:publish-path` 89 pure (in `npm test`) · `:int` 56 (AC-MC.1–8:
+  bypass matrix, byte-identity, voided trigger, frozen chain, auto-mode
+  card, unpublish zero-calls) · autonomy suite now 102.
+- **M-D — queue/editor integration SHIPPED (2026-07-31; guide:
+  docs/social-accounts.md § M-D):** publish state rides the queue/editor with
+  ZERO new creation paths — `connected/PublishStates.tsx` chips (scheduled
+  countdown via useSyncExternalStore + focus/visibility refresh, NO polling;
+  held w/ self-heal copy; posted_api link-out + history drawer w/ retry
+  lineage; failed→Retry [A2 clone, no card] vs platform_failed→edit&re-card;
+  voided→re-card) + `ConnectedScheduler` (health-aware picker → the SAME
+  PublishApprovalCard via the shared `cardPayload.ts` assembly) + read-only
+  `/api/marketing/social-posts/publish-state`. Language = contextual
+  allowlist (`languageAllowlist.ts`, 3 path prefixes; verify-social skips
+  only `social/connected/`; both directions + Phase-1 bytes fenced). Dev
+  banner text lives ONLY in the dev-branch dev-status route (bundle needle).
+  **AC-MD.8 live proof:** Inngest dev server + local vendor stub → 23s fire
+  delay from the approved instant; cancel-by-event released run = no-op.
+  ⚠ v4 SDK needs `INNGEST_DEV=1` to serve unkeyed. **Design correction:**
+  the send window no longer gates connected publishing (card-approved fire
+  time is authoritative; send_window = legacy render only).
+  `mark_social_post_status` can't forge posted_api; performance logging
+  accepts both posted states. Pure suite 109.
+- **M-AG — agentic publishing SHIPPED (2026-07-31; guide:
+  docs/social-accounts.md § M-AG):** chat = a new RENDER surface for the
+  SAME cards, never a new approval path. `lib/marketing/tools/publishOps.ts`
+  (get_connected_accounts + get_publish_status reads; retry_publish +
+  cancel_scheduled_publish irreversible-NOT-hard-denied — the M-C trio stays
+  HARD_DENY; autonomy registry updated with the drift guard). Cards inline:
+  the loop emits an additive `publish_cards` SSE event (`filedApprovalIds`
+  detects the 3 filing tools ONLY — status reads never re-render; tokens
+  ride the ephemeral event, never conversation messages) →
+  `components/marketing/publish/ChatPublishCards.tsx` (allowlisted;
+  AgentPanel/MarketingHub import its vocabulary strings) mounts the SAME
+  PublishApprovalCard + SAME approve/reject actions; `approvalSync` gained a
+  `publish` kind (the card subscribes itself — chat ↔ review page ↔ tabs
+  collapse; AC-AG.3 is structural: last-mint-wins + atomic consume).
+  Honesty loop: `social_publish_approval.conversation_id` (migration
+  `20260731100000`, types SPLICED) stamped by chat-filed cards →
+  `fetchPublishFollowUpAction` (decision from the ROW) →
+  `resumeAgentAfterPublishDecision` (the 4th resume path;
+  `publishDecisionMessage` = queued-is-NOT-posted) in the SAME thread.
+  Prompt: DISCOVERY FIRST / STATUS TRUTH / inline cards / retry+cancel.
+  Suites: pure `agentic.spec` (verify:publish-path 145) · int `agentic.spec`
+  (AC-AG.1–4). ⚠ timestamptz round-trips normalize ISO strings — match
+  cards by approval id, compare fire times by epoch. ⚠ run the int suites
+  with the Inngest dev server DOWN (live fire runs race fake-provider ticks).
+
+## Marketing hub UI overhaul (UI-1) — 2026-08-02
+
+> Guide: **`docs/ui1-design-system.md`** · Reports: `docs/ui1-task0-audit.md` +
+> `docs/ui1-checkpoint-{w2,w4,final}.md` · Before/after: `screenshots/ui1/`.
+> Zero feature loss, zero governance change — presentation + IA only.
+
+- **Tokens** live in `app/globals.css @theme` (status trios, type scale
+  meta/secondary/body/title/section/display, spacing card-pad/gutter/
+  section-gap/row-h/fab-clearance/rail, radius card/panel/control,
+  shadow-card/overlay, ease-out-brand, tracking-eyebrow) + the `font-display`
+  @utility (NOT a theme token — next/font owns the var). Raw hex/px-bracket/
+  shadow-[/tracking-[/text-[N are LINTED OUT of the UI-1 surface file list.
+  ⚠ v4 stone-500 (#79716b) passes AA only on WHITE — stone-600 on
+  canvas/stone-100; text links = brand-700.
+- **Primitives** in `components/ui/` (StatusChip/Drawer/SegmentedControl/
+  Toggle/FieldGroup/Input/Select/StickyActionBar/SectionHeader/Eyebrow/
+  IconTile/ListRow + tokenized legacy), all states fixture-pinned
+  (`components/ui/fixtures.tsx` → `/zz-ui-fixtures` + goldens;
+  `UI_SNAPSHOT_RECORD=1` re-records). ⚠ Drawer's lifecycle effect deps on
+  `open` only (onClose = latest-ref) or focus teleports on parent re-render;
+  SegmentedControl badge segments are flex-none or labels truncate.
+- **Hub** = SectionNav grouped strip (all destinations 1 click; scroll strip
+  <lg) + stat tiles (loaded data only) + attention zone + 2-resident rail
+  (ActivityFeed + AutonomyPill→Drawer). Shell: sidebar auto-collapses <xl,
+  hides <md behind MobileNav; `DockClearance` reserves 88px above the FAB,
+  which vacates while any Drawer is open (lib/ui/overlayStore).
+- **Activity feed**: `marketing_action.summary_fields` jsonb (additive,
+  migration 20260802100000) + `lib/marketing/activitySummaries.ts` — one
+  deterministic ≤80ch template per mutating tool, exhaustively typed against
+  `lib/marketing/humanize.ts` (the tool→label/icon map; **new mutating tool ⇒
+  label + template or CI fails**, registry drift-guarded). Feed renders
+  humanized guardrails, origin-resolved short links, "Approved by you" for
+  card-routed rows (never the policy badge); historical prose renders in
+  detail only. Trust copy in EXACTLY 3 places (social notice · feed hint ·
+  ACCOUNTS_TRUST_NOTE).
+- **Autonomy drawer**: SegmentedControl modes + consequence line
+  (`lib/marketing/autonomyCopy.ts`), grouped Toggle rows from the map's
+  categories, "Always asks you" locked group, FieldGroup guardrails, sticky
+  save with dirty/discard guard and the **`updated_at`-guarded save**
+  (`saveAutonomySettingsGuarded` — conflict → re-read, re-apply once,
+  inform; legacy upsert kept for old callers).
+- **Suites**: `npm run verify:ui` (151 pure — tokens lint, snapshots,
+  humanization/templates exhaustiveness, copy-lint, trust-copy locations; in
+  `npm test`) · `npm run verify:ui:browser` (121 vs prod build on :3100 —
+  layout/nav/rail/FAB/feed/drawer flows incl. a REAL concurrent-save
+  conflict, axe zero serious/critical ×4 surfaces, keyboard walkthrough,
+  clipped-element matrix, `/marketing` load-JS budget 620KB; needs temp
+  `npm i -D playwright axe-core`). Lighthouse a11y 1.00 (was 0.90), CLS 0.
+- The `/educators` landing set moved to `components/educators/`
+  (`components/marketing/` is now hub-suite only).
 
 ## Where things live
 

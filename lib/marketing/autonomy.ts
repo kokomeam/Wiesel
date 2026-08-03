@@ -54,6 +54,12 @@ export const HARD_DENY_TOOLS: ReadonlySet<string> = new Set([
   "cancel_campaign",
   "send_consent_confirmations",
   "launch_campaign",
+  // M-C (AC-MC.6): connected publishing is card-governed in EVERY mode —
+  // these can never auto-approve; approving their gate card still only
+  // files/executes through the preview-then-decide publish card path.
+  "publish_social_post",
+  "schedule_social_post",
+  "unpublish_social_post",
 ]);
 
 /**
@@ -73,6 +79,14 @@ export const KNOWN_IRREVERSIBLE_TOOLS: ReadonlySet<string> = new Set([
   "send_consent_confirmations",
   "launch_campaign",
   "cancel_campaign",
+  "publish_social_post",
+  "schedule_social_post",
+  "unpublish_social_post",
+  // M-AG publish ops: irreversible (agent-initiated re-fire / cancel stay
+  // human-visible) but NOT hard-denied — retry re-fires bytes the creator
+  // already card-approved; cancel is the safe direction. Policy-optable.
+  "retry_publish",
+  "cancel_scheduled_publish",
 ]);
 
 /** The tools a policy MAY opt into auto-approval (known minus hard-denied). */

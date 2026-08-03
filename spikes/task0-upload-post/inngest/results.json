@@ -1,0 +1,19 @@
+{
+  "cancel.started": {
+    "at": "2026-07-17T09:09:58.742Z",
+    "runKey": "k1"
+  },
+  "sleepUntil.before": {
+    "at": "2026-07-17T09:09:58.746Z",
+    "wakeAt": "2026-07-17T09:11:58.510Z"
+  },
+  "retry.attempts": 2,
+  "retry.final": {
+    "succeededOnAttempt": 2,
+    "at": "2026-07-17T09:10:13.011Z"
+  },
+  "sleepUntil.after": {
+    "wokeAt": "2026-07-17T09:11:58.898Z",
+    "driftMs": 389
+  }
+}

@@ -15,6 +15,22 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useEditorStore } from "@/lib/course/store";
+import type { RecordingPipGeometry } from "@/lib/course/types";
+import {
+  abortSlideSyncCapture,
+  beginSlideSyncCapture,
+  endSlideSyncCapture,
+  reportSlideShown,
+  slideIdFromSelection,
+  type SlideSyncCaptureEntry,
+} from "@/lib/editor/recordingSlideSync";
+import { createBackgroundTicker, type TickerHandle } from "@/lib/editor/backgroundTicker";
+
+/** D-4 (M-R): also persist the raw camera stream alongside the composited
+ *  canvas for screen_camera sessions. Default OFF — a storage-cost decision
+ *  (docs/clips.md § dual-track); the code path is complete and fixture-tested. */
+const DUAL_TRACK_ENABLED = process.env.NEXT_PUBLIC_RECORDER_DUAL_TRACK === "1";
 import type {
   CameraBubblePosition,
   VideoRecordingMode,
@@ -57,6 +73,12 @@ export interface RecordedResult {
   url: string;
   durationSeconds: number;
   mimeType: string;
+  /** D-2: slide advances captured on the RECORDED timeline (null = none). */
+  slideSync: SlideSyncCaptureEntry[] | null;
+  /** D-3: the bubble rect the compositor actually drew (screen_camera). */
+  pipGeometry: RecordingPipGeometry | null;
+  /** D-4: the raw camera track (flag-gated dual capture), video-only. */
+  cameraClip: { blob: Blob; mimeType: string } | null;
 }
 
 function pickMimeType(): string {
@@ -188,7 +210,7 @@ export function useVideoRecorder(opts?: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
-  const compositeRafRef = useRef<number | null>(null);
+  const compositeTickerRef = useRef<TickerHandle | null>(null);
   const meterRafRef = useRef<number | null>(null);
   const meterCtxRef = useRef<AudioContext | null>(null);
   const mixCtxRef = useRef<AudioContext | null>(null);
@@ -197,6 +219,12 @@ export function useVideoRecorder(opts?: {
   const startTsRef = useRef<number>(0);
   const pausedAccumRef = useRef<number>(0);
   const pauseStartRef = useRef<number>(0);
+  // M-R: slide-sync subscription + the compositor's last-drawn bubble rect +
+  // the dual-track camera recorder (D-2/D-3/D-4).
+  const syncUnsubRef = useRef<(() => void) | null>(null);
+  const lastBubbleRectRef = useRef<RecordingPipGeometry | null>(null);
+  const cameraRecorderRef = useRef<MediaRecorder | null>(null);
+  const cameraChunksRef = useRef<Blob[]>([]);
   const recordedUrlRef = useRef<string | null>(null);
   const modeRef = useRef<VideoRecordingMode | null>(null);
   const bubbleRef = useRef<CameraBubblePosition>("bottom-right");
@@ -461,6 +489,7 @@ export function useVideoRecorder(opts?: {
       if (cameraVideo && cameraVideo.videoWidth) {
         const camAspect = cameraVideo.videoWidth / cameraVideo.videoHeight;
         const r = bubbleRect(W, H, camAspect, bubbleRef.current);
+        lastBubbleRectRef.current = { x: r.x, y: r.y, width: r.w, height: r.h, corner: bubbleRef.current };
         ctx.save();
         roundedRectPath(ctx, r.x, r.y, r.w, r.h, r.radius);
         ctx.clip();
@@ -484,15 +513,19 @@ export function useVideoRecorder(opts?: {
         roundedRectPath(ctx, r.x, r.y, r.w, r.h, r.radius);
         ctx.stroke();
       }
-      compositeRafRef.current = requestAnimationFrame(draw);
     };
-    compositeRafRef.current = requestAnimationFrame(draw);
+    // NOT requestAnimationFrame: rAF suspends in a backgrounded tab, and
+    // recording another window/app is exactly when this tab is backgrounded —
+    // a rAF-driven compositor froze a real 6-minute lesson recording on its
+    // first frame (audio kept going). Worker-interval ticks are exempt from
+    // visibility throttling, so the canvas keeps repainting off-screen.
+    compositeTickerRef.current = createBackgroundTicker(30, draw);
     return canvas.captureStream(30);
   }, []);
 
   const stopComposite = useCallback(() => {
-    if (compositeRafRef.current != null) cancelAnimationFrame(compositeRafRef.current);
-    compositeRafRef.current = null;
+    compositeTickerRef.current?.stop();
+    compositeTickerRef.current = null;
     if (screenVideoRef.current) {
       screenVideoRef.current.srcObject = null;
       screenVideoRef.current = null;
@@ -601,10 +634,47 @@ export function useVideoRecorder(opts?: {
       if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current);
       const url = URL.createObjectURL(blob);
       recordedUrlRef.current = url;
-      const result: RecordedResult = { blob, url, durationSeconds: duration, mimeType: type };
-      setRecorded(result);
-      setPhase("recorded");
-      completeRef.current?.(result);
+
+      // M-R: close the slide-sync session + collect the D-3/D-4 facts.
+      syncUnsubRef.current?.();
+      syncUnsubRef.current = null;
+      const slideSync = endSlideSyncCapture();
+      const pipGeometry = modeRef.current === "screen_camera" ? lastBubbleRectRef.current : null;
+
+      const finalize = () => {
+        const camType = cameraRecorderRef.current?.mimeType || "video/webm";
+        const cameraClip =
+          cameraChunksRef.current.length > 0
+            ? { blob: new Blob(cameraChunksRef.current, { type: camType }), mimeType: camType }
+            : null;
+        cameraChunksRef.current = [];
+        cameraRecorderRef.current = null;
+        const result: RecordedResult = {
+          blob,
+          url,
+          durationSeconds: duration,
+          mimeType: type,
+          slideSync: slideSync.length > 0 ? slideSync : null,
+          pipGeometry,
+          cameraClip,
+        };
+        setRecorded(result);
+        setPhase("recorded");
+        completeRef.current?.(result);
+      };
+      // D-4: the camera recorder's final chunk flushes on ITS stop — chain so
+      // the result never misses the tail.
+      const cam = cameraRecorderRef.current;
+      if (cam && cam.state !== "inactive") {
+        cam.onstop = finalize;
+        try {
+          cam.stop();
+        } catch {
+          finalize();
+        }
+      } else {
+        finalize();
+      }
       // stop the mixed-audio context (source tracks stay alive for re-record)
       if (mixCtxRef.current) {
         void mixCtxRef.current.close().catch(() => {});
@@ -624,6 +694,40 @@ export function useVideoRecorder(opts?: {
     }
     setElapsedSeconds(0);
     startTimer();
+
+    // M-R (D-2): capture slide advances on the RECORDED timeline (the same
+    // clock the duration uses — pauses excluded). Report the slide already
+    // on screen at t0, then follow the editor's selection.
+    beginSlideSyncCapture(
+      () => performance.now() - startTsRef.current - pausedAccumRef.current
+    );
+    const initial = slideIdFromSelection(useEditorStore.getState().selection as never);
+    if (initial) reportSlideShown(initial);
+    syncUnsubRef.current = useEditorStore.subscribe((state) => {
+      const sid = slideIdFromSelection(state.selection as never);
+      if (sid) reportSlideShown(sid);
+    });
+
+    // M-R (D-4, flag-gated): a second recorder on the RAW camera stream so
+    // stacked_split can use the full-res face band (no PiP upscale softness).
+    cameraChunksRef.current = [];
+    if (DUAL_TRACK_ENABLED && modeRef.current === "screen_camera" && cameraStreamRef.current) {
+      try {
+        const camTrack = cameraStreamRef.current.getVideoTracks()[0];
+        if (camTrack) {
+          const camStream = new MediaStream([camTrack]);
+          const cam = new MediaRecorder(camStream, mimeType ? { mimeType } : undefined);
+          cam.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) cameraChunksRef.current.push(e.data);
+          };
+          cam.start(1000);
+          cameraRecorderRef.current = cam;
+        }
+      } catch {
+        cameraRecorderRef.current = null; // dual capture is best-effort extra
+      }
+    }
+
     setPhase("recording");
   }, [buildRecordingStream, startTimer, stopComposite]);
 
@@ -658,6 +762,11 @@ export function useVideoRecorder(opts?: {
     if (r && r.state === "recording") {
       try {
         r.pause();
+        try {
+          if (cameraRecorderRef.current?.state === "recording") cameraRecorderRef.current.pause();
+        } catch {
+          /* dual-track pause is best-effort */
+        }
         pauseStartRef.current = performance.now();
         setPhase("paused");
       } catch {
@@ -671,6 +780,11 @@ export function useVideoRecorder(opts?: {
     if (r && r.state === "paused") {
       try {
         r.resume();
+        try {
+          if (cameraRecorderRef.current?.state === "paused") cameraRecorderRef.current.resume();
+        } catch {
+          /* dual-track resume is best-effort */
+        }
         pausedAccumRef.current += performance.now() - pauseStartRef.current;
         setPhase("recording");
       } catch {
@@ -702,6 +816,10 @@ export function useVideoRecorder(opts?: {
   }, [stopRecordingInternal]);
 
   const discardRecording = useCallback(() => {
+    abortSlideSyncCapture();
+    syncUnsubRef.current?.();
+    syncUnsubRef.current = null;
+    cameraChunksRef.current = [];
     if (recordedUrlRef.current) {
       URL.revokeObjectURL(recordedUrlRef.current);
       recordedUrlRef.current = null;
@@ -718,6 +836,20 @@ export function useVideoRecorder(opts?: {
     stopTimer();
     stopComposite();
     stopMeter();
+    abortSlideSyncCapture();
+    syncUnsubRef.current?.();
+    syncUnsubRef.current = null;
+    const cam = cameraRecorderRef.current;
+    if (cam && cam.state !== "inactive") {
+      try {
+        cam.onstop = null;
+        cam.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    cameraRecorderRef.current = null;
+    cameraChunksRef.current = [];
     const r = recorderRef.current;
     if (r && r.state !== "inactive") {
       try {

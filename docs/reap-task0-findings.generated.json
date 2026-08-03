@@ -1,0 +1,463 @@
+{
+  "ranAt": "2026-07-07T15:21:39.396Z",
+  "probes": [
+    {
+      "step": "(c) list presets",
+      "method": "GET",
+      "path": "/get-all-presets",
+      "status": 200,
+      "ok": true,
+      "latencyMs": 2116,
+      "responseBody": {
+        "presets": [
+          {
+            "id": "system_hype",
+            "name": "Hype",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_march",
+            "name": "March",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_stretchy",
+            "name": "Stretchy",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_think_media",
+            "name": "Think Media",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_lemon",
+            "name": "Lemon",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_bloom",
+            "name": "Bloom",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_tremor",
+            "name": "Tremor",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_blur",
+            "name": "Blur",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_surge",
+            "name": "Surge",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_bubblegum",
+            "name": "Bubblegum",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_cloud_fall",
+            "name": "Cloud Fall",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_slide_down",
+            "name": "Slide Down",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_punch",
+            "name": "Punch",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_pulse",
+            "name": "Pulse",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_ready_audiogram_vinyl_vibes",
+            "name": "Vinyl Vibes",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": true,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "square",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_ready_audiogram_daily_cafe",
+            "name": "Daily Cafe",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": true,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "square",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_candy",
+            "name": "Candy",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_halo",
+            "name": "Halo",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_ready_audiogram_tech_talk",
+            "name": "After Dark",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": true,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "square",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          },
+          {
+            "id": "system_crimson",
+            "name": "Crimson",
+            "source": "system",
+            "preferences": {
+              "addAudiogram": false,
+              "addCaptions": true,
+              "genre": "talking",
+              "language": "en",
+              "translationLanguage": null,
+              "transcriptionScript": "native",
+              "orientation": "portrait",
+              "resolution": 720,
+              "clipDurations": [
+                [
+                  30,
+                  60
+                ]
+              ]
+            }
+          }
+        ],
+        "currentPage": 1,
+        "totalPages": 4,
+        "totalPresets": 69
+      }
+    },
+    {
+      "step": "(d) get-upload-url",
+      "method": "POST",
+      "path": "/get-upload-url",
+      "requestBody": {
+        "filename": "wisesel-smoke-test.mp4"
+      },
+      "status": 200,
+      "ok": true,
+      "latencyMs": 1288,
+      "responseBody": {
+        "uploadUrl": "https://reap-user-upload-bkt-prod.s3-accelerate.amazonaws.com/studios/6a4cc734a51e148381e06adf/api-uploads/wisesel-smoke-test-0c60ee32-0309-4c36-8f01-fe13c1801780.mp4?AWSAccessKeyId=AKIAQE43KLS4OKALAEG2&Signature=Izgx8iAOO6dlRxTvkQ1uAZ4yPR4%3D&content-type=video%2Fmp4&Expires=1783480902",
+        "id": "6a4d1986dd32744e40487e8a",
+        "fileName": "wisesel-smoke-test.mp4",
+        "fileType": "video",
+        "fileSize": null,
+        "contentType": null,
+        "status": "upload",
+        "createdAt": 1783437702,
+        "updatedAt": 1783437702
+      }
+    }
+  ],
+  "conclusions": {}
+}

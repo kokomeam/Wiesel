@@ -69,6 +69,7 @@ const generateLandingPage = defineMarketingTool({
 
     return {
       summary: `Drafted a landing page "${title}" with ${sections.length} sections (→ /p/${slug}).`,
+      summaryFields: { v: 1, entity: title, count: sections.length, outcome: "done" },
       data: { pageId: data.id, slug, sectionCount: sections.length },
       target: { entity: "landing_page", id: data.id },
     };
@@ -104,6 +105,7 @@ const updateLandingSection = defineMarketingTool({
 
     return {
       summary: `Updated the "${args.section.kind}" section of "${page.title}".`,
+      summaryFields: { v: 1, entity: args.section.kind, outcome: "done" },
       target: { entity: "landing_page", id: args.pageId },
     };
   },
@@ -124,6 +126,7 @@ const publishLandingPage = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Publish "${page.title}" live at /p/${page.slug}.`,
+        summaryFields: { v: 1, entity: page.title },
         target: { entity: "landing_page", id: page.id },
         approvalPreview: {
           title: page.title,
@@ -142,6 +145,7 @@ const publishLandingPage = defineMarketingTool({
     if (error) throw new MarketingToolError(`publish_landing_page: ${error.message}`);
     return {
       summary: `Published "${page.title}" — now live at /p/${page.slug}.`,
+      summaryFields: { v: 1, entity: page.title, outcome: "done" },
       data: { url: `/p/${page.slug}` },
       target: { entity: "landing_page", id: page.id },
     };
@@ -160,6 +164,7 @@ const unpublishLandingPage = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Take "${page.title}" offline (it will no longer be reachable at /p/${page.slug}).`,
+        summaryFields: { v: 1, entity: page.title },
         target: { entity: "landing_page", id: page.id },
         approvalPreview: { title: page.title, slug: page.slug, effectLabel: "take the page offline" },
       };
@@ -171,6 +176,7 @@ const unpublishLandingPage = defineMarketingTool({
     if (error) throw new MarketingToolError(`unpublish_landing_page: ${error.message}`);
     return {
       summary: `Unpublished "${page.title}".`,
+      summaryFields: { v: 1, entity: page.title, outcome: "done" },
       target: { entity: "landing_page", id: page.id },
     };
   },
@@ -207,6 +213,7 @@ const setPageDesign = defineMarketingTool({
     if (error) throw new MarketingToolError(`set_page_design: ${error.message}`);
     return {
       summary: `Updated the design of "${page.title}".`,
+      summaryFields: { v: 1, entity: page.title, outcome: "done" },
       target: { entity: "landing_page", id: args.pageId },
     };
   },
@@ -247,6 +254,7 @@ const setSectionVariant = defineMarketingTool({
     if (error) throw new MarketingToolError(`set_section_variant: ${error.message}`);
     return {
       summary: `Set the ${section.kind} section layout to "${args.variant}".`,
+      summaryFields: { v: 1, entity: section.kind, note: args.variant, outcome: "done" },
       target: { entity: "landing_page", id: args.pageId },
     };
   },

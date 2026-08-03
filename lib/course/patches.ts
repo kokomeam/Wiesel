@@ -245,6 +245,23 @@ export const CoursePatchSchema = z.discriminatedUnion("action", [
             .nullable()
             .optional(),
           includeMic: z.boolean().nullable().optional(),
+          // M-R (D-2/D-3/D-4): null clears, absent leaves untouched — the
+          // same shallow-merge semantics as every recording field.
+          slideSync: z
+            .array(z.object({ slideId: z.string(), atMs: z.number().int().nonnegative() }))
+            .nullable()
+            .optional(),
+          pipGeometry: z
+            .object({
+              x: z.number(),
+              y: z.number(),
+              width: z.number(),
+              height: z.number(),
+              corner: z.enum(["bottom-right", "bottom-left", "top-right", "top-left"]),
+            })
+            .nullable()
+            .optional(),
+          dualCameraAssetRowId: z.string().nullable().optional(),
         })
         .optional(),
       edit: z

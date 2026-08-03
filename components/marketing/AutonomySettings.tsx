@@ -1,18 +1,22 @@
 "use client";
 
 /**
- * The autonomy settings surface — mode picker + the auto-mode policy form.
- * Lives on the Marketing hub (course-scoped, like everything the gate does).
+ * The autonomy settings drawer (UI-1 Wave 4) — mode as a SegmentedControl
+ * with one line of description for the selected mode (+ a compare-modes
+ * popover), permissions as grouped single-column Toggle rows, hard-locked
+ * actions in their own "Always asks you" group, guardrails as FieldGroups,
+ * and a sticky save bar with dirty detection, a discard guard, and the
+ * DEV-2 optimistic save (conflict → re-read, re-apply once, inform).
  *
- * The form can only ever NARROW what auto mode does: hard-denied tools render
- * disabled ("always needs you"), the server strips them again regardless, and
- * an unconfigured field fails closed in the policy engine — so saving a
- * half-filled form yields LESS autonomy, never more.
+ * The form can only ever NARROW what auto mode does: hard-denied tools have
+ * no toggle, the server strips them again regardless, and an unconfigured
+ * field fails closed in the policy engine — so saving a half-filled form
+ * yields LESS autonomy, never more. Copy here must never imply otherwise.
  */
 
-import { useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Lock, ShieldCheck } from "lucide-react";
+import { Loader2, Lock } from "lucide-react";
 import {
   updateAutonomySettingsAction,
   type ActionResult,
@@ -20,263 +24,474 @@ import {
 import {
   AUTO_APPROVABLE_TOOLS,
   HARD_DENY_TOOLS,
-  type AutonomySettings as Settings,
+  type AutonomyMode,
 } from "@/lib/marketing/autonomy";
+import type { AutonomySettingsWithMeta } from "@/lib/marketing/autonomyStore";
+import { MODE_COMPARISON, MODE_DESCRIPTIONS, MODE_TITLES, modeConsequence } from "@/lib/marketing/autonomyCopy";
+import { humanizeToolName, TOOL_CATEGORY_META, type ToolCategory } from "@/lib/marketing/humanize";
+import { useAutonomyDrawer } from "@/lib/marketing/autonomyDrawerStore";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { Drawer } from "@/components/ui/Drawer";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { FieldGroup } from "@/components/ui/FieldGroup";
+import { Input, Select } from "@/components/ui/Input";
+import { ListRow } from "@/components/ui/ListRow";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { StatusChip } from "@/components/ui/StatusChip";
+import { StickyActionBar } from "@/components/ui/StickyActionBar";
+import { Toggle } from "@/components/ui/Toggle";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 
-const MODES: { value: "manual" | "assisted" | "auto"; title: string; blurb: string }[] = [
-  {
-    value: "manual",
-    title: "Manual",
-    blurb: "Every action that reaches a real person waits for your approval card. No exceptions.",
-  },
-  {
-    value: "assisted",
-    title: "Assisted",
-    blurb:
-      "Approval cards for everything outward — but the agent asks a clarifying question first when targeting is ambiguous, and test emails to your own address just send.",
-  },
-  {
-    value: "auto",
-    title: "Auto",
-    blurb:
-      "Actions you explicitly opt in below may run without a card — inside your caps, your hours, and never the first send to a new segment. Everything else still gets a card.",
-  },
+const FALLBACK_TIMEZONES = [
+  "UTC",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "Europe/London",
+  "Europe/Berlin",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Australia/Sydney",
 ];
 
-const TOOL_LABELS: Record<string, string> = {
-  publish_landing_page: "Publish a landing page",
-  unpublish_landing_page: "Unpublish a landing page",
-  activate_sequence: "Activate a sequence",
-  enroll_segment_in_sequence: "Enroll a segment",
-  send_broadcast: "Send a broadcast",
-  send_test_email: "Send a test email",
-  send_consent_confirmation: "Send one consent confirmation",
-};
+interface FormState {
+  mode: AutonomyMode;
+  tools: string[];
+  maxRecipients: string;
+  hoursEnabled: boolean;
+  startHour: number;
+  endHour: number;
+  timezone: string;
+  firstSendManual: boolean;
+  revertWindow: string;
+}
 
-const HARD_DENY_LABELS: Record<string, string> = {
-  launch_campaign: "Launch a campaign",
-  cancel_campaign: "Cancel a campaign",
-  send_consent_confirmations: "Bulk consent confirmations",
-};
+function formFromSettings(s: AutonomySettingsWithMeta): FormState {
+  return {
+    mode: s.mode,
+    tools: [...s.policy.autoApproveTools].sort(),
+    maxRecipients: s.policy.maxRecipients === null ? "" : String(s.policy.maxRecipients),
+    hoursEnabled: s.policy.allowedHours !== null,
+    startHour: s.policy.allowedHours?.startHour ?? 9,
+    endHour: s.policy.allowedHours?.endHour ?? 17,
+    timezone: s.policy.allowedHours?.timezone ?? "",
+    firstSendManual: s.policy.firstSendToNewSegmentManual,
+    revertWindow: String(s.revertWindowHours),
+  };
+}
 
-const labelCls = "font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400";
+/** The permission groups, derived from the humanization map's categories so
+ *  the grouping can never drift from the labels. */
+function permissionGroups(): { label: string; tools: string[] }[] {
+  const by = new Map<ToolCategory, string[]>();
+  for (const t of AUTO_APPROVABLE_TOOLS) {
+    const { category } = humanizeToolName(t);
+    if (!category) continue;
+    by.set(category, [...(by.get(category) ?? []), t]);
+  }
+  const order: ToolCategory[] = ["landing", "email", "audience", "publishing"];
+  return order
+    .filter((c) => (by.get(c) ?? []).length > 0)
+    .map((c) => ({ label: TOOL_CATEGORY_META[c].label, tools: by.get(c)! }));
+}
 
-export function AutonomySettings({
+function CompareModes() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative inline-block">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="text-meta font-medium text-brand-700 hover:underline"
+        data-testid="compare-modes"
+      >
+        Compare modes
+      </button>
+      {open ? (
+        <div
+          role="note"
+          className="absolute left-0 top-6 z-30 w-96 max-w-[80vw] overflow-x-auto rounded-panel border border-stone-200/80 bg-white p-3 shadow-overlay"
+        >
+          <table className="w-full text-meta">
+            <thead>
+              <tr className="text-left text-stone-500">
+                <th className="pb-1 pr-2 font-normal" />
+                <th className="pb-1 pr-2 font-medium text-stone-600">Manual</th>
+                <th className="pb-1 pr-2 font-medium text-stone-600">Assisted</th>
+                <th className="pb-1 font-medium text-stone-600">Auto</th>
+              </tr>
+            </thead>
+            <tbody className="text-stone-600">
+              {MODE_COMPARISON.map((r) => (
+                <tr key={r.row} className="border-t border-stone-100">
+                  <td className="py-1 pr-2 text-stone-500">{r.row}</td>
+                  <td className="py-1 pr-2">{r.manual}</td>
+                  <td className="py-1 pr-2">{r.assisted}</td>
+                  <td className="py-1">{r.auto}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function AutonomyDrawer({
   courseId,
   initial,
   onResult,
-  embedded = false,
 }: {
   courseId: string;
-  initial: Settings;
+  initial: AutonomySettingsWithMeta;
   onResult?: (r: ActionResult) => void;
-  /** Rendered inside a CollapsibleCard (hub) — the parent owns the card frame
-   *  and the "Agent autonomy" title, so skip both here. */
-  embedded?: boolean;
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState(initial.mode);
-  const [tools, setTools] = useState<string[]>(initial.policy.autoApproveTools);
-  const [maxRecipients, setMaxRecipients] = useState<string>(
-    initial.policy.maxRecipients === null ? "" : String(initial.policy.maxRecipients)
-  );
-  const [hoursEnabled, setHoursEnabled] = useState(initial.policy.allowedHours !== null);
-  const [startHour, setStartHour] = useState(initial.policy.allowedHours?.startHour ?? 9);
-  const [endHour, setEndHour] = useState(initial.policy.allowedHours?.endHour ?? 17);
-  const [timezone, setTimezone] = useState(initial.policy.allowedHours?.timezone ?? "");
-  const [firstSendManual, setFirstSendManual] = useState(initial.policy.firstSendToNewSegmentManual);
-  const [revertWindow, setRevertWindow] = useState(String(initial.revertWindowHours));
-  const [saved, setSaved] = useState(false);
+  const open = useAutonomyDrawer((s) => s.open);
+  const setOpen = useAutonomyDrawer((s) => s.setOpen);
+
+  const [form, setForm] = useState<FormState>(() => formFromSettings(initial));
+  // The dirty baseline participates in render → state, not a ref (React 19
+  // forbids ref reads during render). The optimistic token is handler-only.
+  const [baseline, setBaseline] = useState<FormState>(() => formFromSettings(initial));
+  const updatedAtRef = useRef<string | null>(initial.updatedAt);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [busy, startTransition] = useTransition();
+
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
+
+  const dirty = JSON.stringify({ ...form, tools: [...form.tools].sort() }) !== JSON.stringify(baseline);
+
+  const maxRecipientsError =
+    form.maxRecipients.trim() !== "" && (!/^\d+$/.test(form.maxRecipients.trim()) || Number(form.maxRecipients) < 1)
+      ? "Enter a whole number of at least 1, or leave it unset."
+      : null;
+  const revertWindowError =
+    !/^\d+$/.test(form.revertWindow.trim()) || Number(form.revertWindow) < 1 || Number(form.revertWindow) > 720
+      ? "Between 1 and 720 hours."
+      : null;
+  const invalid = Boolean(maxRecipientsError || revertWindowError);
+
+  const groups = useMemo(() => permissionGroups(), []);
+  const timezones = useMemo(() => {
+    try {
+      const all = Intl.supportedValuesOf("timeZone");
+      return form.timezone && !all.includes(form.timezone) ? [form.timezone, ...all] : all;
+    } catch {
+      return FALLBACK_TIMEZONES;
+    }
+  }, [form.timezone]);
+
+  const consequence = modeConsequence(
+    { mode: baseline.mode, policy: { ...initial.policy, autoApproveTools: form.tools }, revertWindowHours: initial.revertWindowHours },
+    form.mode
+  );
+
+  const close = () => {
+    if (busy) return;
+    if (dirty) setConfirmDiscard(true);
+    else setOpen(false);
+  };
 
   const save = () =>
     startTransition(async () => {
       const r = await updateAutonomySettingsAction(courseId, {
-        mode,
-        revertWindowHours: Number(revertWindow) || 24,
-        autoApproveTools: tools,
-        maxRecipients: maxRecipients.trim() === "" ? null : Math.max(1, Math.round(Number(maxRecipients))),
-        allowedHours: hoursEnabled
-          ? { startHour, endHour, timezone: timezone.trim() || null }
+        mode: form.mode,
+        revertWindowHours: Number(form.revertWindow) || 24,
+        autoApproveTools: form.tools,
+        maxRecipients: form.maxRecipients.trim() === "" ? null : Math.max(1, Math.round(Number(form.maxRecipients))),
+        allowedHours: form.hoursEnabled
+          ? { startHour: form.startHour, endHour: form.endHour, timezone: form.timezone.trim() || null }
           : null,
-        firstSendToNewSegmentManual: firstSendManual,
+        firstSendToNewSegmentManual: form.firstSendManual,
+        expectedUpdatedAt: updatedAtRef.current,
       });
       onResult?.(r);
       if (!r.error) {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2500);
+        setBaseline({ ...form, tools: [...form.tools].sort() });
+        if (r.updatedAt !== undefined) updatedAtRef.current = r.updatedAt;
       }
       router.refresh();
     });
 
-  const Wrapper = embedded ? "div" : "section";
+  const toggleRows = (tools: string[]) =>
+    tools.map((t) => {
+      const id = `autotool-${t}`;
+      return (
+        <ListRow
+          key={t}
+          title={<span id={id}>{humanizeToolName(t).label}</span>}
+          trailing={
+            <Toggle
+              checked={form.tools.includes(t)}
+              onChange={(next) =>
+                set("tools", next ? [...form.tools, t] : form.tools.filter((x) => x !== t))
+              }
+              aria-labelledby={id}
+              data-testid={`toggle-${t}`}
+            />
+          }
+          className="px-0 hover:bg-transparent"
+        />
+      );
+    });
+
   return (
-    <Wrapper
-      className={embedded ? undefined : "rounded-2xl border border-stone-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(68,48,28,0.05)]"}
-      data-testid="autonomy-settings"
-    >
-      {!embedded ? (
-        <>
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 text-stone-400" />
-            <h3 className="text-sm font-medium text-stone-900">Agent autonomy</h3>
-          </div>
-          <p className="mt-1 text-xs text-stone-500">
-            Governs only actions that reach real people. Drafts and edits always auto-apply with a{" "}
-            <span className="text-stone-700">revert window</span>, whatever the mode.
-          </p>
-        </>
-      ) : (
-        <p className="text-xs text-stone-500">
-          Governs only actions that reach real people. Drafts and edits always auto-apply with a{" "}
-          <span className="text-stone-700">revert window</span>, whatever the mode.
-        </p>
-      )}
-
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        {MODES.map((m) => (
-          <button
-            key={m.value}
-            type="button"
-            onClick={() => setMode(m.value)}
-            className={cn(
-              "rounded-xl border p-3 text-left transition-colors",
-              mode === m.value
-                ? "border-brand-400 bg-brand-50/60 ring-1 ring-inset ring-brand-200"
-                : "border-stone-200 bg-white hover:border-stone-300"
-            )}
-            aria-pressed={mode === m.value}
+    <>
+      <Drawer
+        open={open}
+        onClose={close}
+        title="Agent autonomy"
+        subtitle="How much the agent may do without a card."
+        data-testid="autonomy-drawer"
+        footer={
+          <StickyActionBar
+            note={dirty ? "You have unsaved changes" : "Everything saved"}
+            data-testid="autonomy-save-bar"
           >
-            <p className="text-sm font-medium text-stone-900">
-              {m.title}
-              {m.value === "assisted" ? <span className="ml-1.5 text-[10px] font-normal text-stone-400">recommended</span> : null}
-            </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-stone-500">{m.blurb}</p>
-          </button>
-        ))}
-      </div>
+            {dirty ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => setForm(baseline)}
+                data-testid="autonomy-discard"
+              >
+                Discard
+              </Button>
+            ) : null}
+            <Button size="sm" onClick={save} disabled={busy || !dirty || invalid} data-testid="autonomy-save">
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : null} Save settings
+            </Button>
+          </StickyActionBar>
+        }
+      >
+        <div className="space-y-5">
+          <p className="text-meta leading-relaxed text-stone-500">
+            Governs only actions that reach real people. Drafts and edits always auto-apply with a revert
+            window, whatever the mode.
+          </p>
 
-      {mode === "auto" ? (
-        <div className="mt-4 space-y-4 rounded-xl border border-stone-200 bg-stone-50/60 p-3">
+          {/* ── mode ── */}
           <div>
-            <p className={labelCls}>Auto-approvable actions</p>
-            <p className="mt-0.5 text-[11px] text-stone-500">
-              Nothing runs without a card until you opt it in here — and it still has to pass every cap below.
-            </p>
-            <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
-              {[...AUTO_APPROVABLE_TOOLS].map((t) => (
-                <label key={t} className="flex items-center gap-2 text-xs text-stone-700">
-                  <input
-                    type="checkbox"
-                    checked={tools.includes(t)}
-                    onChange={(e) =>
-                      setTools((cur) => (e.target.checked ? [...cur, t] : cur.filter((x) => x !== t)))
-                    }
-                    className="size-3.5 rounded border-stone-300 accent-orange-600"
-                  />
-                  {TOOL_LABELS[t] ?? t}
-                </label>
-              ))}
+            <SegmentedControl<AutonomyMode>
+              aria-label="Autonomy mode"
+              value={form.mode}
+              onChange={(m) => set("mode", m)}
+              options={[
+                { value: "manual", label: MODE_TITLES.manual },
+                {
+                  value: "assisted",
+                  label: MODE_TITLES.assisted,
+                  badge: <StatusChip status="success">Recommended</StatusChip>,
+                },
+                { value: "auto", label: MODE_TITLES.auto },
+              ]}
+            />
+            <div className="mt-2 flex items-start justify-between gap-3">
+              <p className="min-w-0 flex-1 text-meta leading-relaxed text-stone-500" data-testid="mode-description">
+                {MODE_DESCRIPTIONS[form.mode]}
+              </p>
+              <CompareModes />
+            </div>
+            {consequence ? (
+              <p
+                className="mt-2 rounded-panel bg-status-pending-bg px-2.5 py-1.5 text-meta leading-relaxed text-status-pending"
+                data-testid="mode-consequence"
+              >
+                {consequence}
+              </p>
+            ) : null}
+          </div>
+
+          {/* ── what can run on its own ── */}
+          <div>
+            <Eyebrow as="h3">What can run on its own</Eyebrow>
+            {form.mode === "auto" ? (
+              <>
+                <p className="mt-1 text-meta text-stone-500">
+                  Nothing runs without a card until you opt it in here — and it still has to pass every
+                  guardrail below.
+                </p>
+                <div className="mt-1 space-y-3">
+                  {groups.map((g) => (
+                    <div key={g.label}>
+                      <p className="text-meta font-medium text-stone-500">{g.label}</p>
+                      <div>{toggleRows(g.tools)}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-1 text-meta text-stone-500" data-testid="optin-hint">
+                Switch to Auto to opt individual actions in. In {MODE_TITLES[form.mode]} mode, everything
+                outward asks you first.
+              </p>
+            )}
+          </div>
+
+          {/* ── always asks you ── */}
+          <div>
+            <Eyebrow as="h3">Always asks you</Eyebrow>
+            <div className="mt-1" data-testid="hard-locked-list">
               {[...HARD_DENY_TOOLS].map((t) => (
-                <label key={t} className="flex items-center gap-2 text-xs text-stone-400" title="Never auto-approvable">
-                  <Lock className="size-3.5" />
-                  {HARD_DENY_LABELS[t] ?? t} <span className="text-[10px]">— always needs you</span>
-                </label>
+                <ListRow
+                  key={t}
+                  leading={<Lock className="size-3.5 shrink-0 text-stone-500" aria-hidden />}
+                  title={<span className="text-stone-500">{humanizeToolName(t).label}</span>}
+                  trailing={
+                    <span className="shrink-0 text-meta text-stone-500">Always requires your approval</span>
+                  }
+                  className="px-0 hover:bg-transparent"
+                />
               ))}
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-xs text-stone-600">
-              <span className={labelCls}>Max recipients per auto-send</span>
-              <input
-                type="number"
-                min={1}
-                placeholder="unset — sends need a card"
-                value={maxRecipients}
-                onChange={(e) => setMaxRecipients(e.target.value)}
-                className="mt-1 block w-full rounded-lg border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
-              />
-            </label>
-            <div className="text-xs text-stone-600">
-              <span className={labelCls}>Allowed hours</span>
-              <div className="mt-1 flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={hoursEnabled}
-                  onChange={(e) => setHoursEnabled(e.target.checked)}
-                  className="size-3.5 rounded border-stone-300 accent-orange-600"
-                />
-                {hoursEnabled ? (
-                  <span className="flex items-center gap-1.5">
-                    <select
-                      value={startHour}
-                      onChange={(e) => setStartHour(Number(e.target.value))}
-                      className="rounded-lg border border-stone-300/80 bg-white px-1.5 py-1 text-sm"
-                    >
-                      {Array.from({ length: 24 }, (_, h) => (
-                        <option key={h} value={h}>{`${h}:00`}</option>
-                      ))}
-                    </select>
-                    –
-                    <select
-                      value={endHour}
-                      onChange={(e) => setEndHour(Number(e.target.value))}
-                      className="rounded-lg border border-stone-300/80 bg-white px-1.5 py-1 text-sm"
-                    >
-                      {Array.from({ length: 24 }, (_, h) => (
-                        <option key={h + 1} value={h + 1}>{`${h + 1}:00`}</option>
-                      ))}
-                    </select>
-                    <input
-                      placeholder="UTC"
-                      title="IANA timezone, e.g. America/New_York (empty = UTC)"
-                      value={timezone ?? ""}
-                      onChange={(e) => setTimezone(e.target.value)}
-                      className="w-32 rounded-lg border border-stone-300/80 bg-white px-2 py-1 text-sm"
-                    />
-                  </span>
-                ) : (
-                  <span className="text-stone-400">unset — nothing auto-executes</span>
-                )}
+          {/* ── guardrails ── */}
+          {form.mode === "auto" ? (
+            <div>
+              <Eyebrow as="h3">Guardrails</Eyebrow>
+              <div className="mt-2 space-y-4">
+                <FieldGroup
+                  label="Max recipients per auto-send"
+                  htmlFor="autonomy-max-recipients"
+                  help="Unset fails closed — sends still ask first."
+                  error={maxRecipientsError}
+                >
+                  <Input
+                    id="autonomy-max-recipients"
+                    type="number"
+                    min={1}
+                    inputMode="numeric"
+                    placeholder="Unset — sends still ask first"
+                    value={form.maxRecipients}
+                    invalid={Boolean(maxRecipientsError)}
+                    onChange={(e) => set("maxRecipients", e.target.value)}
+                  />
+                </FieldGroup>
+
+                <FieldGroup
+                  label="Allowed hours"
+                  help={form.hoursEnabled ? undefined : "Unset fails closed — nothing auto-executes."}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2.5">
+                      <Toggle
+                        checked={form.hoursEnabled}
+                        onChange={(v) => set("hoursEnabled", v)}
+                        aria-label="Limit auto-runs to allowed hours"
+                        data-testid="hours-toggle"
+                      />
+                      {form.hoursEnabled ? (
+                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                          <Select
+                            aria-label="Start hour"
+                            value={form.startHour}
+                            onChange={(e) => set("startHour", Number(e.target.value))}
+                            className="w-auto"
+                          >
+                            {Array.from({ length: 24 }, (_, h) => (
+                              <option key={h} value={h}>{`${String(h).padStart(2, "0")}:00`}</option>
+                            ))}
+                          </Select>
+                          <span className="text-stone-500">–</span>
+                          <Select
+                            aria-label="End hour"
+                            value={form.endHour}
+                            onChange={(e) => set("endHour", Number(e.target.value))}
+                            className="w-auto"
+                          >
+                            {Array.from({ length: 24 }, (_, h) => (
+                              <option key={h + 1} value={h + 1}>{`${String(h + 1).padStart(2, "0")}:00`}</option>
+                            ))}
+                          </Select>
+                        </div>
+                      ) : (
+                        <span className="text-meta text-stone-500">Off</span>
+                      )}
+                    </div>
+                    {form.hoursEnabled ? (
+                      <Select
+                        aria-label="Timezone"
+                        value={form.timezone}
+                        onChange={(e) => set("timezone", e.target.value)}
+                        data-testid="timezone-select"
+                      >
+                        <option value="">UTC (default)</option>
+                        {timezones.map((tz) => (
+                          <option key={tz} value={tz}>
+                            {tz}
+                          </option>
+                        ))}
+                      </Select>
+                    ) : null}
+                  </div>
+                </FieldGroup>
+
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-body text-stone-700" id="first-send-label">
+                      First-send review
+                    </p>
+                    <p className="text-meta text-stone-500">
+                      Always review the first send to a segment this course hasn&apos;t emailed before.
+                    </p>
+                  </div>
+                  <Toggle
+                    checked={form.firstSendManual}
+                    onChange={(v) => set("firstSendManual", v)}
+                    aria-labelledby="first-send-label"
+                    data-testid="first-send-toggle"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
 
-          <label className="flex items-center gap-2 text-xs text-stone-700">
-            <input
-              type="checkbox"
-              checked={firstSendManual}
-              onChange={(e) => setFirstSendManual(e.target.checked)}
-              className="size-3.5 rounded border-stone-300 accent-orange-600"
-            />
-            Always review the first send to a segment this course hasn&apos;t emailed before
-          </label>
+          {/* ── revert window (every mode) ── */}
+          <FieldGroup
+            label="Revert window"
+            htmlFor="autonomy-revert-window"
+            help="How long drafts and edits stay revertible from Activity."
+            error={revertWindowError}
+          >
+            <div className="flex items-center gap-2">
+              <Input
+                id="autonomy-revert-window"
+                type="number"
+                min={1}
+                max={720}
+                inputMode="numeric"
+                value={form.revertWindow}
+                invalid={Boolean(revertWindowError)}
+                onChange={(e) => set("revertWindow", e.target.value)}
+                className={cn("w-24")}
+              />
+              <span className="text-body text-stone-500">hours</span>
+            </div>
+          </FieldGroup>
         </div>
-      ) : null}
+      </Drawer>
 
-      <div className="mt-4 flex items-center gap-3">
-        <label className="flex items-center gap-2 text-xs text-stone-600">
-          <span className={labelCls}>Revert window</span>
-          <input
-            type="number"
-            min={1}
-            max={720}
-            value={revertWindow}
-            onChange={(e) => setRevertWindow(e.target.value)}
-            className="w-16 rounded-lg border border-stone-300/80 bg-white px-2 py-1 text-sm"
-          />
-          hours
-        </label>
-        <div className="ml-auto flex items-center gap-2">
-          {saved ? <span className="text-xs text-emerald-600">Saved</span> : null}
-          <Button size="sm" onClick={save} disabled={busy}>
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : null} Save autonomy settings
-          </Button>
-        </div>
-      </div>
-    </Wrapper>
+      <ConfirmDialog
+        open={confirmDiscard}
+        title="Discard unsaved changes?"
+        message="Your autonomy edits haven't been saved."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        onCancel={() => setConfirmDiscard(false)}
+        onConfirm={() => {
+          setForm(baseline);
+          setConfirmDiscard(false);
+          setOpen(false);
+        }}
+      />
+    </>
   );
 }

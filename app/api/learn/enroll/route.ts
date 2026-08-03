@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { EnrollRequestSchema } from "@/lib/learn/schemas";
 import { getEnrollment } from "@/lib/learn/access";
 import { learnErrorResponse, parseBody, requireUser } from "@/lib/learn/routeHelpers";
+import { recordClipEnrollment } from "@/lib/marketing/clips/attribution";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
   const body = await parseBody(request, EnrollRequestSchema);
   if (!body.ok) return body.response;
   const { supabase, user } = auth;
-  const { courseId } = body.data;
+  const { courseId, refCode } = body.data;
 
   try {
     const existing = await getEnrollment(supabase, user.id, courseId);
@@ -55,6 +56,8 @@ export async function POST(request: Request) {
       }
       throw inserted.error;
     }
+    // M-D clip attribution — best-effort, never blocks the enrollment.
+    if (refCode) await recordClipEnrollment(courseId, refCode).catch(() => {});
     return NextResponse.json({ enrollment: inserted.data });
   } catch (error) {
     return learnErrorResponse(error);

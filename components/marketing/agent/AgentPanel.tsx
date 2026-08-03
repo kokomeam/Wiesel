@@ -17,6 +17,12 @@ import type { QuestionSpec } from "@/lib/marketing/questions";
 import type { PendingActionPayload } from "@/app/(app)/marketing/actions";
 import { ApprovalCard } from "@/components/marketing/ApprovalCard";
 import { QuestionCard } from "@/components/marketing/QuestionCard";
+import {
+  ChatPublishCards,
+  PUBLISH_CHAT_SUGGESTIONS,
+  PUBLISH_CAPABILITY_BLURB,
+} from "@/components/marketing/publish/ChatPublishCards";
+import type { PublishCardPayload } from "@/components/marketing/publish/PublishApprovalCard";
 
 type Item =
   | { kind: "user"; text: string }
@@ -25,6 +31,7 @@ type Item =
   | { kind: "tool"; tool: string; summary: string; status: string }
   | { kind: "approval"; pending: PendingActionPayload }
   | { kind: "question"; questionId: string; question: QuestionSpec }
+  | { kind: "publishCards"; cards: PublishCardPayload[] }
   | { kind: "error"; text: string };
 
 // UI polish (2026-07-08): render-only humanized tool labels — stored item data,
@@ -80,10 +87,15 @@ function toolStatusLabel(status: string): string {
   return "Done";
 }
 
+
+// The connected-publishing suggestion strings are imported from the
+// allowlisted publish module — this file carries no publish vocabulary of
+// its own (AC-MD.5 both-directions fence).
 const SUGGESTIONS = [
   "Generate a landing page and a launch sequence",
   "How's my funnel doing?",
   "Draft a followup for people who viewed but didn't enroll",
+  ...PUBLISH_CHAT_SUGGESTIONS,
 ];
 
 /** One transcript row, memoized on item identity (PERF-1 D5, A5 §2.2's
@@ -145,6 +157,7 @@ const ItemRow = memo(function ItemRow({ it }: { it: Item }) {
         ) : null}
       </div>
     );
+  if (it.kind === "publishCards") return <ChatPublishCards cards={it.cards} />;
   if (it.kind === "approval") return <ApprovalCard pending={it.pending} compact />;
   if (it.kind === "question")
     return (
@@ -231,6 +244,9 @@ export function AgentPanel({
       } else if (f.kind === "question") {
         renderedBlockersRef.current.add(`q:${f.questionId}`);
         additions.push({ kind: "question", questionId: f.questionId, question: f.question });
+      } else if (f.kind === "publish_cards") {
+        for (const c of f.cards) renderedBlockersRef.current.add(`p:${c.approvalId}`);
+        additions.push({ kind: "publishCards", cards: f.cards });
       }
     }
     if (additions.length) {
@@ -248,7 +264,9 @@ export function AgentPanel({
         if (consumedFollowUpsRef.current.has(key)) continue;
         const followUp = key.startsWith("a:")
           ? state.actions[key.slice(2)]?.followUp
-          : state.questions[key.slice(2)]?.followUp;
+          : key.startsWith("q:")
+            ? state.questions[key.slice(2)]?.followUp
+            : state.publishCards[key.slice(2)]?.followUp;
         if (followUp) {
           consumedFollowUpsRef.current.add(key);
           replayFollowUp(followUp);
@@ -360,6 +378,11 @@ export function AgentPanel({
               renderedBlockersRef.current.add(`q:${ev.questionId}`);
               push({ kind: "question", questionId: ev.questionId, question: ev.question });
             }
+          } else if (ev.type === "publish_cards") {
+            if (ev.cards.length) {
+              for (const c of ev.cards) renderedBlockersRef.current.add(`p:${c.approvalId}`);
+              push({ kind: "publishCards", cards: ev.cards });
+            }
           } else if (ev.type === "error") push({ kind: "error", text: ev.message });
           else if (ev.type === "done") router.refresh(); // reflect draft edits in the live preview
         }
@@ -378,19 +401,19 @@ export function AgentPanel({
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto scrollbar-thin px-1 py-2">
         {items.length === 0 ? (
           <div className="mx-auto mt-10 max-w-md text-center">
-            <span className="brand-gradient grid size-11 place-items-center rounded-2xl text-white [font-family:var(--font-display)] text-xl mx-auto">
+            <span className="brand-gradient grid size-11 place-items-center rounded-card text-white font-display text-xl mx-auto">
               *
             </span>
             <p className="mt-4 text-stone-600">
               I can generate your landing page, sequences, and followups, watch the funnel, and propose
-              what to do next. I’ll always ask before anything goes out.
+              what to do next. I’ll always ask before anything goes out. {PUBLISH_CAPABILITY_BLURB}
             </p>
             <div className="mt-4 flex flex-col gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
                   onClick={() => send(s)}
-                  className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-600 hover:border-brand-200 hover:bg-brand-50"
+                  className="rounded-panel border border-stone-200 bg-white px-3 py-2 text-sm text-stone-600 hover:border-brand-200 hover:bg-brand-50"
                 >
                   {s}
                 </button>
@@ -423,19 +446,19 @@ export function AgentPanel({
           e.preventDefault();
           send(input);
         }}
-        className="mt-2 flex items-center gap-2 rounded-2xl border border-stone-200 bg-white p-2 shadow-[0_1px_2px_rgba(68,48,28,0.05)]"
+        className="mt-2 flex items-center gap-2 rounded-card border border-stone-200 bg-white p-2 shadow-card"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask the agent to generate, analyze, or send…"
-          className="flex-1 bg-transparent px-2 text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none"
+          className="flex-1 bg-transparent px-2 text-sm text-stone-900 placeholder:text-stone-500 focus:outline-none"
           disabled={streaming}
         />
         <button
           type="submit"
           disabled={streaming || !input.trim()}
-          className="brand-gradient grid size-8 place-items-center rounded-xl text-white disabled:opacity-50"
+          className="brand-gradient grid size-8 place-items-center rounded-panel text-white disabled:opacity-50"
         >
           {streaming ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
         </button>

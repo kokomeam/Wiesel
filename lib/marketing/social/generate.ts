@@ -100,7 +100,7 @@ export function budgetWindowStart(nowIso: string): string {
 export async function ensureSocialVoiceProfile(
   deps: Pick<SocialPipelineDeps, "supabase" | "ownerId" | "model" | "courseIdForEvents">
 ): Promise<VoiceProfileRecord> {
-  const existing = await loadSocialVoiceProfile(deps.supabase);
+  const existing = await loadSocialVoiceProfile(deps.supabase, deps.ownerId);
   if (existing) return existing;
   const input = await collectVoiceDerivationInput(deps.supabase, deps.ownerId);
   const { profile, via } = await deriveVoiceProfile(deps.model, input);

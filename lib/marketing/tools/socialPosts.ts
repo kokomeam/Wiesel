@@ -17,9 +17,11 @@ import {
   GOAL_STAGE_MAP,
   PLATFORMS,
   PLATFORM_LIMITS,
+  platformLimitsFor,
   POST_STATUSES,
   SOCIAL_GOALS,
   SOCIAL_TONES,
+  type SocialPostPlatform,
 } from "../social/constants";
 import { emitSocialEvent } from "../social/events";
 import {
@@ -204,7 +206,7 @@ const suggestHashtagsTool = defineMarketingTool({
   reversibility: "read",
   async execute(args, ctx) {
     let text = args.text ?? "";
-    let platform = args.platform ?? "linkedin";
+    let platform: SocialPostPlatform = args.platform ?? "linkedin";
     if (args.postId) {
       const post = await requirePost(ctx, args.postId);
       text = post.body;
@@ -213,7 +215,7 @@ const suggestHashtagsTool = defineMarketingTool({
     if (!text.trim()) throw new MarketingToolError("Provide postId or text");
     const hashtags = await suggestHashtags(depsFrom(ctx), { text, platform });
     return {
-      summary: `Suggested: ${hashtags.join(" ")} (${PLATFORM_LIMITS[platform].label} range ${PLATFORM_LIMITS[platform].hashtagMin}-${PLATFORM_LIMITS[platform].hashtagMax}).`,
+      summary: `Suggested: ${hashtags.join(" ")} (${platformLimitsFor(platform).label} range ${platformLimitsFor(platform).hashtagMin}-${platformLimitsFor(platform).hashtagMax}).`,
       data: { hashtags, platform },
     };
   },
@@ -285,7 +287,8 @@ const generateSocialPostDrafts = defineMarketingTool({
         ? " Note: this course has little content — posts will be more generic; adding a course description improves them."
         : "";
       return {
-        summary: `Generated ${result.posts.length} ${PLATFORM_LIMITS[req.platform].label} draft(s) (${mix}), value-first ordering.${droppedNote}${thinNote} They are drafts in the content queue — the creator reviews, copies, and posts them manually.`,
+        summary: `Generated ${result.posts.length} ${PLATFORM_LIMITS[req.platform].label} draft(s) (${mix}), value-first ordering.${droppedNote}${thinNote} New drafts are waiting in the content queue.`,
+        summaryFields: { v: 1, count: result.posts.length, dropped: result.dropped.length, platform: req.platform, outcome: "done" },
         data: {
           batchId: result.batch.id,
           posts: result.posts.map(compactPost),
@@ -361,6 +364,7 @@ const changePostToneTool = defineMarketingTool({
       });
       return {
         summary: `Retoned the post to ${args.targetTone} (now v${updated.version}).`,
+        summaryFields: { v: 1, note: args.targetTone, outcome: "done" },
         data: compactPost(updated),
         target: { entity: "social_post", id: updated.id },
       };
@@ -429,6 +433,7 @@ const createSocialPostVariant = defineMarketingTool({
       });
       return {
         summary: `Created ${posts.length} variant(s) of the post — new drafts in the queue, the original untouched.`,
+        summaryFields: { v: 1, count: posts.length, outcome: "done" },
         data: { posts: posts.map(compactPost) },
         target: { entity: "social_post_batch", id: batchId },
       };
@@ -482,6 +487,7 @@ const createSocialPost = defineMarketingTool({
     });
     return {
       summary: `Created a ${PLATFORM_LIMITS[args.platform].label} draft from the provided copy.`,
+      summaryFields: { v: 1, platform: args.platform, outcome: "done" },
       data: compactPost(post),
       target: { entity: "social_post", id: post.id },
     };
@@ -535,9 +541,9 @@ const updateSocialPost = defineMarketingTool({
         )
       )
     );
-    if (patch.body && patch.body.length > PLATFORM_LIMITS[post.platform].charCap) {
+    if (patch.body && patch.body.length > platformLimitsFor(post.platform).charCap) {
       throw new MarketingToolError(
-        `body exceeds the ${PLATFORM_LIMITS[post.platform].label} cap of ${PLATFORM_LIMITS[post.platform].charCap} characters`
+        `body exceeds the ${platformLimitsFor(post.platform).label} cap of ${platformLimitsFor(post.platform).charCap} characters`
       );
     }
     try {
@@ -598,10 +604,13 @@ const deleteSocialPost = defineMarketingTool({
 const markSocialPostStatus = defineMarketingTool({
   name: "mark_social_post_status",
   description:
-    "Move a post through its lifecycle: draft → ready → planned → posted_manual → archived. posted_manual stamps the posted-manually timestamp (the creator posted it themselves on the platform).",
+    "Move a post through its MANUAL lifecycle: draft → ready → planned → posted_manual → archived. posted_manual stamps the posted-manually timestamp (the creator posted it themselves on the platform). posted_api/unpublished_local are SYSTEM states stamped only by the connected-publish workflow — they cannot be set here.",
   params: z.object({
     postId: z.string().min(1),
-    status: PostStatusSchema,
+    // Deliberately NOT PostStatusSchema: the connected-publish states are
+    // workflow-stamped; a tool that could forge posted_api would fake a
+    // publish that never happened (M-C governance).
+    status: z.enum(["draft", "ready", "planned", "posted_manual", "archived"]),
   }),
   reversibility: "reversible",
   actionKind: "mark_social_post_status",
@@ -708,6 +717,7 @@ const rewriteForPlatformTool = defineMarketingTool({
       });
       return {
         summary: `Created a native ${PLATFORM_LIMITS[args.targetPlatform].label} version as a new draft (the original is untouched).`,
+        summaryFields: { v: 1, platform: args.targetPlatform, outcome: "done" },
         data: compactPost(created),
         target: { entity: "social_post", id: created.id },
       };
@@ -758,7 +768,7 @@ const updatePlannedPostTime = defineMarketingTool({
 const logSocialPostPerformance = defineMarketingTool({
   name: "log_social_post_performance",
   description:
-    "Log manual performance on a posted_manual post — metrics (impressions/likes/comments/shares/clicks) and/or a one-tap qualitative rating (flop/ok/good/viral). Feeds later closed-loop learning; changes nothing else.",
+    "Log performance on a POSTED post — posted_manual (creator posted by hand) or posted_api (went out through a connected account; the states stay distinct). Metrics (impressions/likes/comments/shares/clicks) and/or a one-tap qualitative rating (flop/ok/good/viral). Feeds later closed-loop learning; changes nothing else.",
   params: z.object({
     postId: z.string().min(1),
     impressions: z.number().int().nonnegative().nullable(),
@@ -775,9 +785,9 @@ const logSocialPostPerformance = defineMarketingTool({
   },
   async execute(args, ctx) {
     const post = await requirePost(ctx, args.postId);
-    if (post.status !== "posted_manual") {
+    if (post.status !== "posted_manual" && post.status !== "posted_api") {
       throw new MarketingToolError(
-        "Performance can only be logged on a posted_manual post — mark it posted first (mark_social_post_status)."
+        "Performance can only be logged on a posted post (posted_manual or posted_api)."
       );
     }
     const performance = PostPerformanceSchema.parse({

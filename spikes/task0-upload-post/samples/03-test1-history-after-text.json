@@ -1,0 +1,95 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/history?limit=10&page=1",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-length": "803",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:15:22 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "58",
+      "x-ratelimit-reset": "1784790960",
+      "x-request-id": "3230c39d773541d4a71dea7a16aff881"
+    },
+    "body": {
+      "history": [
+        {
+          "user_email": "[REDACTED_EMAIL]",
+          "profile_username": "henry",
+          "platform": "linkedin",
+          "media_type": "text",
+          "upload_timestamp": "2026-07-23T07:15:13.045Z",
+          "success": false,
+          "platform_post_id": null,
+          "post_url": null,
+          "error_message": "Duplicate post detected. LinkedIn prevents posting the same content consecutively. If this issue persists, please contact support at [REDACTED_EMAIL]. Learn more: https://docs.upload-post.com/resources/common-errors.",
+          "error_signature": "4ca5b174971875d8",
+          "error_code": null,
+          "failure_stage": null,
+          "media_size_bytes": 88,
+          "post_title": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+          "post_caption": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+          "is_async": true,
+          "dashboard": false,
+          "source": "api",
+          "video_was_transcoded": null,
+          "changes": null,
+          "prevalidation_metadata": null,
+          "target_linkedin_page_id": null,
+          "request_id": "d49d29f6cc0d420d982847c3bdca7e00",
+          "request_id_logs": "d49d29f6cc0d420d982847c3bdca7e00",
+          "job_id": "1c51920f512f4d80ad7e3a4e663fd87e",
+          "request_total_platforms": 1
+        },
+        {
+          "user_email": "[REDACTED_EMAIL]",
+          "profile_username": "henry",
+          "platform": "linkedin",
+          "media_type": "text",
+          "upload_timestamp": "2026-07-23T07:15:08.595Z",
+          "success": true,
+          "platform_post_id": "urn:li:share:7485955623193542656",
+          "post_url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/",
+          "error_message": null,
+          "error_signature": null,
+          "error_code": null,
+          "failure_stage": null,
+          "media_size_bytes": 88,
+          "post_title": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+          "post_caption": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+          "is_async": true,
+          "dashboard": false,
+          "source": "api",
+          "video_was_transcoded": null,
+          "changes": null,
+          "prevalidation_metadata": null,
+          "target_linkedin_page_id": null,
+          "request_id": "617656f7b503482c871650ecde87f402",
+          "request_id_logs": "617656f7b503482c871650ecde87f402",
+          "job_id": "6160efc6afa247888c865a9a73e832aa",
+          "request_total_platforms": 1
+        }
+      ],
+      "in_progress": [],
+      "total": 2,
+      "page": 1,
+      "limit": 10,
+      "profiles": [
+        "henry"
+      ]
+    }
+  },
+  "elapsedMs": 834,
+  "at": "2026-07-23T07:15:21.529Z"
+}

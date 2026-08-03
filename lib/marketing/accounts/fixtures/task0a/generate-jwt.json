@@ -1,0 +1,44 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.upload-post.com/api/uploadposts/users/generate-jwt",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "username": "henry",
+      "redirect_url": "https://example.com/linked",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "linkedin",
+        "youtube",
+        "facebook"
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "324",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:13:54 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "56",
+      "x-ratelimit-reset": "1784790840",
+      "x-request-id": "609ef7451b1f436499b6399cb824f74e"
+    },
+    "body": {
+      "success": true,
+      "access_url": "https://app.upload-post.com/connect?token=[REDACTED_JWT]",
+      "duration": "48h"
+    }
+  },
+  "elapsedMs": 361,
+  "at": "2026-07-23T07:13:54.104Z"
+}

@@ -1,0 +1,67 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/users",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "850",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:13:53 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "58",
+      "x-ratelimit-reset": "1784790840",
+      "x-request-id": "a9805b21df8c4d60b3efa7623bbe0407"
+    },
+    "body": {
+      "success": true,
+      "profiles": [
+        {
+          "username": "henry",
+          "social_accounts": {
+            "tiktok": "",
+            "youtube": {
+              "display_name": "Henry Lai",
+              "handle": "@henrylai4667",
+              "social_images": "https://storage.googleapis.com/pfp-social-pics-upload-post-eu3/ca5acdbee3e84921905342b5fe048da1.jpg",
+              "reauth_required": false
+            },
+            "linkedin": {
+              "display_name": "Henry Lai",
+              "handle": "Henry Lai",
+              "social_images": "https://storage.googleapis.com/pfp-social-pics-upload-post-eu3/2dfde2e5ff3343158c573e4879edd585.jpg",
+              "reauth_required": false
+            },
+            "facebook": {
+              "display_name": "Henry Lai",
+              "handle": "Henry Lai",
+              "social_images": "https://storage.googleapis.com/pfp-social-pics-upload-post-eu3/f7d220cd3d4e42568e00a14378a30fd5.jpg",
+              "reauth_required": false
+            }
+          },
+          "created_at": "Fri, 17 Jul 2026 08:14:48 GMT",
+          "platforms": [
+            "tiktok",
+            "instagram",
+            "linkedin",
+            "youtube",
+            "facebook"
+          ],
+          "blocked": false
+        }
+      ],
+      "limit": 2,
+      "plan": "default"
+    }
+  },
+  "elapsedMs": 953,
+  "at": "2026-07-23T07:13:52.585Z"
+}

@@ -942,6 +942,27 @@ export interface VideoAssetSnapshot {
   errorMessage?: string;
 }
 
+/** One slide advance observed WHILE recording (M-R, D-2): `atMs` is on the
+ *  RECORDED timeline (pauses excluded). The clips pipeline's slide-sync
+ *  contract (lib/marketing/clips SlideSyncEntrySchema) consumes this exact
+ *  shape — one producer, one consumer, no second shape. */
+export interface RecordingSlideSyncEntry {
+  slideId: string;
+  atMs: number;
+}
+
+/** The webcam bubble's ACTUAL rect on the composited canvas, stamped at
+ *  record time (M-R, D-3) — the recorder draws the bubble, so it stores the
+ *  fact. Downstream stacked_split crops deterministically from this;
+ *  detection is the legacy-upload path only. */
+export interface RecordingPipGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  corner: CameraBubblePosition;
+}
+
 /** How the video was (or will be) recorded. Persisted so a re-record keeps the
  *  educator's last choices, and so export/analysis can reason about layout. */
 export interface VideoRecordingConfig {
@@ -949,6 +970,14 @@ export interface VideoRecordingConfig {
   layout?: VideoLayout;
   cameraBubblePosition?: CameraBubblePosition;
   includeMic?: boolean;
+  /** D-2: slide advances captured during this recording (nullable/absent on
+   *  legacy recordings and uploads — every consumer guards). */
+  slideSync?: RecordingSlideSyncEntry[];
+  /** D-3: the bubble rect stamped by the compositor (screen_camera only). */
+  pipGeometry?: RecordingPipGeometry;
+  /** D-4: the raw camera track's video_assets row when RECORDER_DUAL_TRACK
+   *  captured one alongside the composited canvas (flag-gated, default off). */
+  dualCameraAssetRowId?: string;
 }
 
 /** Non-destructive trim. Both are offsets in seconds from the start of the

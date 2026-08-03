@@ -271,6 +271,7 @@ const generateEmailSequence = defineMarketingTool({
     }
     return {
       summary: `Drafted a ${touchCount}-email "${blueprint.label}" sequence${usedModel ? "" : " (deterministic — no model configured)"}. Avg quality score ${avgQuality}/100.`,
+      summaryFields: { v: 1, entity: blueprint.label, count: touchCount, outcome: "done" },
       data: { sequenceId, touchCount, blueprintKey: blueprint.key, usedModel, avgQuality },
       target: { entity: "email_sequence", id: sequenceId },
     };
@@ -544,6 +545,7 @@ const activateSequence = defineMarketingTool({
     }
     return {
       summary: `Activated "${seq.name}"${enrolled ? ` — enrolled ${enrolled} subscriber(s). ${await campaignTimingSentence(ctx, seq.campaignId)}` : "."}`,
+      summaryFields: { v: 1, entity: seq.name, count: enrolled || undefined, outcome: "done" },
       data: { enrolled },
       target: { entity: "email_sequence", id: seq.id },
     };
@@ -585,6 +587,7 @@ const pauseSequence = defineMarketingTool({
     const queued = await countPendingSequenceSends(ctx, seq.id);
     return {
       summary: `Paused "${seq.name}" — ${queued} queued send(s) are held until you resume. Nothing is lost.`,
+      summaryFields: { v: 1, entity: seq.name, count: queued, outcome: "done" },
       data: { heldSends: queued },
       target: { entity: "email_sequence", id: seq.id },
     };
@@ -622,6 +625,7 @@ const resumeSequence = defineMarketingTool({
     const queued = await countPendingSequenceSends(ctx, seq.id);
     return {
       summary: `Resumed "${seq.name}" — ${queued} held send(s) continue on their schedule.`,
+      summaryFields: { v: 1, entity: seq.name, count: queued, outcome: "done" },
       data: { resumedSends: queued },
       target: { entity: "email_sequence", id: seq.id },
     };
@@ -654,6 +658,7 @@ const enrollSegmentInSequence = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Enroll ${ids.length} subscriber(s) into "${seq.name}" — sends will go out.`,
+        summaryFields: { v: 1, entity: seq.name, count: ids.length },
         target: { entity: "email_sequence", id: seq.id },
         approvalPreview: {
           name: seq.name,
@@ -667,6 +672,7 @@ const enrollSegmentInSequence = defineMarketingTool({
     const { enrolled } = await enrollSegment(ctx.supabase, seq, ids, { nowMs: ctx.services.clock.epochMs() });
     return {
       summary: `Enrolled ${enrolled} subscriber(s) into "${seq.name}". ${await campaignTimingSentence(ctx, seq.campaignId)}`,
+      summaryFields: { v: 1, entity: seq.name, count: enrolled, outcome: "sent" },
       data: { enrolled },
       target: { entity: "email_sequence", id: seq.id },
     };
@@ -704,6 +710,7 @@ const sendBroadcastTool = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Send "${args.subject}" to ${ids.length} subscriber(s).`,
+        summaryFields: { v: 1, entity: args.subject, count: ids.length },
         approvalPreview: {
           subject: args.subject,
           audience: ids.length,
@@ -720,7 +727,7 @@ const sendBroadcastTool = defineMarketingTool({
       body: args.body,
       nowMs: ctx.services.clock.epochMs(),
     });
-    return { summary: `Sent to ${sent} subscriber(s)${skipped ? ` (${skipped} skipped).` : "."}`, data: { sent, skipped } };
+    return { summary: `Sent to ${sent} subscriber(s)${skipped ? ` (${skipped} skipped).` : "."}`, summaryFields: { v: 1, count: sent, dropped: skipped || undefined, outcome: "sent" }, data: { sent, skipped } };
   },
 });
 

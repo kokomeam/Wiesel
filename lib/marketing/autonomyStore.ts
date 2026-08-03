@@ -36,6 +36,73 @@ export async function loadAutonomySettings(supabase: DB, courseId: string): Prom
   };
 }
 
+/** Settings + the row's `updated_at` (null = no row yet) — the optimistic
+ *  token for the guarded save (UI-1 DEV-2). */
+export interface AutonomySettingsWithMeta extends AutonomySettings {
+  updatedAt: string | null;
+}
+
+export async function loadAutonomySettingsWithMeta(
+  supabase: DB,
+  courseId: string
+): Promise<AutonomySettingsWithMeta> {
+  const { data } = await supabase
+    .from("marketing_autonomy_settings")
+    .select("mode, policy, revert_window_hours, updated_at")
+    .eq("course_id", courseId)
+    .maybeSingle();
+  if (!data) return { ...DEFAULT_AUTONOMY_SETTINGS, updatedAt: null };
+  return {
+    mode: parseMode(data.mode),
+    policy: parsePolicy(data.policy),
+    revertWindowHours:
+      typeof data.revert_window_hours === "number" && data.revert_window_hours >= 1
+        ? data.revert_window_hours
+        : DEFAULT_REVERT_WINDOW_HOURS,
+    updatedAt: data.updated_at,
+  };
+}
+
+/**
+ * Optimistic guarded save (UI-1 DEV-2, approved at CHECKPOINT-0): the update
+ * only lands if the row's `updated_at` still matches what this client loaded
+ * (the moddatetime trigger bumps it on every write) — a concurrent save from
+ * another tab/surface returns `conflict` instead of being silently clobbered.
+ * `expectedUpdatedAt: null` = first save → INSERT; losing a first-save race
+ * (unique course_id) is a conflict too. No schema change: the guard rides
+ * the existing `updated_at` column.
+ */
+export async function saveAutonomySettingsGuarded(
+  supabase: DB,
+  courseId: string,
+  next: AutonomySettings,
+  expectedUpdatedAt: string | null
+): Promise<{ ok: true } | { ok: false; conflict: true }> {
+  const row = {
+    course_id: courseId,
+    mode: next.mode,
+    policy: next.policy as unknown as Json,
+    revert_window_hours: next.revertWindowHours,
+  };
+  if (expectedUpdatedAt === null) {
+    const { error } = await supabase.from("marketing_autonomy_settings").insert(row);
+    if (error) {
+      if (error.code === "23505") return { ok: false, conflict: true };
+      throw new Error(`autonomy settings save failed: ${error.message}`);
+    }
+    return { ok: true };
+  }
+  const { data, error } = await supabase
+    .from("marketing_autonomy_settings")
+    .update(row)
+    .eq("course_id", courseId)
+    .eq("updated_at", expectedUpdatedAt)
+    .select("course_id");
+  if (error) throw new Error(`autonomy settings save failed: ${error.message}`);
+  if (!data || data.length === 0) return { ok: false, conflict: true };
+  return { ok: true };
+}
+
 export async function upsertAutonomySettings(
   supabase: DB,
   courseId: string,

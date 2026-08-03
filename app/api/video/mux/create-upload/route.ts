@@ -39,6 +39,10 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const { courseId, lessonId, blockId } = body;
+  // M-R (D-4): a raw camera dual-track upload — no captions/transcript, and
+  // marked so lesson-video pickers exclude it.
+  const role =
+    (body as { role?: unknown }).role === "camera_dual_track" ? "camera_dual_track" : null;
   if (!isUuid(courseId)) return new Response("Missing or invalid courseId.", { status: 400 });
   if (lessonId != null && lessonId !== "" && !isUuid(lessonId)) {
     return new Response("Invalid lessonId.", { status: 400 });
@@ -69,9 +73,11 @@ export async function POST(req: Request): Promise<Response> {
     // filled in below once we have the Mux upload id (two-step so passthrough=id)
     muxUploadId: "",
     // Auto-generate English captions by default (asynchronous — never blocks
-    // playback). Seeds the row as caption_status="generating".
-    requestCaptions: true,
+    // playback). Seeds the row as caption_status="generating". Aux camera
+    // tracks skip captions entirely.
+    requestCaptions: role === null,
     captionLanguageCode: DEFAULT_CAPTION_LANGUAGE,
+    role,
   });
   if ("error" in created) {
     console.log(JSON.stringify({ tag: "video_create_row_error", message: created.error }));
@@ -87,7 +93,9 @@ export async function POST(req: Request): Promise<Response> {
       upload = await provider.createDirectUpload({
         corsOrigin: origin,
         passthrough: row.id,
-        generateSubtitles: { languageCode: DEFAULT_CAPTION_LANGUAGE, name: DEFAULT_CAPTION_NAME },
+        ...(role === null
+          ? { generateSubtitles: { languageCode: DEFAULT_CAPTION_LANGUAGE, name: DEFAULT_CAPTION_NAME } }
+          : {}),
       });
     } catch (capErr) {
       // A caption request must NEVER block the upload (a Mux tier/version could reject

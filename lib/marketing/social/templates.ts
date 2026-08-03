@@ -6,8 +6,8 @@
  * queue can be honest about provenance.
  */
 
-import type { BatchPlanSlot, SocialGoal, SocialPlatform, SocialTone } from "./constants";
-import { PLATFORM_LIMITS } from "./constants";
+import type { BatchPlanSlot, SocialGoal, SocialPlatform, SocialPostPlatform, SocialTone } from "./constants";
+import { PLATFORM_LIMITS, platformLimitsFor } from "./constants";
 import type { ModelPost } from "./schemas";
 
 export interface TemplateContext {
@@ -141,8 +141,8 @@ export function buildTemplatePosts(
 }
 
 /** Deterministic hashtag suggestions (the no-model path for suggest_hashtags). */
-export function suggestHashtagsDeterministic(text: string, platform: SocialPlatform): string[] {
-  const max = PLATFORM_LIMITS[platform].hashtagMax;
+export function suggestHashtagsDeterministic(text: string, platform: SocialPostPlatform): string[] {
+  const max = platformLimitsFor(platform).hashtagMax;
   const words = text
     .split(/\s+/)
     .map((w) => w.replace(/[^\p{L}\p{N}_]/gu, ""))

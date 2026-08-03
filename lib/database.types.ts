@@ -424,6 +424,211 @@ export type Database = {
           },
         ]
       }
+      clip_moment_candidate: {
+        Row: {
+          ai_metadata: Json
+          alt_hooks: Json
+          caption_draft: string | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          end_card_cta: string | null
+          end_ms: number
+          funnel_stage: string
+          hook_text: string
+          id: string
+          layout: string
+          lesson_id: string
+          moment_type: string
+          prompt_version: string
+          rank: number
+          rationale: string
+          request_id: string
+          rubric_scores: Json
+          segments: Json | null
+          start_ms: number
+          status: string
+          stitched_script: string | null
+          target_platform_fit: Json
+          transcript_id: string
+          updated_at: string
+        }
+        Insert: {
+          ai_metadata?: Json
+          alt_hooks?: Json
+          caption_draft?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          end_card_cta?: string | null
+          end_ms: number
+          funnel_stage: string
+          hook_text: string
+          id?: string
+          layout?: string
+          lesson_id: string
+          moment_type: string
+          prompt_version: string
+          rank: number
+          rationale: string
+          request_id: string
+          rubric_scores: Json
+          segments?: Json | null
+          start_ms: number
+          status?: string
+          stitched_script?: string | null
+          target_platform_fit?: Json
+          transcript_id: string
+          updated_at?: string
+        }
+        Update: {
+          ai_metadata?: Json
+          alt_hooks?: Json
+          caption_draft?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          end_card_cta?: string | null
+          end_ms?: number
+          funnel_stage?: string
+          hook_text?: string
+          id?: string
+          layout?: string
+          lesson_id?: string
+          moment_type?: string
+          prompt_version?: string
+          rank?: number
+          rationale?: string
+          request_id?: string
+          rubric_scores?: Json
+          segments?: Json | null
+          start_ms?: number
+          status?: string
+          stitched_script?: string | null
+          target_platform_fit?: Json
+          transcript_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clip_moment_candidate_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_moment_candidate_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_moment_candidate_transcript_id_fkey"
+            columns: ["transcript_id"]
+            isOneToOne: false
+            referencedRelation: "lesson_transcript"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      clip_render_job: {
+        Row: {
+          attempts: number
+          candidate_id: string
+          cost_minutes: number | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          crop_provenance: string | null
+          error: string | null
+          id: string
+          idempotency_key: string | null
+          layout: string
+          lesson_id: string
+          output: Json | null
+          precut: Json | null
+          preset: string
+          provider: string
+          provider_ref: string | null
+          source: Json
+          status: string
+          submitted_at: string | null
+          updated_at: string
+          upload_ref: string | null
+        }
+        Insert: {
+          attempts?: number
+          candidate_id: string
+          cost_minutes?: number | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          crop_provenance?: string | null
+          error?: string | null
+          id?: string
+          idempotency_key?: string | null
+          layout: string
+          lesson_id: string
+          output?: Json | null
+          precut?: Json | null
+          preset?: string
+          provider: string
+          provider_ref?: string | null
+          source: Json
+          status?: string
+          submitted_at?: string | null
+          updated_at?: string
+          upload_ref?: string | null
+        }
+        Update: {
+          attempts?: number
+          candidate_id?: string
+          cost_minutes?: number | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          crop_provenance?: string | null
+          error?: string | null
+          id?: string
+          idempotency_key?: string | null
+          layout?: string
+          lesson_id?: string
+          output?: Json | null
+          precut?: Json | null
+          preset?: string
+          provider?: string
+          provider_ref?: string | null
+          source?: Json
+          status?: string
+          submitted_at?: string | null
+          updated_at?: string
+          upload_ref?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clip_render_job_candidate_id_fkey"
+            columns: ["candidate_id"]
+            isOneToOne: false
+            referencedRelation: "clip_moment_candidate"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_render_job_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clip_render_job_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: false
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+        ]
       comms_suppressions: {
         Row: {
           created_at: string
@@ -1439,6 +1644,82 @@ export type Database = {
           },
         ]
       }
+      lesson_transcript: {
+        Row: {
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          duration_seconds: number
+          format_source: string
+          id: string
+          language: string
+          lesson_id: string
+          provider_ref: string | null
+          recording_format: string
+          source: string
+          text: string
+          updated_at: string
+          video_asset_id: string | null
+          words: Json
+        }
+        Insert: {
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          duration_seconds: number
+          format_source?: string
+          id?: string
+          language?: string
+          lesson_id: string
+          provider_ref?: string | null
+          recording_format: string
+          source: string
+          text: string
+          updated_at?: string
+          video_asset_id?: string | null
+          words: Json
+        }
+        Update: {
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          duration_seconds?: number
+          format_source?: string
+          id?: string
+          language?: string
+          lesson_id?: string
+          provider_ref?: string | null
+          recording_format?: string
+          source?: string
+          text?: string
+          updated_at?: string
+          video_asset_id?: string | null
+          words?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lesson_transcript_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lesson_transcript_video_asset_id_fkey"
+            columns: ["video_asset_id"]
+            isOneToOne: false
+            referencedRelation: "video_assets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lesson_transcript_lesson_id_fkey"
+            columns: ["lesson_id"]
+            isOneToOne: true
+            referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       lessons: {
         Row: {
           course_id: string
@@ -1507,6 +1788,7 @@ export type Database = {
           revert_expires_at: string | null
           status: string
           summary: string | null
+          summary_fields: Json | null
           target_ref: Json | null
           tool_name: string
           updated_at: string
@@ -1527,6 +1809,7 @@ export type Database = {
           revert_expires_at?: string | null
           status?: string
           summary?: string | null
+          summary_fields?: Json | null
           target_ref?: Json | null
           tool_name: string
           updated_at?: string
@@ -1547,6 +1830,7 @@ export type Database = {
           revert_expires_at?: string | null
           status?: string
           summary?: string | null
+          summary_fields?: Json | null
           target_ref?: Json | null
           tool_name?: string
           updated_at?: string
@@ -1892,6 +2176,76 @@ export type Database = {
             columns: ["course_id"]
             isOneToOne: false
             referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      posting_kit: {
+        Row: {
+          ai_metadata: Json
+          caption: string
+          comment_keyword: string | null
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          disclosure_line: string
+          hashtags: Json
+          id: string
+          post_id: string
+          short_link_id: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          ai_metadata?: Json
+          caption: string
+          comment_keyword?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          disclosure_line: string
+          hashtags?: Json
+          id?: string
+          post_id: string
+          short_link_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          ai_metadata?: Json
+          caption?: string
+          comment_keyword?: string | null
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          disclosure_line?: string
+          hashtags?: Json
+          id?: string
+          post_id?: string
+          short_link_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "posting_kit_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "posting_kit_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: true
+            referencedRelation: "social_post"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "posting_kit_short_link_id_fkey"
+            columns: ["short_link_id"]
+            isOneToOne: false
+            referencedRelation: "short_link"
             referencedColumns: ["id"]
           },
         ]
@@ -2564,6 +2918,92 @@ export type Database = {
           },
         ]
       }
+      short_link: {
+        Row: {
+          clicks: number
+          code: string
+          course_id: string | null
+          created_at: string
+          creator_id: string
+          destination: string
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          clicks?: number
+          code: string
+          course_id?: string | null
+          created_at?: string
+          creator_id: string
+          destination: string
+          id?: string
+          updated_at?: string
+        }
+        Update: {
+          clicks?: number
+          code?: string
+          course_id?: string | null
+          created_at?: string
+          creator_id?: string
+          destination?: string
+          id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "short_link_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_account: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          creator_id: string
+          display_name: string | null
+          handle: string | null
+          id: string
+          last_synced_at: string | null
+          platform: string
+          provider: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          creator_id: string
+          display_name?: string | null
+          handle?: string | null
+          id?: string
+          last_synced_at?: string | null
+          platform: string
+          provider?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          creator_id?: string
+          display_name?: string | null
+          handle?: string | null
+          id?: string
+          last_synced_at?: string | null
+          platform?: string
+          provider?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: []
+      }
       social_post: {
         Row: {
           ai_metadata: Json
@@ -2571,6 +3011,8 @@ export type Database = {
           batch_id: string | null
           batch_order: number | null
           body: string
+          clean_video_path: string | null
+          clip_job_id: string | null
           campaign_id: string | null
           course_id: string | null
           created_at: string
@@ -2578,6 +3020,7 @@ export type Database = {
           cta: string | null
           deleted_at: string | null
           external_ref: Json | null
+          first_comment: string | null
           funnel_stage: string
           goal: string
           hashtags: string[]
@@ -2600,6 +3043,8 @@ export type Database = {
           tone: string
           updated_at: string
           version: number
+          video_path: string | null
+          regenerated_from_post_id: string | null
         }
         Insert: {
           ai_metadata?: Json
@@ -2607,6 +3052,8 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body: string
+          clean_video_path?: string | null
+          clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null
           created_at?: string
@@ -2614,6 +3061,7 @@ export type Database = {
           cta?: string | null
           deleted_at?: string | null
           external_ref?: Json | null
+          first_comment?: string | null
           funnel_stage: string
           goal: string
           hashtags?: string[]
@@ -2636,6 +3084,8 @@ export type Database = {
           tone: string
           updated_at?: string
           version?: number
+          video_path?: string | null
+          regenerated_from_post_id?: string | null
         }
         Update: {
           ai_metadata?: Json
@@ -2643,6 +3093,8 @@ export type Database = {
           batch_id?: string | null
           batch_order?: number | null
           body?: string
+          clean_video_path?: string | null
+          clip_job_id?: string | null
           campaign_id?: string | null
           course_id?: string | null
           created_at?: string
@@ -2650,6 +3102,7 @@ export type Database = {
           cta?: string | null
           deleted_at?: string | null
           external_ref?: Json | null
+          first_comment?: string | null
           funnel_stage?: string
           goal?: string
           hashtags?: string[]
@@ -2672,6 +3125,8 @@ export type Database = {
           tone?: string
           updated_at?: string
           version?: number
+          video_path?: string | null
+          regenerated_from_post_id?: string | null
         }
         Relationships: [
           {
@@ -2787,6 +3242,250 @@ export type Database = {
             columns: ["module_id"]
             isOneToOne: false
             referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_provider_profile: {
+        Row: {
+          created_at: string
+          creator_id: string
+          id: string
+          profile_ref_enc: string
+          provider: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          creator_id: string
+          id?: string
+          profile_ref_enc: string
+          provider?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          creator_id?: string
+          id?: string
+          profile_ref_enc?: string
+          provider?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      social_publish_approval: {
+        Row: {
+          consumed_at: string | null
+          content_hash: string
+          conversation_id: string | null
+          created_at: string
+          creator_id: string
+          declined_at: string | null
+          expires_at: string | null
+          id: string
+          kind: string
+          minted_at: string | null
+          parent_approval_id: string | null
+          platform: string
+          proposed_scheduled_for: string | null
+          requested_by: string
+          social_account_id: string
+          social_post_id: string
+          token_hash: string | null
+          updated_at: string
+          voided_at: string | null
+        }
+        Insert: {
+          consumed_at?: string | null
+          content_hash: string
+          conversation_id?: string | null
+          created_at?: string
+          creator_id: string
+          declined_at?: string | null
+          expires_at?: string | null
+          id?: string
+          kind?: string
+          minted_at?: string | null
+          parent_approval_id?: string | null
+          platform: string
+          proposed_scheduled_for?: string | null
+          requested_by?: string
+          social_account_id: string
+          social_post_id: string
+          token_hash?: string | null
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Update: {
+          consumed_at?: string | null
+          content_hash?: string
+          conversation_id?: string | null
+          created_at?: string
+          creator_id?: string
+          declined_at?: string | null
+          expires_at?: string | null
+          id?: string
+          kind?: string
+          minted_at?: string | null
+          parent_approval_id?: string | null
+          platform?: string
+          proposed_scheduled_for?: string | null
+          requested_by?: string
+          social_account_id?: string
+          social_post_id?: string
+          token_hash?: string | null
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_approval_parent_approval_id_fkey"
+            columns: ["parent_approval_id"]
+            isOneToOne: false
+            referencedRelation: "social_publish_approval"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_approval_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_approval_social_post_id_fkey"
+            columns: ["social_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_publish_ledger: {
+        Row: {
+          client_ref: string
+          created_at: string
+          creator_id: string
+          id: string
+          platform: string
+          provider_request_id: string | null
+          social_account_id: string
+        }
+        Insert: {
+          client_ref: string
+          created_at?: string
+          creator_id: string
+          id?: string
+          platform: string
+          provider_request_id?: string | null
+          social_account_id: string
+        }
+        Update: {
+          client_ref?: string
+          created_at?: string
+          creator_id?: string
+          id?: string
+          platform?: string
+          provider_request_id?: string | null
+          social_account_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_ledger_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_publish_manifest: {
+        Row: {
+          approval_id: string
+          approved_via: string
+          attempt: number
+          content_hash: string
+          created_at: string
+          creator_id: string
+          hold_reason: string | null
+          id: string
+          last_error: Json | null
+          platform: string
+          platform_post_id: string | null
+          post_url: string | null
+          provider_request_id: string | null
+          scheduled_for: string | null
+          social_account_id: string
+          social_post_id: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          approval_id: string
+          approved_via?: string
+          attempt?: number
+          content_hash: string
+          created_at?: string
+          creator_id: string
+          hold_reason?: string | null
+          id?: string
+          last_error?: Json | null
+          platform: string
+          platform_post_id?: string | null
+          post_url?: string | null
+          provider_request_id?: string | null
+          scheduled_for?: string | null
+          social_account_id: string
+          social_post_id: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          approval_id?: string
+          approved_via?: string
+          attempt?: number
+          content_hash?: string
+          created_at?: string
+          creator_id?: string
+          hold_reason?: string | null
+          id?: string
+          last_error?: Json | null
+          platform?: string
+          platform_post_id?: string | null
+          post_url?: string | null
+          provider_request_id?: string | null
+          scheduled_for?: string | null
+          social_account_id?: string
+          social_post_id?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_manifest_approval_id_fkey"
+            columns: ["approval_id"]
+            isOneToOne: true
+            referencedRelation: "social_publish_approval"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_manifest_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_manifest_social_post_id_fkey"
+            columns: ["social_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
             referencedColumns: ["id"]
           },
         ]

@@ -45,6 +45,8 @@ export interface CreateVideoAssetArgs {
    *  `generating` (the track appears in `preparing` once the asset is ready). */
   requestCaptions?: boolean;
   captionLanguageCode?: string;
+  /** M-R (D-4): auxiliary-track marker (e.g. "camera_dual_track"). */
+  role?: string | null;
 }
 
 export async function createVideoAsset(
@@ -67,6 +69,9 @@ export async function createVideoAsset(
         ? args.captionLanguageCode ?? DEFAULT_CAPTION_LANGUAGE
         : null,
       caption_source: args.requestCaptions ? "generated" : null,
+      // M-R (D-4): role metadata marks auxiliary tracks (e.g. the raw camera
+      // capture) so lesson-video pickers can exclude them.
+      ...(args.role ? { metadata: { role: args.role } } : {}),
     })
     .select("*")
     .single();
@@ -309,6 +314,17 @@ export async function syncVideoAssetFromMux(
 
 /* ───────────────────────── row → client View ───────────────────────────── */
 
+/** A recorded composite (screen+camera canvas capture) draws its black letterbox
+ *  fill before the source `<video>` elements report a real frame, so the first
+ *  instants of the recording are briefly solid black — Mux's default `time=0`
+ *  thumbnail lands squarely on that gap. Default a beat later instead; clamp to
+ *  the clip's own length so a very short recording never requests past its end. */
+function defaultThumbnailTime(durationSeconds: number | null): number {
+  const DEFAULT = 1;
+  if (durationSeconds == null) return DEFAULT;
+  return Math.min(DEFAULT, durationSeconds / 2);
+}
+
 /** Build the client-safe view, deriving public playback + thumbnail URLs from the
  *  playback id. PURE (no I/O) — the URLs are public (public playback policy). */
 export function buildVideoAssetView(row: VideoAssetRow): VideoAssetView {
@@ -331,7 +347,7 @@ export function buildVideoAssetView(row: VideoAssetRow): VideoAssetView {
     hlsUrl: playbackId ? hlsUrl(playbackId) : null,
     thumbnailUrl: playbackId
       ? thumbnailUrl(playbackId, {
-          time: row.thumbnail_time ?? 0,
+          time: row.thumbnail_time ?? defaultThumbnailTime(row.duration_seconds),
           width: 640,
           fitMode: "smartcrop",
         })

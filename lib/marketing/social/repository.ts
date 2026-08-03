@@ -373,6 +373,7 @@ export async function versionedUpdateSocialPost(
       | "body"
       | "cta"
       | "hashtags"
+      | "first_comment"
       | "image_alt_text"
       | "audience"
       | "funnel_stage"
@@ -382,6 +383,9 @@ export async function versionedUpdateSocialPost(
       | "suggested_image_idea"
       | "planned_post_at"
       | "ai_metadata"
+      // H-3: a hook re-burn swaps the burned artifact — content-versioned
+      // (the clean master column never changes after ingest).
+      | "video_path"
     >
   >
 ): Promise<SocialPost> {
@@ -394,6 +398,22 @@ export async function versionedUpdateSocialPost(
     .select("*");
   if (error) throw new Error(`versionedUpdateSocialPost: ${error.message}`);
   if (!data || data.length === 0) throw new SocialVersionConflictError(id);
+
+  // M-C edit-voids-approval: a PUBLISHED-CONTENT edit through this single
+  // write path invalidates every open card approval and live-but-unsent
+  // manifest for the post (lib/marketing/publish/voiding.ts). Lazy import:
+  // publish governance never rides into graphs that only read posts.
+  const touched = Object.keys(set);
+  const contentAffecting = ["body", "cta", "hashtags", "first_comment", "video_path", "platform"];
+  if (touched.some((k) => contentAffecting.includes(k))) {
+    const { voidPublishArtifactsForPost } = await import("@/lib/marketing/publish/voiding");
+    await voidPublishArtifactsForPost(
+      supabase,
+      { id, course_id: data[0].course_id },
+      "post_edited",
+      new Date().toISOString()
+    );
+  }
   return rowToSocialPost(data[0]);
 }
 
@@ -528,8 +548,16 @@ function rowToVoice(row: VoiceRow): VoiceProfileRecord {
   };
 }
 
-export async function loadSocialVoiceProfile(supabase: DB): Promise<VoiceProfileRecord | null> {
-  const { data, error } = await supabase.from("social_voice_profile").select("*").maybeSingle();
+/** `creatorId` scopes explicitly — REQUIRED under a service-role client
+ *  (RLS normally scopes user clients to one row; the admin-driven render
+ *  tick would otherwise see every creator's profile — found live at M-C). */
+export async function loadSocialVoiceProfile(
+  supabase: DB,
+  creatorId?: string
+): Promise<VoiceProfileRecord | null> {
+  let query = supabase.from("social_voice_profile").select("*");
+  if (creatorId) query = query.eq("creator_id", creatorId);
+  const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`loadSocialVoiceProfile: ${error.message}`);
   return data ? rowToVoice(data) : null;
 }
@@ -540,7 +568,7 @@ export async function upsertSocialVoiceProfile(
   profile: SocialVoiceProfile,
   source: "derived" | "creator_edited"
 ): Promise<VoiceProfileRecord> {
-  const existing = await loadSocialVoiceProfile(supabase);
+  const existing = await loadSocialVoiceProfile(supabase, creatorId);
   const { data, error } = await supabase
     .from("social_voice_profile")
     .upsert(

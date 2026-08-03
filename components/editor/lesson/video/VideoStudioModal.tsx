@@ -15,16 +15,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertCircle, Loader2, X } from "lucide-react";
+import { AlertCircle, Loader2, Maximize2, Minimize2, Pause, Play, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { updateVideoLessonPatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
 import type { VideoLessonBlock, VideoRecordingMode } from "@/lib/course/types";
-import { layoutForMode, validateVideoFile, VIDEO_UPLOAD_ACCEPT } from "@/lib/video/recorderConfig";
+import { formatDuration, layoutForMode, validateVideoFile, VIDEO_UPLOAD_ACCEPT } from "@/lib/video/recorderConfig";
 import { snapshotFromView } from "@/lib/video/videoTypes";
 import { useEscapeToClose } from "../../QualityHintBadge";
 import { useVideoAsset } from "./useVideoAsset";
-import { useVideoRecorder } from "./useVideoRecorder";
+import { useVideoRecorder, type RecordedResult } from "./useVideoRecorder";
 import { useVideoUpload } from "./useVideoUpload";
 import { VideoManagePanel } from "./VideoManagePanel";
 import { VideoModeSelect } from "./VideoModeSelect";
@@ -73,6 +73,10 @@ export function VideoStudioModal({
     end: block.edit.trimEndSeconds,
   });
   const [fileError, setFileError] = useState<string | null>(null);
+  // M-R (D-2): while recording, the modal can collapse to a floating REC pill
+  // so the teacher presents their slides IN the studio — that navigation is
+  // exactly what the slide-sync capture records.
+  const [minimized, setMinimized] = useState(false);
   const [confirm, setConfirm] = useState<{ message: string; onConfirm: () => void } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -86,9 +90,11 @@ export function VideoStudioModal({
     }
   }, []);
 
-  // A recording finished — move to review (event, not an effect).
+  // A recording finished — move to review (event, not an effect). The result
+  // carries the M-R capture facts (slideSync/pipGeometry/cameraClip) which
+  // ride the clip object through review to upload.
   const onRecordingComplete = useCallback(
-    (result: { blob: Blob; url: string; durationSeconds: number }) => {
+    (result: RecordedResult) => {
       setClip({ ...result, source: "recording" });
       setTrim({});
       setUserScreen("review");
@@ -158,6 +164,20 @@ export function VideoStudioModal({
     const view = await upload.start(clip.blob);
     if (!view) return; // upload hook holds the error; screen stays "uploading"
     const oldAssetId = replacingFromRef.current;
+    // M-R capture facts ride the clip from the recorder (absent on uploads).
+    const captured = clip as Partial<RecordedResult>;
+    // D-4: the raw camera track uploads as a SECOND, role-marked asset (the
+    // stacked_split face band prefers it). Best-effort — the main video is
+    // already safe.
+    let dualCameraAssetRowId: string | null = null;
+    if (captured.cameraClip) {
+      try {
+        const camView = await upload.start(captured.cameraClip.blob, { role: "camera_dual_track" });
+        dualCameraAssetRowId = camView?.id ?? null;
+      } catch {
+        dualCameraAssetRowId = null;
+      }
+    }
     apply(
       updateVideoLessonPatch(block.id, {
         asset: snapshotFromView(view),
@@ -167,6 +187,10 @@ export function VideoStudioModal({
               layout: layoutForMode(recorder.mode),
               cameraBubblePosition: recorder.bubblePosition,
               includeMic: recorder.includeMic,
+              // D-2/D-3: persisted with the recording metadata (same jsonb home).
+              slideSync: captured.slideSync ?? null,
+              pipGeometry: captured.pipGeometry ?? null,
+              dualCameraAssetRowId,
             }
           : undefined,
         edit: { trimStartSeconds: trim.start ?? null, trimEndSeconds: trim.end ?? null },
@@ -249,6 +273,64 @@ export function VideoStudioModal({
 
   const uploadFailed = upload.phase === "failed";
 
+  // The floating REC pill (minimized recording). The recorder lives in THIS
+  // component's hook, so collapsing the dialog never interrupts capture.
+  if (minimized && activeRecording) {
+    const paused = recorder.phase === "paused";
+    return createPortal(
+      <div className="fixed inset-x-0 bottom-5 z-[80] flex justify-center px-4">
+        <div
+          role="status"
+          aria-label="Recording in progress"
+          className="flex items-center gap-3 rounded-full border border-stone-200 bg-white px-4 py-2.5 shadow-2xl"
+        >
+          <span className="relative flex size-2.5">
+            {!paused && (
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+            )}
+            <span className={`relative inline-flex size-2.5 rounded-full ${paused ? "bg-amber-500" : "bg-rose-500"}`} />
+          </span>
+          <span className="font-mono text-sm tabular-nums text-stone-700">
+            {formatDuration(recorder.elapsedSeconds)}
+          </span>
+          <span className="text-xs text-stone-400">
+            {paused ? "Paused" : "Recording — navigate your slides; advances are captured"}
+          </span>
+          <div className="ml-1 flex items-center gap-1">
+            <button
+              type="button"
+              aria-label={paused ? "Resume recording" : "Pause recording"}
+              onClick={paused ? recorder.resumeRecording : recorder.pauseRecording}
+              className="grid size-8 place-items-center rounded-full text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+            >
+              {paused ? <Play className="size-4" /> : <Pause className="size-4" />}
+            </button>
+            <button
+              type="button"
+              aria-label="Stop recording"
+              onClick={() => {
+                recorder.stopRecording();
+                setMinimized(false);
+              }}
+              className="grid size-8 place-items-center rounded-full bg-rose-50 text-rose-600 transition-colors hover:bg-rose-100"
+            >
+              <Square className="size-3.5 fill-current" />
+            </button>
+            <button
+              type="button"
+              aria-label="Expand the video studio"
+              onClick={() => setMinimized(false)}
+              className="grid size-8 place-items-center rounded-full text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+            >
+              <Maximize2 className="size-4" />
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    );
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-stone-950/50 p-4 backdrop-blur-sm sm:p-6">
       <div
@@ -262,6 +344,17 @@ export function VideoStudioModal({
           <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
             Video lesson
           </span>
+          <div className="flex items-center gap-1">
+            {activeRecording && recorder.phase !== "countdown" && (
+              <button
+                type="button"
+                onClick={() => setMinimized(true)}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700"
+              >
+                <Minimize2 className="size-3.5" />
+                Minimize &amp; present slides
+              </button>
+            )}
           <button
             type="button"
             aria-label="Close"
@@ -270,6 +363,7 @@ export function VideoStudioModal({
           >
             <X className="size-4" />
           </button>
+          </div>
         </div>
 
         {recorder.supported === false && screen !== "manage" ? (

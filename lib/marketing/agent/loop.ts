@@ -28,7 +28,7 @@ import {
 } from "../tools";
 import type { MarketingToolContext } from "../tools/types";
 import { getOrCreateMarketingConversation } from "./conversation";
-import type { MarketingAgentEvent } from "./events";
+import { filedApprovalIds, type MarketingAgentEvent } from "./events";
 import { buildMarketingSystemPrompt, buildObservation, observationSummary } from "./prompt";
 
 export interface MarketingAgentParams {
@@ -172,6 +172,26 @@ export async function runMarketingAgentTurn(
         const out = JSON.stringify({ summary: outcome.summary, ...(outcome.data ? { data: outcome.data } : {}) }).slice(0, 4000);
         await saveToolMessage(p.supabase, conversationId, p.courseId, { callId: call.callId, name: call.name, output: out });
         input.push({ type: "function_call_output", callId: call.callId, output: out });
+
+        // M-AG: cards freshly filed by this call render INLINE — assembled by
+        // the ONE payload assembly and streamed as an ephemeral event (tokens
+        // never touch conversation messages). Best-effort: the review page is
+        // the durable home either way.
+        const cardIds = filedApprovalIds(call.name, outcome.data);
+        if (cardIds.length) {
+          try {
+            const { assembleCardPayloadsForApprovals } = await import(
+              "@/lib/marketing/publish/cardPayload"
+            );
+            const cards = await assembleCardPayloadsForApprovals(p.supabase, p.ownerId, cardIds);
+            if (cards.length) emit({ type: "publish_cards", cards });
+          } catch (err) {
+            console.warn(
+              "[marketing/agent] inline card assembly failed (cards still wait on /marketing/publish):",
+              err instanceof Error ? err.message : err
+            );
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         emit({ type: "tool_result", toolCallId: call.callId, tool: call.name, ok: false, summary: msg, status: "error" });

@@ -62,7 +62,7 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
 
   if (external) {
     if (external.outcome === "dismissed") {
-      return <div className="py-1.5 text-xs text-stone-400">Question dismissed.</div>;
+      return <div className="py-1.5 text-xs text-stone-500">Question dismissed.</div>;
     }
     return (
       <div className="py-1.5 text-xs text-stone-500">
@@ -111,13 +111,13 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
   return (
     <div
       className={cn(
-        "rounded-2xl border border-sky-200 bg-sky-50/60 shadow-[0_1px_2px_rgba(68,48,28,0.05)]",
+        "rounded-card border border-status-attention-ring bg-status-attention-bg/60 shadow-card",
         compact ? "p-3" : "p-4"
       )}
       data-testid="question-card"
     >
       <div className="flex items-start gap-2.5">
-        <HelpCircle className="mt-0.5 size-4 shrink-0 text-sky-500" />
+        <HelpCircle className="mt-0.5 size-4 shrink-0 text-status-attention" />
         <div className="min-w-0 flex-1 space-y-2.5">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-medium text-stone-800">{question}</p>
@@ -125,7 +125,7 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
               type="button"
               onClick={dismiss}
               disabled={busy}
-              className="rounded-full p-1 text-stone-400 hover:bg-stone-900/[0.06] hover:text-stone-600"
+              className="rounded-full p-1 text-stone-500 hover:bg-stone-900/[0.06] hover:text-stone-600"
               aria-label="Dismiss question"
             >
               <X className="size-3.5" />
@@ -138,7 +138,7 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
                 type="button"
                 disabled={busy}
                 onClick={() => answer(o.value, o.label)}
-                className="flex flex-col items-start rounded-xl border border-stone-200 bg-white px-3 py-2 text-left transition-colors hover:border-sky-300 hover:bg-sky-50 disabled:opacity-50"
+                className="flex flex-col items-start rounded-panel border border-stone-200 bg-white px-3 py-2 text-left transition-colors hover:border-status-attention-ring hover:bg-status-attention-bg disabled:opacity-50"
               >
                 <span className="text-sm text-stone-800">{o.label}</span>
                 {o.description ? <span className="text-xs text-stone-500">{o.description}</span> : null}
@@ -151,12 +151,12 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
                   e.preventDefault();
                   if (otherText.trim()) answer("__other__", otherText.trim());
                 }}
-                className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2"
+                className="flex items-start gap-2 rounded-panel border border-stone-200 bg-white px-3 py-2"
               >
                 <textarea
                   autoFocus
                   rows={2}
-                  className="min-h-9 flex-1 resize-y bg-transparent text-sm text-stone-800 placeholder:text-stone-400 focus:outline-none"
+                  className="min-h-9 flex-1 resize-y bg-transparent text-sm text-stone-800 placeholder:text-stone-500 focus:outline-none"
                   placeholder="Type your own answer — or tell the agent to do something else entirely"
                   value={otherText}
                   onChange={(e) => setOtherText(e.target.value)}
@@ -182,14 +182,14 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
                 type="button"
                 disabled={busy}
                 onClick={() => setOtherOpen(true)}
-                className="flex items-center gap-2 rounded-xl border border-dashed border-stone-300 bg-white/60 px-3 py-2 text-left text-sm text-stone-500 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-stone-700 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-panel border border-dashed border-stone-300 bg-white/60 px-3 py-2 text-left text-sm text-stone-500 transition-colors hover:border-status-attention-ring hover:bg-status-attention-bg hover:text-stone-700 disabled:opacity-50"
               >
                 <PenLine className="size-3.5" /> Something else…
               </button>
             )}
           </div>
           {errorMsg ? (
-            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-100/70 p-2.5 text-xs text-rose-800">
+            <div className="flex items-start gap-2 rounded-panel border border-status-attention-ring bg-status-attention-bg p-2.5 text-xs text-status-attention">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
               <p>
                 <span className="font-medium">Couldn&apos;t record the answer:</span> {errorMsg}
@@ -199,13 +199,13 @@ export function QuestionCard({ questionId, question, options, compact, onResult,
           {!otherOpen ? (
             <div className="flex items-center gap-2">
               <input
-                className="block w-full rounded-lg border border-stone-200 bg-white/70 px-2 py-1.5 text-xs text-stone-600 placeholder:text-stone-400"
+                className="block w-full rounded-lg border border-stone-200 bg-white/70 px-2 py-1.5 text-xs text-stone-600 placeholder:text-stone-500"
                 placeholder="Add context with your choice (optional)"
                 value={freeText}
                 onChange={(e) => setFreeText(e.target.value)}
                 disabled={busy}
               />
-              {busy ? <Loader2 className="size-3.5 shrink-0 animate-spin text-stone-400" /> : null}
+              {busy ? <Loader2 className="size-3.5 shrink-0 animate-spin text-stone-500" /> : null}
             </div>
           ) : null}
         </div>

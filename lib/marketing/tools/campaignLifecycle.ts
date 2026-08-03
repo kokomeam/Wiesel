@@ -227,6 +227,7 @@ const launchCampaign = defineMarketingTool({
     const windowNow = sendWindowState(ctx.services.clock.epochMs(), window);
     return {
       summary: `Launched "${campaign.name}" — enrolled ${enrolled} subscriber(s). ${timing}`,
+      summaryFields: { v: 1, entity: campaign.name, count: enrolled, outcome: "done" },
       data: {
         enrolled,
         nextWindowOpensAt: windowNow.nextOpenMs !== null ? new Date(windowNow.nextOpenMs).toISOString() : null,
@@ -252,6 +253,7 @@ const cancelCampaign = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Cancel "${campaign.name}" — ${queued} queued send(s) will stop permanently. This cannot be undone (pause instead to keep the option of resuming).`,
+        summaryFields: { v: 1, entity: campaign.name, count: queued },
         target: { entity: "campaign", id: campaign.id },
         approvalPreview: { name: campaign.name, queuedSends: queued, effectLabel: "cancel campaign" },
       };
@@ -266,6 +268,7 @@ const cancelCampaign = defineMarketingTool({
     await ctx.supabase.from("marketing_campaign").update({ status: "cancelled" }).eq("id", args.campaignId);
     return {
       summary: `Cancelled "${campaign.name}" — ${queued} queued send(s) stopped permanently.`,
+      summaryFields: { v: 1, entity: campaign.name, count: queued, outcome: "done" },
       data: { cancelledSends: queued },
       target: { entity: "campaign", id: campaign.id },
     };
@@ -298,6 +301,7 @@ const pauseCampaign = defineMarketingTool({
     await ctx.supabase.from("marketing_campaign").update({ status: "paused" }).eq("id", args.campaignId);
     return {
       summary: `Paused "${campaign.name}" — ${queued} queued send(s) are held until you resume. Nothing is lost.`,
+      summaryFields: { v: 1, entity: campaign.name, count: queued, outcome: "done" },
       data: { heldSends: queued },
       target: { entity: "campaign", id: campaign.id },
     };
@@ -333,6 +337,7 @@ const resumeCampaign = defineMarketingTool({
     const queued = await countPendingSends(ctx, seqIds);
     return {
       summary: `Resumed "${campaign.name}" — ${queued} held send(s) continue on their schedule.`,
+      summaryFields: { v: 1, entity: campaign.name, count: queued, outcome: "done" },
       data: { resumedSends: queued },
       target: { entity: "campaign", id: campaign.id },
     };

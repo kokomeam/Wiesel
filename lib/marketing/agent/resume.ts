@@ -23,6 +23,7 @@ import type { MarketingQuestionRow, QuestionAnswer } from "../questions";
 import type { MarketingActionRow } from "../types";
 import type { MarketingServices } from "../services/types";
 import type { MarketingToolContext } from "../tools/types";
+import type { PublishApproval } from "../publish/approvalRepository";
 import type { MarketingAgentEvent } from "./events";
 import { runMarketingAgentTurn } from "./loop";
 
@@ -113,6 +114,72 @@ export function answeredMessage(q: MarketingQuestionRow, answer: QuestionAnswer)
     return `✎ The creator answered your blocked ${q.toolName} call — "${q.question}" → ${chosen}.${extra} Retry ${q.toolName} now with ${paramKey} set to ${JSON.stringify(answer.value)}, keeping your other arguments from the original call.`;
   }
   return `✎ The creator answered: "${q.question}" → ${chosen}.${extra} Continue.`;
+}
+
+/* ────────── the fourth path (M-AG): a publish card was decided ──────────
+ * Publish cards are NOT marketing_action rows — they're social_publish_
+ * approval rows resolved by the token flow. A chat-filed card carries its
+ * conversation_id, so deciding it (on ANY surface) can resume the same
+ * thread with the outcome. Same constraints as the other resume paths:
+ * agent-filed only, never throws, the turn cap applies, and the resumed loop
+ * still cannot publish anything itself. */
+
+/** Build the message the resumed turn receives. Exported for tests. */
+export function publishDecisionMessage(
+  approval: Pick<PublishApproval, "socialPostId" | "platform" | "proposedScheduledFor">,
+  decision: "approved" | "skipped"
+): string {
+  if (decision === "approved") {
+    const timing = approval.proposedScheduledFor
+      ? `scheduled to fire at ${approval.proposedScheduledFor}`
+      : "firing immediately";
+    return `✓ The creator approved your publish card for post ${approval.socialPostId} (${approval.platform}) — the run is now queued, ${timing}. Queued is NOT posted: only a live run (posted_api + postUrl in get_publish_status) counts as published. Close with your wrap-up: what was approved, when it fires, and what (if anything) still awaits the creator.`;
+  }
+  return `✕ The creator skipped your publish card for post ${approval.socialPostId} (${approval.platform}) — the card is declined; nothing will fire for it and the post stays ready. Do not re-file the same card unprompted; adjust the plan or ask what to change.`;
+}
+
+export interface ResumeAfterPublishParams {
+  supabase: MarketingToolContext["supabase"];
+  model: ModelClient;
+  services: MarketingServices;
+  ownerId: string;
+  approval: PublishApproval;
+  decision: "approved" | "skipped";
+  /** The post's course (the loop's observation scope). */
+  courseId: string;
+  emit?: (e: MarketingAgentEvent) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Run the one resume turn after a publish card is approved/skipped. No-op
+ * (returns null) unless the card was agent-filed FROM a conversation. Never
+ * throws — the decision itself already happened.
+ */
+export async function resumeAgentAfterPublishDecision(
+  p: ResumeAfterPublishParams
+): Promise<{ paused: boolean; conversationId: string } | null> {
+  if (p.approval.requestedBy !== "agent" || !p.approval.conversationId) return null;
+  try {
+    return await runMarketingAgentTurn({
+      supabase: p.supabase,
+      model: p.model,
+      courseId: p.courseId,
+      campaignId: null,
+      ownerId: p.ownerId,
+      conversationId: p.approval.conversationId,
+      userMessage: publishDecisionMessage(p.approval, p.decision),
+      services: p.services,
+      emit: p.emit ?? (() => {}),
+      signal: p.signal,
+    });
+  } catch (err) {
+    console.warn(
+      "[marketing/agent] publish-decision resume failed (the decision itself succeeded):",
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
 }
 
 /**

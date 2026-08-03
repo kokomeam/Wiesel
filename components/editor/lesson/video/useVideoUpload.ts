@@ -22,7 +22,7 @@ export interface UseVideoUpload {
   view: VideoAssetView | null;
   /** Run the full create → PUT → status flow. Resolves with the view (status
    *  usually "processing") once the bytes are uploaded, or null on failure. */
-  start: (source: Blob | File) => Promise<VideoAssetView | null>;
+  start: (source: Blob | File, opts?: { role?: "camera_dual_track" }) => Promise<VideoAssetView | null>;
   cancel: () => void;
   reset: () => void;
 }
@@ -76,7 +76,10 @@ export function useVideoUpload(target: {
   }, []);
 
   const start = useCallback(
-    async (source: Blob | File): Promise<VideoAssetView | null> => {
+    async (
+      source: Blob | File,
+      opts: { role?: "camera_dual_track" } = {}
+    ): Promise<VideoAssetView | null> => {
       if (!target.courseId) {
         setError("This course isn't ready yet. Try again in a moment.");
         setPhase("failed");
@@ -97,6 +100,7 @@ export function useVideoUpload(target: {
             courseId: target.courseId,
             lessonId: target.lessonId,
             blockId: target.blockId,
+            ...(opts.role ? { role: opts.role } : {}),
           }),
         });
         if (!res.ok) {

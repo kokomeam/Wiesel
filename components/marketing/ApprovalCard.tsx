@@ -92,7 +92,7 @@ function PreviewBlock({ preview }: { preview: Record<string, unknown> }) {
   const touchSubjects = Array.isArray(preview.touchSubjects) ? (preview.touchSubjects as string[]) : null;
 
   return (
-    <div className="rounded-xl border border-stone-200 bg-white p-3 text-xs text-stone-600">
+    <div className="rounded-panel border border-stone-200 bg-white p-3 text-xs text-stone-600">
       {typeof preview.subject === "string" ? (
         <p className="font-medium text-stone-900">Subject: {preview.subject}</p>
       ) : null}
@@ -112,13 +112,13 @@ function PreviewBlock({ preview }: { preview: Record<string, unknown> }) {
       {typeof preview.count === "number" ? <p>Contacts: {preview.count}</p> : null}
       {typeof preview.url === "string" ? <p>URL: {preview.url}</p> : null}
       {typeof preview.bodyPreview === "string" && preview.bodyPreview ? (
-        <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-2 font-sans text-[11px] leading-relaxed text-stone-600">
+        <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-control bg-stone-50 p-2 font-sans text-secondary leading-relaxed text-stone-600">
           {preview.bodyPreview}
         </pre>
       ) : null}
       {touchSubjects && touchSubjects.length > 0 ? (
         <div className="mt-2">
-          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">First emails</p>
+          <p className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">First emails</p>
           <ul className="mt-1 space-y-0.5">
             {touchSubjects.map((s, i) => (
               <li key={i}>· {s}</li>
@@ -140,7 +140,7 @@ function PreviewBlock({ preview }: { preview: Record<string, unknown> }) {
         <dl className="mt-2 space-y-0.5">
           {rest.map(([k, v]) => (
             <div key={k} className="flex gap-1.5">
-              <dt className="text-stone-400">{k}:</dt>
+              <dt className="text-stone-500">{k}:</dt>
               <dd>{String(v)}</dd>
             </div>
           ))}
@@ -222,7 +222,7 @@ export function ApprovalCard({
         {external.decision === "approved" ? (
           <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
         ) : (
-          <X className="mt-0.5 size-3.5 shrink-0 text-stone-400" />
+          <X className="mt-0.5 size-3.5 shrink-0 text-stone-500" />
         )}
         <span>
           <span className="font-medium text-stone-600">{label}</span>
@@ -305,7 +305,7 @@ export function ApprovalCard({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-rose-200 bg-rose-50/60 shadow-[0_1px_2px_rgba(68,48,28,0.05)]",
+        "rounded-card border border-status-attention-ring bg-status-attention-bg/60 shadow-card",
         compact ? "p-3" : "p-4"
       )}
       data-testid="approval-card"
@@ -317,7 +317,7 @@ export function ApprovalCard({
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone="rose">{prettyKind(pending.toolName)}</Badge>
               {pending.requestedBy === "agent" ? (
-                <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">agent</span>
+                <span className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">agent</span>
               ) : null}
             </div>
             <p className="mt-1.5 text-sm text-stone-800">{pending.summary}</p>
@@ -332,13 +332,13 @@ export function ApprovalCard({
           )}
 
           {editing ? (
-            <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3">
+            <div className="space-y-2 rounded-panel border border-stone-200 bg-white p-3">
               {editable.map((key) =>
                 key === "status" ? (
                   <label key={key} className="block text-xs text-stone-600">
-                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">audience</span>
+                    <span className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">audience</span>
                     <select
-                      className="mt-1 block w-full rounded-lg border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
+                      className="mt-1 block w-full rounded-control border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
                       value={draft[key] ?? String((preview.segment as string) ?? "all")}
                       onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
                     >
@@ -351,9 +351,9 @@ export function ApprovalCard({
                   </label>
                 ) : (
                   <label key={key} className="block text-xs text-stone-600">
-                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">{key}</span>
+                    <span className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">{key}</span>
                     <input
-                      className="mt-1 block w-full rounded-lg border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
+                      className="mt-1 block w-full rounded-control border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
                       defaultValue={String(preview[key] ?? "")}
                       onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
                     />
@@ -373,7 +373,7 @@ export function ApprovalCard({
 
           {pending.requestedBy === "agent" ? (
             <input
-              className="block w-full rounded-lg border border-stone-200 bg-white/70 px-2 py-1.5 text-xs text-stone-600 placeholder:text-stone-400"
+              className="block w-full rounded-control border border-stone-200 bg-white/70 px-2 py-1.5 text-xs text-stone-600 placeholder:text-stone-500"
               placeholder="Note to the agent (optional — sent with a rejection)"
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -381,7 +381,7 @@ export function ApprovalCard({
           ) : null}
 
           {errorMsg ? (
-            <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-100/70 p-2.5 text-xs text-rose-800">
+            <div className="flex items-start gap-2 rounded-panel border border-status-attention-ring bg-status-attention-bg p-2.5 text-xs text-status-attention">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
               <p>
                 <span className="font-medium">Couldn&apos;t {effectLabel}:</span> {errorMsg}
