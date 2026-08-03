@@ -41,9 +41,14 @@ const PendingBlockRowSchema = z.object({
   evidence: z.unknown(),
 });
 
+// The studio bundle RPC now also emits concept_graph pending items (W1.2B). Accept
+// them at the schema boundary; they're filtered out of `pendingNodes` below — a
+// concept_graph item is NOT a course-document outline node, so the outline-sidebar
+// surface (the only consumer of `pendingNodes`) never receives one. The graph
+// review UI reads its pending set separately.
 const PendingNodeRowSchema = z.object({
   node_id: z.string(),
-  node_type: z.enum(["module", "lesson"]),
+  node_type: z.enum(["module", "lesson", "concept_graph"]),
   change_set_id: z.string(),
   op: z.string(),
 });
@@ -117,12 +122,16 @@ export async function loadStudioCourse(
       op: i.op,
       evidence: (i.evidence ?? null) as Json | null,
     })),
-    pendingNodes: raw.pending_nodes.map((i) => ({
-      nodeId: i.node_id,
-      nodeType: i.node_type,
-      changeSetId: i.change_set_id,
-      op: i.op,
-    })),
+    // Outline nodes only: concept_graph pending items ride the same RPC field but
+    // are not course-document nodes, so they don't drive the outline highlight.
+    pendingNodes: raw.pending_nodes
+      .filter((i): i is typeof i & { node_type: "module" | "lesson" } => i.node_type === "module" || i.node_type === "lesson")
+      .map((i) => ({
+        nodeId: i.node_id,
+        nodeType: i.node_type,
+        changeSetId: i.change_set_id,
+        op: i.op,
+      })),
     openFindings: raw.open_findings,
   };
 }

@@ -12,7 +12,7 @@
     "verify:validation": "tsx scripts/verify-validation.ts",
     "verify:ai:int": "tsx scripts/verify-agent-integration.ts",
     "verify:course-agent": "tsx scripts/verify-course-agent.ts",
-    "verify:reject": "tsx scripts/verify-reject-revert.ts",
+    "verify:reject": "tsx scripts/verify-reject-revert.ts && tsx scripts/verify-tutor-rail.ts",
     "verify:visuals": "tsx scripts/verify-visuals.ts",
     "verify:materialize": "tsx scripts/verify-materialize.ts",
     "verify:materialize:visual": "tsx scripts/verify-materialize-visual.ts",
@@ -76,7 +76,8 @@
     "verify:ui": "tsx scripts/verify-ui.ts",
     "verify:ui:browser": "tsx scripts/verify-ui-browser.ts",
     "verify:publish-path:int": "tsx scripts/verify-publish-path-int.ts",
-    "verify:tutor": "tsx scripts/verify-tutor-models.ts && tsx scripts/verify-tutor-telemetry.ts",
+    "verify:tutor": "tsx scripts/verify-tutor-models.ts && tsx scripts/verify-tutor-telemetry.ts && tsx scripts/verify-tutor-graph.ts",
+    "verify:tutor:int": "tsx scripts/verify-tutor-graph-int.ts",
     "smoke:tutor": "tsx scripts/smoke-tutor-models.ts"
   },
   "dependencies": {

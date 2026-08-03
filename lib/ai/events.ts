@@ -86,13 +86,16 @@ export type AgentEvent =
     }
   /** This turn's mutations were grouped into a reviewable change-set. `structuralCount`
    *  is how many of the `count` items are module/lesson structural ops (the rest are
-   *  block changes) — lets the panel group Structure vs Content/Slide. */
+   *  block changes) — lets the panel group Structure vs Content/Slide. `graphCount`
+   *  (W1.2B) is how many are concept_graph items — surfaced only when > 0 (0-cost
+   *  when absent). */
   | {
       type: "change_set";
       changeSetId: string;
       count: number;
       summary?: string;
       structuralCount?: number;
+      graphCount?: number;
       /** Maintenance runs: the finding's evidence (rendered as the evidence
        *  card over the pending blocks — live, without a refetch). */
       evidence?: unknown;

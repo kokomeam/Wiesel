@@ -209,6 +209,47 @@ export type Database = {
           },
         ]
       }
+      assumed_prior_nodes: {
+        Row: {
+          course_id: string
+          created_at: string
+          description: string
+          evidence: Json
+          id: string
+          status: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          description?: string
+          evidence?: Json
+          id?: string
+          status?: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          description?: string
+          evidence?: Json
+          id?: string
+          status?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assumed_prior_nodes_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       audience_contact: {
         Row: {
           attributes: Json
@@ -653,6 +694,136 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      concept_edges: {
+        Row: {
+          course_id: string
+          created_at: string
+          creator_locked: boolean
+          evidence_refs: Json
+          id: string
+          kind: string
+          source_node_id: string
+          target_node_id: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          creator_locked?: boolean
+          evidence_refs?: Json
+          id?: string
+          kind?: string
+          source_node_id: string
+          target_node_id: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          creator_locked?: boolean
+          evidence_refs?: Json
+          id?: string
+          kind?: string
+          source_node_id?: string
+          target_node_id?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "concept_edges_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "concept_edges_source_node_id_fkey"
+            columns: ["source_node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "concept_edges_target_node_id_fkey"
+            columns: ["target_node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      concept_nodes: {
+        Row: {
+          aliases: Json
+          anchors: Json
+          course_id: string
+          created_at: string
+          created_by: string
+          creator_edited: boolean
+          description: string
+          embedding: Json | null
+          external_taxonomy_ref: Json | null
+          id: string
+          merged_into_node_id: string | null
+          status: string
+          title: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          aliases?: Json
+          anchors?: Json
+          course_id: string
+          created_at?: string
+          created_by?: string
+          creator_edited?: boolean
+          description?: string
+          embedding?: Json | null
+          external_taxonomy_ref?: Json | null
+          id?: string
+          merged_into_node_id?: string | null
+          status?: string
+          title: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          aliases?: Json
+          anchors?: Json
+          course_id?: string
+          created_at?: string
+          created_by?: string
+          creator_edited?: boolean
+          description?: string
+          embedding?: Json | null
+          external_taxonomy_ref?: Json | null
+          id?: string
+          merged_into_node_id?: string | null
+          status?: string
+          title?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "concept_nodes_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "concept_nodes_merged_into_node_id_fkey"
+            columns: ["merged_into_node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       conversations: {
         Row: {
@@ -2984,6 +3155,51 @@ export type Database = {
           },
         ]
       }
+      snapshot_concept_map: {
+        Row: {
+          anchor_downgraded: boolean
+          anchors: Json
+          course_id: string
+          created_at: string
+          node_id: string
+          publication_id: string
+          version: number
+        }
+        Insert: {
+          anchor_downgraded?: boolean
+          anchors?: Json
+          course_id: string
+          created_at?: string
+          node_id: string
+          publication_id: string
+          version: number
+        }
+        Update: {
+          anchor_downgraded?: boolean
+          anchors?: Json
+          course_id?: string
+          created_at?: string
+          node_id?: string
+          publication_id?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "snapshot_concept_map_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "snapshot_concept_map_publication_id_fkey"
+            columns: ["publication_id"]
+            isOneToOne: false
+            referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       social_account: {
         Row: {
           avatar_url: string | null
@@ -3628,6 +3844,100 @@ export type Database = {
           },
         ]
       }
+      tutor_action: {
+        Row: {
+          action_kind: string
+          before_snapshot: Json | null
+          course_id: string
+          created_at: string
+          id: string
+          params: Json
+          requested_by: string
+          resolved_at: string | null
+          reversibility: string
+          revert_expires_at: string | null
+          status: string
+          summary: string | null
+          target_ref: Json | null
+          tool_name: string
+          updated_at: string
+        }
+        Insert: {
+          action_kind: string
+          before_snapshot?: Json | null
+          course_id: string
+          created_at?: string
+          id?: string
+          params?: Json
+          requested_by?: string
+          resolved_at?: string | null
+          reversibility?: string
+          revert_expires_at?: string | null
+          status?: string
+          summary?: string | null
+          target_ref?: Json | null
+          tool_name: string
+          updated_at?: string
+        }
+        Update: {
+          action_kind?: string
+          before_snapshot?: Json | null
+          course_id?: string
+          created_at?: string
+          id?: string
+          params?: Json
+          requested_by?: string
+          resolved_at?: string | null
+          reversibility?: string
+          revert_expires_at?: string | null
+          status?: string
+          summary?: string | null
+          target_ref?: Json | null
+          tool_name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_action_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tutor_course_settings: {
+        Row: {
+          budget_limit_usd: number | null
+          course_id: string
+          created_at: string
+          enabled: boolean
+          updated_at: string
+        }
+        Insert: {
+          budget_limit_usd?: number | null
+          course_id: string
+          created_at?: string
+          enabled?: boolean
+          updated_at?: string
+        }
+        Update: {
+          budget_limit_usd?: number | null
+          course_id?: string
+          created_at?: string
+          enabled?: boolean
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_course_settings_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: true
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       video_assets: {
         Row: {
           aspect_ratio: string | null
@@ -3919,6 +4229,19 @@ export type Database = {
       studio_course_bundle: { Args: { p_course_id: string }; Returns: Json }
       submit_course_review: {
         Args: { p_course_id: string; p_rating: number; p_review_text: string }
+        Returns: Json
+      }
+      tutor_upsert_concept_edge: {
+        Args: {
+          p_course_id: string
+          p_creator_locked?: boolean
+          p_evidence_refs?: Json
+          p_expected_version?: number
+          p_id: string
+          p_kind: string
+          p_source_node_id: string
+          p_target_node_id: string
+        }
         Returns: Json
       }
     }

@@ -93,6 +93,10 @@ export interface StructuredCallResult<T> {
   ok: boolean;
   data: T | null;
   usage: PhaseUsage;
+  /** The provider's response id for the LAST attempt (null when the provider
+   *  returned none). Tutor jobs use it as the cost-telemetry idempotency key
+   *  (lib/tutor/telemetry.ts emitTutorModelCall). */
+  responseId?: string | null;
   error?: string;
 }
 
@@ -127,6 +131,7 @@ export async function runStructuredCall<T>(
   }
 ): Promise<StructuredCallResult<T>> {
   const usage: PhaseUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
+  let lastResponseId: string | null = null;
   const params: ModelTurnParams = {
     system: args.system,
     input: [{ role: "user", content: args.input }],
@@ -159,17 +164,18 @@ export async function runStructuredCall<T>(
       () => {}
     );
     addUsage(usage, result.usage as PhaseUsage | undefined);
+    lastResponseId = result.responseId ?? null;
     if (result.finishReason === "error") {
-      return { ok: false, data: null, usage, error: result.errorKind ?? "model error" };
+      return { ok: false, data: null, usage, responseId: lastResponseId, error: result.errorKind ?? "model error" };
     }
     try {
       const parsed = args.outputSchema.safeParse(JSON.parse(result.text || "{}"));
-      if (parsed.success) return { ok: true, data: parsed.data, usage };
+      if (parsed.success) return { ok: true, data: parsed.data, usage, responseId: lastResponseId };
     } catch {
       // fall through to the re-ask
     }
   }
-  return { ok: false, data: null, usage, error: "schema_parse_failed" };
+  return { ok: false, data: null, usage, responseId: lastResponseId, error: "schema_parse_failed" };
 }
 
 /* ────────────────────────────── runSubagent ────────────────────────────── */

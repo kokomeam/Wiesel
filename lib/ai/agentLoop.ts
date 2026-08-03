@@ -423,7 +423,21 @@ async function stageChanges(
     { courseId: c.courseId, lessonId: stagedLessonId, conversationId: c.conversationId || null, messageId: lastAssistantMessageId, summary, evidence },
     { blocks, structure }
   );
-  if (cs) c.emit({ type: "change_set", changeSetId: cs.changeSetId, count: cs.count, summary, structuralCount: structure.length, evidence: evidence ?? undefined });
+  if (cs) {
+    // This loop stages course-document diffs only; concept_graph items are staged by
+    // the graph tooling. graphCount is emitted ONLY when > 0 (0-cost when absent) so
+    // a graph-carrying change-set routed through here can group Graph in the panel.
+    const graphCount = cs.count - blocks.length - structure.length;
+    c.emit({
+      type: "change_set",
+      changeSetId: cs.changeSetId,
+      count: cs.count,
+      summary,
+      structuralCount: structure.length,
+      ...(graphCount > 0 ? { graphCount } : {}),
+      evidence: evidence ?? undefined,
+    });
+  }
   return cs;
 }
 

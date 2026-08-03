@@ -16,6 +16,12 @@ import { findBlock, findLesson, findModule } from "@/lib/course/queries";
 import type { CourseDocument, LessonBlock } from "@/lib/course/types";
 import type { BlockChange, StructureChange, StructureSnapshot } from "./changeSetDiff";
 import { loadCourseDoc, reconcileCourseDoc } from "./serverPersistence";
+import {
+  applyConceptGraphRestore,
+  isConceptGraphItem,
+  planConceptGraphRestore,
+  type ConceptGraphRevertItem,
+} from "@/lib/tutor/railRestore";
 
 type DB = SupabaseClient<Database>;
 
@@ -288,6 +294,13 @@ export function revertChangeSet(
   nowIso: string
 ): { ok: true; doc: CourseDocument } | { ok: false; error: string } {
   let working = doc;
+  // Defensive: a concept_graph item is NOT a course-document node — it must be
+  // reverted through lib/tutor/railRestore, never the CoursePatch pipeline. If one
+  // reaches here the caller's partition is broken; abort loudly rather than
+  // mis-route it (the unknown-node_type throw below stays for truly-unknown types).
+  if (items.some((it) => isConceptGraphItem(it))) {
+    return { ok: false, error: "concept_graph items must be reverted via the graph restore path" };
+  }
   const ordered = items.map((item, i) => ({ item, i })).sort((a, b) => revertPhase(a.item) - revertPhase(b.item) || a.i - b.i);
   for (const { item } of ordered) {
     const label = item.node_id ?? item.block_id ?? "(item)";
@@ -335,16 +348,43 @@ export async function rejectChangeSet(
   if (itemsErr) throw new Error(`Reject aborted: could not load change-set items: ${itemsErr.message}`);
   if (!items || items.length === 0) throw new Error("Reject aborted: change-set has no items to revert");
 
-  const doc = await loadCourseDoc(supabase, cs.course_id);
-  if (!doc) throw new Error("Course not found");
   const now = new Date().toISOString();
 
-  // Compute the FULL restored doc first; only touch the DB if every item reverts.
-  const reverted = revertChangeSet(doc, items, now);
-  if (!reverted.ok) throw new Error(`Reject aborted (no changes applied): ${reverted.error}`);
+  // DOMAIN PARTITION: block/lesson/module items revert through the CoursePatch
+  // pipeline (`revertChangeSet` → `reconcileCourseDoc`); concept_graph items revert
+  // through the graph entity path (`planConceptGraphRestore` → `applyConceptGraphRestore`).
+  // Same all-or-nothing discipline: BOTH plans are computed FIRST — if either fails,
+  // nothing is written and the set stays `pending`.
+  const docItems = items.filter((i) => !isConceptGraphItem(i));
+  const graphItems = items.filter((i) => isConceptGraphItem(i));
 
-  const err = await reconcileCourseDoc(supabase, reverted.doc, ownerId);
-  if (err) throw new Error(err);
+  // Compute the concept-graph restore plan first (pure).
+  const graphPlan = graphItems.length
+    ? planConceptGraphRestore(graphItems as ConceptGraphRevertItem[])
+    : null;
+  if (graphPlan && !graphPlan.ok) {
+    throw new Error(`Reject aborted (no changes applied): ${graphPlan.error}`);
+  }
+
+  // Compute the full restored doc first — ONLY when there are doc items. A graph-only
+  // change-set must NEVER require loading the course doc.
+  let revertedDoc: CourseDocument | null = null;
+  if (docItems.length > 0) {
+    const doc = await loadCourseDoc(supabase, cs.course_id);
+    if (!doc) throw new Error("Course not found");
+    const reverted = revertChangeSet(doc, docItems, now);
+    if (!reverted.ok) throw new Error(`Reject aborted (no changes applied): ${reverted.error}`);
+    revertedDoc = reverted.doc;
+  }
+
+  // Both plans succeeded — apply. Doc reconcile first, then graph entities, then flip.
+  if (revertedDoc) {
+    const err = await reconcileCourseDoc(supabase, revertedDoc, ownerId);
+    if (err) throw new Error(err);
+  }
+  if (graphPlan && graphPlan.ok) {
+    await applyConceptGraphRestore(supabase, cs.course_id, graphPlan.steps);
+  }
 
   const { error } = await supabase
     .from("change_sets")
