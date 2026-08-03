@@ -35,6 +35,24 @@ const TOOL_LABELS: Record<string, string> = {
   analyze_course_for_marketing: "Analyzing your course",
   get_analytics_summary: "Reading your analytics",
   create_sender_identity: "Setting up the sender identity",
+  // W3.0 pre-item 2 (approved in the Wave 3 execution order): curated labels
+  // for the highest-traffic social/publish/clips tools — the snake_case
+  // fallback keeps covering the rest of the registry.
+  generate_social_post_drafts: "Drafting social posts",
+  revise_social_post: "Revising the post",
+  regenerate_social_post: "Regenerating the post",
+  create_social_post_variant: "Drafting a post variant",
+  rewrite_for_platform: "Rewriting for the platform",
+  change_post_tone: "Adjusting the post's tone",
+  schedule_social_post: "Scheduling the post",
+  update_planned_post_time: "Moving the planned post time",
+  propose_publish_plan: "Proposing a publish plan",
+  publish_social_post: "Publishing to the connected account",
+  cancel_scheduled_publish: "Cancelling the scheduled publish",
+  retry_publish: "Retrying the publish",
+  get_publish_status: "Checking publish status",
+  generate_lesson_clips: "Cutting lesson clips",
+  select_clip_moments: "Picking the strongest clip moments",
 };
 
 /** snake_case → sentence-case fallback for unmapped tools. */
