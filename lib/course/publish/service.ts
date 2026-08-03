@@ -217,6 +217,17 @@ export async function publishCourse(
   }
   const result = PublishRpcResultSchema.parse(data);
   const fresh = await getLatestPublication(client, doc.id);
+
+  // TUTOR-1 W1.4: a REAL publish (the identical-hash path returned above)
+  // enqueues the concept-graph run — extraction when no graph exists,
+  // reconciliation over an active graph, nothing while a staged run awaits
+  // review. Best-effort + lazy: a send failure never breaks the publish and
+  // the Inngest SDK stays out of publish-only import graphs.
+  if (fresh) {
+    const { enqueueGraphRunForPublish } = await import("@/lib/tutor/graph/publishHook");
+    await enqueueGraphRunForPublish(client, { courseId: doc.id, publicationId: fresh.id });
+  }
+
   return {
     publication: fresh ? rowToSummary(fresh) : { ...result, previousSlugs: [] },
     diff: summarizePublishDiff(prevSnapshot, snapshot),

@@ -7,10 +7,11 @@
 import { serve } from "inngest/next";
 import { inngest } from "@/lib/inngest/client";
 import { publishFire, publishSweep } from "@/lib/inngest/functions/publish";
+import { tutorGraphExtract } from "@/lib/inngest/functions/tutorGraph";
 
 export const runtime = "nodejs";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [publishFire, publishSweep],
+  functions: [publishFire, publishSweep, tutorGraphExtract],
 });
