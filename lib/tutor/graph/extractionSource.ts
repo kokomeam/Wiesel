@@ -276,9 +276,9 @@ function deriveOneLesson(
 export function deriveLessonChunks(snapshot: PublicationSnapshot): LessonChunk[] {
   const chunks: LessonChunk[] = [];
   const maxChars = 6000; // default; the orchestrator passes cfg.chunkMaxChars via deriveLessonChunksWithConfig
-  for (const module of snapshot.modules) {
-    for (const lesson of module.lessons) {
-      chunks.push(deriveOneLesson(lesson, module.id, module.title, maxChars));
+  for (const mod of snapshot.modules) {
+    for (const lesson of mod.lessons) {
+      chunks.push(deriveOneLesson(lesson, mod.id, mod.title, maxChars));
     }
   }
   return chunks;
@@ -292,9 +292,9 @@ export function deriveLessonChunksWithCap(
   maxChars: number
 ): LessonChunk[] {
   const chunks: LessonChunk[] = [];
-  for (const module of snapshot.modules) {
-    for (const lesson of module.lessons) {
-      chunks.push(deriveOneLesson(lesson, module.id, module.title, maxChars));
+  for (const mod of snapshot.modules) {
+    for (const lesson of mod.lessons) {
+      chunks.push(deriveOneLesson(lesson, mod.id, mod.title, maxChars));
     }
   }
   return chunks;

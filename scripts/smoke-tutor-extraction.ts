@@ -23,6 +23,7 @@ import type { Database } from "@/lib/database.types";
 import { createOpenAIModelClient } from "@/lib/ai/providers/openai";
 import { withSemaphore } from "@/lib/ai/subagent";
 import { runGraphExtraction } from "@/lib/tutor/graph/extraction";
+import { PublicationSnapshotSchema } from "@/lib/course/publish/schemas";
 import { seedTutorFixture } from "./seed-fixture-tutor";
 
 dns.setDefaultResultOrder("ipv4first");
@@ -71,11 +72,36 @@ async function main() {
     auth: { autoRefreshToken: false, persistSession: false },
   });
   const model = withSemaphore(createOpenAIModelClient());
-  const runId = crypto.randomUUID();
+
+  // The fate finding's run_id FK -> agent_runs.id: mint the run row exactly
+  // like the Inngest caller does, and use ITS id as runId.
+  const runRow = await admin
+    .from("agent_runs")
+    .insert({ course_id: fx.courseId, trigger: "scheduled", status: "running" })
+    .select("id")
+    .single();
+  if (runRow.error || !runRow.data) {
+    log({ smoke: "agent_run", ok: false, error: runRow.error?.message ?? "no row" });
+    process.exit(1);
+  }
+  const runId = runRow.data.id;
+
+  // Bare tsx has no Next incrementalCache, so getCachedSnapshot's
+  // unstable_cache throws — use the same direct-loader seam the int suite uses.
+  const loadSnapshot = async (publicationId: string) => {
+    const { data, error } = await admin
+      .from("course_publications")
+      .select("version, snapshot")
+      .eq("id", publicationId)
+      .maybeSingle();
+    if (error) throw new Error(`loadSnapshot: ${error.message}`);
+    if (!data) throw new Error(`publication ${publicationId} not found`);
+    return { snapshot: PublicationSnapshotSchema.parse(data.snapshot), version: data.version };
+  };
 
   const t0 = Date.now();
   const result = await runGraphExtraction(
-    { supabase: admin, model },
+    { supabase: admin, model, loadSnapshot },
     { courseId: fx.courseId, publicationId: fx.publicationId, runId }
   );
   const ms = Date.now() - t0;
@@ -96,6 +122,11 @@ async function main() {
     usage: result.usage,
     costUsd: result.usage.costUsd,
   });
+
+  await admin
+    .from("agent_runs")
+    .update({ status: result.ok ? "completed" : "failed", report: { kind: "graph_extraction_smoke", flags: result.flags, checkpoint: result.checkpoint } })
+    .eq("id", runId);
 
   const ok = result.ok && result.nodeCount > 0;
   log({ smoke: "done", ok, nodeCount: result.nodeCount });

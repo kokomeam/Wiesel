@@ -114,20 +114,28 @@ export interface RunGraphExtractionArgs {
   runId: string;
 }
 
+/** The minimal shape edge inference reads (title + description). Both a
+ *  CanonicalConcept (extraction candidates) and a stored ConceptNode
+ *  (reconciliation's post-diff active set) satisfy it. */
+export interface EdgeInferenceNode {
+  title: string;
+  description: string;
+}
+
 /* ──────────────────────────── model-call budget ─────────────────────────── */
 
-interface CallBudget {
+export interface CallBudget {
   remaining: number;
 }
 
-interface UsageTotals {
+export interface UsageTotals {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
   costUsd: number;
 }
 
-function addUsage(
+export function addUsage(
   totals: UsageTotals,
   usage: { inputTokens: number; cachedTokens: number; outputTokens: number },
   model: string
@@ -147,12 +155,12 @@ function addUsage(
  * every call site is one line. For embeds pass a synthetic providerResponseId
  * (`embed:{runId}:{batchIndex}`) since the embeddings API returns none.
  */
-async function emitAndAccumulate(
+export async function emitAndAccumulate(
   deps: GraphExtractionDeps,
   args: {
     courseId: string;
     authorId: string;
-    jobType: "graph_extraction" | "embedding";
+    jobType: "graph_extraction" | "reconciliation" | "embedding";
     model: string;
     usage: { inputTokens: number; cachedTokens: number; outputTokens: number };
     latencyMs: number;
@@ -176,15 +184,16 @@ async function emitAndAccumulate(
 /* ───────────────────────────── anchor resolution ────────────────────────── */
 
 /** Build the sets of valid blockIds + (blockId→slideIds) present in the snapshot,
- *  so a proposal's anchors can be resolved (R-13). */
-function buildSnapshotAnchorIndex(snapshot: PublicationSnapshot): {
+ *  so a proposal's anchors can be resolved (R-13). Exported so reconciliation
+ *  re-resolves anchors against the NEW snapshot through the SAME logic (W1.4). */
+export function buildSnapshotAnchorIndex(snapshot: PublicationSnapshot): {
   blockIds: Set<string>;
   slideIdsByBlock: Map<string, Set<string>>;
 } {
   const blockIds = new Set<string>();
   const slideIdsByBlock = new Map<string, Set<string>>();
-  for (const module of snapshot.modules) {
-    for (const lesson of module.lessons) {
+  for (const mod of snapshot.modules) {
+    for (const lesson of mod.lessons) {
       for (const block of lesson.blocks) {
         blockIds.add(block.id);
         if (block.type === "slide_deck") {
@@ -201,8 +210,9 @@ function buildSnapshotAnchorIndex(snapshot: PublicationSnapshot): {
 /** Resolve one canonical concept's anchors against the snapshot. An anchor whose
  *  blockId is unknown is DROPPED. A slideId that doesn't resolve DOWNGRADES to
  *  block level (slideId cleared) and flags the whole node's map row
- *  anchorDowngraded=true (R-13). Returns the resolved anchors + the downgrade flag. */
-function resolveAnchors(
+ *  anchorDowngraded=true (R-13). Returns the resolved anchors + the downgrade flag.
+ *  Exported for reconciliation's anchor re-resolution against the new snapshot. */
+export function resolveAnchors(
   anchors: LessonChunkAnchor[],
   index: { blockIds: Set<string>; slideIdsByBlock: Map<string, Set<string>> }
 ): { resolved: LessonChunkAnchor[]; downgraded: boolean } {
@@ -249,7 +259,8 @@ async function canonicalize(
   proposals: LessonProposal[],
   cfg: ExtractionConfig,
   budget: CallBudget,
-  totals: UsageTotals
+  totals: UsageTotals,
+  jobType: "graph_extraction" | "reconciliation" = "graph_extraction"
 ): Promise<{ canonicals: CanonicalConcept[]; flags: string[] }> {
   const flags: string[] = [];
   if (proposals.length === 0) return { canonicals: [], flags };
@@ -373,7 +384,7 @@ async function canonicalize(
       {
         courseId,
         authorId,
-        jobType: "graph_extraction",
+        jobType,
         model: TUTOR_MODELS.graph_extraction.model,
         usage: {
           inputTokens: verdict.usage.inputTokens,
@@ -424,15 +435,17 @@ async function canonicalize(
 /** Infer edges over the canonical node list, then run the pure passes. Returns the
  *  surviving edges (index-addressed against `nodes`) + the dropped-edge log +
  *  flags. One model call (budget-gated). */
-async function inferAndHardenEdges(
+export async function inferAndHardenEdges(
   deps: GraphExtractionDeps,
   courseId: string,
   authorId: string,
   runId: string,
-  nodes: CanonicalConcept[],
+  nodes: EdgeInferenceNode[],
   cfg: ExtractionConfig,
   budget: CallBudget,
-  totals: UsageTotals
+  totals: UsageTotals,
+  jobType: "graph_extraction" | "reconciliation" = "graph_extraction",
+  runKey = "edges"
 ): Promise<{ edges: InferredEdge[]; droppedEdges: { reason: string; count: number }[]; flags: string[] }> {
   const flags: string[] = [];
   const dropLog: { reason: string; count: number }[] = [];
@@ -461,7 +474,7 @@ async function inferAndHardenEdges(
     {
       courseId,
       authorId,
-      jobType: "graph_extraction",
+      jobType,
       model: TUTOR_MODELS.graph_extraction.model,
       usage: {
         inputTokens: verdict.usage.inputTokens,
@@ -470,7 +483,9 @@ async function inferAndHardenEdges(
       },
       latencyMs: Date.now() - t0,
       // RunId-scoped synthetic id (retry-stable — see the proposal emit note).
-      providerResponseId: `edges:${runId}`,
+      // runKey distinguishes an extraction ('edges') from a reconciliation
+      // ('reconcile-edges') edge-inference call within one runId's telemetry.
+      providerResponseId: `${runKey}:${runId}`,
     },
     totals
   );
@@ -508,6 +523,148 @@ async function inferAndHardenEdges(
   return { edges, droppedEdges: dropLog, flags };
 }
 
+/* ──────────────────────── shared candidate generation ───────────────────── */
+
+/** The output of the SHARED stages 1–4 (extraction + reconciliation both run
+ *  this): the resolved author, the source snapshot + version, the canonical
+ *  candidate concepts, and the accumulated flags + budget-exhaustion checkpoint.
+ *  `ok:false` carries a fatal-but-benign checkpoint (course/snapshot missing). */
+export type GenerateCandidatesResult =
+  | {
+      ok: true;
+      authorId: string;
+      snapshot: PublicationSnapshot;
+      version: number;
+      canonicals: CanonicalConcept[];
+      flags: string[];
+      checkpoint: string | null;
+    }
+  | { ok: false; checkpoint: string };
+
+/**
+ * Stages 1–4 of the pipeline, SHARED by extraction and reconciliation
+ * (Directive §W1.4 — "REUSE chunk→propose→grain→canonicalize over the NEW
+ * publication's snapshot — import, don't duplicate"):
+ *   author  ← courses.author_id (the cost-telemetry principal)
+ *   snapshot ← deps.loadSnapshot ?? getCachedSnapshot (the NEW publication)
+ *   chunk   ← deriveLessonChunksWithCap
+ *   propose ← per-lesson structured proposals under the shared CallBudget
+ *   grain   ← normalizeGrain (pure)
+ *   canon   ← exact-title → embed → cluster → adjudicate
+ * Model calls are emitted under `jobType` (reconciliation emits under
+ * "reconciliation") with runId-scoped retry-stable synthetic ids. Mutates the
+ * passed `budget` + `totals` in place (the caller owns them so the edge step
+ * below shares the same budget).
+ */
+export async function generateCandidates(
+  deps: GraphExtractionDeps,
+  args: RunGraphExtractionArgs,
+  cfg: ExtractionConfig,
+  budget: CallBudget,
+  totals: UsageTotals,
+  jobType: "graph_extraction" | "reconciliation"
+): Promise<GenerateCandidatesResult> {
+  // Resolve the course author (admin) — the acting principal for cost telemetry.
+  const courseRow = await deps.supabase
+    .from("courses")
+    .select("author_id")
+    .eq("id", args.courseId)
+    .maybeSingle();
+  if (courseRow.error) throw new Error(`load course: ${courseRow.error.message}`);
+  if (!courseRow.data) return { ok: false, checkpoint: `course ${args.courseId} not found` };
+  const authorId = courseRow.data.author_id;
+
+  const flags: string[] = [];
+
+  // The published snapshot is the SOURCE (the NEW publication for reconciliation).
+  const { snapshot, version } = deps.loadSnapshot
+    ? await deps.loadSnapshot(args.publicationId)
+    : await getCachedSnapshot(args.publicationId);
+  const chunks = deriveLessonChunksWithCap(snapshot, cfg.chunkMaxChars);
+
+  // Per-lesson proposal under the call budget. Exhaustion checkpoints the rest.
+  const allProposals: LessonProposal[] = [];
+  const processedLessonIds: string[] = [];
+  const unprocessed: string[] = [];
+  let checkpoint: string | null = null;
+
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunk = chunks[i];
+    if (budget.remaining <= 0) {
+      unprocessed.push(...chunks.slice(i).map((c) => c.lessonId));
+      break;
+    }
+    budget.remaining -= 1;
+    const t0 = Date.now();
+    const verdict = await runStructuredCall(deps.model, {
+      system: PROPOSAL_SYSTEM_PROMPT,
+      input: buildProposalInput(chunk),
+      outputName: PROPOSAL_RESPONSE_NAME,
+      outputSchema: ProposalBatchSchema,
+      model: TUTOR_MODELS.graph_extraction.model,
+      effort: TUTOR_MODELS.graph_extraction.effort,
+      timeoutMs: TUTOR_MODELS.graph_extraction.timeoutMs,
+      maxRetries: TUTOR_MODELS.graph_extraction.maxRetries,
+      maxOutputTokens: TUTOR_MODELS.graph_extraction.maxOutputTokens,
+    });
+    await emitAndAccumulate(
+      deps,
+      {
+        courseId: args.courseId,
+        authorId,
+        jobType,
+        model: TUTOR_MODELS.graph_extraction.model,
+        usage: {
+          inputTokens: verdict.usage.inputTokens,
+          cachedTokens: verdict.usage.cachedTokens,
+          outputTokens: verdict.usage.outputTokens,
+        },
+        latencyMs: Date.now() - t0,
+        // RunId-scoped synthetic id — retry-stable, NOT the provider's responseId.
+        providerResponseId: `propose:${args.runId}:${chunk.lessonId}`,
+      },
+      totals
+    );
+    processedLessonIds.push(chunk.lessonId);
+    if (verdict.ok && verdict.data) {
+      for (const proposal of verdict.data.concepts) {
+        allProposals.push({ lessonId: chunk.lessonId, proposal });
+      }
+    } else {
+      flags.push(`propose_failed:${chunk.lessonId}`);
+    }
+  }
+
+  if (unprocessed.length > 0) {
+    checkpoint = `Model-call budget (${cfg.maxCalls}) exhausted — ${unprocessed.length} lesson(s) not processed: ${unprocessed.join(", ")}. Staged what was built.`;
+    flags.push("budget_exhausted");
+  }
+
+  // Grain normalization (pure) over the processed lessons.
+  const grain = normalizeGrain(
+    allProposals,
+    { grainMaxPerLesson: cfg.grainMaxPerLesson, grainCourseMax: cfg.grainCourseMax },
+    processedLessonIds
+  );
+  flags.push(...grain.flags);
+
+  // Canonicalize (exact → embed → cluster → adjudicate).
+  const { canonicals, flags: canonFlags } = await canonicalize(
+    deps,
+    args.courseId,
+    authorId,
+    args.runId,
+    grain.kept,
+    cfg,
+    budget,
+    totals,
+    jobType
+  );
+  flags.push(...canonFlags);
+
+  return { ok: true, authorId, snapshot, version, canonicals, flags, checkpoint };
+}
+
 /* ─────────────────────────────── orchestrator ───────────────────────────── */
 
 /**
@@ -537,105 +694,13 @@ export async function runGraphExtraction(
   });
 
   try {
-    // Resolve the course author (admin) — the acting principal for cost telemetry.
-    const courseRow = await deps.supabase
-      .from("courses")
-      .select("author_id")
-      .eq("id", args.courseId)
-      .maybeSingle();
-    if (courseRow.error) throw new Error(`load course: ${courseRow.error.message}`);
-    if (!courseRow.data) return empty(`course ${args.courseId} not found`, false);
-    const authorId = courseRow.data.author_id;
-
-    // The published snapshot is the extraction SOURCE.
-    const { snapshot, version } = deps.loadSnapshot
-      ? await deps.loadSnapshot(args.publicationId)
-      : await getCachedSnapshot(args.publicationId);
-    const chunks = deriveLessonChunksWithCap(snapshot, cfg.chunkMaxChars);
-
-    // Per-lesson proposal under the call budget. Exhaustion checkpoints the rest.
-    const allProposals: LessonProposal[] = [];
-    const processedLessonIds: string[] = [];
-    const unprocessed: string[] = [];
-    let checkpoint: string | null = null;
-
-    for (let i = 0; i < chunks.length; i += 1) {
-      const chunk = chunks[i];
-      if (budget.remaining <= 0) {
-        // Budget out — record the rest as unprocessed and STOP proposing.
-        unprocessed.push(...chunks.slice(i).map((c) => c.lessonId));
-        break;
-      }
-      budget.remaining -= 1;
-      const t0 = Date.now();
-      const verdict = await runStructuredCall(deps.model, {
-        system: PROPOSAL_SYSTEM_PROMPT,
-        input: buildProposalInput(chunk),
-        outputName: PROPOSAL_RESPONSE_NAME,
-        outputSchema: ProposalBatchSchema,
-        model: TUTOR_MODELS.graph_extraction.model,
-        effort: TUTOR_MODELS.graph_extraction.effort,
-        timeoutMs: TUTOR_MODELS.graph_extraction.timeoutMs,
-        maxRetries: TUTOR_MODELS.graph_extraction.maxRetries,
-        maxOutputTokens: TUTOR_MODELS.graph_extraction.maxOutputTokens,
-      });
-      await emitAndAccumulate(
-        deps,
-        {
-          courseId: args.courseId,
-          authorId,
-          jobType: "graph_extraction",
-          model: TUTOR_MODELS.graph_extraction.model,
-          usage: {
-            inputTokens: verdict.usage.inputTokens,
-            cachedTokens: verdict.usage.cachedTokens,
-            outputTokens: verdict.usage.outputTokens,
-          },
-          latencyMs: Date.now() - t0,
-          // RunId-scoped synthetic id (like the embed) — NOT the provider's
-          // responseId, which is NOT retry-stable (a retried call gets a fresh one,
-          // so it would double-count cost on an Inngest step retry). This id is
-          // stable across a retry of the SAME run+lesson ⇒ the emit no-ops (R: the
-          // module header's "a step retry re-emits as a no-op").
-          providerResponseId: `propose:${args.runId}:${chunk.lessonId}`,
-        },
-        totals
-      );
-      processedLessonIds.push(chunk.lessonId);
-      if (verdict.ok && verdict.data) {
-        for (const proposal of verdict.data.concepts) {
-          allProposals.push({ lessonId: chunk.lessonId, proposal });
-        }
-      } else {
-        flags.push(`propose_failed:${chunk.lessonId}`);
-      }
-    }
-
-    if (unprocessed.length > 0) {
-      checkpoint = `Model-call budget (${cfg.maxCalls}) exhausted — ${unprocessed.length} lesson(s) not processed: ${unprocessed.join(", ")}. Staged what was built.`;
-      flags.push("budget_exhausted");
-    }
-
-    // Grain normalization (pure) over the processed lessons.
-    const grain = normalizeGrain(
-      allProposals,
-      { grainMaxPerLesson: cfg.grainMaxPerLesson, grainCourseMax: cfg.grainCourseMax },
-      processedLessonIds
-    );
-    flags.push(...grain.flags);
-
-    // Canonicalize (exact → embed → cluster → adjudicate).
-    const { canonicals, flags: canonFlags } = await canonicalize(
-      deps,
-      args.courseId,
-      authorId,
-      args.runId,
-      grain.kept,
-      cfg,
-      budget,
-      totals
-    );
-    flags.push(...canonFlags);
+    // Shared stages 1–4 (course author → snapshot → chunk → propose → grain →
+    // canonicalize). Reconciliation (W1.4) reuses the SAME function so the two
+    // paths never drift.
+    const cand = await generateCandidates(deps, args, cfg, budget, totals, "graph_extraction");
+    if (!cand.ok) return empty(cand.checkpoint, false);
+    const { authorId, snapshot, version, canonicals, checkpoint } = cand;
+    flags.push(...cand.flags);
 
     // TAUGHT nodes only become concept_nodes. A PURE assumed-prior (isAssumedPrior
     // — foldConcept sets it iff EVERY folded member was a prior) is a node the
@@ -758,10 +823,10 @@ export async function runGraphExtraction(
 /* ──────────────────────────────── helpers ───────────────────────────────── */
 
 /** The lessonId owning a given blockId in the snapshot (empty string if unknown —
- *  the caller filters those out). Pure. */
-function lessonIdForBlock(snapshot: PublicationSnapshot, blockId: string): string {
-  for (const module of snapshot.modules) {
-    for (const lesson of module.lessons) {
+ *  the caller filters those out). Pure. Exported for reconciliation. */
+export function lessonIdForBlock(snapshot: PublicationSnapshot, blockId: string): string {
+  for (const mod of snapshot.modules) {
+    for (const lesson of mod.lessons) {
       for (const block of lesson.blocks) {
         if (block.id === blockId) return lesson.id;
       }

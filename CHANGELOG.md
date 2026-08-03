@@ -1,5 +1,67 @@
 # Changelog — Course Studio editor upgrade
 
+## TUTOR-1 Wave 1 — concept graph subsystem (extraction · review rail · reconciliation), 2026-08-03
+
+The first wave of the Learner Tutor Agent: the course's knowledge model, built
+per the Wave 1 Execution Order (D-1 Branch A — Inngest). Full docs:
+`docs/tutor/concept-graph.md` + `docs/tutor/architecture.md`; delta note:
+`TUTOR-1-w1-delta-note.md`; checkpoint: `TUTOR-1-wave1-checkpoint.md`.
+
+- **Foundations (W1.1):** `TUTOR_MODELS` job registry (terra/luna/embedding;
+  gpt-5.6-sol DENY-LISTED at load + grep-guarded), pricing + pure
+  `computeCostUsd`, `ModelClient.embed`, the D-3 chaining seam
+  (previousResponseId/store/responseId — dead until Wave 3), and
+  `tutor_model_call` cost telemetry on the ONE analytics pipeline (migration
+  `20260803100000`; R-9: per-call rows invisible to every client role, the
+  select policy excludes `tutor_%`; aggregate spend via the service-role-only
+  `tutor_model_costs_daily` view). Live smoke green (real terra call +
+  1536-dim embeddings).
+- **Graph tables + write gate (W1.2, migration `20260803100100`):**
+  concept_nodes/edges, snapshot_concept_map (R-13 anchors + downgrade flag),
+  assumed_prior_nodes, tutor_course_settings, tutor_action ledger. THE DAG
+  INVARIANT LIVES AT THE WRITE PATH: concept_edges has no client
+  insert/update policy — every edge write rides the
+  `tutor_upsert_concept_edge` definer RPC (per-kind WITH RECURSIVE cycle
+  check, advisory-lock vs concurrent-writer TOCTOU, version discipline,
+  typed errors). Versioned node updates (the social idiom) + byte-for-byte
+  ledger reverts, fail-closed past the window.
+- **Rail extension (W1.2, migration `20260803100200`):** change_set_items
+  gains node_type 'concept_graph'; `rejectChangeSet` DOMAIN-PARTITIONED —
+  both plans computed before any write, one bad item aborts everything, a
+  graph-only reject NEVER loads the course doc; graph restores ride
+  `lib/tutor/railRestore.ts` (edges through the cycle gate, so a revert can
+  never install a cycle). The rail is extended, never weakened.
+- **Extraction (W1.3):** chunk (snapshot-sourced; quiz STEMS only — snapshots
+  are answer-stripped by construction) → per-lesson Terra proposals under a
+  call budget (exhaustion checkpoints honestly) → grain band 1–4/lesson with
+  out-of-band FLAGS → canonicalize (exact pre-merge → one batched embed →
+  cosine clusters → merge adjudication) → R-13 anchor resolution → edge
+  inference → prune-evidenceless / drop-low-confidence /
+  break-cycles-drop-weakest / transitive-reduction → assumed priors →
+  persist-rows-first, then ONE change-set + the agent_findings fate row.
+  Accept activates; Reject deletes every staged row and leaves the course
+  doc byte-identical. Inngest `tutor-graph-extract` (1/course concurrency;
+  runs recorded + settled in agent_runs). Execution surfaced two real bugs
+  (assumed-priors double-persisted; retry-unstable cost-telemetry ids) —
+  fixed.
+- **Publish seam + reconciliation (W1.4):** publishing enqueues extraction
+  (no graph) / reconciliation (active graph) / nothing (pending review);
+  the identical-hash republish path returns before the hook.
+  `runGraphReconciliation` classifies every candidate — matched (ID KEPT) ·
+  added · removed (retired, never deleted) · split/merged with full lineage
+  {parent→children + the configured 0.75 confidence factor} in the item
+  payloads (AC-T1.7a — Wave 2's mastery redistribution consumes exactly
+  this); creator_locked edges and creator_edited nodes are suppressed from
+  the diff (flagged when their content vanished, never auto-changed).
+- **Tests:** `verify:tutor` = 300 pure (models 48 · telemetry 36 · graph 70 ·
+  extraction 83 · reconcile 63, in the `npm test` chain) + `verify:reject`
+  chains the 45-check rail suite; `verify:tutor:int` = 83 vs live Supabase
+  (graph 14 · extraction 33 · reconcile 36) — the cycle gate, the full RLS
+  matrix, byte-for-byte reverts, AC-T1.3–T1.8 + AC-W1M.1/2. LIVE extraction
+  smoke over the 12-lesson Microeconomics fixture: 36 nodes / 38 edges
+  (40 pre-reduction), zero grain flags, $0.0988 — and the cost-event rollup
+  reconciles the run total EXACTLY.
+
 All notable editor changes, newest first. Each batch is individually
 verifiable; verification = `npm run build` + `npm run lint` + a temporary
 Playwright script driving the real UI through its `data-ai-*` attributes.

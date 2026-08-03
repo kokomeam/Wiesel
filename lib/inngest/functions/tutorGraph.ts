@@ -26,17 +26,25 @@
 import { inngest } from "../client";
 import {
   TUTOR_EXTRACTION_REQUESTED_EVENT,
+  TUTOR_RECONCILIATION_REQUESTED_EVENT,
   type TutorExtractionRequestedData,
+  type TutorReconciliationRequestedData,
 } from "../tutorGraphEvents";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { createOpenAIModelClient } from "@/lib/ai/providers/openai";
 import { withSemaphore } from "@/lib/ai/subagent";
 import { runGraphExtraction, type GraphExtractionResult } from "@/lib/tutor/graph/extraction";
+import { runGraphReconciliation, type GraphReconciliationResult } from "@/lib/tutor/graph/reconcile";
 
 /** The step's return shape: the full GraphExtractionResult, or a benign
  *  not-configured stub when the admin/model env is absent (never a throw). */
 type ExtractStepResult =
   | GraphExtractionResult
+  | { ok: false; checkpoint: string };
+
+/** Same benign-stub contract for the reconciliation step. */
+type ReconcileStepResult =
+  | GraphReconciliationResult
   | { ok: false; checkpoint: string };
 
 // NOTE: inngest 4.x's createFunction takes TWO args — (options, handler) — with
@@ -67,10 +75,38 @@ export const tutorGraphExtract = inngest.createFunction(
 
       const admin = createAdminClient();
       const model = withSemaphore(createOpenAIModelClient());
+
+      // The fate finding's run_id FK → agent_runs.id: the event's runId becomes
+      // the run row's id. Idempotent (an Inngest retry upserts the same id) —
+      // and the settled row is the auditable trail of what this run did.
+      await admin
+        .from("agent_runs")
+        .upsert(
+          { id: runId, course_id: courseId, trigger: "scheduled", status: "running" },
+          { onConflict: "id", ignoreDuplicates: true }
+        );
+
       const result = await runGraphExtraction(
         { supabase: admin, model },
         { courseId, publicationId, runId }
       );
+
+      await admin
+        .from("agent_runs")
+        .update({
+          status: result.ok ? "completed" : "failed",
+          report: {
+            kind: "graph_extraction",
+            nodeCount: result.nodeCount,
+            edgeCount: result.edgeCount,
+            assumedPriorCount: result.assumedPriorCount,
+            flags: result.flags,
+            droppedEdges: result.droppedEdges,
+            costUsd: result.usage.costUsd,
+            checkpoint: result.checkpoint,
+          },
+        })
+        .eq("id", runId);
 
       console.log(
         JSON.stringify({
@@ -85,6 +121,91 @@ export const tutorGraphExtract = inngest.createFunction(
           nodeCount: result.nodeCount,
           edgeCount: result.edgeCount,
           assumedPriorCount: result.assumedPriorCount,
+          droppedEdges: result.droppedEdges,
+          flags: result.flags,
+          costUsd: result.usage.costUsd,
+          checkpoint: result.checkpoint,
+        })
+      );
+      return result;
+    });
+  }
+);
+
+/**
+ * tutorGraphReconcile — on tutor/graph.reconciliation.requested: the exact mirror
+ * of tutorGraphExtract, running the reconciliation CORE
+ * (lib/tutor/graph/reconcile.runGraphReconciliation) in ONE durable step.
+ * concurrency { key: event.data.courseId, limit: 1 } serializes runs of the same
+ * course. IDEMPOTENT: the core short-circuits on an existing pending concept-graph
+ * change-set, so re-executing the whole step can't double-stage. NO MODEL KEY ⇒ a
+ * benign not-configured stub (never a throw), like the extract path.
+ */
+export const tutorGraphReconcile = inngest.createFunction(
+  {
+    id: "tutor-graph-reconcile",
+    concurrency: { key: "event.data.courseId", limit: 1 },
+    triggers: [{ event: TUTOR_RECONCILIATION_REQUESTED_EVENT }],
+  },
+  async ({ event, step }) => {
+    const { courseId, publicationId, runId } = event.data as TutorReconciliationRequestedData;
+
+    return step.run("reconcile", async (): Promise<ReconcileStepResult> => {
+      if (!isAdminConfigured() || !process.env.OPENAI_API_KEY) {
+        const result: ReconcileStepResult = { ok: false, checkpoint: "model not configured" };
+        console.log(
+          JSON.stringify({ tag: "tutor_graph_reconcile", courseId, publicationId, runId, ...result })
+        );
+        return result;
+      }
+
+      const admin = createAdminClient();
+      const model = withSemaphore(createOpenAIModelClient());
+
+      // Mirror the extract path: mint/settle the agent_runs row (the fate
+      // finding's run_id FK) with the event's runId as its id.
+      await admin
+        .from("agent_runs")
+        .upsert(
+          { id: runId, course_id: courseId, trigger: "scheduled", status: "running" },
+          { onConflict: "id", ignoreDuplicates: true }
+        );
+
+      const result = await runGraphReconciliation(
+        { supabase: admin, model },
+        { courseId, publicationId, runId }
+      );
+
+      await admin
+        .from("agent_runs")
+        .update({
+          status: result.ok ? "completed" : "failed",
+          report: {
+            kind: "graph_reconciliation",
+            nodeCount: result.nodeCount,
+            edgeCount: result.edgeCount,
+            classified: result.classified,
+            flags: result.flags,
+            droppedEdges: result.droppedEdges,
+            costUsd: result.usage.costUsd,
+            checkpoint: result.checkpoint,
+          },
+        })
+        .eq("id", runId);
+
+      console.log(
+        JSON.stringify({
+          tag: "tutor_graph_reconcile",
+          courseId,
+          publicationId,
+          runId,
+          ok: result.ok,
+          alreadyPending: result.alreadyPending ?? false,
+          changeSetId: result.changeSetId,
+          findingId: result.findingId,
+          nodeCount: result.nodeCount,
+          edgeCount: result.edgeCount,
+          classified: result.classified,
           droppedEdges: result.droppedEdges,
           flags: result.flags,
           costUsd: result.usage.costUsd,

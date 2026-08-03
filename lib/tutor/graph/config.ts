@@ -57,6 +57,11 @@ export interface ExtractionConfig {
   edgeMinConfidence: number;
   /** Per-lesson chunk cap (chars) before the truncation marker is appended. */
   chunkMaxChars: number;
+  /** Reconciliation (W1.4): cosine ≥ this MATCHES a candidate to an existing
+   *  active node when titles/aliases don't. Seam-overridable via deps.config. */
+  reconcileMatchThreshold: number;
+  /** Reconciliation (W1.4): the split/merge lineage confidenceFactor. */
+  lineageConfidence: number;
   /** Verify-time toggle mirror (unused by the core; kept so a deployment can read
    *  the resolved config as one object). */
   imageVerifyEnabled: boolean;
@@ -77,6 +82,18 @@ export const TUTOR_EDGE_MIN_CONFIDENCE = ratio("TUTOR_EDGE_MIN_CONFIDENCE", 0.5)
 export const TUTOR_CHUNK_MAX_CHARS = int("TUTOR_CHUNK_MAX_CHARS", 6000);
 export const TUTOR_IMAGE_VERIFY_ENABLED = bool("TUTOR_IMAGE_VERIFY_ENABLED", true);
 
+/* ───────────────────── reconciliation tunables (W1.4) ────────────────────── */
+
+/** Reconciliation: a candidate that isn't an exact/alias title match still
+ *  MATCHES an existing active node when their embeddings' cosine similarity is
+ *  ≥ this threshold (Directive §W1.4 matched rule). Separate from
+ *  `canonSimThreshold` (which clusters candidates for merge adjudication). */
+export const TUTOR_RECONCILE_MATCH_THRESHOLD = ratio("TUTOR_RECONCILE_MATCH_THRESHOLD", 0.8);
+
+/** Split/merge lineage confidenceFactor stamped on each lineage payload
+ *  (consumed by Wave 2's mastery redistribution — AC-T1.7a). */
+export const TUTOR_LINEAGE_CONFIDENCE = ratio("TUTOR_LINEAGE_CONFIDENCE", 0.75);
+
 /** Resolve the whole config from the env-backed constants above. Pure — reads the
  *  module-level constants (already env-resolved at import), returns a fresh object. */
 export function resolveExtractionConfig(overrides: Partial<ExtractionConfig> = {}): ExtractionConfig {
@@ -88,6 +105,8 @@ export function resolveExtractionConfig(overrides: Partial<ExtractionConfig> = {
     maxCalls: TUTOR_EXTRACTION_MAX_CALLS,
     edgeMinConfidence: TUTOR_EDGE_MIN_CONFIDENCE,
     chunkMaxChars: TUTOR_CHUNK_MAX_CHARS,
+    reconcileMatchThreshold: TUTOR_RECONCILE_MATCH_THRESHOLD,
+    lineageConfidence: TUTOR_LINEAGE_CONFIDENCE,
     imageVerifyEnabled: TUTOR_IMAGE_VERIFY_ENABLED,
     ...overrides,
   };

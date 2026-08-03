@@ -37,7 +37,6 @@ import {
   upsertAssumedPrior,
   upsertConceptEdge,
   type ConceptNodeCreateInput,
-  type AssumedPriorCreateInput,
   type ConceptEdgeUpsertInput,
 } from "./repository";
 import { ConceptGraphItemPayloadSchema, type ConceptGraphItemPayload } from "./schemas";
@@ -127,8 +126,11 @@ export interface StageExtractionResult {
  * Is there already a PENDING change_set carrying concept_graph items for this
  * course? A single join query: change_set_items(node_type='concept_graph') ⋈
  * change_sets(status='pending', course_id). Returns the change_set id if so.
+ *
+ * Exported so the reconciliation stager (W1.4) reuses the SAME guard — a
+ * concept_graph pending set short-circuits both extraction and reconciliation.
  */
-async function findPendingConceptGraphChangeSet(
+export async function findPendingConceptGraphChangeSet(
   supabase: DB,
   courseId: string
 ): Promise<string | null> {

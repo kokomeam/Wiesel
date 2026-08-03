@@ -47,7 +47,7 @@ import type {
   SlideDeckBlock,
 } from "@/lib/course/types";
 
-import { CHUNK_TRUNCATION_MARKER, resolveExtractionConfig } from "@/lib/tutor/graph/config";
+import { CHUNK_TRUNCATION_MARKER } from "@/lib/tutor/graph/config";
 import { deriveLessonChunksWithCap, deriveLessonChunks } from "@/lib/tutor/graph/extractionSource";
 import {
   ProposalBatchSchema,
@@ -244,7 +244,6 @@ function makeStubSupabase(opts: {
 }) {
   const { authorId, onCall } = opts;
   let nodeSeq = 0;
-  let edgeSeq = 0;
   let priorSeq = 0;
 
   function builder(table: string) {
@@ -356,7 +355,7 @@ function makeStubSupabase(opts: {
     };
 
     const chain: Record<string, unknown> = {
-      select(_cols?: string) {
+      select() {
         state.op = state.op || "select";
         return chain;
       },
@@ -405,7 +404,6 @@ function makeStubSupabase(opts: {
     async rpc(fn: string, args: Record<string, unknown>) {
       if (fn === "tutor_upsert_concept_edge") {
         onCall({ table: "concept_edges", method: "rpc(upsert_edge)", arg: args });
-        edgeSeq += 1;
         const now = new Date().toISOString();
         return {
           data: {
@@ -577,7 +575,6 @@ async function main() {
 
   /* ─────────────────────────── normalizeGrain ───────────────────────────── */
   console.log("\n# normalizeGrain");
-  const cfg = resolveExtractionConfig();
   const L1 = "lesson-1";
   const L2 = "lesson-2";
   const L3 = "lesson-3";
