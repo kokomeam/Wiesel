@@ -44,11 +44,23 @@ export interface QuestionResolution {
   followUp: AgentFollowUp | null;
 }
 
+/** M-AG: a publish review card's resolution, keyed by approvalId. The token
+ *  consume already guards correctness server-side — this only collapses the
+ *  OTHER rendered copies (chat ↔ review page ↔ other tabs) and carries the
+ *  agent's follow-up for conversation-linked cards. */
+export interface PublishCardResolution {
+  decision: "approved" | "skipped" | "resolved";
+  followUp: AgentFollowUp | null;
+}
+
 interface ApprovalSyncState {
   actions: Record<string, ActionResolution>;
   questions: Record<string, QuestionResolution>;
+  publishCards: Record<string, PublishCardResolution>;
   markActionResolved: (actionId: string, res: ActionResolution) => void;
   markQuestionResolved: (questionId: string, res: QuestionResolution) => void;
+  markPublishCardResolved: (approvalId: string, res: PublishCardResolution) => void;
+  attachPublishCardFollowUp: (approvalId: string, followUp: AgentFollowUp) => void;
   /** Attach a LATE-arriving follow-up to an existing resolution — resolutions
    *  return instantly now and the agent's wrap-up is fetched in the background,
    *  so the follow-up lands as a second write. No-op if the resolution is
@@ -61,7 +73,8 @@ interface ApprovalSyncState {
 
 export type SyncMessage =
   | { source: typeof CHANNEL_SOURCE; kind: "action"; id: string; res: ActionResolution }
-  | { source: typeof CHANNEL_SOURCE; kind: "question"; id: string; res: QuestionResolution };
+  | { source: typeof CHANNEL_SOURCE; kind: "question"; id: string; res: QuestionResolution }
+  | { source: typeof CHANNEL_SOURCE; kind: "publish"; id: string; res: PublishCardResolution };
 
 const CHANNEL_SOURCE = "wisesel-marketing-approval-sync" as const;
 export const APPROVAL_SYNC_CHANNEL = CHANNEL_SOURCE;
@@ -78,12 +91,17 @@ let broadcast: ((msg: SyncMessage) => void) | null = null;
 function isSyncMessage(data: unknown): data is SyncMessage {
   if (typeof data !== "object" || data === null) return false;
   const d = data as Record<string, unknown>;
-  return d.source === CHANNEL_SOURCE && (d.kind === "action" || d.kind === "question") && typeof d.id === "string";
+  return (
+    d.source === CHANNEL_SOURCE &&
+    (d.kind === "action" || d.kind === "question" || d.kind === "publish") &&
+    typeof d.id === "string"
+  );
 }
 
 export const useApprovalSync = create<ApprovalSyncState>((set, get) => ({
   actions: {},
   questions: {},
+  publishCards: {},
   markActionResolved(actionId, res) {
     // First writer wins — a later, vaguer "resolved elsewhere" must not
     // overwrite a concrete approved/denied (which may carry a follow-up).
@@ -110,6 +128,18 @@ export const useApprovalSync = create<ApprovalSyncState>((set, get) => ({
     set((s) => ({ questions: { ...s.questions, [questionId]: res } }));
     broadcast?.({ source: CHANNEL_SOURCE, kind: "question", id: questionId, res });
   },
+  markPublishCardResolved(approvalId, res) {
+    if (get().publishCards[approvalId]) return; // first writer wins
+    set((s) => ({ publishCards: { ...s.publishCards, [approvalId]: res } }));
+    broadcast?.({ source: CHANNEL_SOURCE, kind: "publish", id: approvalId, res });
+  },
+  attachPublishCardFollowUp(approvalId, followUp) {
+    const cur = get().publishCards[approvalId];
+    if (!cur || cur.followUp) return;
+    const res = { ...cur, followUp };
+    set((s) => ({ publishCards: { ...s.publishCards, [approvalId]: res } }));
+    broadcast?.({ source: CHANNEL_SOURCE, kind: "publish", id: approvalId, res });
+  },
   applyRemote(msg) {
     // First writer wins, with ONE exception: a remote copy carrying a follow-up
     // may fill in a local resolution that doesn't have one yet (the follow-up
@@ -118,10 +148,14 @@ export const useApprovalSync = create<ApprovalSyncState>((set, get) => ({
       const cur = get().actions[msg.id];
       if (cur && (cur.followUp || !msg.res.followUp)) return;
       set((s) => ({ actions: { ...s.actions, [msg.id]: msg.res } }));
-    } else {
+    } else if (msg.kind === "question") {
       const cur = get().questions[msg.id];
       if (cur && (cur.followUp || !msg.res.followUp)) return;
       set((s) => ({ questions: { ...s.questions, [msg.id]: msg.res } }));
+    } else {
+      const cur = get().publishCards[msg.id];
+      if (cur && (cur.followUp || !msg.res.followUp)) return;
+      set((s) => ({ publishCards: { ...s.publishCards, [msg.id]: msg.res } }));
     }
   },
 }));
@@ -144,7 +178,7 @@ export function connectApprovalSyncChannel(channel: SyncChannelLike): void {
 /** Reset hook state between test cases. */
 export function resetApprovalSyncForTests(): void {
   broadcast = null;
-  useApprovalSync.setState({ actions: {}, questions: {} });
+  useApprovalSync.setState({ actions: {}, questions: {}, publishCards: {} });
 }
 
 if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {

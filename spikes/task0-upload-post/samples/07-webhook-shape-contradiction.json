@@ -1,0 +1,17 @@
+{
+  "finding": "SPEC vs DOCS CONTRADICTION on webhook_events, and ZERO deliveries observed. The OpenAPI spec types webhook_events as an ARRAY of dot-form names (['upload_completed','social_account.connected',...]); the docs page (docs/api/webhooks.md) says an OBJECT of underscore-name booleans ({upload_completed:true, social_account_connected:true,...}, all-enabled when omitted). The API returns 200 and persists EITHER shape verbatim — no validation. With the array-form config active, 2 successful uploads (LinkedIn 07:14Z, YouTube 07:16Z) produced 0 webhook deliveries to the webhook.site inbox (re-polled ~4 min after). Cannot confirm whether the object form fixes delivery without another upload — deferred to Task 0b (config now left in the documented object form). Also: docs confirm delivery is at-least-once ('strive for exactly once — handle duplicates'), payload carries job_id for correlation, and there is NO signature/HMAC field anywhere.",
+  "arrayFormConfig": {
+    "request": "POST https://api.upload-post.com/api/uploadposts/users/notifications",
+    "body": { "channels": { "webhook": true }, "webhook_url": "https://webhook.site/4b340de7-0836-4db4-b77c-ec71a3d9f138", "webhook_events": ["upload_completed", "social_account.connected", "social_account.disconnected", "social_account.reauth_required"] },
+    "status": 200,
+    "deliveriesObservedAfter2Uploads": 0
+  },
+  "objectFormConfig": {
+    "request": "POST https://api.upload-post.com/api/uploadposts/users/notifications",
+    "body": { "channels": { "webhook": true }, "webhook_url": "https://webhook.site/4b340de7-0836-4db4-b77c-ec71a3d9f138", "webhook_events": { "upload_completed": true, "social_account_connected": true, "social_account_disconnected": true, "social_account_reauth_required": true } },
+    "status": 200,
+    "persistedVerbatim": true,
+    "deliveriesVerified": "PENDING Task 0b (no uploads left in the 0a budget)"
+  },
+  "at": "2026-07-23"
+}

@@ -1,0 +1,26 @@
+{
+  "finding": "FIRST COMMENT CONFIRMED VIA API. The generic `first_comment` param on /upload_text DOES land on LinkedIn text posts (the spec only documents `linkedin_first_comment` on the video endpoint). Verified with GET /uploadposts/comments — docs are Instagram-focused but it works for LinkedIn. Param name is `user` (a `profile` query returns 400 'Missing required query parameters: platform, user, and either post_id or post_url').",
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/comments?user=henry&platform=linkedin&post_id=urn:li:share:7485955623193542656"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "comments": [
+        {
+          "actor": "urn:li:person:VPRGnS3rM9",
+          "id": "7485955646044143616",
+          "$URN": "urn:li:comment:(urn:li:activity:7485955623633768448,7485955646044143616)",
+          "message": {
+            "attributes": [],
+            "text": "First comment via API 🧪 (2026-07-23T07:14:58.336Z) — part of the same verification test."
+          },
+          "object": "urn:li:activity:7485955623633768448"
+        }
+      ]
+    }
+  },
+  "at": "2026-07-23"
+}

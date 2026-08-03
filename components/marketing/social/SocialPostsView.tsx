@@ -9,7 +9,7 @@
  * resolve 409s by re-read + one re-apply, never a silent overwrite.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import type { SocialBatch, VoiceProfileRecord } from "@/lib/marketing/social/repository";
@@ -20,6 +20,7 @@ import { PostEditor } from "./PostEditor";
 import { PostQueue, type QueueFilters } from "./PostQueue";
 import { VoiceProfileSheet } from "./VoiceProfileSheet";
 import { SocialApiError, socialApi, streamGenerate } from "./api";
+import { DevInngestBanner, type PublishState } from "./connected/PublishStates";
 
 interface CourseRef {
   id: string;
@@ -77,6 +78,35 @@ export function SocialPostsView(props: {
       // keep current state — a refresh failure is non-fatal
     }
   }, []);
+
+  // M-D connected-publish state: fetched on mount, after actions, and when
+  // the tab regains focus/visibility — deliberately no polling interval.
+  const [publishState, setPublishState] = useState<PublishState | null>(null);
+  const refreshPublishState = useCallback(async () => {
+    try {
+      const res = await fetch("/api/marketing/social-posts/publish-state");
+      if (res.ok) setPublishState((await res.json()) as PublishState);
+    } catch {
+      // non-fatal — the queue renders without chips
+    }
+  }, []);
+  useEffect(() => {
+    const onWake = () => void refreshPublishState();
+    // Initial load rides a macrotask so the effect body stays a pure
+    // subscription (the react-hooks purity rule).
+    const kick = window.setTimeout(onWake, 0);
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
+    return () => {
+      window.clearTimeout(kick);
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
+    };
+  }, [refreshPublishState]);
+  const onPublishChanged = useCallback(() => {
+    void refreshPublishState();
+    void refreshQueue();
+  }, [refreshPublishState, refreshQueue]);
 
   /* ───────────────────────────── generation ──────────────────────────── */
 
@@ -197,6 +227,7 @@ export function SocialPostsView(props: {
 
   return (
     <div className="space-y-5">
+      <DevInngestBanner />
       <GeneratorControls
         course={props.course}
         courses={props.courses}
@@ -281,6 +312,8 @@ export function SocialPostsView(props: {
             showToast("Marked ready.");
           }}
           empty={!hasAnyPosts && !generating}
+          publishState={publishState}
+          onPublishChanged={onPublishChanged}
         />
         {selected && (
           <PostEditor
@@ -292,6 +325,8 @@ export function SocialPostsView(props: {
             savePatch={savePatch}
             onQueueChanged={refreshQueue}
             showToast={showToast}
+            publishState={publishState}
+            onPublishChanged={onPublishChanged}
           />
         )}
       </div>

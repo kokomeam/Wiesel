@@ -133,7 +133,7 @@ const createLeadList = defineMarketingTool({
       .select("id")
       .single();
     if (error || !data) throw new MarketingToolError(`create_lead_list: ${error?.message}`);
-    return { summary: `Created lead list "${args.name}".`, data: { listId: data.id }, target: { entity: "lead_list", id: data.id } };
+    return { summary: `Created lead list "${args.name}".`, summaryFields: { v: 1, entity: args.name, outcome: "done" }, data: { listId: data.id }, target: { entity: "lead_list", id: data.id } };
   },
 });
 
@@ -212,6 +212,7 @@ const importLeads = defineMarketingTool({
     // actually confirmed (via double opt-in) — never at import time.
     return {
       summary: `Imported ${imported} contact(s)${rejected ? ` (${rejected} rejected — invalid email)` : ""}. They are PENDING until they confirm consent.`,
+      summaryFields: { v: 1, count: imported, dropped: rejected || undefined, outcome: "done" },
       data: { imported, rejected },
       target: { entity: "lead_list", id: args.listId },
     };
@@ -304,6 +305,7 @@ const buildAudienceList = defineMarketingTool({
     const eligible = matches.filter((m) => m.consent_status === "confirmed").length;
     return {
       summary: `Created "${args.name}" with ${matches.length} ${filterLabel(args.filter)} (${eligible} eligible to email now).`,
+      summaryFields: { v: 1, entity: args.name, count: matches.length, outcome: "done" },
       data: { listId: list.id, added: matches.length, eligible },
       target: { entity: "lead_list", id: list.id },
     };
@@ -357,6 +359,7 @@ const addLeadsToList = defineMarketingTool({
     const skipped = candidates.length - fresh.length;
     return {
       summary: `Added ${fresh.length} contact(s) to "${list.name}"${skipped ? ` (${skipped} already on it)` : ""}.`,
+      summaryFields: { v: 1, entity: list.name, count: fresh.length, outcome: "done" },
       data: { added: fresh.length, skipped },
       target: { entity: "lead_list", id: args.listId },
     };
@@ -387,6 +390,7 @@ const removeLeadsFromList = defineMarketingTool({
     if (error) throw new MarketingToolError(`remove_leads_from_list: ${error.message}`);
     return {
       summary: `Removed ${args.subscriberIds.length} contact(s) from "${list.name}".`,
+      summaryFields: { v: 1, entity: list.name, count: args.subscriberIds.length, outcome: "done" },
       data: { removed: args.subscriberIds.length },
       target: { entity: "lead_list", id: args.listId },
     };
@@ -448,7 +452,7 @@ const sendConsentConfirmation = defineMarketingTool({
 
     const course = await loadCourseMarketingContext(ctx.supabase, ctx.courseId);
     await deliverConsentEmail(ctx, sub, course?.title ?? null);
-    return { summary: `Sent a confirmation email to ${sub.email}.`, data: { sent: 1 } };
+    return { summary: `Sent a confirmation email to ${sub.email}.`, summaryFields: { v: 1, count: 1, outcome: "sent" }, data: { sent: 1 } };
   },
 });
 
@@ -480,6 +484,7 @@ const sendConsentConfirmations = defineMarketingTool({
     if (!ctx.approved) {
       return {
         summary: `Send the opt-in confirmation to ${due.length} pending contact(s) in "${list.name}".`,
+        summaryFields: { v: 1, entity: list.name, count: due.length },
         approvalPreview: {
           count: due.length,
           to: due.slice(0, 10).map((m) => m.email),
@@ -492,7 +497,7 @@ const sendConsentConfirmations = defineMarketingTool({
     for (const sub of due) {
       await deliverConsentEmail(ctx, sub, course?.title ?? null);
     }
-    return { summary: `Sent ${due.length} confirmation email(s) for "${list.name}".`, data: { sent: due.length } };
+    return { summary: `Sent ${due.length} confirmation email(s) for "${list.name}".`, summaryFields: { v: 1, entity: list.name, count: due.length, outcome: "sent" }, data: { sent: due.length } };
   },
 });
 

@@ -1,0 +1,9 @@
+spike inngest app on :3111
+RetryAfterError: deliberate first-attempt failure
+    at file:///Users/admin/Desktop/App-marketing/spikes/task0-upload-post/inngest/server.mjs:60:26
+    at Object.fn (file:///Users/admin/Desktop/App-marketing/spikes/task0-upload-post/node_modules/inngest/components/InngestStepTools.js:65:37)
+    at step.fn (file:///Users/admin/Desktop/App-marketing/spikes/task0-upload-post/node_modules/inngest/components/execution/v1.js:956:35)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5) {
+  cause: undefined,
+  retryAfter: '5'
+}

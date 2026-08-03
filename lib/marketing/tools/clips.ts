@@ -145,6 +145,13 @@ const selectClipMomentsTool = defineMarketingTool({
           : "";
       return {
         summary: `Found ${result.candidates.length} moment(s) worth clipping in this lesson (transcript: ${result.transcript.source}).${droppedNote}\n${result.candidates.map(candidateLine).join("\n")}`,
+        summaryFields: {
+          v: 1,
+          count: result.candidates.length,
+          dropped: result.dropped.length,
+          entity: result.candidates[0]?.hookText,
+          outcome: "done",
+        },
         data: {
           requestId: result.requestId,
           candidates: result.candidates.map(compactCandidate),
@@ -205,6 +212,7 @@ const updateClipMomentStatusTool = defineMarketingTool({
     }
     return {
       summary: `Candidate #${updated.rank} ("${updated.hookText}") is now ${updated.status}.`,
+      summaryFields: { v: 1, entity: updated.hookText, note: updated.status, outcome: "done" },
       data: compactCandidate(updated),
       target: { entity: "clip_moment_candidate", id: updated.id },
     };
@@ -277,7 +285,16 @@ const generateLessonClipsTool = defineMarketingTool({
         { candidate, preset, idempotencyKey: `gen:${candidate.id}:${preset}` }
       );
       return {
-        summary: `Render queued for "${candidate.hookText}" — ${CLIP_LAYOUT_LABELS[job.layout]} (${job.provider === "reap" ? "provider reframe" : "in-house composition"}), preset ${preset}. It processes in the background over the next few minutes; queued is NOT rendered yet, and nothing is ever posted for you.`,
+        // W3.8: the trust reassurance moved to the section headers — summaries
+        // state facts ("queued, renders in the background"), not policy.
+        summary: `Render queued for "${candidate.hookText}" — ${CLIP_LAYOUT_LABELS[job.layout]}, preset ${preset}. It renders in the background over the next few minutes; queued is not rendered yet.`,
+        summaryFields: {
+          v: 1,
+          entity: candidate.hookText,
+          layout: CLIP_LAYOUT_LABELS[job.layout],
+          preset,
+          outcome: "queued",
+        },
         data: compactJob(job),
         target: { entity: "clip_render_job", id: job.id },
       };
@@ -311,6 +328,7 @@ const cancelClipJobTool = defineMarketingTool({
         job.status === "cancelled"
           ? `Render cancelled (${CLIP_LAYOUT_LABELS[job.layout]}).`
           : `That render already finished (${job.status}) — nothing to cancel.`,
+      summaryFields: { v: 1, layout: CLIP_LAYOUT_LABELS[job.layout], outcome: "done" },
       data: compactJob(job),
       target: { entity: "clip_render_job", id: job.id },
     };
@@ -385,7 +403,16 @@ const generatePostingKitTool = defineMarketingTool({
       }
     );
     return {
-      summary: `Posting kit ready (${CLIP_PLATFORM_SPECS[platform].label}): comment keyword "${kit.commentKeyword}", short link /l/${kit.shortCode ?? "—"}. Copy the full text below and post it MANUALLY — WiseSel never posts for you.\n\n${kit.fullText}`,
+      // W3.8: kit summaries carry the kit, not the reassurance (that lives on
+      // the social section header + connected-accounts page + first-run hint).
+      summary: `Posting kit ready (${CLIP_PLATFORM_SPECS[platform].label}): comment keyword "${kit.commentKeyword}", short link /l/${kit.shortCode ?? "—"}. Copy the full text below when you post.\n\n${kit.fullText}`,
+      summaryFields: {
+        v: 1,
+        platform,
+        keyword: kit.commentKeyword,
+        shortCode: kit.shortCode ?? undefined,
+        outcome: "ready",
+      },
       data: kit,
       target: { entity: "social_post", id: post.id },
     };
@@ -456,6 +483,7 @@ const updateClipHookTool = defineMarketingTool({
       const capLine = result.burn.captionsEnabled ? `${result.burn.captionStyle} captions` : "captions off";
       return {
         summary: `Re-burned the clip from its clean master — ${hookLine}, ${capLine}. Free local re-burn (no render minutes; ${result.reburnsToday}/${result.reburnsPerDay} today).${findingsNote}`,
+        summaryFields: { v: 1, entity: result.burn.hookText ?? undefined, outcome: "done" },
         data: result,
         target: { entity: "social_post", id: result.postId },
       };

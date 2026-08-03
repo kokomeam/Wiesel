@@ -67,7 +67,7 @@ export function ConfirmDialog({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-[100] grid place-items-center p-4"
+          className="fixed inset-0 z-100 grid place-items-center p-4"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -79,7 +79,7 @@ export function ConfirmDialog({
             aria-hidden
             tabIndex={-1}
             onClick={() => !busy && onCancel()}
-            className="absolute inset-0 cursor-default bg-stone-900/40 backdrop-blur-[2px]"
+            className="absolute inset-0 cursor-default bg-stone-900/40 backdrop-blur-xs"
           />
           <motion.div
             role="alertdialog"
@@ -89,12 +89,12 @@ export function ConfirmDialog({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
             transition={{ duration: reduce ? 0 : 0.18, ease: EASE }}
-            className="relative w-full max-w-sm rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_20px_60px_rgba(28,25,23,0.22)]"
+            className="relative w-full max-w-sm rounded-card border border-stone-200/80 bg-white p-5 shadow-overlay"
           >
             <div className="flex gap-3.5">
               <span
                 className={cn(
-                  "grid size-9 shrink-0 place-items-center rounded-xl",
+                  "grid size-9 shrink-0 place-items-center rounded-panel",
                   tone === "danger" ? "bg-rose-50 text-rose-600" : "bg-stone-100 text-stone-600"
                 )}
               >
@@ -102,7 +102,7 @@ export function ConfirmDialog({
               </span>
               <div className="min-w-0 flex-1">
                 <h2 className="text-sm font-semibold text-stone-900">{title}</h2>
-                <div className="mt-1 text-[13px] leading-relaxed text-stone-500">{message}</div>
+                <div className="mt-1 text-secondary text-stone-500">{message}</div>
               </div>
             </div>
 

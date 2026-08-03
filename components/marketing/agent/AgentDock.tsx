@@ -18,12 +18,16 @@ import Link from "next/link";
 import { Maximize2, Wand2, X } from "lucide-react";
 import { AgentPanel } from "@/components/marketing/agent/AgentPanel";
 import { useAgentDockStore } from "@/lib/marketing/agentDockStore";
+import { useOverlayOpen } from "@/lib/ui/overlayStore";
 import { cn } from "@/lib/cn";
 
 export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
   const pathname = usePathname();
   const params = useSearchParams();
   const { open, seed, openDock, closeDock, clearSeed } = useAgentDockStore();
+  // W2.5: while any Drawer/overlay is open, the FAB vacates — a drawer's
+  // sticky action bar is exclusion territory.
+  const overlayOpen = useOverlayOpen();
 
   // Surfaces that already own a chat: full-screen agent + the campaign builder.
   const hidden =
@@ -38,27 +42,30 @@ export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
       {/* the slide-over — always mounted so the transcript survives close */}
       <div
         className={cn(
-          "fixed inset-y-4 right-4 z-50 flex w-[min(27.5rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-[#faf7f1] shadow-2xl shadow-stone-900/15 transition-transform duration-300 ease-out",
+          "fixed inset-y-4 right-4 z-50 flex w-[min(27.5rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-card border border-stone-200 bg-canvas shadow-overlay transition-transform duration-300 ease-out",
           open ? "translate-x-0" : "pointer-events-none translate-x-[calc(100%+2rem)]"
         )}
         aria-hidden={!open}
+        // Keyboard parity with aria-hidden: while closed, the off-screen
+        // panel's focusables must not be tabbable (Lighthouse aria-hidden-focus).
+        inert={!open}
         role="complementary"
         aria-label="Marketing Agent"
         data-testid="agent-dock"
       >
         <div className="flex items-center gap-2.5 border-b border-stone-200/80 bg-white/70 px-4 py-3">
-          <span className="brand-gradient grid size-7 shrink-0 place-items-center rounded-lg text-white [font-family:var(--font-display)] text-base">
+          <span className="brand-gradient grid size-7 shrink-0 place-items-center rounded-lg text-white font-display text-base">
             *
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-stone-900">Marketing Agent</p>
-            <p className="truncate text-[11px] text-stone-400">
+            <p className="truncate text-meta text-stone-500">
               Reads your funnel · drafts revert · sends always ask you first
             </p>
           </div>
           <Link
             href={`/marketing/agent?course=${courseId}`}
-            className="grid size-7 place-items-center rounded-lg text-stone-400 hover:bg-stone-900/[0.06] hover:text-stone-700"
+            className="grid size-7 place-items-center rounded-lg text-stone-500 hover:bg-stone-900/[0.06] hover:text-stone-700"
             title="Open full screen"
             onClick={closeDock}
           >
@@ -67,7 +74,7 @@ export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
           <button
             type="button"
             onClick={closeDock}
-            className="grid size-7 place-items-center rounded-lg text-stone-400 hover:bg-stone-900/[0.06] hover:text-stone-700"
+            className="grid size-7 place-items-center rounded-lg text-stone-500 hover:bg-stone-900/[0.06] hover:text-stone-700"
             aria-label="Close agent"
           >
             <X className="size-4" />
@@ -78,8 +85,8 @@ export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
         </div>
       </div>
 
-      {/* the always-visible way in */}
-      {!open ? (
+      {/* the always-visible way in (vacates while an overlay is open) */}
+      {!open && !overlayOpen ? (
         <button
           type="button"
           onClick={() => openDock()}

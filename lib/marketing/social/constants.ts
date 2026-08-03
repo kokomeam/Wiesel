@@ -56,7 +56,19 @@ export const SOCIAL_TONES = [
 ] as const;
 export type SocialTone = (typeof SOCIAL_TONES)[number];
 
-export const POST_STATUSES = ["draft", "ready", "planned", "posted_manual", "archived"] as const;
+// posted_api (M-C: published through a connected account, card-approved) is
+// deliberately DISTINCT from posted_manual (creator copied it out by hand);
+// unpublished_local = locally withdrawn AFTER an api publish — the platform
+// copy remains live (no provider delete exists, Task 0a).
+export const POST_STATUSES = [
+  "draft",
+  "ready",
+  "planned",
+  "posted_manual",
+  "archived",
+  "posted_api",
+  "unpublished_local",
+] as const;
 export type SocialPostStatus = (typeof POST_STATUSES)[number];
 
 export const TIMING_PRESETS = ["none", "same_day", "spread_week", "spread_2_weeks", "custom"] as const;

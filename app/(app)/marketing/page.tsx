@@ -12,9 +12,10 @@ import Link from "next/link";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { createClient } from "@/lib/supabase/server";
 import { parseAutonomyDecision } from "@/lib/marketing/autonomy";
-import { loadAutonomySettings } from "@/lib/marketing/autonomyStore";
+import { loadAutonomySettingsWithMeta } from "@/lib/marketing/autonomyStore";
 import { getBlueprint } from "@/lib/marketing/blueprints";
 import { listPendingApprovals, listRecentActivity } from "@/lib/marketing/gate";
+import { dayLabel, parseSummaryFields, relativeTime } from "@/lib/marketing/activitySummaries";
 import {
   listAuthorCourses,
   listLandingPages,
@@ -25,7 +26,7 @@ import {
 import { listPendingQuestions } from "@/lib/marketing/questions";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { getMarketingTool, previewMarketingAction } from "@/lib/marketing/tools";
-import type { ActivityEntryVM } from "@/components/marketing/ActivityLogEntry";
+import type { ActivityFeedEntryVM } from "@/components/marketing/ActivityFeed";
 import type { CampaignVM } from "@/components/marketing/CampaignCard";
 import type { PendingActionPayload } from "./actions";
 import { MarketingHub, type LandingPageVM, type QuestionVM } from "./MarketingHub";
@@ -62,7 +63,7 @@ export default async function MarketingPage({
           title="Marketing Assistant"
           description="Creating the course is half the battle — let AI help you sell it."
         />
-        <div className="rounded-2xl border border-stone-200/80 bg-white p-10 text-center shadow-[0_1px_2px_rgba(68,48,28,0.05)]">
+        <div className="rounded-card border border-stone-200/80 bg-white p-10 text-center shadow-card">
           <p className="text-stone-600">You don’t have a course yet.</p>
           <Link
             href="/studio"
@@ -80,8 +81,8 @@ export default async function MarketingPage({
     loadCampaignForCourse(supabase, course.id),
     listPendingApprovals(supabase, course.id),
     listPendingQuestions(supabase, course.id),
-    listRecentActivity(supabase, course.id, { limit: 15 }),
-    loadAutonomySettings(supabase, course.id),
+    listRecentActivity(supabase, course.id, { limit: 100 }),
+    loadAutonomySettingsWithMeta(supabase, course.id),
   ]);
   const pages = campaign ? await listLandingPages(supabase, campaign.id) : [];
 
@@ -111,20 +112,37 @@ export default async function MarketingPage({
   }));
 
   const nowMs = services.clock.epochMs();
-  const activityVms: ActivityEntryVM[] = activity.map((a) => {
-    const autoExecuted = a.status === "executed" && a.autonomyDecision != null;
-    const { canRevert, label } = autoExecuted
-      ? { canRevert: false, label: null }
-      : revertLabel(a.revertExpiresAt, nowMs);
+  const activityVms: ActivityFeedEntryVM[] = activity.map((a) => {
+    const decision = parseAutonomyDecision(a.autonomyDecision);
+    // D-16: a card-routed action the creator approved is NOT policy-executed —
+    // only route auto_execute/auto_log earns the "ran on its own" treatment.
+    const routedToApproval = decision?.route === "pending_approval";
+    const autoExecuted =
+      a.status === "executed" && (decision?.route === "auto_execute" || decision?.route === "auto_log");
+    const { canRevert, label } =
+      a.status === "auto_approved" ? revertLabel(a.revertExpiresAt, nowMs) : { canRevert: false, label: null };
+    const created = new Date(a.createdAt);
     return {
       id: a.id,
-      actionKind: a.actionKind,
-      summary: a.summary ?? a.actionKind,
+      toolName: a.toolName,
+      status: a.status,
       requestedBy: a.requestedBy,
+      fields: parseSummaryFields(a.summaryFields),
+      legacyProse: a.summary,
+      routedToApproval,
+      autoExecuted,
+      failedGuardrails: decision?.guardrails.filter((g) => g.status === "fail").map((g) => g.name) ?? [],
+      targetRef: a.targetRef,
+      relative: relativeTime(a.createdAt, nowMs),
+      absolute: created.toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+      day: dayLabel(a.createdAt, nowMs),
       canRevert,
       revertWindowLabel: label,
-      autoExecuted,
-      autoReason: autoExecuted ? (parseAutonomyDecision(a.autonomyDecision)?.reason ?? null) : null,
     };
   });
 

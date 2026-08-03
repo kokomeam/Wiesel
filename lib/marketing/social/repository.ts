@@ -322,6 +322,7 @@ export async function versionedUpdateSocialPost(
       | "body"
       | "cta"
       | "hashtags"
+      | "first_comment"
       | "image_alt_text"
       | "audience"
       | "funnel_stage"
@@ -346,6 +347,22 @@ export async function versionedUpdateSocialPost(
     .select("*");
   if (error) throw new Error(`versionedUpdateSocialPost: ${error.message}`);
   if (!data || data.length === 0) throw new SocialVersionConflictError(id);
+
+  // M-C edit-voids-approval: a PUBLISHED-CONTENT edit through this single
+  // write path invalidates every open card approval and live-but-unsent
+  // manifest for the post (lib/marketing/publish/voiding.ts). Lazy import:
+  // publish governance never rides into graphs that only read posts.
+  const touched = Object.keys(set);
+  const contentAffecting = ["body", "cta", "hashtags", "first_comment", "video_path", "platform"];
+  if (touched.some((k) => contentAffecting.includes(k))) {
+    const { voidPublishArtifactsForPost } = await import("@/lib/marketing/publish/voiding");
+    await voidPublishArtifactsForPost(
+      supabase,
+      { id, course_id: data[0].course_id },
+      "post_edited",
+      new Date().toISOString()
+    );
+  }
   return rowToSocialPost(data[0]);
 }
 

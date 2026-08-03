@@ -8,6 +8,7 @@
  */
 
 import type { QuestionSpec } from "../questions";
+import type { PublishCardPayload } from "@/components/marketing/publish/PublishApprovalCard";
 
 export type MarketingAgentEvent =
   | { type: "conversation"; conversationId: string }
@@ -44,6 +45,15 @@ export type MarketingAgentEvent =
       question?: QuestionSpec;
     }
   | { type: "assistant_message"; content: string }
+  /**
+   * M-AG: publish review cards freshly FILED this run, assembled server-side
+   * by the ONE payload assembly (cardPayload.ts) so chat renders the SAME
+   * card as the review page. NOT a pause — the filing tools are reversible
+   * requests; the run continues while the cards wait on the creator (inline
+   * here AND durably on /marketing/publish). Tokens ride only this ephemeral
+   * event, never conversation messages.
+   */
+  | { type: "publish_cards"; cards: PublishCardPayload[] }
   | { type: "error"; message: string }
   /** Terminal. `paused` = stopped blocked on a human (not a clean finish). */
   | { type: "done"; paused: boolean };
@@ -66,6 +76,7 @@ export type AgentFollowUpItem =
   | { kind: "tool"; tool: string; summary: string; status: string }
   | { kind: "approval"; actionId: string; tool: string; summary: string; preview: Record<string, unknown> | null }
   | { kind: "question"; questionId: string; question: QuestionSpec }
+  | { kind: "publish_cards"; cards: PublishCardPayload[] }
   | { kind: "error"; text: string };
 
 export interface AgentFollowUp {
@@ -124,6 +135,10 @@ export function followUpFromEvents(events: MarketingAgentEvent[]): AgentFollowUp
           items.push({ kind: "question", questionId: ev.questionId, question: ev.question });
         }
         break;
+      case "publish_cards":
+        flush();
+        if (ev.cards.length) items.push({ kind: "publish_cards", cards: ev.cards });
+        break;
       case "error":
         flush();
         items.push({ kind: "error", text: ev.message });
@@ -137,6 +152,28 @@ export function followUpFromEvents(events: MarketingAgentEvent[]): AgentFollowUp
   }
   flush();
   return { conversationId, paused, items };
+}
+
+/* ───────────── publish-card filing detection (M-AG, pure) ─────────────
+ * The loop emits `publish_cards` exactly where cards are freshly FILED —
+ * never on status reads (get_publish_status re-listing open cards must not
+ * re-render them). The three filing tools return their approval ids in
+ * outcome data; everything else yields []. */
+
+export const PUBLISH_CARD_FILING_TOOLS: ReadonlySet<string> = new Set([
+  "propose_publish_plan",
+  "publish_social_post",
+  "schedule_social_post",
+]);
+
+export function filedApprovalIds(tool: string, data: unknown): string[] {
+  if (!PUBLISH_CARD_FILING_TOOLS.has(tool) || !data || typeof data !== "object") return [];
+  const d = data as { approvalId?: unknown; approvalIds?: unknown };
+  if (typeof d.approvalId === "string" && d.approvalId) return [d.approvalId];
+  if (Array.isArray(d.approvalIds)) {
+    return d.approvalIds.filter((x): x is string => typeof x === "string" && x.length > 0);
+  }
+  return [];
 }
 
 export function encodeSSE(event: MarketingAgentEvent): string {

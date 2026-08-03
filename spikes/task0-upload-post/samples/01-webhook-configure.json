@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://app.upload-post.com/api/uploadposts/users/notifications",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "channels": {
+        "webhook": true
+      },
+      "webhook_url": "https://webhook.site/4b340de7-0836-4db4-b77c-ec71a3d9f138",
+      "webhook_events": [
+        "upload_completed",
+        "social_account.connected",
+        "social_account.disconnected",
+        "social_account.reauth_required"
+      ]
+    }
+  },
+  "response": {
+    "status": 405,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=86400",
+      "cf-cache-status": "DYNAMIC",
+      "cf-ray": "a1f8e2df081208e3-SEA",
+      "connection": "keep-alive",
+      "content-security-policy": "frame-ancestors 'self' https://*.upload-post.com https://upload-post.com;",
+      "content-type": "text/html",
+      "date": "Thu, 23 Jul 2026 07:14:05 GMT",
+      "nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+      "permissions-policy": "geolocation=(), microphone=(self \"https://hypewall.img2html.com\"), camera=(self \"https://hypewall.img2html.com\")",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "report-to": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=oQsODLe%2FgnHx0EksCGJJh6zkGWE%2B2WnKSiIgh9deoJ7Wnv3wwNMoqu%2FevkwvK6G3rq1N6gRebXlc8eecZUHsLpAYt79ZE3A%2FBzx7BP9Vz25KfJlaR46KrASoOLqYvhZh6KMdvpAy\"}]}",
+      "server": "cloudflare",
+      "transfer-encoding": "chunked",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": "<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx/1.31.3</center>\r\n</body>\r\n</html>\r\n"
+  },
+  "elapsedMs": 2568,
+  "at": "2026-07-23T07:14:03.455Z"
+}

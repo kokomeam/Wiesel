@@ -42,6 +42,18 @@
     "scripts/verify-gallery-browser.ts",
     "scripts/verify-delete-browser.ts",
     "scripts/verify-coursepage-browser.ts",
-    "scripts/verify-delete-structure-browser.ts"
+    "scripts/verify-delete-structure-browser.ts",
+    "scripts/verify-learn-browser.ts",
+    "scripts/verify-list-browser.ts",
+    "scripts/verify-marketing-sync-browser.ts",
+    "scripts/verify-materialize-visual.ts",
+    "scripts/screenshot-accounts.ts",
+    "scripts/verify-ui-browser.ts",
+    "scripts/screenshot-accounts-states.ts",
+    "scripts/screenshot-publish-cards.ts",
+    "scripts/e2e-inngest-live.ts",
+    "scripts/e2e-inngest-cancel.ts",
+    "scripts/e2e-agentic-publish.ts",
+    "scripts/screenshot-publish-queue.ts"
   ]
 }

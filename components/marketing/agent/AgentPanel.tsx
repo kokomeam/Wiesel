@@ -17,6 +17,12 @@ import type { QuestionSpec } from "@/lib/marketing/questions";
 import type { PendingActionPayload } from "@/app/(app)/marketing/actions";
 import { ApprovalCard } from "@/components/marketing/ApprovalCard";
 import { QuestionCard } from "@/components/marketing/QuestionCard";
+import {
+  ChatPublishCards,
+  PUBLISH_CHAT_SUGGESTIONS,
+  PUBLISH_CAPABILITY_BLURB,
+} from "@/components/marketing/publish/ChatPublishCards";
+import type { PublishCardPayload } from "@/components/marketing/publish/PublishApprovalCard";
 
 type Item =
   | { kind: "user"; text: string }
@@ -25,12 +31,17 @@ type Item =
   | { kind: "tool"; tool: string; summary: string; status: string }
   | { kind: "approval"; pending: PendingActionPayload }
   | { kind: "question"; questionId: string; question: QuestionSpec }
+  | { kind: "publishCards"; cards: PublishCardPayload[] }
   | { kind: "error"; text: string };
 
+// The connected-publishing suggestion strings are imported from the
+// allowlisted publish module — this file carries no publish vocabulary of
+// its own (AC-MD.5 both-directions fence).
 const SUGGESTIONS = [
   "Generate a landing page and a launch sequence",
   "How's my funnel doing?",
   "Draft a followup for people who viewed but didn't enroll",
+  ...PUBLISH_CHAT_SUGGESTIONS,
 ];
 
 export function AgentPanel({
@@ -102,6 +113,9 @@ export function AgentPanel({
       } else if (f.kind === "question") {
         renderedBlockersRef.current.add(`q:${f.questionId}`);
         additions.push({ kind: "question", questionId: f.questionId, question: f.question });
+      } else if (f.kind === "publish_cards") {
+        for (const c of f.cards) renderedBlockersRef.current.add(`p:${c.approvalId}`);
+        additions.push({ kind: "publishCards", cards: f.cards });
       }
     }
     if (additions.length) {
@@ -119,7 +133,9 @@ export function AgentPanel({
         if (consumedFollowUpsRef.current.has(key)) continue;
         const followUp = key.startsWith("a:")
           ? state.actions[key.slice(2)]?.followUp
-          : state.questions[key.slice(2)]?.followUp;
+          : key.startsWith("q:")
+            ? state.questions[key.slice(2)]?.followUp
+            : state.publishCards[key.slice(2)]?.followUp;
         if (followUp) {
           consumedFollowUpsRef.current.add(key);
           replayFollowUp(followUp);
@@ -199,6 +215,11 @@ export function AgentPanel({
               renderedBlockersRef.current.add(`q:${ev.questionId}`);
               push({ kind: "question", questionId: ev.questionId, question: ev.question });
             }
+          } else if (ev.type === "publish_cards") {
+            if (ev.cards.length) {
+              for (const c of ev.cards) renderedBlockersRef.current.add(`p:${c.approvalId}`);
+              push({ kind: "publishCards", cards: ev.cards });
+            }
           } else if (ev.type === "error") push({ kind: "error", text: ev.message });
           else if (ev.type === "done") router.refresh(); // reflect draft edits in the live preview
         }
@@ -215,19 +236,19 @@ export function AgentPanel({
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto scrollbar-thin px-1 py-2">
         {items.length === 0 ? (
           <div className="mx-auto mt-10 max-w-md text-center">
-            <span className="brand-gradient grid size-11 place-items-center rounded-2xl text-white [font-family:var(--font-display)] text-xl mx-auto">
+            <span className="brand-gradient grid size-11 place-items-center rounded-card text-white font-display text-xl mx-auto">
               *
             </span>
             <p className="mt-4 text-stone-600">
               I can generate your landing page, sequences, and followups, watch the funnel, and propose
-              what to do next. I’ll always ask before anything goes out.
+              what to do next. I’ll always ask before anything goes out. {PUBLISH_CAPABILITY_BLURB}
             </p>
             <div className="mt-4 flex flex-col gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
                   onClick={() => send(s)}
-                  className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-600 hover:border-brand-200 hover:bg-brand-50"
+                  className="rounded-panel border border-stone-200 bg-white px-3 py-2 text-sm text-stone-600 hover:border-brand-200 hover:bg-brand-50"
                 >
                   {s}
                 </button>
@@ -239,36 +260,36 @@ export function AgentPanel({
         {items.map((it, i) => {
           if (it.kind === "user")
             return (
-              <div key={i} className="ml-auto max-w-[85%] rounded-2xl bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
+              <div key={i} className="ml-auto max-w-[85%] rounded-card bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
                 {it.text}
               </div>
             );
           if (it.kind === "assistant")
             return (
-              <div key={i} className="max-w-[90%] whitespace-pre-wrap rounded-2xl bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
+              <div key={i} className="max-w-[90%] whitespace-pre-wrap rounded-card bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
                 {it.text}
               </div>
             );
           if (it.kind === "observation")
             return (
-              <div key={i} className="flex items-center gap-2 px-1 text-xs text-stone-400">
+              <div key={i} className="flex items-center gap-2 px-1 text-xs text-stone-500">
                 <Sparkles className="size-3.5" /> {it.text}
               </div>
             );
           if (it.kind === "tool")
             return (
-              <div key={i} className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
+              <div key={i} className="flex items-start gap-2 rounded-panel border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
                 <span
                   className={
                     "mt-0.5 grid size-4 place-items-center rounded " +
                     (it.status === "run"
                       ? "bg-amber-100 text-amber-700"
                       : it.status === "error"
-                        ? "bg-red-100 text-red-700"
+                        ? "bg-status-destructive-bg text-status-destructive"
                         : it.status === "pending_approval"
-                          ? "bg-red-100 text-red-700"
+                          ? "bg-status-destructive-bg text-status-destructive"
                           : it.status === "needs_clarification"
-                            ? "bg-sky-100 text-sky-700"
+                            ? "bg-status-pending-bg text-status-pending"
                             : "bg-emerald-100 text-emerald-700")
                   }
                 >
@@ -277,13 +298,14 @@ export function AgentPanel({
                 <span className="font-mono text-stone-500">{it.tool}</span>
                 <span className="text-stone-500">— {it.summary}</span>
                 {it.status === "executed" ? (
-                  <span className="ml-auto shrink-0 rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700 ring-1 ring-inset ring-sky-100">
+                  <span className="ml-auto shrink-0 rounded-full bg-status-pending-bg px-2 py-0.5 font-medium text-status-pending ring-1 ring-inset ring-status-pending-ring">
                     auto · policy
                   </span>
                 ) : null}
               </div>
             );
           if (it.kind === "approval") return <ApprovalCard key={i} pending={it.pending} compact />;
+          if (it.kind === "publishCards") return <ChatPublishCards key={i} cards={it.cards} />;
           if (it.kind === "question")
             return (
               <QuestionCard
@@ -295,7 +317,7 @@ export function AgentPanel({
               />
             );
           return (
-            <div key={i} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <div key={i} className="rounded-panel border border-status-destructive-ring bg-status-destructive-bg px-3 py-2 text-xs text-status-destructive">
               {it.text}
             </div>
           );
@@ -307,19 +329,19 @@ export function AgentPanel({
           e.preventDefault();
           send(input);
         }}
-        className="mt-2 flex items-center gap-2 rounded-2xl border border-stone-200 bg-white p-2 shadow-[0_1px_2px_rgba(68,48,28,0.05)]"
+        className="mt-2 flex items-center gap-2 rounded-card border border-stone-200 bg-white p-2 shadow-card"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask the agent to generate, analyze, or send…"
-          className="flex-1 bg-transparent px-2 text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none"
+          className="flex-1 bg-transparent px-2 text-sm text-stone-900 placeholder:text-stone-500 focus:outline-none"
           disabled={streaming}
         />
         <button
           type="submit"
           disabled={streaming || !input.trim()}
-          className="brand-gradient grid size-8 place-items-center rounded-xl text-white disabled:opacity-50"
+          className="brand-gradient grid size-8 place-items-center rounded-panel text-white disabled:opacity-50"
         >
           {streaming ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
         </button>

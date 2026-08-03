@@ -1,0 +1,10 @@
+{
+  "name": "task0-upload-post-spike",
+  "private": true,
+  "type": "module",
+  "description": "THROWAWAY verification spike — Upload-Post as SocialPublishProvider candidate + Inngest runtime. Not production code.",
+  "dependencies": {
+    "express": "^4.21.0",
+    "inngest": "^3.35.0"
+  }
+}

@@ -1,0 +1,82 @@
+[
+  {
+    "method": "DELETE",
+    "path": "/uploadposts/posts/urn%3Ali%3Ashare%3A7485955623193542656",
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "9267731fe968401f95ab211195f5b6ac"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/upload/urn%3Ali%3Ashare%3A7485955623193542656",
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "87c84110d1d548039eb377134fce1bed"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/uploadposts/history/urn%3Ali%3Ashare%3A7485955623193542656",
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "b909312b286148c7b1adfa59222d5bfd"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/uploadposts/posts/delete",
+    "requestBody": {
+      "post_id": "urn:li:share:7485955623193542656",
+      "profile_username": "henry",
+      "platform": "linkedin"
+    },
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "cab2a8db44604fa6af785e7d58107444"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/uploadposts/posts/oG1hZXB2EJ8",
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "85b8c38804344a30904b0cab9e05ed30"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/uploadposts/videos/oG1hZXB2EJ8",
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "1ef38a06ecc840e48d8e5f9eca1cfe80"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/uploadposts/posts/delete",
+    "requestBody": {
+      "post_id": "oG1hZXB2EJ8",
+      "profile_username": "henry",
+      "platform": "youtube"
+    },
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
+      "request_id": "cae03e3554a24ce9a0ffcdad121d41d5"
+    }
+  }
+]

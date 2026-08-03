@@ -1,0 +1,35 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/me",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "129",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:20:29 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "58",
+      "x-ratelimit-reset": "1784791260",
+      "x-request-id": "09bad5a963c447f4af95553b0530e819"
+    },
+    "body": {
+      "success": true,
+      "message": "Token is valid",
+      "email": "[REDACTED_EMAIL]",
+      "plan": "Default",
+      "preferences": {},
+      "attribution": {}
+    }
+  },
+  "elapsedMs": 346,
+  "at": "2026-07-23T07:20:28.881Z"
+}

@@ -1,0 +1,74 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.upload-post.com/api/uploadposts/status?request_id=42e9c735c9f64a5ba6d9fa3ae3432cb8",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-length": "607",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:16:28 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-request-id": "40ef611486a549c6a23b77bed89f1425"
+    },
+    "body": {
+      "status": "completed",
+      "completed": 1,
+      "total": 1,
+      "results": [
+        {
+          "user_email": "[REDACTED_EMAIL]",
+          "profile_username": "henry",
+          "platform": "youtube",
+          "media_type": "video",
+          "upload_timestamp": {
+            "$date": "2026-07-23T07:16:26.475Z"
+          },
+          "success": true,
+          "platform_post_id": "oG1hZXB2EJ8",
+          "post_url": "https://www.youtube.com/watch?v=oG1hZXB2EJ8",
+          "error_message": null,
+          "error_signature": null,
+          "error_code": null,
+          "failure_stage": null,
+          "media_size_bytes": 4325651,
+          "post_title": "WiseSel vertical test 2026-07-23T07:16:19.663Z #Shorts",
+          "post_caption": "WiseSel vertical test 2026-07-23T07:16:19.663Z #Shorts",
+          "is_async": true,
+          "dashboard": false,
+          "source": "api",
+          "video_was_transcoded": false,
+          "changes": [],
+          "prevalidation_metadata": {
+            "width": 1080,
+            "height": 1920,
+            "fps": 30,
+            "duration": 5,
+            "container": "mov,mp4,m4a,3gp,3g2,mj2",
+            "video_codec": "h264",
+            "audio_codec": "aac"
+          },
+          "target_linkedin_page_id": null,
+          "request_id": "42e9c735c9f64a5ba6d9fa3ae3432cb8",
+          "request_id_logs": "42e9c735c9f64a5ba6d9fa3ae3432cb8",
+          "job_id": "a9168d288e834dcfbeb7d06d43db998d",
+          "request_total_platforms": 1
+        }
+      ],
+      "last_update": {
+        "$date": "2026-07-23T07:16:26.475Z"
+      },
+      "request_id": "42e9c735c9f64a5ba6d9fa3ae3432cb8"
+    }
+  },
+  "elapsedMs": 927,
+  "at": "2026-07-23T07:16:28.001Z"
+}

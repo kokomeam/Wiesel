@@ -1,0 +1,36 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.upload-post.com/api/upload_text",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    },
+    "body": {
+      "user": "henry",
+      "platform[]": "myspace",
+      "title": "error-shape probe — never posts"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "75",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:20:28 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "1784791260",
+      "x-request-id": "fa995150d8b94621900541a0c77d5fd0"
+    },
+    "body": {
+      "success": false,
+      "message": "Invalid platforms for text post: ['myspace']"
+    }
+  },
+  "elapsedMs": 317,
+  "at": "2026-07-23T07:20:28.562Z"
+}

@@ -31,7 +31,7 @@ import { cn } from "@/lib/cn";
 function Note({ note }: { note: { text: string; error: boolean } | null }) {
   if (!note) return null;
   return (
-    <p className={cn("w-full text-xs", note.error ? "text-red-700" : "text-stone-500")}>{note.text}</p>
+    <p className={cn("w-full text-xs", note.error ? "text-status-destructive" : "text-stone-500")}>{note.text}</p>
   );
 }
 
@@ -61,7 +61,7 @@ export function CampaignLifecycleControls({
   return (
     <>
       <span className="flex shrink-0 items-center gap-1.5">
-        {busy ? <Loader2 className="size-3.5 animate-spin text-stone-400" /> : null}
+        {busy ? <Loader2 className="size-3.5 animate-spin text-stone-500" /> : null}
         {pausable ? (
           <Button
             size="sm"
@@ -153,7 +153,7 @@ export function SequenceLifecycleControls({
   return (
     <>
       <span className="flex shrink-0 items-center gap-1.5">
-        {busy ? <Loader2 className="size-3.5 animate-spin text-stone-400" /> : null}
+        {busy ? <Loader2 className="size-3.5 animate-spin text-stone-500" /> : null}
         {status === "active" ? (
           <Button
             size="sm"

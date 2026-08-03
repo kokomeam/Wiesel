@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import { displayFont } from "@/components/intro/fonts";
-import { MarketingNav } from "@/components/marketing/MarketingNav";
-import { Hero } from "@/components/marketing/Hero";
-import { TrustStrip } from "@/components/marketing/TrustStrip";
-import { DualPath } from "@/components/marketing/DualPath";
-import { HowItWorks } from "@/components/marketing/HowItWorks";
-import { Features } from "@/components/marketing/Features";
-import { StatsBand } from "@/components/marketing/StatsBand";
-import { MarketplacePeek } from "@/components/marketing/MarketplacePeek";
-import { FinalCTA } from "@/components/marketing/FinalCTA";
-import { MarketingFooter } from "@/components/marketing/MarketingFooter";
+import { MarketingNav } from "@/components/educators/MarketingNav";
+import { Hero } from "@/components/educators/Hero";
+import { TrustStrip } from "@/components/educators/TrustStrip";
+import { DualPath } from "@/components/educators/DualPath";
+import { HowItWorks } from "@/components/educators/HowItWorks";
+import { Features } from "@/components/educators/Features";
+import { StatsBand } from "@/components/educators/StatsBand";
+import { MarketplacePeek } from "@/components/educators/MarketplacePeek";
+import { FinalCTA } from "@/components/educators/FinalCTA";
+import { MarketingFooter } from "@/components/educators/MarketingFooter";
 
 export const metadata: Metadata = {
   title: "WiseSel for Educators — The AI Course Studio",

@@ -51,6 +51,9 @@ async function handle(req: Request): Promise<Response> {
     precut: createMuxPrecutOps(),
     nowIso: services.clock.now(),
   });
+  // Social publishing moved OFF this tick in M-C (amendment 1): the fire
+  // path is the Inngest durable function; the reconciliation sweep is the
+  // Inngest cron (lib/inngest/functions/publish.ts).
   return NextResponse.json({ ok: true, ...result, consentLapsed: consent.lapsed, clips });
 }
 

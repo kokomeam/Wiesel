@@ -38,6 +38,8 @@ import { readTools } from "./read";
 import { senderIdentityTools } from "./senderIdentity";
 import { socialPostTools } from "./socialPosts";
 import { clipTools } from "./clips";
+import { publishGovernanceTools } from "./publishGovernance";
+import { publishOpsTools } from "./publishOps";
 import { voiceTools } from "./voice";
 import {
   MarketingToolError,
@@ -58,6 +60,8 @@ const allReadTools = [
   ...voiceTools.filter((t) => t.reversibility === "read"),
   ...socialPostTools.filter((t) => t.reversibility === "read"),
   ...clipTools.filter((t) => t.reversibility === "read"),
+  // M-AG: connected-account discovery + publish-status truth source.
+  ...publishOpsTools.filter((t) => t.reversibility === "read"),
 ];
 const mutatingTools = [
   ...campaignTools,
@@ -73,6 +77,14 @@ const mutatingTools = [
   ...socialPostTools.filter((t) => t.reversibility !== "read"),
   // Lesson Clip Repurposing (Phase 1.5): same rule — reversible-tier only.
   ...clipTools.filter((t) => t.reversibility !== "read"),
+  // M-C publish governance: the FIRST irreversible social tools — hard-denied
+  // in the autonomy config (a card in every mode), and even approved they
+  // only file preview-then-decide cards / mark locally (never a manifest).
+  ...publishGovernanceTools,
+  // M-AG publish ops: retry (A2 clone, approved-bytes only) + cancel
+  // (queued/held only) — irreversible-tier but NOT hard-denied: neither puts
+  // new content in front of an audience.
+  ...publishOpsTools.filter((t) => t.reversibility !== "read"),
 ];
 
 const reversibleTools = mutatingTools.filter((t) => t.reversibility === "reversible");

@@ -7,7 +7,7 @@
  */
 
 import Link from "next/link";
-import { Reveal, Stagger, StaggerItem } from "@/components/marketing/motion";
+import { Reveal, Stagger, StaggerItem } from "@/components/educators/motion";
 import { UnderlineScribble } from "./Annotate";
 
 function Asterisk() {

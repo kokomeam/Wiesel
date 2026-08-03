@@ -1,0 +1,45 @@
+sent spike/sleep.requested → eventId 01KXQNDY48Y7WM9KX914DAJ60E
+sent spike/cancellable.start → eventId 01KXQNDY4DS8AWZZ17XVZJ1MSQ
+sent spike/cancel → eventId 01KXQNE7X4DJW0BAF7C5DV5PSJ
+sent spike/retry.start → eventId 01KXQNE7X86M2W1H01CMPPK5ED
+cancellable: Completed after 0s
+retry: Completed after 15s
+sleepUntil: Completed after 0s
+
+{
+  "sleepUntil": {
+    "runStatus": "Completed",
+    "wakeAtTarget": "2026-07-17T09:11:58.510Z",
+    "proof": {
+      "before": {
+        "at": "2026-07-17T09:09:58.746Z",
+        "wakeAt": "2026-07-17T09:11:58.510Z"
+      }
+    },
+    "pass": false
+  },
+  "cancelOnEvent": {
+    "runStatus": "Completed",
+    "proof": {
+      "started": {
+        "at": "2026-07-17T09:09:58.742Z",
+        "runKey": "k1"
+      },
+      "completedAnyway": null
+    },
+    "pass": false
+  },
+  "retryOnError": {
+    "runStatus": "Completed",
+    "proof": {
+      "attempts": 2,
+      "final": {
+        "succeededOnAttempt": 2,
+        "at": "2026-07-17T09:10:13.011Z"
+      }
+    },
+    "pass": true
+  }
+}
+
+INNGEST SPIKE: FAILURES — see above

@@ -11,7 +11,11 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
 import { followUpFromEvents, type AgentFollowUp, type MarketingAgentEvent } from "@/lib/marketing/agent/events";
-import { resumeAgentAfterAnswer, resumeAgentAfterResolution } from "@/lib/marketing/agent/resume";
+import {
+  resumeAgentAfterAnswer,
+  resumeAgentAfterPublishDecision,
+  resumeAgentAfterResolution,
+} from "@/lib/marketing/agent/resume";
 import {
   AUTO_APPROVABLE_TOOLS,
   HARD_DENY_TOOLS,
@@ -19,7 +23,12 @@ import {
   parsePolicy,
   type AutonomyPolicy,
 } from "@/lib/marketing/autonomy";
-import { loadAutonomySettings, upsertAutonomySettings } from "@/lib/marketing/autonomyStore";
+import {
+  loadAutonomySettings,
+  loadAutonomySettingsWithMeta,
+  saveAutonomySettingsGuarded,
+  upsertAutonomySettings,
+} from "@/lib/marketing/autonomyStore";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { loadCampaignForCourse, loadLandingPage } from "@/lib/marketing/persistence";
 import { answerQuestion, dismissQuestion, loadQuestion, type QuestionAnswer } from "@/lib/marketing/questions";
@@ -58,6 +67,9 @@ export interface ActionResult {
   /** With `error`: the failure was "someone already resolved this elsewhere"
    *  — the card should collapse (via the sync store), not stay clickable. */
   alreadyResolved?: boolean;
+  /** Guarded saves (UI-1 DEV-2): the base row had changed elsewhere — the
+   *  view was refreshed and the update re-applied over the latest version. */
+  refreshed?: boolean;
   /** Set when the action recorded a pending approval — render the card here. */
   pending?: PendingActionPayload;
 }
@@ -448,6 +460,51 @@ export async function fetchAgentFollowUpAction(
   }
 }
 
+/**
+ * M-AG: the agent's resume turn after a PUBLISH card decision (the fourth
+ * resume path). Fired by the chat card in the background after approve/skip
+ * returned; the decision is derived from the approval ROW (consumed = approved,
+ * declined = skipped), never trusted from the client. Null when there's
+ * nothing to resume: not agent-filed, not from a conversation, undecided,
+ * no key, or the bounded run failed. Never throws.
+ */
+export async function fetchPublishFollowUpAction(approvalId: string): Promise<AgentFollowUp | null> {
+  try {
+    const { supabase, ownerId } = await authed();
+    if (!isOpenAIConfigured()) return null;
+    const { getApproval } = await import("@/lib/marketing/publish/approvalRepository");
+    const approval = await getApproval(supabase, approvalId);
+    if (!approval || approval.creatorId !== ownerId) return null;
+    if (approval.requestedBy !== "agent" || !approval.conversationId) return null;
+    const decision = approval.consumedAt ? "approved" : approval.declinedAt ? "skipped" : null;
+    if (!decision) return null;
+    const { data: post } = await supabase
+      .from("social_post")
+      .select("course_id")
+      .eq("id", approval.socialPostId)
+      .maybeSingle();
+    if (!post?.course_id) return null;
+    const events: MarketingAgentEvent[] = [];
+    const signal = AbortSignal.timeout(FOLLOW_UP_DEADLINE_MS);
+    await resumeAgentAfterPublishDecision({
+      supabase,
+      model: createOpenAIModelClient(),
+      services: services(),
+      ownerId,
+      approval,
+      decision,
+      courseId: post.course_id,
+      emit: (e) => events.push(e),
+      signal,
+    });
+    revalidatePath("/marketing");
+    return events.length ? followUpFromEvents(events) : null;
+  } catch {
+    // best-effort by contract — the card decision itself already succeeded
+    return null;
+  }
+}
+
 /** Dismiss a pending question without answering (the agent stays paused until
  *  the creator sends it a new message). */
 export async function dismissQuestionAction(questionId: string): Promise<ActionResult> {
@@ -525,6 +582,9 @@ export interface AutonomySettingsForm {
   maxRecipients: number | null;
   allowedHours: { startHour: number; endHour: number; timezone: string | null } | null;
   firstSendToNewSegmentManual: boolean;
+  /** Optimistic token (UI-1 DEV-2): the row's updated_at as loaded (null =
+   *  no row existed). Omitted (legacy callers) → unguarded upsert. */
+  expectedUpdatedAt?: string | null;
 }
 
 export async function loadAutonomySettingsAction(courseId: string) {
@@ -538,7 +598,7 @@ export async function loadAutonomySettingsAction(courseId: string) {
 export async function updateAutonomySettingsAction(
   courseId: string,
   form: AutonomySettingsForm
-): Promise<ActionResult> {
+): Promise<ActionResult & { updatedAt?: string | null }> {
   const { supabase } = await authed();
   const policy: AutonomyPolicy = parsePolicy({
     autoApproveTools: (form.autoApproveTools ?? []).filter(
@@ -550,15 +610,38 @@ export async function updateAutonomySettingsAction(
     firstSendToNewSegmentManual: form.firstSendToNewSegmentManual,
   });
   const revertWindowHours = Math.min(720, Math.max(1, Math.round(form.revertWindowHours || 24)));
+  const next = { mode: parseMode(form.mode), policy, revertWindowHours };
   try {
-    await upsertAutonomySettings(supabase, courseId, {
-      mode: parseMode(form.mode),
-      policy,
-      revertWindowHours,
-    });
+    if (form.expectedUpdatedAt === undefined) {
+      // Legacy caller shape — the original read-merge upsert, unchanged.
+      await upsertAutonomySettings(supabase, courseId, next);
+    } else {
+      // DEV-2 guarded save: land only if the row is unchanged since load; on
+      // a conflict, re-read and re-apply the creator's full form ONCE (the
+      // form carries complete state), telling them their view was refreshed.
+      const first = await saveAutonomySettingsGuarded(supabase, courseId, next, form.expectedUpdatedAt);
+      if (!first.ok) {
+        const fresh = await loadAutonomySettingsWithMeta(supabase, courseId);
+        const retry = await saveAutonomySettingsGuarded(supabase, courseId, next, fresh.updatedAt);
+        revalidatePath("/marketing");
+        if (!retry.ok) {
+          return {
+            message: "These settings are being changed elsewhere right now — refresh and try again.",
+            error: true,
+          };
+        }
+        const meta = await loadAutonomySettingsWithMeta(supabase, courseId);
+        return {
+          message: "Settings had changed elsewhere — your view was refreshed and your update applied over the latest version.",
+          refreshed: true,
+          updatedAt: meta.updatedAt,
+        };
+      }
+    }
   } catch (e) {
     return { message: e instanceof Error ? e.message : String(e), error: true };
   }
   revalidatePath("/marketing");
-  return { message: "Autonomy settings saved." };
+  const meta = await loadAutonomySettingsWithMeta(supabase, courseId);
+  return { message: "Autonomy settings saved", updatedAt: meta.updatedAt };
 }

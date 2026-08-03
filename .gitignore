@@ -47,3 +47,8 @@ scripts/.materialize-visual/
 
 # Rendered clip artifacts (T0/M-C checkpoint outputs — media, never committed)
 /artifacts/
+
+# Spike workspaces keep their scripts/findings/samples in-repo, but never their
+# own installs or test media
+spikes/**/node_modules/
+spikes/**/media/

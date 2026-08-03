@@ -44,7 +44,8 @@ export type EntityKind =
   | "social_voice_profile"
   | "clip_moment_candidate"
   | "clip_moment_set"
-  | "clip_render_job";
+  | "clip_render_job"
+  | "social_publish_approval";
 
 export interface EntityRef {
   entity: EntityKind;
@@ -103,6 +104,11 @@ export interface MarketingToolContext {
 
 export interface MarketingToolResult {
   summary: string;
+  /** Structured result bag for the activity feed's deterministic templates
+   *  (UI-1 W3.3) — persisted to `marketing_action.summary_fields` alongside
+   *  the prose. Optional: templates degrade to the humanized label without
+   *  it. Shape: lib/marketing/activitySummaries.ts `ActionSummaryFields`. */
+  summaryFields?: Record<string, unknown>;
   data?: unknown;
   /**
    * For mutating tools: the entity this call created or updated. The gate uses

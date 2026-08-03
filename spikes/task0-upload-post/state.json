@@ -1,0 +1,25 @@
+{
+  "linkedin": {
+    "title": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+    "refs": [
+      {
+        "source": "sync",
+        "post_id": "urn:li:share:7485955623193542656",
+        "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/"
+      },
+      {
+        "source": "history",
+        "post_id": "urn:li:share:7485955623193542656",
+        "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/"
+      }
+    ],
+    "at": "2026-07-23T07:14:58.336Z"
+  },
+  "youtube": {
+    "title": "WiseSel vertical test 2026-07-23T07:16:19.663Z #Shorts",
+    "videoId": "oG1hZXB2EJ8",
+    "postUrl": "https://www.youtube.com/watch?v=oG1hZXB2EJ8",
+    "requestId": "42e9c735c9f64a5ba6d9fa3ae3432cb8",
+    "at": "2026-07-23T07:16:19.663Z"
+  }
+}

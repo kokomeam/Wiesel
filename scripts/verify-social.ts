@@ -694,6 +694,11 @@ function grepChecks() {
   const uiOffenders: string[] = [];
   for (const dir of uiDirs) {
     for (const f of walk(dir)) {
+      // M-D language split: the connected/ subtree is the ALLOWLISTED home
+      // of connected-publishing vocabulary (lib/marketing/publish/
+      // languageAllowlist.ts); the scan set is otherwise unchanged and
+      // verify-publish-path proves both directions.
+      if (f.includes("/social/connected/")) continue;
       const content = readFileSync(f, "utf8").toLowerCase();
       for (const phrase of BANNED_UI_PHRASES) {
         if (content.includes(phrase)) uiOffenders.push(`${f}: "${phrase}"`);

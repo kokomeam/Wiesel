@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.upload-post.com/api/upload_text",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    },
+    "body": {
+      "user": "henry",
+      "platform[]": "linkedin",
+      "title": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+      "first_comment": "First comment via API 🧪 (2026-07-23T07:14:58.336Z) — part of the same verification test."
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "503",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:15:13 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "1784790960",
+      "x-request-id": "fb7df638ea874f9ba1645a39392a2a18"
+    },
+    "body": {
+      "success": true,
+      "results": {
+        "linkedin": {
+          "success": false,
+          "error": "Duplicate post detected. LinkedIn prevents posting the same content consecutively. If this issue persists, please contact support at [REDACTED_EMAIL]. Learn more: https://docs.upload-post.com/resources/common-errors.",
+          "status": "failed",
+          "attempts": 1
+        }
+      },
+      "usage": {
+        "count": 1,
+        "limit": 10,
+        "last_reset": "2026-07-17T08:12:40.651623"
+      },
+      "request_id": "d49d29f6cc0d420d982847c3bdca7e00",
+      "job_id": "1c51920f512f4d80ad7e3a4e663fd87e",
+      "status": "failed"
+    }
+  },
+  "elapsedMs": 4598,
+  "at": "2026-07-23T07:15:08.926Z"
+}

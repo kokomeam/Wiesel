@@ -1679,6 +1679,7 @@ export type Database = {
           revert_expires_at: string | null
           status: string
           summary: string | null
+          summary_fields: Json | null
           target_ref: Json | null
           tool_name: string
           updated_at: string
@@ -1699,6 +1700,7 @@ export type Database = {
           revert_expires_at?: string | null
           status?: string
           summary?: string | null
+          summary_fields?: Json | null
           target_ref?: Json | null
           tool_name: string
           updated_at?: string
@@ -1719,6 +1721,7 @@ export type Database = {
           revert_expires_at?: string | null
           status?: string
           summary?: string | null
+          summary_fields?: Json | null
           target_ref?: Json | null
           tool_name?: string
           updated_at?: string
@@ -2746,6 +2749,51 @@ export type Database = {
           },
         ]
       }
+      social_account: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          creator_id: string
+          display_name: string | null
+          handle: string | null
+          id: string
+          last_synced_at: string | null
+          platform: string
+          provider: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          creator_id: string
+          display_name?: string | null
+          handle?: string | null
+          id?: string
+          last_synced_at?: string | null
+          platform: string
+          provider?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          creator_id?: string
+          display_name?: string | null
+          handle?: string | null
+          id?: string
+          last_synced_at?: string | null
+          platform?: string
+          provider?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: []
+      }
       social_post: {
         Row: {
           ai_metadata: Json
@@ -2762,6 +2810,7 @@ export type Database = {
           cta: string | null
           deleted_at: string | null
           external_ref: Json | null
+          first_comment: string | null
           funnel_stage: string
           goal: string
           hashtags: string[]
@@ -2801,6 +2850,7 @@ export type Database = {
           cta?: string | null
           deleted_at?: string | null
           external_ref?: Json | null
+          first_comment?: string | null
           funnel_stage: string
           goal: string
           hashtags?: string[]
@@ -2840,6 +2890,7 @@ export type Database = {
           cta?: string | null
           deleted_at?: string | null
           external_ref?: Json | null
+          first_comment?: string | null
           funnel_stage?: string
           goal?: string
           hashtags?: string[]
@@ -2971,6 +3022,250 @@ export type Database = {
             columns: ["module_id"]
             isOneToOne: false
             referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_provider_profile: {
+        Row: {
+          created_at: string
+          creator_id: string
+          id: string
+          profile_ref_enc: string
+          provider: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          creator_id: string
+          id?: string
+          profile_ref_enc: string
+          provider?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          creator_id?: string
+          id?: string
+          profile_ref_enc?: string
+          provider?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      social_publish_approval: {
+        Row: {
+          consumed_at: string | null
+          content_hash: string
+          conversation_id: string | null
+          created_at: string
+          creator_id: string
+          declined_at: string | null
+          expires_at: string | null
+          id: string
+          kind: string
+          minted_at: string | null
+          parent_approval_id: string | null
+          platform: string
+          proposed_scheduled_for: string | null
+          requested_by: string
+          social_account_id: string
+          social_post_id: string
+          token_hash: string | null
+          updated_at: string
+          voided_at: string | null
+        }
+        Insert: {
+          consumed_at?: string | null
+          content_hash: string
+          conversation_id?: string | null
+          created_at?: string
+          creator_id: string
+          declined_at?: string | null
+          expires_at?: string | null
+          id?: string
+          kind?: string
+          minted_at?: string | null
+          parent_approval_id?: string | null
+          platform: string
+          proposed_scheduled_for?: string | null
+          requested_by?: string
+          social_account_id: string
+          social_post_id: string
+          token_hash?: string | null
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Update: {
+          consumed_at?: string | null
+          content_hash?: string
+          conversation_id?: string | null
+          created_at?: string
+          creator_id?: string
+          declined_at?: string | null
+          expires_at?: string | null
+          id?: string
+          kind?: string
+          minted_at?: string | null
+          parent_approval_id?: string | null
+          platform?: string
+          proposed_scheduled_for?: string | null
+          requested_by?: string
+          social_account_id?: string
+          social_post_id?: string
+          token_hash?: string | null
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_approval_parent_approval_id_fkey"
+            columns: ["parent_approval_id"]
+            isOneToOne: false
+            referencedRelation: "social_publish_approval"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_approval_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_approval_social_post_id_fkey"
+            columns: ["social_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_publish_ledger: {
+        Row: {
+          client_ref: string
+          created_at: string
+          creator_id: string
+          id: string
+          platform: string
+          provider_request_id: string | null
+          social_account_id: string
+        }
+        Insert: {
+          client_ref: string
+          created_at?: string
+          creator_id: string
+          id?: string
+          platform: string
+          provider_request_id?: string | null
+          social_account_id: string
+        }
+        Update: {
+          client_ref?: string
+          created_at?: string
+          creator_id?: string
+          id?: string
+          platform?: string
+          provider_request_id?: string | null
+          social_account_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_ledger_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_publish_manifest: {
+        Row: {
+          approval_id: string
+          approved_via: string
+          attempt: number
+          content_hash: string
+          created_at: string
+          creator_id: string
+          hold_reason: string | null
+          id: string
+          last_error: Json | null
+          platform: string
+          platform_post_id: string | null
+          post_url: string | null
+          provider_request_id: string | null
+          scheduled_for: string | null
+          social_account_id: string
+          social_post_id: string
+          status: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          approval_id: string
+          approved_via?: string
+          attempt?: number
+          content_hash: string
+          created_at?: string
+          creator_id: string
+          hold_reason?: string | null
+          id?: string
+          last_error?: Json | null
+          platform: string
+          platform_post_id?: string | null
+          post_url?: string | null
+          provider_request_id?: string | null
+          scheduled_for?: string | null
+          social_account_id: string
+          social_post_id: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          approval_id?: string
+          approved_via?: string
+          attempt?: number
+          content_hash?: string
+          created_at?: string
+          creator_id?: string
+          hold_reason?: string | null
+          id?: string
+          last_error?: Json | null
+          platform?: string
+          platform_post_id?: string | null
+          post_url?: string | null
+          provider_request_id?: string | null
+          scheduled_for?: string | null
+          social_account_id?: string
+          social_post_id?: string
+          status?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_publish_manifest_approval_id_fkey"
+            columns: ["approval_id"]
+            isOneToOne: true
+            referencedRelation: "social_publish_approval"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_manifest_social_account_id_fkey"
+            columns: ["social_account_id"]
+            isOneToOne: false
+            referencedRelation: "social_account"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "social_publish_manifest_social_post_id_fkey"
+            columns: ["social_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
             referencedColumns: ["id"]
           },
         ]

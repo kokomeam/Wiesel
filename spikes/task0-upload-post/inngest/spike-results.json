@@ -1,0 +1,47 @@
+{
+  "summary": {
+    "sleepUntil": {
+      "pass": true,
+      "wakeAtTarget": "2026-07-17T09:11:58.510Z",
+      "proof": {
+        "before": {
+          "at": "2026-07-17T09:09:58.746Z",
+          "wakeAt": "2026-07-17T09:11:58.510Z"
+        },
+        "after": {
+          "wokeAt": "2026-07-17T09:11:58.898Z",
+          "driftMs": 389
+        }
+      },
+      "verdict": "woke 389ms after a timestamp 2min out"
+    },
+    "cancelOnEvent": {
+      "pass": true,
+      "finalRunStatus": "Cancelled",
+      "endedAt": "2026-07-17T09:10:08.738Z",
+      "proof": {
+        "started": {
+          "at": "2026-07-17T09:09:58.742Z",
+          "runKey": "k1"
+        },
+        "completedAnyway": null
+      },
+      "verdict": "run Cancelled the moment spike/cancel (matched on data.runKey) landed at +10s; the 10m sleep aborted; the following step never executed"
+    },
+    "retryOnError": {
+      "pass": true,
+      "finalRunStatus": "Completed",
+      "proof": {
+        "attempts": 2,
+        "final": {
+          "succeededOnAttempt": 2,
+          "at": "2026-07-17T09:10:13.011Z"
+        }
+      },
+      "verdict": "step threw RetryAfterError(5s) on attempt 1, retried once, succeeded on attempt 2 (09:10:08 -> 09:10:13)"
+    },
+    "devServerQuirk": "GET /v1/events/{id}/runs on inngest-cli dev reports status=Completed with ended_at=null for runs that are actually sleeping/in-flight — do not use it for liveness; Cancelled/Failed and function-side evidence are reliable."
+  },
+  "allPass": true,
+  "correctedAt": "2026-07-17T09:13:06.695Z"
+}

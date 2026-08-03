@@ -17,6 +17,9 @@ interface HubUiState {
   /** Only sections the user explicitly toggled — absent = use the default. */
   open: Partial<Record<HubSectionKey, boolean>>;
   setOpen: (key: HubSectionKey, value: boolean) => void;
+  /** First-run Activity hint (UI-1 W3.1) — dismissed once, stays dismissed. */
+  activityHintDismissed: boolean;
+  dismissActivityHint: () => void;
 }
 
 export const useHubUi = create<HubUiState>()(
@@ -24,6 +27,8 @@ export const useHubUi = create<HubUiState>()(
     (set) => ({
       open: {},
       setOpen: (key, value) => set((s) => ({ open: { ...s.open, [key]: value } })),
+      activityHintDismissed: false,
+      dismissActivityHint: () => set({ activityHintDismissed: true }),
     }),
     { name: "wisesel-marketing-hub-ui", skipHydration: true }
   )

@@ -310,6 +310,37 @@ const clipRenderJobSnapshotter: EntitySnapshotter = {
   },
 };
 
+/** M-C publish-card requests: no delete policy exists (governance audit
+ *  trail), so revert-of-create DECLINES the request instead (the social-post
+ *  archive-on-revert precedent) — an inert, honest neutralization. Restores
+ *  of an existing snapshot upsert it back verbatim. */
+const approvalRequestSnapshotter: EntitySnapshotter = {
+  async snapshot(supabase, id) {
+    const { data, error } = await supabase
+      .from("social_publish_approval")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) throw new Error(`snapshot(social_publish_approval/${id}): ${error.message}`);
+    return (data as Json) ?? null;
+  },
+  async restore(supabase, id, before) {
+    if (before === null) {
+      const { error } = await supabase
+        .from("social_publish_approval")
+        .update({ declined_at: new Date().toISOString() })
+        .eq("id", id)
+        .is("consumed_at", null);
+      if (error) throw new Error(`restore(decline social_publish_approval/${id}): ${error.message}`);
+      return;
+    }
+    const { error } = await supabase
+      .from("social_publish_approval")
+      .upsert(before as never, { onConflict: "id" });
+    if (error) throw new Error(`restore(upsert social_publish_approval/${id}): ${error.message}`);
+  },
+};
+
 const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   campaign: singleRow("marketing_campaign"),
   landing_page: singleRow("landing_page"),
@@ -326,6 +357,7 @@ const REGISTRY: Record<EntityKind, EntitySnapshotter> = {
   clip_moment_candidate: singleRow("clip_moment_candidate"),
   clip_moment_set: clipMomentSetSnapshotter,
   clip_render_job: clipRenderJobSnapshotter,
+  social_publish_approval: approvalRequestSnapshotter,
 };
 
 export async function snapshotEntity(supabase: DB, ref: EntityRef): Promise<Json | null> {

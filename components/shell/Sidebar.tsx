@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 import { WiseSelLogo } from "@/components/brand/WiseSelLogo";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useUIStore } from "@/lib/editor/uiStore";
+import { useMediaQuery } from "@/lib/ui/useMediaQuery";
 import type { NavItem } from "@/lib/nav";
 import { SignOutButton } from "./SignOutButton";
 
@@ -35,13 +36,13 @@ function NavLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
     >
       <Icon
         className={cn(
-          "size-[18px] shrink-0",
-          active ? "text-brand-600" : "text-stone-400 group-hover:text-stone-600"
+          "size-4.5 shrink-0",
+          active ? "text-brand-700" : "text-stone-500 group-hover:text-stone-600"
         )}
       />
       {!collapsed && item.label}
       {!collapsed && item.badge && (
-        <span className="ml-auto rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-700">
+        <span className="ml-auto rounded-full bg-brand-100 px-2 py-0.5 text-meta font-semibold text-brand-700">
           {item.badge}
         </span>
       )}
@@ -54,8 +55,15 @@ export function Sidebar({
 }: {
   user: { name: string; email: string; initials: string };
 }) {
-  const collapsed = useUIStore((s) => s.collapsed.appSidebar);
+  const storedCollapsed = useUIStore((s) => s.collapsed.appSidebar);
   const togglePanel = useUIStore((s) => s.togglePanel);
+  // DEV-3 (UI-1): below xl the sidebar is ALWAYS the icon rail — a 256px
+  // column starved the content area at tablet/laptop widths (D-17): at 1024
+  // the hub's two-column grid + an expanded sidebar left a ~344px work
+  // column. Below md the whole rail hides; MobileNav in the Topbar takes
+  // over. The manual expand/collapse toggle only applies at xl and up.
+  const xlUp = useMediaQuery("(min-width: 1280px)", true);
+  const collapsed = storedCollapsed || !xlUp;
   const displayName = user.name;
   const initials = user.initials;
   const subtitle = user.email;
@@ -65,7 +73,7 @@ export function Sidebar({
       data-ai-component="app-sidebar"
       data-ai-state={collapsed ? "collapsed" : "expanded"}
       className={cn(
-        "flex h-full shrink-0 flex-col border-r border-stone-200 bg-white transition-[width] duration-200",
+        "hidden h-full shrink-0 flex-col border-r border-stone-200 bg-white transition-[width] duration-200 md:flex",
         collapsed ? "w-16" : "w-64"
       )}
     >
@@ -76,7 +84,7 @@ export function Sidebar({
         className={cn("flex h-16 items-center gap-2.5", collapsed ? "justify-center px-0" : "px-5")}
       >
         <WiseSelLogo variant="mark" className="h-8 w-auto shrink-0" />
-        {!collapsed && <WiseSelLogo variant="wordmark" className="h-[18px] w-auto" />}
+        {!collapsed && <WiseSelLogo variant="wordmark" className="h-4.5 w-auto" />}
       </Link>
 
       {/* New course CTA — server action (avoids prefetch-on-hover creates) */}
@@ -122,7 +130,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-stone-900">{displayName}</p>
-            <p className="truncate text-xs text-stone-400">{subtitle}</p>
+            <p className="truncate text-xs text-stone-500">{subtitle}</p>
           </div>
         )}
         <SignOutButton />
@@ -135,7 +143,7 @@ export function Sidebar({
             label: collapsed ? "Expand the app sidebar" : "Collapse the app sidebar to icons",
           })}
           onClick={() => togglePanel("appSidebar")}
-          className="grid size-7 shrink-0 place-items-center rounded-lg text-stone-300 transition-colors hover:bg-stone-100 hover:text-stone-600"
+          className="grid size-7 shrink-0 place-items-center rounded-lg text-stone-300 transition-colors hover:bg-stone-100 hover:text-stone-600 max-xl:hidden"
         >
           {collapsed ? <PanelLeft className="size-4" /> : <PanelLeftClose className="size-4" />}
         </button>

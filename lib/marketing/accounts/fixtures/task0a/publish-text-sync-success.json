@@ -1,0 +1,55 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.upload-post.com/api/upload_text",
+    "headers": {
+      "Authorization": "Apikey [REDACTED_API_KEY]"
+    },
+    "body": {
+      "user": "henry",
+      "platform[]": "linkedin",
+      "title": "WiseSel API verification test 2026-07-23T07:14:58.336Z — please ignore, will be removed.",
+      "first_comment": "First comment via API 🧪 (2026-07-23T07:14:58.336Z) — part of the same verification test."
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "486",
+      "content-type": "application/json",
+      "date": "Thu, 23 Jul 2026 07:15:08 GMT",
+      "server": "nginx/1.22.1",
+      "vary": "Accept-Encoding",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "57",
+      "x-ratelimit-reset": "1784790900",
+      "x-request-id": "1d6fdf304b484b06991341a4161c1b3c"
+    },
+    "body": {
+      "success": true,
+      "results": {
+        "linkedin": {
+          "success": true,
+          "post_id": "urn:li:share:7485955623193542656",
+          "url": "https://www.linkedin.com/feed/update/urn:li:share:7485955623193542656/",
+          "platform_post_id": "urn:li:share:7485955623193542656",
+          "target_linkedin_page_id": null,
+          "status": "completed",
+          "attempts": 1
+        }
+      },
+      "usage": {
+        "count": 1,
+        "limit": 10,
+        "last_reset": "2026-07-17T08:12:40.651623"
+      },
+      "request_id": "617656f7b503482c871650ecde87f402",
+      "job_id": "6160efc6afa247888c865a9a73e832aa",
+      "status": "completed"
+    }
+  },
+  "elapsedMs": 10575,
+  "at": "2026-07-23T07:14:58.348Z"
+}

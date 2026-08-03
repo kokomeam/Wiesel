@@ -1,0 +1,33 @@
+{"time":"2026-07-17T09:09:15.210719Z","level":"INFO","msg":"initialized database","db":"sqlite","mode":"memory"}
+{"time":"2026-07-17T09:09:15.215636Z","level":"INFO","msg":"ran database migrations","db":"sqlite","mode":"memory"}
+{"time":"2026-07-17T09:09:15.219712Z","level":"INFO","msg":"starting executor grpc server","svc":"executor","addr":":50053"}
+{"time":"2026-07-17T09:09:15.220397Z","level":"INFO","msg":"service starting","caller":"executor","service":"executor"}
+{"time":"2026-07-17T09:09:15.220411Z","level":"INFO","msg":"service starting","caller":"devserver","service":"devserver"}
+{"time":"2026-07-17T09:09:15.220432Z","level":"INFO","msg":"service starting","caller":"lease-scavenger","service":"lease-scavenger"}
+{"time":"2026-07-17T09:09:15.220518Z","level":"INFO","msg":"starting event stream","backend":"redis"}
+{"time":"2026-07-17T09:09:15.220536Z","level":"INFO","msg":"service starting","caller":"runner","service":"runner"}
+{"time":"2026-07-17T09:09:15.22056Z","level":"INFO","msg":"subscribing to function queue"}
+{"time":"2026-07-17T09:09:15.220604Z","level":"INFO","msg":"Executor started in assignedQueueShard Mode","queue_shard":"default"}
+{"time":"2026-07-17T09:09:15.220624Z","level":"INFO","msg":"service starting","caller":"api","service":"api"}
+{"time":"2026-07-17T09:09:15.220728Z","level":"INFO","msg":"starting server","caller":"api","addr":"0.0.0.0:8288"}
+{"time":"2026-07-17T09:09:15.221006Z","level":"INFO","msg":"service starting","caller":"connect-gateway","service":"connect-gateway"}
+{"time":"2026-07-17T09:09:15.221091Z","level":"INFO","msg":"starting connect gateway grpc server","caller":"connect-gateway","addr":":50052"}
+{"time":"2026-07-17T09:09:15.223277Z","level":"INFO","msg":"subscribing to events","topic":"events"}
+{"time":"2026-07-17T09:09:58.536894Z","level":"INFO","msg":"publishing event","caller":"api","event_name":"spike/sleep.requested","internal_id":"01KXQNDY48Y7WM9KX914DAJ60E","external_id":"01KXQNDY48Y7WM9KX914DAJ60E","event":{"id":"01KXQNDY48Y7WM9KX914DAJ60E","name":"spike/sleep.requested","data":{"wakeAt":"2026-07-17T09:11:58.510Z"},"ts":1784279398536}}
+{"time":"2026-07-17T09:09:58.541531Z","level":"INFO","msg":"publishing event","caller":"api","event_name":"spike/cancellable.start","internal_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","external_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","event":{"id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","name":"spike/cancellable.start","data":{"runKey":"k1"},"ts":1784279398541}}
+{"time":"2026-07-17T09:09:58.64651Z","level":"INFO","msg":"received event","event":"spike/cancellable.start","event_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","internal_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ"}
+{"time":"2026-07-17T09:09:58.64653Z","level":"INFO","msg":"received event","event":"spike/sleep.requested","event_id":"01KXQNDY48Y7WM9KX914DAJ60E","internal_id":"01KXQNDY48Y7WM9KX914DAJ60E"}
+{"time":"2026-07-17T09:09:58.647005Z","level":"INFO","msg":"initializing fn","event":"spike/cancellable.start","event_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","internal_id":"01KXQNDY4DS8AWZZ17XVZJ1MSQ","function":"spike-cancellable","function_id":"caf177c4-a585-5fa8-8191-d2e63d142336"}
+{"time":"2026-07-17T09:09:58.647011Z","level":"INFO","msg":"initializing fn","event":"spike/sleep.requested","event_id":"01KXQNDY48Y7WM9KX914DAJ60E","internal_id":"01KXQNDY48Y7WM9KX914DAJ60E","function":"spike-sleep-until","function_id":"db1db0d2-538e-51b2-8d66-0d3fe2c2a3ee"}
+{"time":"2026-07-17T09:10:08.548139Z","level":"INFO","msg":"publishing event","caller":"api","event_name":"spike/cancel","internal_id":"01KXQNE7X4DJW0BAF7C5DV5PSJ","external_id":"01KXQNE7X4DJW0BAF7C5DV5PSJ","event":{"id":"01KXQNE7X4DJW0BAF7C5DV5PSJ","name":"spike/cancel","data":{"runKey":"k1"},"ts":1784279408548}}
+{"time":"2026-07-17T09:10:08.552843Z","level":"INFO","msg":"publishing event","caller":"api","event_name":"spike/retry.start","internal_id":"01KXQNE7X86M2W1H01CMPPK5ED","external_id":"01KXQNE7X86M2W1H01CMPPK5ED","event":{"id":"01KXQNE7X86M2W1H01CMPPK5ED","name":"spike/retry.start","data":{},"ts":1784279408552}}
+{"time":"2026-07-17T09:10:08.683455Z","level":"INFO","msg":"received event","event":"spike/retry.start","event_id":"01KXQNE7X86M2W1H01CMPPK5ED","internal_id":"01KXQNE7X86M2W1H01CMPPK5ED"}
+{"time":"2026-07-17T09:10:08.683466Z","level":"INFO","msg":"received event","event":"spike/cancel","event_id":"01KXQNE7X4DJW0BAF7C5DV5PSJ","internal_id":"01KXQNE7X4DJW0BAF7C5DV5PSJ"}
+{"time":"2026-07-17T09:10:08.683841Z","level":"INFO","msg":"initializing fn","event":"spike/retry.start","event_id":"01KXQNE7X86M2W1H01CMPPK5ED","internal_id":"01KXQNE7X86M2W1H01CMPPK5ED","function":"spike-retry","function_id":"1fe4fd47-0a57-5e72-8b04-775ed0e0a746"}
+{"time":"2026-07-17T09:10:08.934628Z","level":"INFO","msg":"received event","event":"inngest/function.cancelled","event_id":"01KXQNDY7Q054MR0EKV9YPS7ZG","internal_id":"01KXQNE832SRKXSG41NN2W5FRN"}
+{"time":"2026-07-17T09:10:08.934646Z","level":"INFO","msg":"received event","event":"inngest/function.finished","event_id":"01KXQNE8324ZPRRDC2SY4VXEEG","internal_id":"01KXQNE8324WKPFJMX9PMK2VXX"}
+{"time":"2026-07-17T09:10:13.199577Z","level":"INFO","msg":"received event","event":"inngest/function.finished","event_id":"01KXQNECCGVP4JRFGXDP25ERVB","internal_id":"01KXQNECCGMMSRZFGJJFVYES9C"}
+{"time":"2026-07-17T09:11:59.124919Z","level":"INFO","msg":"received event","event":"inngest/function.finished","event_id":"01KXQNHKSWZSJ8PN3MDN4CYBET","internal_id":"01KXQNHKSWXKYPEZG96MH0ATH9"}
+{"time":"2026-07-17T09:13:06.749928Z","level":"INFO","msg":"context canceled, stopping scavenger loop","caller":"lease-scavenger","service":"lease-scavenger"}
+{"time":"2026-07-17T09:13:06.750434Z","level":"INFO","msg":"waiting for service run to finish","caller":"lease-scavenger","service":"lease-scavenger"}
+{"time":"2026-07-17T09:13:06.750463Z","level":"INFO","msg":"service run finished","caller":"lease-scavenger","service":"lease-scavenger"}

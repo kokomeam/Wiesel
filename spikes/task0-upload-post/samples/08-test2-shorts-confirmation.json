@@ -1,0 +1,18 @@
+{
+  "finding": "YouTube registered the vertical 5s 1080x1920 upload as a SHORT — confirmed ~3 minutes post-upload by three independent signals. The script's initial check ~30s after upload transiently redirected /shorts/{id} → /watch: Shorts CLASSIFICATION LAGS the upload by a couple of minutes. verifyPost must not assert Short-ness immediately.",
+  "videoId": "oG1hZXB2EJ8",
+  "probes": [
+    { "check": "GET https://www.youtube.com/shorts/oG1hZXB2EJ8 (desktop UA, -L)", "result": "200, final URL stays https://www.youtube.com/shorts/oG1hZXB2EJ8" },
+    { "check": "GET https://www.youtube.com/shorts/oG1hZXB2EJ8 (iPhone UA, -L)", "result": "200, final URL https://m.youtube.com/shorts/oG1hZXB2EJ8" },
+    { "check": "watch page source", "result": "link rel=\"canonical\" href=\"https://www.youtube.com/shorts/oG1hZXB2EJ8\" and \"isShortsEligible\":true" },
+    { "check": "oEmbed", "result": "title/author resolve; thumbnail present (oEmbed dims are player-box, not video AR — not used as the signal)" }
+  ],
+  "timeline": {
+    "uploadCallAt": "2026-07-23T07:16:19.664Z",
+    "apiCompletedSeconds": 9,
+    "liveOnPlatformSeconds": 19.3,
+    "shortsCheckAt~30s": "redirected to /watch (classification lag)",
+    "shortsCheckAt~3min": "serves /shorts/ directly — registered"
+  },
+  "at": "2026-07-23"
+}

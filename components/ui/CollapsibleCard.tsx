@@ -42,11 +42,11 @@ export function CollapsibleCard({
   return (
     <section
       className={cn(
-        "rounded-2xl border border-stone-200/80 bg-white shadow-[0_1px_2px_rgba(68,48,28,0.05)]",
+        "rounded-card border border-stone-200/80 bg-white shadow-card",
         className
       )}
     >
-      <div className={cn("flex items-center gap-2 px-4", open ? "border-b border-stone-100" : "")}>
+      <div className={cn("flex items-center gap-2 px-card-pad", open ? "border-b border-stone-100" : "")}>
         <button
           type="button"
           onClick={() => onToggle(!open)}
@@ -55,7 +55,7 @@ export function CollapsibleCard({
           className="flex min-w-0 flex-1 items-center gap-2 py-3 text-left"
         >
           <ChevronDown
-            className={cn("size-4 shrink-0 text-stone-400 transition-transform", !open && "-rotate-90")}
+            className={cn("size-4 shrink-0 text-stone-500 transition-transform", !open && "-rotate-90")}
           />
           <span className="min-w-0">
             <span className="flex items-center gap-2">
@@ -67,7 +67,7 @@ export function CollapsibleCard({
         </button>
         {action ? <span className="shrink-0">{action}</span> : null}
       </div>
-      <div id={bodyId} hidden={!open} className={cn("px-4 pb-4 pt-3", bodyClassName)}>
+      <div id={bodyId} hidden={!open} className={cn("px-card-pad pb-4 pt-3", bodyClassName)}>
         {children}
       </div>
     </section>

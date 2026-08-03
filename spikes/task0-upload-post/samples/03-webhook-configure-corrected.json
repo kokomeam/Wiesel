@@ -1,0 +1,27 @@
+{
+  "finding": "OpenAPI spec bug: the notifications endpoint's `servers` override says app.upload-post.com, but that host serves the dashboard SPA (GET → HTML, POST → raw nginx 405). The endpoint actually lives on the NORMAL api base.",
+  "probes": [
+    { "request": "POST https://app.upload-post.com/api/uploadposts/users/notifications", "status": 405, "body": "nginx '405 Not Allowed' HTML (not JSON)" },
+    { "request": "PUT https://app.upload-post.com/api/uploadposts/users/notifications", "status": 405, "body": "nginx '405 Not Allowed' HTML" },
+    { "request": "GET https://app.upload-post.com/api/uploadposts/users/notifications", "status": 200, "body": "dashboard SPA index.html" },
+    {
+      "request": "POST https://api.upload-post.com/api/uploadposts/users/notifications",
+      "requestBody": {
+        "channels": { "webhook": true },
+        "webhook_url": "https://webhook.site/4b340de7-0836-4db4-b77c-ec71a3d9f138",
+        "webhook_events": ["upload_completed", "social_account.connected", "social_account.disconnected", "social_account.reauth_required"]
+      },
+      "status": 200,
+      "body": {
+        "success": true,
+        "notifications": {
+          "channels": { "webhook": true },
+          "webhook_url": "https://webhook.site/4b340de7-0836-4db4-b77c-ec71a3d9f138",
+          "webhook_events": ["upload_completed", "social_account.connected", "social_account.disconnected", "social_account.reauth_required"]
+        }
+      }
+    },
+    { "request": "GET https://api.upload-post.com/api/uploadposts/users/notifications", "status": 200, "body": "same config echoed back — persisted" }
+  ],
+  "at": "2026-07-23"
+}
