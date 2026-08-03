@@ -6,41 +6,27 @@
  * mock's synthetic engagement and Resend's real engagement are two sources
  * feeding one pipeline — nothing downstream knows the difference.
  *
- * Security: Resend signs webhooks with Svix. Signature = HMAC-SHA256 over
- * `${svix-id}.${svix-timestamp}.${rawBody}` keyed by the base64 part of
- * RESEND_WEBHOOK_SECRET (`whsec_<base64>`), compared against every signature
- * in the `svix-signature` header (space-separated `v1,<sig>` entries).
- * Verified manually with Node crypto — no new dependency. Unsigned requests
- * are rejected when the secret is set; when it's NOT set, the route 503s
- * (never processes unverified events silently).
+ * Security: Resend signs webhooks with Svix. Verification lives in the SHARED
+ * verifier (lib/webhooks/svix.ts — HMAC-SHA256 over
+ * `${svix-id}.${svix-timestamp}.${rawBody}`, timing-safe, manual Node crypto,
+ * no new dependency), which since M7 ALSO enforces the ±5-minute timestamp
+ * tolerance this route's original inline copy omitted (replay protection).
+ * Unsigned requests are rejected when the secret is set; when it's NOT set,
+ * the route 503s (never processes unverified events silently).
  *
  * Idempotency: the `svix-id` header is stored in props and duplicate webhook
  * deliveries are dropped by checking for an existing event with the same id —
  * the PRD's "duplicate webhook event received → use idempotency key" edge case.
  */
 
-import { createHmac, timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { applyEventToSubscriber } from "@/lib/marketing/stateMachine";
 import type { AnalyticsEventType } from "@/lib/marketing/types";
+import { verifySvixSignature } from "@/lib/webhooks/svix";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function verifySvixSignature(secret: string, id: string, timestamp: string, rawBody: string, signatureHeader: string): boolean {
-  const key = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
-  const signedContent = `${id}.${timestamp}.${rawBody}`;
-  const expected = createHmac("sha256", key).update(signedContent).digest("base64");
-  const expectedBuf = Buffer.from(expected);
-  for (const part of signatureHeader.split(" ")) {
-    const sig = part.includes(",") ? part.split(",")[1] : part;
-    if (!sig) continue;
-    const sigBuf = Buffer.from(sig);
-    if (sigBuf.length === expectedBuf.length && timingSafeEqual(sigBuf, expectedBuf)) return true;
-  }
-  return false;
-}
 
 /** Resend event type → our stream's event type (+ hard/soft classification for
  *  bounces — Resend's payload carries `bounce.type`: 'Permanent' = hard). */
@@ -71,10 +57,17 @@ export async function POST(req: Request) {
   }
 
   const svixId = req.headers.get("svix-id");
-  const svixTimestamp = req.headers.get("svix-timestamp");
-  const svixSignature = req.headers.get("svix-signature");
   const rawBody = await req.text();
-  if (!svixId || !svixTimestamp || !svixSignature || !verifySvixSignature(secret, svixId, svixTimestamp, rawBody, svixSignature)) {
+  if (
+    !svixId ||
+    !verifySvixSignature({
+      secret,
+      svixId,
+      svixTimestamp: req.headers.get("svix-timestamp"),
+      svixSignature: req.headers.get("svix-signature"),
+      rawBody,
+    })
+  ) {
     return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 401 });
   }
 

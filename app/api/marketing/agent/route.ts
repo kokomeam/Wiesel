@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { runMarketingAgentTurn } from "@/lib/marketing/agent/loop";
 import { encodeSSE, type MarketingAgentEvent } from "@/lib/marketing/agent/events";
 import { loadCampaignForCourse } from "@/lib/marketing/persistence";
@@ -17,9 +17,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: { courseId?: string; message?: string; conversationId?: string | null; pageId?: string | null };

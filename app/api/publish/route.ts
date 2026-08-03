@@ -30,7 +30,7 @@ import {
 } from "@/lib/course/publish/service";
 import type { CourseDocument } from "@/lib/course/types";
 import type { Database } from "@/lib/database.types";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 
 /** Load the author's draft as a CourseDocument (RLS scopes every read). */
 async function loadDraftDoc(
@@ -75,7 +75,7 @@ function errorResponse(error: unknown): Response {
 
 export async function GET(req: Request): Promise<Response> {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   const courseId = new URL(req.url).searchParams.get("courseId");
@@ -93,7 +93,7 @@ export async function GET(req: Request): Promise<Response> {
 
 export async function POST(req: Request): Promise<Response> {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   let body: unknown;
@@ -123,7 +123,7 @@ export async function POST(req: Request): Promise<Response> {
 
 export async function PATCH(req: Request): Promise<Response> {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   let body: unknown;

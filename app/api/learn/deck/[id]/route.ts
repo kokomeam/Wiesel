@@ -14,7 +14,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getLearnerAccess } from "@/lib/learn/access";
 import { LearnError } from "@/lib/learn/errors";
-import { getLivePublicationByCourse, parsePublicationSnapshot } from "@/lib/learn/resolve";
+import { getCachedSnapshot, getLivePublicationMetaByCourse } from "@/lib/learn/publicationCache";
 import { learnErrorResponse, requireUser } from "@/lib/learn/routeHelpers";
 import { getDeckImportView } from "@/lib/course/imports/deckImportService";
 
@@ -39,9 +39,12 @@ export async function GET(
     if (!access) throw new LearnError("not_enrolled", "Enroll to view this deck.");
 
     if (access.role === "student") {
-      const publication = await getLivePublicationByCourse(supabase, view.courseId);
-      if (!publication) throw new LearnError("not_found", "This course isn't published.");
-      const snapshot = parsePublicationSnapshot(publication);
+      // PERF-1 C1: narrow live-meta lookup + the cached immutable snapshot
+      // (this route is now the deck viewer's LAZY initial load, so it must
+      // not re-fetch/re-parse the full snapshot per call).
+      const meta = await getLivePublicationMetaByCourse(supabase, view.courseId);
+      if (!meta) throw new LearnError("not_found", "This course isn't published.");
+      const { snapshot } = await getCachedSnapshot(meta.id);
       const inSnapshot = snapshot.modules.some((m) =>
         m.lessons.some((l) =>
           l.blocks.some((b) => b.type === "imported_deck" && b.deckImportId === id)

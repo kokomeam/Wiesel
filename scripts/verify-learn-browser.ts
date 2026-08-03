@@ -144,7 +144,10 @@ async function main() {
     const page = await (await browser.newContext()).newPage();
     await signIn(page, student.email, student.password);
     await page.goto(`${BASE}/learn/${slug}`);
-    check("landing shows the course title", await page.getByText(doc.title).first().isVisible());
+    // The landing streams behind a loading.tsx skeleton now (2026-07-08 perf
+    // pass) — wait for the hero instead of sampling visibility instantly.
+    await page.getByText(doc.title).first().waitFor({ timeout: 20000 });
+    check("landing shows the course title", true);
     await page.click('[data-ai-tool="learn-enroll"] >> nth=0');
     await page.getByText("Your progress").waitFor({ timeout: 20000 });
     check("enrolled state shows progress card", true);

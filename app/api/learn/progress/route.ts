@@ -7,6 +7,10 @@
  * completion claim (learn_progress has no client write policies at all).
  * Authors previewing their course get a no-op snapshot: nothing is written,
  * so learner analytics never contain the creator's own walkthroughs.
+ *
+ * PERF-1 C1: the access pair and the NARROW live-meta lookup run as one
+ * parallel wave, and the immutable snapshot comes from the publication cache
+ * (no full-row fetch + strict re-parse per POST — diagnosis §A2).
  */
 
 import { NextResponse } from "next/server";
@@ -14,7 +18,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getLearnerAccess } from "@/lib/learn/access";
 import { LearnError } from "@/lib/learn/errors";
 import { applyProgressAction } from "@/lib/learn/progressService";
-import { getLivePublicationByCourse, parsePublicationSnapshot } from "@/lib/learn/resolve";
+import { getCachedSnapshot, getLivePublicationMetaByCourse } from "@/lib/learn/publicationCache";
 import { learnErrorResponse, parseBody, requireUser } from "@/lib/learn/routeHelpers";
 import { ProgressRequestSchema } from "@/lib/learn/schemas";
 
@@ -30,11 +34,13 @@ export async function POST(request: Request) {
   const { courseId, action } = body.data;
 
   try {
-    const access = await getLearnerAccess(supabase, user.id, courseId);
+    // Independent reads — one wave. Error precedence stays: enrollment first.
+    const [access, meta] = await Promise.all([
+      getLearnerAccess(supabase, user.id, courseId),
+      getLivePublicationMetaByCourse(supabase, courseId),
+    ]);
     if (!access) throw new LearnError("not_enrolled", "Enroll to track progress.");
-
-    const publication = await getLivePublicationByCourse(supabase, courseId);
-    if (!publication) throw new LearnError("not_found", "This course isn't published.");
+    if (!meta) throw new LearnError("not_found", "This course isn't published.");
 
     if (access.role === "author") {
       return NextResponse.json({
@@ -48,15 +54,16 @@ export async function POST(request: Request) {
       });
     }
 
+    const { snapshot } = await getCachedSnapshot(meta.id);
     const admin = createAdminClient();
     const progress = await applyProgressAction(
       admin,
       {
         userId: user.id,
         courseId,
-        publicationId: publication.id,
-        version: publication.version,
-        snapshot: parsePublicationSnapshot(publication),
+        publicationId: meta.id,
+        version: meta.version,
+        snapshot,
       },
       action
     );

@@ -82,7 +82,6 @@ export function SlideDeckEditor({
           <SlideThumbnailStrip
             slides={block.slides}
             deckId={block.id}
-            lessonId={lessonId}
             activeId={activeSlide?.id}
             onSelect={selectSlide}
           />

@@ -19,7 +19,7 @@
  *    clamping would shear the arrangement); locked members stay put.
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type React from "react";
 import { moveElementPatch } from "@/lib/course/commands";
 import {
@@ -37,9 +37,32 @@ import {
 } from "@/lib/course/slide/snap";
 import { findSlide } from "@/lib/course/queries";
 import { useEditorStore } from "@/lib/course/store";
-import { useDragStore, type GuideLine } from "@/lib/editor/dragStore";
+import {
+  createFrameCoalescer,
+  useDragStore,
+  type FrameCoalescer,
+  type GuideLine,
+  type TransientFrame,
+} from "@/lib/editor/dragStore";
 import type { SlideElement } from "@/lib/course/types";
 import { growAwareResizePatch } from "./elements/measureTextLike";
+
+/** The per-frame dragStore write every gesture hook coalesces through
+ *  (A5 §6: raw pointermove outruns paint several-fold). Ids ride the payload
+ *  — the coalescer's write closure is created once per component instance
+ *  and must never capture a slide id that can change under it. */
+export interface SessionUpdate {
+  blockId: string;
+  slideId: string;
+  frames: Record<string, TransientFrame>;
+  guides: GuideLine[];
+}
+
+export function writeDragSession(u: SessionUpdate): void {
+  const drag = useDragStore.getState();
+  if (!drag.session) drag.setSession({ blockId: u.blockId, slideId: u.slideId, frames: u.frames, guides: u.guides });
+  else drag.updateSession(u.frames, u.guides);
+}
 
 export type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -161,6 +184,16 @@ export function useElementDrag(
   opts?: ElementDragOptions
 ) {
   const gesture = useRef<Gesture | null>(null);
+  // Latest-wins per animation frame; flushed on pointer-up so the committed
+  // patch reads the exact final position (one undo per gesture unchanged).
+  const writes = useRef<FrameCoalescer<SessionUpdate> | null>(null);
+  if (writes.current === null) {
+    writes.current = createFrameCoalescer(writeDragSession);
+  }
+  useEffect(() => {
+    const w = writes.current;
+    return () => w?.cancel();
+  }, []);
 
   function begin(e: React.PointerEvent, kind: Gesture["kind"], handle?: ResizeHandle) {
     if (!scale) return;
@@ -201,7 +234,6 @@ export function useElementDrag(
 
     const bypassSnap = e.metaKey || e.ctrlKey || e.altKey;
     const threshold = SNAP_SCREEN_PX / scale;
-    const drag = useDragStore.getState();
     const frames: Record<string, Frame> = {};
     let guides: GuideLine[] = [];
 
@@ -279,17 +311,15 @@ export function useElementDrag(
       frames[el.id] = enforceMin(orig, handle, frame);
     }
 
-    if (!drag.session) {
-      drag.setSession({ blockId, slideId, frames, guides });
-    } else {
-      drag.updateSession(frames, guides);
-    }
+    writes.current?.push({ blockId, slideId, frames, guides });
   }
 
   function onPointerUp(e: React.PointerEvent) {
     const g = gesture.current;
     gesture.current = null;
     if (!g) return;
+    // Land any pending frame first so the commit reads the exact position.
+    writes.current?.flush();
     const drag = useDragStore.getState();
     const frames = drag.session?.frames;
     drag.setSession(null);

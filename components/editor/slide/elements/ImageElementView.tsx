@@ -7,8 +7,9 @@
  */
 
 import { ImagePlus } from "lucide-react";
-import { useUIStore } from "@/lib/editor/uiStore";
 import type { SlideElement } from "@/lib/course/types";
+import { SlideImage } from "../SlideImage";
+import { useSlideEditorBridge } from "../editorBridge";
 
 type ImageEl = Extract<SlideElement, { type: "image" }>;
 
@@ -23,7 +24,8 @@ export function ImageElementView({
   slideId: string;
   editable: boolean;
 }) {
-  const openImageDialog = useUIStore((s) => s.openImageDialog);
+  // null outside the editor canvas (read-only SlideView) — no upload prompt.
+  const bridge = useSlideEditorBridge();
 
   if (!el.src) {
     const placeholderLook =
@@ -33,7 +35,7 @@ export function ImageElementView({
     // Preview/thumbnail (and locked) renders: purely presentational — a
     // <button> here would nest inside the filmstrip's thumbnail <button>
     // and break HTML/hydration.
-    if (!editable) {
+    if (!editable || !bridge) {
       return (
         <div aria-hidden className={placeholderLook} style={radius}>
           <ImagePlus className="size-6" />
@@ -47,7 +49,7 @@ export function ImageElementView({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          openImageDialog({
+          bridge.openImageDialog({
             blockId,
             slideId,
             elementCount: 0,
@@ -76,13 +78,17 @@ export function ImageElementView({
         }),
       }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element -- dynamic user/object URLs */}
-      <img
+      {/* PERF-1 D3: SlideImage branches — blob/data/object-URL uploads and
+          SVG placeholders stay a plain <img>; stored Supabase URLs (e.g. a
+          materialized image_supporting slide) ride next/image. Hint = the
+          element's fraction of the 1280 logical canvas. */}
+      <SlideImage
         src={el.src}
         alt={el.alt}
         draggable={false}
-        className="h-full w-full select-none"
-        style={{ objectFit: el.objectFit }}
+        className="select-none"
+        objectFit={el.objectFit}
+        sizes={`(max-width: 1280px) ${Math.max(1, Math.round((el.width / 1280) * 100))}vw, ${Math.round(el.width)}px`}
       />
       {el.caption && (
         <figcaption

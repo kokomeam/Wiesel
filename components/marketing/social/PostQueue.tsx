@@ -5,9 +5,19 @@
  * platform / stage), bulk "mark ready", and the seeded empty state. Stage
  * chips are color-coded and text-labeled; a posted post's card swaps its
  * action to Log performance (opens the editor).
+ *
+ * PERF-1 D2 (diagnosis A5 §6: "PostQueue ≤100, unmemoized cards, whole-array
+ * replacement per save") — deliberate NON-windowing decision: cards are
+ * variable-height (line-clamp-2 body = 1–2 lines, chip/meta rows wrap at
+ * narrow widths) and interleaved with per-batch headers, so fixed-size
+ * windows (lib/perf/virtualRows' contract) would mis-measure the scroll
+ * space. The honest fix here is (a) PostCard memoized on post identity —
+ * `upsertPost` preserves the identity of untouched posts, so a save
+ * re-renders ONE card instead of all ≤100 — and (b) `.cv-row` rendering
+ * containment so off-screen cards skip layout/paint entirely.
  */
 
-import { useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
@@ -18,7 +28,7 @@ import {
   type SocialPostStatus,
 } from "@/lib/marketing/social/constants";
 import type { SocialBatch } from "@/lib/marketing/social/repository";
-import type { SocialPost } from "@/lib/marketing/social/schemas";
+import type { SocialPostListItem } from "@/lib/marketing/social/schemas";
 import { StageChip } from "./StageChip";
 
 export interface QueueFilters {
@@ -80,19 +90,25 @@ function FilterChip(props: { active: boolean; label: string; onClick: () => void
   );
 }
 
-function PostCard(props: {
-  post: SocialPost;
+/** Memoized on post identity (+ selection): the default shallow compare holds
+ *  because `selectPost` below is render-stable and `upsertPost` keeps
+ *  untouched posts' identities — one saved post re-renders one card. */
+const PostCard = memo(function PostCard(props: {
+  post: SocialPostListItem;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (id: string) => void;
 }) {
   const { post } = props;
   const planned = fmtPlanned(post.plannedPostAt);
   return (
     <button
       type="button"
-      onClick={props.onSelect}
+      onClick={() => props.onSelect(post.id)}
+      // .cv-row: off-screen cards skip layout/paint; 104px ≈ a two-line card
+      // (contain-intrinsic-size `auto` remembers the real height after paint).
+      style={{ "--cv-size": "104px" } as React.CSSProperties}
       className={cn(
-        "w-full rounded-xl border bg-white p-3.5 text-left transition-colors",
+        "cv-row w-full rounded-xl border bg-white p-3.5 text-left transition-colors",
         props.selected ? "border-brand-400 ring-2 ring-brand-200" : "border-stone-200 hover:border-stone-300"
       )}
     >
@@ -113,10 +129,10 @@ function PostCard(props: {
       </div>
     </button>
   );
-}
+});
 
 export function PostQueue(props: {
-  posts: SocialPost[];
+  posts: SocialPostListItem[];
   batches: SocialBatch[];
   filters: QueueFilters;
   onFilters: (f: QueueFilters) => void;
@@ -127,9 +143,19 @@ export function PostQueue(props: {
 }) {
   const { filters } = props;
 
+  // props.onSelect is recreated per parent render (it closes over the current
+  // selection) — latch it in a ref so the per-card callback stays identity-
+  // stable and memo(PostCard) holds. The ref write lives in an effect (React
+  // 19 lint: never write refs during render).
+  const onSelectRef = useRef(props.onSelect);
+  useEffect(() => {
+    onSelectRef.current = props.onSelect;
+  });
+  const selectPost = useCallback((id: string) => onSelectRef.current(id), []);
+
   const groups = useMemo(() => {
-    const byBatch = new Map<string, SocialPost[]>();
-    const loose: SocialPost[] = [];
+    const byBatch = new Map<string, SocialPostListItem[]>();
+    const loose: SocialPostListItem[] = [];
     for (const p of props.posts) {
       if (p.batchId) {
         const list = byBatch.get(p.batchId) ?? [];
@@ -222,7 +248,7 @@ export function PostQueue(props: {
           </div>
           <div className="space-y-2">
             {posts.map((p) => (
-              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={() => props.onSelect(p.id)} />
+              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
             ))}
           </div>
         </div>
@@ -233,7 +259,7 @@ export function PostQueue(props: {
           <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-stone-400">Individual posts</div>
           <div className="space-y-2">
             {groups.loose.map((p) => (
-              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={() => props.onSelect(p.id)} />
+              <PostCard key={p.id} post={p} selected={p.id === props.selectedId} onSelect={selectPost} />
             ))}
           </div>
         </div>

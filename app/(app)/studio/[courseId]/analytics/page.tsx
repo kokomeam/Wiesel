@@ -1,23 +1,36 @@
 /**
  * /studio/[courseId]/analytics — the creator analytics dashboard (Milestone 4).
- * Server component: author-gated, reads ROLLUPS + the two definer RPCs (never
- * raw event scans), renders four tabs (?tab= keeps each server-rendered and
+ * Server component: author-gated, reads ROLLUPS + the definer RPCs (never raw
+ * event scans), renders four tabs (?tab= keeps each server-rendered and
  * deep-linkable). A course with no live publication gets a first-class empty
  * state — analytics only exist for published versions.
+ *
+ * PERF-1 C1: each tab is ONE data round trip — the course_analytics_bundle
+ * definer RPC (via loadAnalyticsDashboard) returns exactly what the requested
+ * tab renders, plus the shared header/badge scalars. Snapshot title maps come
+ * from the immutable-publication cache (getCachedSnapshot — free when warm).
+ * getSessionProfile is request-deduped with the (app) layout's fetch.
  */
 
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { BarChart3, PencilLine } from "lucide-react";
-import { loadCourseAnalytics, buildSnapshotMaps } from "@/lib/analytics/dashboard";
-import { getLivePublicationByCourse, parsePublicationSnapshot } from "@/lib/learn/resolve";
-import { createClient } from "@/lib/supabase/server";
+import { buildSnapshotMaps } from "@/lib/analytics/dashboard";
+import {
+  loadAnalyticsDashboard,
+  REVIEWS_PAGE_SIZE,
+  type DashboardTab,
+} from "@/lib/analytics/dashboardLoader";
+import { getCachedSnapshot } from "@/lib/learn/publicationCache";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
+import { getSessionProfile } from "@/lib/supabase/sessionProfile";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ContentHealthTab } from "@/components/studio/analytics/ContentHealthTab";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { LearnersTab } from "@/components/studio/analytics/LearnersTab";
 import { OverviewTab } from "@/components/studio/analytics/OverviewTab";
 import { RefreshButton } from "@/components/studio/analytics/RefreshButton";
+import { ReviewsCard } from "@/components/studio/analytics/ReviewsCard";
 import { StuckQueueTab } from "@/components/studio/analytics/StuckQueueTab";
 import { timeAgo } from "@/components/studio/analytics/format";
 import { cn } from "@/lib/cn";
@@ -38,33 +51,33 @@ export default async function CourseAnalyticsPage({
   searchParams,
 }: {
   params: Promise<{ courseId: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; reviewsPage?: string }>;
 }) {
   const { courseId } = await params;
-  const { tab: rawTab } = await searchParams;
+  const { tab: rawTab, reviewsPage: rawReviewsPage } = await searchParams;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) redirect(`/login?redirectTo=/studio/${courseId}/analytics`);
 
-  // Author gate (RLS on every table backs this up; the explicit check gives a
-  // clean 404 instead of an empty dashboard for non-authors).
-  const course = await supabase
-    .from("courses")
-    .select("id, title, author_id")
-    .eq("id", courseId)
-    .maybeSingle();
-  if (course.error) throw course.error;
-  if (!course.data || course.data.author_id !== user.id) notFound();
+  const tab: TabId = TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
+  const reviewsPage = Math.max(1, Number.parseInt(rawReviewsPage ?? "1", 10) || 1);
+  const reviewsFrom = (reviewsPage - 1) * REVIEWS_PAGE_SIZE;
 
-  const publication = await getLivePublicationByCourse(supabase, courseId);
+  // ONE round trip: the bundle RPC authorizes internally (null → 404) and
+  // returns only this tab's data. The profile read is request-deduped with
+  // the (app) layout's — free on full loads.
+  const [result, creatorProfile] = await Promise.all([
+    loadAnalyticsDashboard(supabase, courseId, tab as DashboardTab, reviewsFrom),
+    getSessionProfile(),
+  ]);
+  if (!result) notFound();
+  const { course, publication, analytics, stuckCount } = result;
 
   if (!publication) {
     return (
       <div className="mx-auto max-w-7xl space-y-8 p-6 lg:p-8">
         <PageHeader
-          title={`${course.data.title} — Analytics`}
+          title={`${course.title} — Analytics`}
           description="Learner analytics for the live version of this course."
         />
         <EmptyState
@@ -84,25 +97,17 @@ export default async function CourseAnalyticsPage({
     );
   }
 
-  const snapshot = parsePublicationSnapshot(publication);
-  const maps = buildSnapshotMaps(snapshot);
-  const [analytics, optOutRows, creatorProfile] = await Promise.all([
-    loadCourseAnalytics(supabase, courseId, publication.id),
-    // Opt-out flags for the Stuck queue's Draft follow-up (the send seam
-    // re-checks these server-side at send time regardless).
-    supabase.from("enrollments").select("user_id, comms_opt_out").eq("course_id", courseId),
-    supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
-  ]);
-  const optOutByUser: Record<string, boolean> = {};
-  for (const row of optOutRows.data ?? []) optOutByUser[row.user_id] = row.comms_opt_out;
-
-  const tab: TabId = TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
-  const stuckCount = new Set(analytics.flags.map((f) => f.user_id)).size;
+  // Title maps for id→label rendering (immutable snapshot — cached forever
+  // keyed by publication id). The Learners tab renders no snapshot labels.
+  const maps =
+    tab === "learners"
+      ? null
+      : buildSnapshotMaps((await getCachedSnapshot(publication.id)).snapshot);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 lg:p-8">
       <PageHeader
-        title={`${course.data.title} — Analytics`}
+        title={`${course.title} — Analytics`}
         description={`Live version v${publication.version} · rollups ${
           analytics.computedAt ? `refreshed ${timeAgo(analytics.computedAt)}` : "not computed yet"
         }`}
@@ -144,27 +149,39 @@ export default async function CourseAnalyticsPage({
         ))}
       </nav>
 
-      {tab === "overview" ? (
-        <OverviewTab
-          analytics={analytics}
-          slug={publication.slug}
-          lessonTitles={maps.lessonTitles}
-        />
-      ) : tab === "content" ? (
+      {tab === "overview" && maps ? (
+        <>
+          <OverviewTab
+            analytics={analytics}
+            slug={publication.slug}
+            lessonTitles={maps.lessonTitles}
+          />
+          <ReviewsCard
+            courseId={courseId}
+            rollup={result.reviews?.rollup ?? null}
+            recent={result.reviews?.rows ?? []}
+            learnerNames={result.reviews?.learnerNames ?? {}}
+            page={reviewsPage}
+            hasMore={result.reviews?.hasMore ?? false}
+          />
+        </>
+      ) : tab === "content" && maps ? (
         <ContentHealthTab analytics={analytics} maps={maps} courseId={courseId} />
       ) : tab === "learners" ? (
         <LearnersTab roster={analytics.roster} courseId={courseId} slug={publication.slug} />
-      ) : (
+      ) : maps ? (
         <StuckQueueTab
           analytics={analytics}
           maps={maps}
           courseId={courseId}
           slug={publication.slug}
-          courseTitle={course.data.title || "your course"}
-          creatorName={creatorProfile.data?.display_name ?? "Your course creator"}
-          optOutByUser={optOutByUser}
+          courseTitle={course.title || "your course"}
+          creatorName={creatorProfile?.displayName ?? "Your course creator"}
+          optOutByUser={result.optOutByUser}
+          lastNudgeByUser={result.lastNudgeByUser}
+          suppressedByUser={result.suppressedByUser}
         />
-      )}
+      ) : null}
     </div>
   );
 }

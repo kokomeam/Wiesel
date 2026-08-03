@@ -28,7 +28,7 @@ function isUuid(v: unknown): v is string {
 export async function POST(req: Request): Promise<Response> {
   const supabase = await createClient();
 
-  const user = await getAuthedUser(supabase);
+  const user = await getAuthedUser();
   if (!user) return new Response("Sign in to continue.", { status: 401 });
 
   let body: { courseId?: unknown; lessonId?: unknown; blockId?: unknown };

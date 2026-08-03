@@ -9,11 +9,11 @@
  * resolve 409s by re-read + one re-apply, never a silent overwrite.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import type { SocialBatch, VoiceProfileRecord } from "@/lib/marketing/social/repository";
-import type { GenerateRequest, SocialPost } from "@/lib/marketing/social/schemas";
+import type { GenerateRequest, SocialPost, SocialPostListItem } from "@/lib/marketing/social/schemas";
 import { GeneratorControls, type GeneratorSetup } from "./GeneratorControls";
 import { ManualPublishNotice } from "./ManualPublishNotice";
 import { PostEditor } from "./PostEditor";
@@ -31,14 +31,18 @@ export function SocialPostsView(props: {
   courses: CourseRef[];
   modules: { id: string; title: string }[];
   lessons: { id: string; title: string; moduleId: string }[];
-  initialPosts: SocialPost[];
+  initialPosts: SocialPostListItem[];
   initialBatches: SocialBatch[];
   initialVoiceProfile: VoiceProfileRecord | null;
 }) {
-  const [posts, setPosts] = useState<SocialPost[]>(props.initialPosts);
+  const [posts, setPosts] = useState<SocialPostListItem[]>(props.initialPosts);
   const [batches, setBatches] = useState<SocialBatch[]>(props.initialBatches);
   const [filters, setFilters] = useState<QueueFilters>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The LIST rows are the narrow projection; the editor needs the FULL row
+  // (performance prefill etc.), hydrated per post via the single-post GET and
+  // kept fresh by every save path (which already re-reads the full post).
+  const [fullPosts, setFullPosts] = useState<Record<string, SocialPost>>({});
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceProfile, setVoiceProfile] = useState<VoiceProfileRecord | null>(props.initialVoiceProfile);
   const [toast, setToast] = useState<string | null>(null);
@@ -59,6 +63,7 @@ export function SocialPostsView(props: {
   }, []);
 
   const upsertPost = useCallback((post: SocialPost) => {
+    setFullPosts((prev) => ({ ...prev, [post.id]: post }));
     setPosts((prev) => {
       const idx = prev.findIndex((p) => p.id === post.id);
       if (idx === -1) return [post, ...prev];
@@ -70,13 +75,25 @@ export function SocialPostsView(props: {
 
   const refreshQueue = useCallback(async () => {
     try {
-      const page = await socialApi.list({ withBatches: "true", limit: "100" });
+      // Same course scope as the server load — the queue stays course-scoped
+      // across refreshes (PERF-1 hygiene, diagnosis A6 #26).
+      const page = await socialApi.list({ withBatches: "true", limit: "100", courseId: props.course.id });
       setPosts(page.posts);
+      // Prune full-row hydrations the fresh list has outdated (or dropped) —
+      // the selection effect re-hydrates the open editor's post if needed.
+      setFullPosts((prev) => {
+        const next: Record<string, SocialPost> = {};
+        for (const p of page.posts) {
+          const full = prev[p.id];
+          if (full && full.updatedAt >= p.updatedAt) next[p.id] = full;
+        }
+        return next;
+      });
       if (page.batches) setBatches(page.batches);
     } catch {
       // keep current state — a refresh failure is non-fatal
     }
-  }, []);
+  }, [props.course.id]);
 
   /* ───────────────────────────── generation ──────────────────────────── */
 
@@ -176,10 +193,33 @@ export function SocialPostsView(props: {
     [showToast, upsertPost]
   );
 
-  const selected = useMemo(
+  // The queue holds narrow LIST items; the editor renders only from the
+  // hydrated FULL row (fetched once per selection below; every save path
+  // already re-reads the full post). Gated on the post still being listed so
+  // a stale hydration can't outlive its card.
+  const selectedListed = useMemo(
     () => (selectedId ? (posts.find((p) => p.id === selectedId) ?? null) : null),
     [posts, selectedId]
   );
+  const selected = selectedListed && selectedId ? (fullPosts[selectedId] ?? null) : null;
+  const editorOpen = Boolean(selectedListed);
+
+  useEffect(() => {
+    if (!selectedId || fullPosts[selectedId]) return;
+    let cancelled = false;
+    socialApi
+      .getPost(selectedId)
+      .then(({ post }) => {
+        if (!cancelled) setFullPosts((prev) => ({ ...prev, [post.id]: post }));
+      })
+      .catch(() => {
+        // hydration failure is non-fatal — the card stays, the editor just
+        // doesn't open; re-selecting retries.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, fullPosts]);
 
   const visiblePosts = useMemo(
     () =>
@@ -267,7 +307,7 @@ export function SocialPostsView(props: {
         </div>
       )}
 
-      <div className={selected ? "grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" : ""}>
+      <div className={editorOpen ? "grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" : ""}>
         <PostQueue
           posts={visiblePosts}
           batches={batches}
@@ -282,6 +322,11 @@ export function SocialPostsView(props: {
           }}
           empty={!hasAnyPosts && !generating}
         />
+        {editorOpen && !selected && (
+          // Full-row hydration in flight (one GET) — hold the editor column so
+          // the layout doesn't jump when it lands.
+          <div className="min-h-40 animate-pulse rounded-2xl border border-stone-200 bg-white" aria-hidden />
+        )}
         {selected && (
           <PostEditor
             key={selected.id}
@@ -296,7 +341,7 @@ export function SocialPostsView(props: {
         )}
       </div>
 
-      {!selected && hasAnyPosts && <ManualPublishNotice />}
+      {!editorOpen && hasAnyPosts && <ManualPublishNotice />}
 
       <VoiceProfileSheet
         open={voiceOpen}

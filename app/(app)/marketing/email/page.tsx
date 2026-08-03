@@ -10,7 +10,7 @@ import { ArrowLeft, ArrowRight, Mail, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CampaignLifecycleControls } from "@/components/marketing/LifecycleControls";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { getBlueprint } from "@/lib/marketing/blueprints";
 import { selectCourseForAuthor } from "@/lib/marketing/persistence";
 
@@ -50,9 +50,7 @@ export default async function EmailCampaignsPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 

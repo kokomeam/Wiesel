@@ -2,29 +2,50 @@
  * /learn/[slug]/[lessonId] — the lesson player. Auth required; content is
  * gated on enrollment (or authorship, as a preview). Everything renders from
  * the LIVE snapshot via read-only renderers — no editor chrome reaches a
- * student. Learner-only media (video MP4s, imported-deck signed pages) is
- * resolved server-side with the admin client AFTER the access check, because
- * their source rows are author-only under RLS.
+ * student.
+ *
+ * PERF-1 C1 transport shape (behavior unchanged):
+ *   1. getSessionUser ∥ resolveLivePublicationMeta — one parallel wave (the
+ *      session read and the slug resolve are independent; redirect/404
+ *      semantics incl. previous_slugs + unlisted-vs-unknown parity preserved).
+ *   2. getCachedSnapshot(meta.id) — the immutable body, cached per process /
+ *      Next data cache (zero round trips warm).
+ *   3. ONE SECURITY DEFINER RPC (loadLessonState) returns the access verdict
+ *      + progress + attempts + homework + review/feedback + the video-asset
+ *      fields — authorization happens INSIDE the RPC. Imported-deck signed
+ *      pages moved OFF the critical path: LearnImportedDeck lazy-fetches
+ *      /api/learn/deck/[id] on mount.
  */
 
 import Link from "next/link";
+import nextDynamic from "next/dynamic";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, ArrowRight, ChevronLeft } from "lucide-react";
-import type { DeckImportView } from "@/lib/course/imports/deckImportTypes";
 import type { PublishedLesson } from "@/lib/course/publish/schemas";
-import { getLearnerAccess } from "@/lib/learn/access";
-import { learnerDeckView, learnerVideoData, type LearnerVideoData } from "@/lib/learn/media";
-import { parsePublicationSnapshot, resolveLivePublicationBySlug } from "@/lib/learn/resolve";
+import {
+  lessonVideoAssetIds,
+  loadLessonState,
+  videoDataFromState,
+} from "@/lib/learn/lessonState";
+import { getCachedSnapshot, resolveLivePublicationMeta } from "@/lib/learn/publicationCache";
+import { parseReviewPromptState, type ReviewPromptState } from "@/lib/learn/reviews";
+import { ProgressStateSchema, type ProgressState } from "@/lib/learn/schemas";
 import { buildCourseProgressSummary } from "@/lib/learn/summary";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { AnalyticsProvider } from "@/components/learn/AnalyticsProvider";
 import { CourseNavSidebar, type NavModule } from "@/components/learn/CourseNavSidebar";
+import type { SlideFeedbackMap } from "@/components/learn/LearnSlideDeck";
 import {
   LearnLessonView,
   type LessonProgressView,
 } from "@/components/learn/LearnLessonView";
 import type { PriorSubmission } from "@/components/learn/LearnHomework";
+
+// The review ask only appears near completion — lazy-load it so framer-motion
+// stays out of the critical lesson bundle.
+const ReviewSlideIn = nextDynamic(() =>
+  import("@/components/learn/CourseReview").then((m) => m.ReviewSlideIn)
+);
 
 export const dynamic = "force-dynamic";
 
@@ -35,87 +56,53 @@ export default async function LessonPlayerPage({
 }) {
   const { slug, lessonId } = await params;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect(`/login?redirectTo=/learn/${slug}/${lessonId}`);
 
-  const resolution = await resolveLivePublicationBySlug(supabase, slug);
+  // The session read and the narrow slug resolve are independent — one wave.
+  const [user, resolution] = await Promise.all([
+    getSessionUser(),
+    resolveLivePublicationMeta(supabase, slug),
+  ]);
+  if (!user) redirect(`/login?redirectTo=/learn/${slug}/${lessonId}`);
   if (resolution.kind === "redirect") redirect(`/learn/${resolution.slug}/${lessonId}`);
   if (resolution.kind === "not_found") notFound();
-  const publication = resolution.publication;
-  const snapshot = parsePublicationSnapshot(publication);
+  const meta = resolution.meta;
 
-  const access = await getLearnerAccess(supabase, user.id, publication.course_id);
-  if (!access) redirect(`/learn/${slug}`);
+  // Immutable body — cached forever by publication id (no round trip warm).
+  const { snapshot } = await getCachedSnapshot(meta.id);
 
-  // Locate the lesson + its ordered neighbors.
+  // Locate the lesson + its ordered neighbors (pure — needed to derive the
+  // RPC's video-asset ids; the access-vs-404 ORDER below matches the old
+  // flow: a denied caller bounces to the landing even for a bogus lessonId).
   const orderedLessons: PublishedLesson[] = snapshot.modules.flatMap((m) => m.lessons);
   const lessonIndex = orderedLessons.findIndex((l) => l.id === lessonId);
-  if (lessonIndex === -1) notFound();
-  const lesson = orderedLessons[lessonIndex];
+  const lesson = lessonIndex === -1 ? null : orderedLessons[lessonIndex];
+
+  // ONE bundle RPC: access verdict + everything user-scoped.
+  const stateResult = await loadLessonState(supabase, {
+    publicationId: meta.id,
+    lessonId,
+    videoAssetIds: lesson ? lessonVideoAssetIds(lesson) : [],
+  });
+  if (stateResult.kind !== "ok") redirect(`/learn/${slug}`);
+  const state = stateResult.state;
+
+  if (!lesson) notFound();
   const prev = lessonIndex > 0 ? orderedLessons[lessonIndex - 1] : null;
-  const next = lessonIndex < orderedLessons.length - 1 ? orderedLessons[lessonIndex + 1] : null;
+  const next =
+    lessonIndex < orderedLessons.length - 1 ? orderedLessons[lessonIndex + 1] : null;
 
-  // Learner media (admin client — the access check above is the gate).
-  const admin = createAdminClient();
-  const videoData: Record<string, LearnerVideoData | null> = {};
-  const deckViews: Record<string, DeckImportView | null> = {};
-  await Promise.all(
-    lesson.blocks.map(async (block) => {
-      if (block.type === "video") {
-        videoData[block.id] = await learnerVideoData(admin, block);
-      } else if (block.type === "imported_deck") {
-        deckViews[block.id] = await learnerDeckView(admin, block);
-      }
-    })
+  const authorPreview = state.access.is_author;
+  const role: "student" | "author" = authorPreview ? "author" : "student";
+  const isStudent = role === "student";
+
+  const quizAttemptCounts: Record<string, number> = state.quiz_attempt_counts;
+
+  const homeworkBlockIds = new Set(
+    lesson.blocks.filter((b) => b.type === "homework").map((b) => b.id)
   );
-
-  // The learner's own context (user-scoped client — RLS).
-  const quizBlockIds = lesson.blocks.filter((b) => b.type === "quiz").map((b) => b.id);
-  const homeworkBlockIds = lesson.blocks
-    .filter((b) => b.type === "homework")
-    .map((b) => b.id);
-
-  const [attemptRows, submissionRows, progressRows] = await Promise.all([
-    quizBlockIds.length > 0
-      ? supabase
-          .from("quiz_attempts")
-          .select("block_id")
-          .eq("user_id", user.id)
-          .in("block_id", quizBlockIds)
-      : Promise.resolve({ data: [] as { block_id: string }[] }),
-    homeworkBlockIds.length > 0
-      ? supabase
-          .from("homework_submissions")
-          .select("id, block_id, status, created_at, file_paths")
-          .eq("user_id", user.id)
-          .in("block_id", homeworkBlockIds)
-          .order("created_at", { ascending: false })
-      : Promise.resolve({
-          data: [] as {
-            id: string;
-            block_id: string;
-            status: string;
-            created_at: string;
-            file_paths: string[];
-          }[],
-        }),
-    // All-course progress (drives the contents sidebar + the current lesson's
-    // initial progress) — one query instead of a per-lesson fetch.
-    supabase
-      .from("learn_progress")
-      .select("lesson_id, status, pct, last_activity_at")
-      .eq("user_id", user.id)
-      .eq("course_id", publication.course_id),
-  ]);
-
-  const quizAttemptCounts: Record<string, number> = {};
-  for (const row of attemptRows.data ?? []) {
-    quizAttemptCounts[row.block_id] = (quizAttemptCounts[row.block_id] ?? 0) + 1;
-  }
   const homeworkSubmissions: Record<string, PriorSubmission[]> = {};
-  for (const row of submissionRows.data ?? []) {
+  for (const row of state.homework_submissions) {
+    if (!homeworkBlockIds.has(row.block_id)) continue;
     (homeworkSubmissions[row.block_id] ??= []).push({
       id: row.id,
       status: row.status,
@@ -123,14 +110,37 @@ export default async function LessonPlayerPage({
       fileCount: row.file_paths.length,
     });
   }
+
   // Full-course progress → the contents sidebar + this lesson's initial progress.
-  const summary = buildCourseProgressSummary(snapshot, progressRows.data ?? []);
+  const summary = buildCourseProgressSummary(snapshot, state.progress);
   const current = summary.byLesson.get(lessonId);
   const initialProgress: LessonProgressView | null =
     current && current.status !== "not_started"
       ? { status: current.status, pct: current.pct }
       : null;
-  const authorPreview = access.role === "author";
+
+  // The stored per-unit state (graceful: a missing/legacy row parses to null
+  // and the checklist simply starts empty — the server verdict still rules).
+  let initialProgressState: ProgressState | null = null;
+  if (state.lesson_progress_state != null) {
+    const parsed = ProgressStateSchema.safeParse(state.lesson_progress_state);
+    if (parsed.success) initialProgressState = parsed.data;
+  }
+
+  let reviewState: ReviewPromptState | null = null;
+  let slideFeedback: SlideFeedbackMap = {};
+  if (state.review_prompt != null) {
+    try {
+      reviewState = parseReviewPromptState(state.review_prompt);
+    } catch (err) {
+      console.error("[learn] review prompt state parse failed", err);
+    }
+  }
+  if (state.slide_feedback && typeof state.slide_feedback === "object") {
+    slideFeedback = state.slide_feedback as SlideFeedbackMap;
+  }
+
+  const videoData = videoDataFromState(lesson, state.video_assets);
 
   const navModules: NavModule[] = snapshot.modules.map((m) => ({
     id: m.id,
@@ -153,7 +163,7 @@ export default async function LessonPlayerPage({
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:flex-row lg:gap-10 lg:py-10">
       <CourseNavSidebar
-        slug={publication.slug}
+        slug={meta.slug}
         courseTitle={snapshot.course.title}
         modules={navModules}
         currentLessonId={lessonId}
@@ -168,13 +178,29 @@ export default async function LessonPlayerPage({
           {/* ── Lesson header ── */}
           <div className="mb-8">
             <Link
-              href={`/learn/${publication.slug}`}
+              href={`/learn/${meta.slug}`}
               className="inline-flex items-center gap-1 text-sm text-stone-500 transition-colors hover:text-stone-800"
             >
               <ChevronLeft className="h-4 w-4" aria-hidden />
               {snapshot.course.title}
             </Link>
-            <div className="mt-3 flex items-start justify-between gap-4">
+            <p className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] uppercase tracking-[0.18em] text-learn-700">
+              {currentModuleIndex >= 0 ? (
+                <>
+                  <span>Module {currentModuleIndex + 1}</span>
+                  <span aria-hidden>·</span>
+                </>
+              ) : null}
+              <span>
+                Lesson {lessonIndex + 1} of {orderedLessons.length}
+              </span>
+              {initialProgress?.status === "completed" ? (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 font-sans text-xs font-medium normal-case tracking-normal text-emerald-700">
+                  Completed
+                </span>
+              ) : null}
+            </p>
+            <div className="mt-2 flex items-start justify-between gap-4">
               <h1 className="text-3xl leading-tight [font-family:var(--font-display)] font-light">
                 {lesson.title}
               </h1>
@@ -184,44 +210,37 @@ export default async function LessonPlayerPage({
                 </span>
               ) : null}
             </div>
-            <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-stone-400">
-              {currentModuleIndex >= 0 ? (
-                <>
-                  <span className="font-medium text-stone-500">
-                    Module {currentModuleIndex + 1}
-                  </span>
-                  <span aria-hidden>·</span>
-                </>
-              ) : null}
-              <span>
-                Lesson {lessonIndex + 1} of {orderedLessons.length}
-              </span>
-              {initialProgress?.status === "completed" ? (
-                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                  Completed
-                </span>
-              ) : null}
-            </p>
           </div>
 
           <AnalyticsProvider
-            publicationId={publication.id}
-            version={publication.version}
-            courseId={publication.course_id}
+            publicationId={meta.id}
+            version={meta.version}
+            courseId={meta.course_id}
             lessonId={lesson.id}
-            enabled={access.role === "student"}
+            enabled={isStudent}
           >
             <LearnLessonView
-              courseId={publication.course_id}
-              publicationId={publication.id}
+              courseId={meta.course_id}
+              publicationId={meta.id}
               lesson={lesson}
-              role={access.role}
+              role={role}
               userId={user.id}
               videoData={videoData}
-              deckViews={deckViews}
+              deckViews={{}}
               quizAttemptCounts={quizAttemptCounts}
               homeworkSubmissions={homeworkSubmissions}
               initialProgress={initialProgress}
+              initialProgressState={initialProgressState}
+              slideFeedback={slideFeedback}
+              courseTitle={snapshot.course.title}
+              lessonNumber={lessonIndex + 1}
+              lessonCount={orderedLessons.length}
+              nextLesson={
+                next
+                  ? { title: next.title, href: `/learn/${meta.slug}/${next.id}` }
+                  : null
+              }
+              courseHref={`/learn/${meta.slug}`}
             />
           </AnalyticsProvider>
 
@@ -229,10 +248,13 @@ export default async function LessonPlayerPage({
           <nav className="mt-12 flex items-stretch justify-between gap-4 border-t border-stone-200/70 pt-6">
             {prev ? (
               <Link
-                href={`/learn/${publication.slug}/${prev.id}`}
-                className="group flex min-w-0 items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
+                href={`/learn/${meta.slug}/${prev.id}`}
+                className="group flex min-w-0 items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-sm text-stone-600 transition hover:-translate-y-0.5 hover:border-stone-300 hover:text-stone-900"
               >
-                <ArrowLeft className="h-4 w-4 shrink-0 text-stone-400 group-hover:text-stone-600" aria-hidden />
+                <ArrowLeft
+                  className="h-4 w-4 shrink-0 text-stone-400 transition group-hover:-translate-x-0.5 group-hover:text-learn-600"
+                  aria-hidden
+                />
                 <span className="min-w-0">
                   <span className="block text-[11px] uppercase tracking-wide text-stone-400">
                     Previous
@@ -245,8 +267,8 @@ export default async function LessonPlayerPage({
             )}
             {next ? (
               <Link
-                href={`/learn/${publication.slug}/${next.id}`}
-                className="group flex min-w-0 items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-right text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
+                href={`/learn/${meta.slug}/${next.id}`}
+                className="group flex min-w-0 items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-right text-sm text-stone-600 transition hover:-translate-y-0.5 hover:border-learn-200 hover:text-stone-900"
               >
                 <span className="min-w-0">
                   <span className="block text-[11px] uppercase tracking-wide text-stone-400">
@@ -254,12 +276,15 @@ export default async function LessonPlayerPage({
                   </span>
                   <span className="block truncate">{next.title}</span>
                 </span>
-                <ArrowRight className="h-4 w-4 shrink-0 text-stone-400 group-hover:text-stone-600" aria-hidden />
+                <ArrowRight
+                  className="h-4 w-4 shrink-0 text-stone-400 transition group-hover:translate-x-0.5 group-hover:text-learn-600"
+                  aria-hidden
+                />
               </Link>
             ) : (
               <Link
-                href={`/learn/${publication.slug}`}
-                className="flex items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
+                href={`/learn/${meta.slug}`}
+                className="group flex items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-sm text-stone-600 transition hover:-translate-y-0.5 hover:border-stone-300 hover:text-stone-900"
               >
                 Back to course overview
               </Link>
@@ -267,6 +292,14 @@ export default async function LessonPlayerPage({
           </nav>
         </div>
       </div>
+
+      {reviewState ? (
+        <ReviewSlideIn
+          courseId={meta.course_id}
+          courseTitle={snapshot.course.title}
+          state={reviewState}
+        />
+      ) : null}
     </div>
   );
 }

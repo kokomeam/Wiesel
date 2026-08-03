@@ -424,6 +424,30 @@ export type Database = {
           },
         ]
       }
+      comms_suppressions: {
+        Row: {
+          created_at: string
+          detail: Json
+          reason: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: Json
+          reason: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          detail?: Json
+          reason?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           course_id: string
@@ -472,7 +496,9 @@ export type Database = {
           course_id: string
           created_by: string
           id: string
+          lesson_count: number | null
           linter_report: Json | null
+          module_count: number | null
           previous_slugs: string[]
           published_at: string
           slug: string
@@ -486,7 +512,9 @@ export type Database = {
           course_id: string
           created_by: string
           id?: string
+          lesson_count?: number | null
           linter_report?: Json | null
+          module_count?: number | null
           previous_slugs?: string[]
           published_at?: string
           slug: string
@@ -500,7 +528,9 @@ export type Database = {
           course_id?: string
           created_by?: string
           id?: string
+          lesson_count?: number | null
           linter_report?: Json | null
+          module_count?: number | null
           previous_slugs?: string[]
           published_at?: string
           slug?: string
@@ -519,10 +549,52 @@ export type Database = {
           },
         ]
       }
+      course_reviews: {
+        Row: {
+          course_id: string
+          created_at: string
+          id: string
+          is_public: boolean
+          rating: number
+          review_text: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          id?: string
+          is_public?: boolean
+          rating: number
+          review_text?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          id?: string
+          is_public?: boolean
+          rating?: number
+          review_text?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "course_reviews_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       courses: {
         Row: {
           audience: string | null
           author_id: string
+          cover_image_url: string | null
           created_at: string
           description: string | null
           id: string
@@ -539,6 +611,7 @@ export type Database = {
         Insert: {
           audience?: string | null
           author_id: string
+          cover_image_url?: string | null
           created_at?: string
           description?: string | null
           id?: string
@@ -555,6 +628,7 @@ export type Database = {
         Update: {
           audience?: string | null
           author_id?: string
+          cover_image_url?: string | null
           created_at?: string
           description?: string | null
           id?: string
@@ -823,6 +897,8 @@ export type Database = {
           course_id: string
           enrolled_at: string
           id: string
+          review_dismiss_count: number
+          review_dismissed_at: string | null
           status: string
           updated_at: string
           user_id: string
@@ -832,6 +908,8 @@ export type Database = {
           course_id: string
           enrolled_at?: string
           id?: string
+          review_dismiss_count?: number
+          review_dismissed_at?: string | null
           status?: string
           updated_at?: string
           user_id: string
@@ -841,6 +919,8 @@ export type Database = {
           course_id?: string
           enrolled_at?: string
           id?: string
+          review_dismiss_count?: number
+          review_dismissed_at?: string | null
           status?: string
           updated_at?: string
           user_id?: string
@@ -1193,6 +1273,8 @@ export type Database = {
           channel: string
           course_id: string
           created_at: string
+          delivery_events: Json
+          delivery_status: string
           error: string | null
           finding_id: string | null
           id: string
@@ -1208,6 +1290,8 @@ export type Database = {
           channel?: string
           course_id: string
           created_at?: string
+          delivery_events?: Json
+          delivery_status?: string
           error?: string | null
           finding_id?: string | null
           id?: string
@@ -1223,6 +1307,8 @@ export type Database = {
           channel?: string
           course_id?: string
           created_at?: string
+          delivery_events?: Json
+          delivery_status?: string
           error?: string | null
           finding_id?: string | null
           id?: string
@@ -1256,54 +1342,78 @@ export type Database = {
           block_id: string | null
           client_event_id: string
           client_ts: string
-          course_id: string
+          course_id: string | null
+          device_class: string | null
           dwell_ms: number | null
           event_type: string
+          feedback_comment: string | null
           id: string
-          lesson_id: string
+          lesson_id: string | null
           metadata: Json
-          publication_id: string
+          metric_name: string | null
+          metric_rating: string | null
+          metric_value: number | null
+          navigation_type: string | null
+          publication_id: string | null
           quartile: number | null
+          reaction: string | null
+          route: string | null
           server_ts: string
           slide_id: string | null
           user_id: string
-          version: number
+          version: number | null
         }
         Insert: {
           attempt_id?: string | null
           block_id?: string | null
           client_event_id: string
           client_ts: string
-          course_id: string
+          course_id?: string | null
+          device_class?: string | null
           dwell_ms?: number | null
           event_type: string
+          feedback_comment?: string | null
           id?: string
-          lesson_id: string
+          lesson_id?: string | null
           metadata?: Json
-          publication_id: string
+          metric_name?: string | null
+          metric_rating?: string | null
+          metric_value?: number | null
+          navigation_type?: string | null
+          publication_id?: string | null
           quartile?: number | null
+          reaction?: string | null
+          route?: string | null
           server_ts?: string
           slide_id?: string | null
           user_id: string
-          version: number
+          version?: number | null
         }
         Update: {
           attempt_id?: string | null
           block_id?: string | null
           client_event_id?: string
           client_ts?: string
-          course_id?: string
+          course_id?: string | null
+          device_class?: string | null
           dwell_ms?: number | null
           event_type?: string
+          feedback_comment?: string | null
           id?: string
-          lesson_id?: string
+          lesson_id?: string | null
           metadata?: Json
-          publication_id?: string
+          metric_name?: string | null
+          metric_rating?: string | null
+          metric_value?: number | null
+          navigation_type?: string | null
+          publication_id?: string | null
           quartile?: number | null
+          reaction?: string | null
+          route?: string | null
           server_ts?: string
           slide_id?: string | null
           user_id?: string
-          version?: number
+          version?: number | null
         }
         Relationships: [
           {
@@ -1789,26 +1899,35 @@ export type Database = {
       profiles: {
         Row: {
           avatar_url: string | null
+          bio: string | null
           created_at: string
           display_name: string | null
+          headline: string | null
           id: string
           plan: string
+          role: string
           updated_at: string
         }
         Insert: {
           avatar_url?: string | null
+          bio?: string | null
           created_at?: string
           display_name?: string | null
+          headline?: string | null
           id: string
           plan?: string
+          role?: string
           updated_at?: string
         }
         Update: {
           avatar_url?: string | null
+          bio?: string | null
           created_at?: string
           display_name?: string | null
+          headline?: string | null
           id?: string
           plan?: string
+          role?: string
           updated_at?: string
         }
         Relationships: []
@@ -1930,6 +2049,98 @@ export type Database = {
             columns: ["publication_id"]
             isOneToOne: false
             referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      rollup_content_feedback: {
+        Row: {
+          block_id: string | null
+          computed_at: string
+          confusing_count: number
+          confusing_pct: number | null
+          course_id: string
+          helpful_count: number
+          id: string
+          lesson_id: string
+          publication_id: string
+          recent_comments: Json
+          slide_id: string | null
+          version: number
+        }
+        Insert: {
+          block_id?: string | null
+          computed_at?: string
+          confusing_count: number
+          confusing_pct?: number | null
+          course_id: string
+          helpful_count: number
+          id?: string
+          lesson_id: string
+          publication_id: string
+          recent_comments?: Json
+          slide_id?: string | null
+          version: number
+        }
+        Update: {
+          block_id?: string | null
+          computed_at?: string
+          confusing_count?: number
+          confusing_pct?: number | null
+          course_id?: string
+          helpful_count?: number
+          id?: string
+          lesson_id?: string
+          publication_id?: string
+          recent_comments?: Json
+          slide_id?: string | null
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rollup_content_feedback_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "rollup_content_feedback_publication_id_fkey"
+            columns: ["publication_id"]
+            isOneToOne: false
+            referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      rollup_course_reviews: {
+        Row: {
+          avg_rating: number
+          computed_at: string
+          course_id: string
+          rating_distribution: Json
+          review_count: number
+        }
+        Insert: {
+          avg_rating: number
+          computed_at?: string
+          course_id: string
+          rating_distribution: Json
+          review_count: number
+        }
+        Update: {
+          avg_rating?: number
+          computed_at?: string
+          course_id?: string
+          rating_distribution?: Json
+          review_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rollup_course_reviews_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: true
+            referencedRelation: "courses"
             referencedColumns: ["id"]
           },
         ]
@@ -2381,6 +2592,7 @@ export type Database = {
           platform: string
           post_type: string
           posted_manually_at: string | null
+          regenerated_from_post_id: string | null
           source_text: string | null
           source_type: string
           status: string
@@ -2416,6 +2628,7 @@ export type Database = {
           platform: string
           post_type?: string
           posted_manually_at?: string | null
+          regenerated_from_post_id?: string | null
           source_text?: string | null
           source_type: string
           status?: string
@@ -2451,6 +2664,7 @@ export type Database = {
           platform?: string
           post_type?: string
           posted_manually_at?: string | null
+          regenerated_from_post_id?: string | null
           source_text?: string | null
           source_type?: string
           status?: string
@@ -2460,6 +2674,13 @@ export type Database = {
           version?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "social_post_regenerated_from_post_id_fkey"
+            columns: ["regenerated_from_post_id"]
+            isOneToOne: false
+            referencedRelation: "social_post"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "social_post_batch_id_fkey"
             columns: ["batch_id"]
@@ -2809,10 +3030,44 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      perf_vitals_daily: {
+        Row: {
+          day: string | null
+          device_class: string | null
+          metric_name: string | null
+          n: number | null
+          p50: number | null
+          p75: number | null
+          p95: number | null
+          route: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      apply_comms_delivery: {
+        Args: { p_entry: Json; p_message_id: string; p_status: string }
+        Returns: Json
+      }
       course_analytics_overview: { Args: { cid: string }; Returns: Json }
+      course_landing_extras: {
+        Args: { p_course_id: string }
+        Returns: {
+          course_avg_rating: number | null
+          course_review_count: number
+          course_student_count: number
+          cover_image_url: string | null
+          creator_avatar_url: string | null
+          creator_avg_rating: number | null
+          creator_bio: string | null
+          creator_course_count: number
+          creator_headline: string | null
+          creator_id: string
+          creator_name: string
+          creator_review_count: number
+          creator_student_count: number
+        }[]
+      }
       course_roster: {
         Args: { cid: string }
         Returns: {
@@ -2828,12 +3083,17 @@ export type Database = {
           user_id: string
         }[]
       }
+      dismiss_review_prompt: { Args: { p_course_id: string }; Returns: boolean }
       ingest_learning_events: { Args: { p_events: Json }; Returns: number }
       marketplace_listings: {
         Args: never
         Returns: {
           audience: string
+          avg_rating: number | null
           course_id: string
+          cover_image_url: string | null
+          creator_avatar_url: string | null
+          creator_headline: string | null
           creator_name: string
           description: string
           lesson_count: number
@@ -2841,29 +3101,39 @@ export type Database = {
           module_count: number
           publication_id: string
           published_at: string
+          review_count: number
           slug: string
           title: string
           version: number
         }[]
       }
+      my_activity_days: {
+        Args: { p_days?: number }
+        Returns: { activity_date: string }[]
+      }
       my_learning: {
         Args: never
         Returns: {
+          avg_rating: number | null
           completed_lessons: number
           course_id: string
+          cover_image_url: string | null
           description: string
           enrolled_at: string
           enrollment_id: string
           enrollment_status: string
+          is_live: boolean
           last_activity_at: string
           level: string
           publication_id: string
+          review_count: number
           slug: string
           title: string
           total_lessons: number
           version: number
         }[]
       }
+      my_slide_feedback: { Args: { p_course_id: string }; Returns: Json }
       publish_course: {
         Args: {
           p_answer_keys: Json
@@ -2877,8 +3147,13 @@ export type Database = {
         Returns: Json
       }
       refresh_course_analytics: { Args: { cid: string }; Returns: undefined }
+      review_prompt_state: { Args: { p_course_id: string }; Returns: Json }
       social_create_batch: {
         Args: { p_batch: Json; p_posts: Json }
+        Returns: Json
+      }
+      submit_course_review: {
+        Args: { p_course_id: string; p_rating: number; p_review_text: string }
         Returns: Json
       }
     }

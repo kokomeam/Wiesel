@@ -117,6 +117,7 @@ export function MarketingHub({
   campaign,
   pages,
   pending,
+  previews,
   questions,
   activity,
   autonomy,
@@ -127,6 +128,8 @@ export function MarketingHub({
   campaign: CampaignVM | null;
   pages: LandingPageVM[];
   pending: PendingActionPayload[];
+  /** Live previews for `pending`, index-aligned — streamed, never awaited by the page. */
+  previews: Promise<(Record<string, unknown> | null)[]>;
   questions: QuestionVM[];
   activity: ActivityEntryVM[];
   autonomy: AutonomySettingsModel;
@@ -275,8 +278,16 @@ export function MarketingHub({
             <Badge tone={pending.length > 0 ? "rose" : "sky"}>{attentionCount}</Badge>
           </h2>
           <div className="space-y-3">
-            {pending.map((p) => (
-              <ApprovalCard key={p.actionId} pending={p} onResult={setToast} />
+            {/* PERF-1 C1 streamed previews (wave-3 shape): the cards mount ONCE
+                with their non-preview data and never remount — only the
+                preview slot INSIDE each card suspends on the ONE shared
+                promise (ApprovalCard's previewsPromise/previewIndex), so
+                in-progress card state (a typed rejection note, an open edit
+                form) survives the previews landing. Approve / Deny never wait
+                on it: the server re-runs everything on approve, so the preview
+                is informational (and feeds Edit's defaults). */}
+            {pending.map((p, i) => (
+              <ApprovalCard key={p.actionId} pending={p} previewsPromise={previews} previewIndex={i} onResult={setToast} />
             ))}
             {questions.map((q) => (
               <QuestionCard key={q.id} questionId={q.id} question={q.question} options={q.options} onResult={setToast} />

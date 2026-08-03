@@ -12,6 +12,7 @@
  */
 
 import type { IllustrationContent } from "@/lib/course/types";
+import { SlideImage } from "../SlideImage";
 import { EditableText, withAlpha, type StructuredCtx } from "./common";
 
 const PAD = 80;
@@ -71,8 +72,13 @@ export function IllustrationLayout({ content, ctx }: { content: IllustrationCont
         }}
       >
         {content.imageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={content.imageUrl} alt={content.alt} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          // The box width varies with points/caption — hint its live
+          // fraction of the logical canvas (PERF-1 D3).
+          <SlideImage
+            src={content.imageUrl}
+            alt={content.alt}
+            sizes={`(max-width: 1280px) ${Math.round((imgW / 1280) * 100)}vw, ${imgW}px`}
+          />
         ) : (
           <div
             className="flex items-center justify-center font-mono uppercase"

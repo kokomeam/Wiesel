@@ -1,45 +1,35 @@
 "use client";
 
 /**
- * Dispatches a renderer-owned structured slide to its layout component, behind
- * a themed corner-blob + dot-grid backdrop (renderer-owned decoration — never a
- * per-slide AI choice). Clicking the background selects the slide; text slots
- * edit in place. The freeform element canvas is bypassed entirely here.
+ * Dispatches a renderer-owned structured slide to its layout component (via
+ * the render registry), behind a themed corner-blob + dot-grid backdrop
+ * (renderer-owned decoration — never a per-slide AI choice). Clicking the
+ * background selects the slide; text slots edit in place. The freeform
+ * element canvas is bypassed entirely here. Store-free: selection rides the
+ * editor bridge, so the read-only SlideView path ships no editor stores.
  */
 
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import { findTheme } from "@/lib/course/slide/themes";
-import { useEditorStore } from "@/lib/course/store";
 import type { Slide } from "@/lib/course/types";
+import { useSlideEditorBridge } from "../editorBridge";
 import { type StructuredCtx } from "./common";
+import { renderStructuredLayout } from "./layoutRegistry";
 import { StructuredBackdrop } from "./StructuredBackdrop";
-import { CodeWalkthroughLayout } from "./CodeWalkthroughLayout";
-import { ComparisonColumnsLayout } from "./ComparisonColumnsLayout";
-import { ComparisonMatrixLayout } from "./ComparisonMatrixLayout";
-import { ConceptExampleLayout } from "./ConceptExampleLayout";
-import { DiagramLayout } from "./DiagramLayout";
-import { IllustrationLayout } from "./IllustrationLayout";
-import { ImageReferenceLayout } from "./ImageReferenceLayout";
-import { ImageSupportingLayout } from "./ImageSupportingLayout";
-import { KeyConceptLayout } from "./KeyConceptLayout";
-import { MetricsLayout } from "./MetricsLayout";
-import { OutlineListLayout } from "./OutlineListLayout";
-import { ProcessLayout } from "./ProcessLayout";
-import { ProseLayout } from "./ProseLayout";
-import { SectionBreakLayout } from "./SectionBreakLayout";
 
 export function StructuredSlide({
   slide,
-  blockId,
-  lessonId,
+  blockId = "",
+  lessonId = "",
   interactive,
 }: {
   slide: Slide;
-  blockId: string;
-  lessonId: string;
+  /** Optional in read-only renders — only selection/editing paths use them. */
+  blockId?: string;
+  lessonId?: string;
   interactive: boolean;
 }) {
-  const select = useEditorStore((s) => s.select);
+  const bridge = useSlideEditorBridge();
   const theme = findTheme(slide.style.theme.id);
   const template = slide.template;
   if (!template) return null;
@@ -69,29 +59,16 @@ export function StructuredSlide({
           })
         : { "aria-hidden": true as const })}
       onClick={
-        interactive
+        interactive && bridge
           ? (e) => {
               e.stopPropagation();
-              select({ kind: "slide", id: slide.id, blockId, lessonId });
+              bridge.select({ kind: "slide", id: slide.id, blockId, lessonId });
             }
           : undefined
       }
     >
       <StructuredBackdrop accent={theme.accentColor} />
-      {template.layoutId === "process_steps" && <ProcessLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "key_concept" && <KeyConceptLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "metrics_overview" && <MetricsLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "code_walkthrough_steps" && <CodeWalkthroughLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "section_break" && <SectionBreakLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "concept_example" && <ConceptExampleLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "outline_list" && <OutlineListLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "prose" && <ProseLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "comparison_columns" && <ComparisonColumnsLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "comparison_matrix" && <ComparisonMatrixLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "diagram" && <DiagramLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "illustration" && <IllustrationLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "image_reference" && <ImageReferenceLayout content={template.content} ctx={ctx} />}
-      {template.layoutId === "image_supporting" && <ImageSupportingLayout content={template.content} ctx={ctx} />}
+      {renderStructuredLayout(template, ctx)}
     </div>
   );
 }

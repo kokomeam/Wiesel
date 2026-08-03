@@ -3,7 +3,10 @@
 /**
  * The slide canvas: a fixed 1280×720 logical stage CSS-scaled to its
  * container. Renders background layers, z-ordered elements, then transient
- * chrome (snap guides). Thumbnails reuse it with mode="thumbnail".
+ * chrome (snap guides). `mode="thumbnail"` renders the store-free SlideView
+ * instead (one rendering implementation, two entry points — PERF-1 D1); the
+ * edit stage also provides the editor BRIDGE the shared renderers commit
+ * through, so they never import the stores themselves.
  *
  * Stage keyboard (edit mode, element(s) selected, no input focused):
  *   arrows nudge 1px (Shift = 10, never snaps) · Delete removes ·
@@ -21,21 +24,41 @@ import {
   groupElementsPatch,
   moveElementPatch,
   ungroupElementsPatch,
+  updateElementPatch,
+  updateTemplateContentPatch,
 } from "@/lib/course/commands";
 import { copyElementsToClipboards, pasteIntoSlide } from "@/lib/editor/clipboard";
 import { SLIDE_H, SLIDE_W } from "@/lib/course/slide/geometry";
-import { resolveBackground } from "@/lib/course/slide/styleResolver";
 import { findSlide } from "@/lib/course/queries";
 import { expandToClosures, groupIdsAt, inScope, unitKeysAt } from "@/lib/course/slide/groups";
 import { useEditorStore } from "@/lib/course/store";
-import { useDragStore } from "@/lib/editor/dragStore";
+import {
+  createFrameCoalescer,
+  useDragStore,
+  type FrameCoalescer,
+  type MarqueeRect,
+} from "@/lib/editor/dragStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import type { Slide, SlideElement } from "@/lib/course/types";
+import { SlideEditorBridgeProvider, type SlideEditorBridge } from "./editorBridge";
 import { ElementView } from "./ElementView";
 import { MultiSelectionBox } from "./MultiSelectionBox";
+import { BackgroundLayers, SlideView } from "./SlideView";
 import { StructuredBackdrop } from "./structured/StructuredBackdrop";
 import { StructuredSlide } from "./structured/StructuredSlide";
 import { useStageScale } from "./useStageScale";
+
+/** The store-backed editing seam handed to the shared renderers (they must
+ *  not import the stores/commands themselves — the read-only SlideView path
+ *  ships them too). Module-level constant ⇒ stable context identity. */
+const EDITOR_BRIDGE: SlideEditorBridge = {
+  apply: (patch) => {
+    useEditorStore.getState().apply(patch, "human");
+  },
+  select: (selection) => useEditorStore.getState().select(selection),
+  openImageDialog: (req) => useUIStore.getState().openImageDialog(req),
+  commands: { updateElementPatch, updateTemplateContentPatch },
+};
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -43,33 +66,6 @@ function isTypingTarget(target: EventTarget | null): boolean {
     target.tagName === "INPUT" ||
     target.tagName === "TEXTAREA" ||
     target.isContentEditable
-  );
-}
-
-function BackgroundLayers({ slide }: { slide: Slide }) {
-  const bg = slide.style.background;
-  return (
-    <>
-      <div className="absolute inset-0" style={resolveBackground(bg)} />
-      {bg.type === "image" && (
-        <>
-          {/* eslint-disable-next-line @next/next/no-img-element -- dynamic user/object URLs */}
-          <img
-            src={bg.imageSrc}
-            alt=""
-            aria-hidden
-            draggable={false}
-            className="absolute inset-0 h-full w-full select-none object-cover"
-          />
-          {bg.overlayColor && (bg.overlayOpacity ?? 0) > 0 && (
-            <div
-              className="absolute inset-0"
-              style={{ backgroundColor: bg.overlayColor, opacity: bg.overlayOpacity }}
-            />
-          )}
-        </>
-      )}
-    </>
   );
 }
 
@@ -141,14 +137,33 @@ export function SlideStage({
   mode: "edit" | "thumbnail";
   className?: string;
 }) {
+  // Read-only entry: the store-free renderer (filmstrip thumbnails, previews).
+  if (mode === "thumbnail") {
+    return <SlideView slide={slide} className={className} />;
+  }
+  return (
+    <EditStage slide={slide} blockId={blockId} lessonId={lessonId} className={className} />
+  );
+}
+
+function EditStage({
+  slide,
+  blockId,
+  lessonId,
+  className,
+}: {
+  slide: Slide;
+  blockId: string;
+  lessonId: string;
+  className?: string;
+}) {
   const select = useEditorStore((s) => s.select);
   const { containerRef, scale: fitScale } = useStageScale();
-  const interactive = mode === "edit";
   /** Renderer-owned structured slides bypass the freeform element canvas
    *  (no marquee / element drag / stage keyboard). */
   const isTemplate = !!slide.template;
-  const elementsInteractive = interactive && !isTemplate;
-  const zoom = useUIStore((s) => (interactive ? s.zoom : 1));
+  const elementsInteractive = !isTemplate;
+  const zoom = useUIStore((s) => s.zoom);
   /** Effective scale = fit-to-container × user zoom. All logical↔screen
    *  math downstream uses this one number. */
   const scale = fitScale === null ? null : fitScale * zoom;
@@ -175,6 +190,17 @@ export function SlideStage({
     top: number;
     moved: boolean;
   } | null>(null);
+  // One store write per frame while the marquee tracks the pointer (A5 §6).
+  const marqueeWrites = useRef<FrameCoalescer<MarqueeRect> | null>(null);
+  if (marqueeWrites.current === null) {
+    marqueeWrites.current = createFrameCoalescer((rect) =>
+      useDragStore.getState().setMarquee(rect)
+    );
+  }
+  useEffect(() => {
+    const writes = marqueeWrites.current;
+    return () => writes?.cancel();
+  }, []);
 
   function toLogical(e: React.PointerEvent) {
     const g = marqueeGesture.current;
@@ -183,7 +209,7 @@ export function SlideStage({
   }
 
   function marqueeDown(e: React.PointerEvent) {
-    if (!interactive || !scale) return;
+    if (!scale) return;
     if (e.button !== 0) return; // right-click opens the menu, never a marquee
     // the inner (scaled) stage, not the container — once zoomed, the
     // container is just the scroll viewport
@@ -205,7 +231,7 @@ export function SlideStage({
     const { x, y } = toLogical(e);
     if (!g.moved && Math.abs(x - g.startX) < 3 && Math.abs(y - g.startY) < 3) return;
     g.moved = true;
-    useDragStore.getState().setMarquee({
+    marqueeWrites.current?.push({
       x: Math.min(g.startX, x),
       y: Math.min(g.startY, y),
       width: Math.abs(x - g.startX),
@@ -216,6 +242,8 @@ export function SlideStage({
   function marqueeUp() {
     const g = marqueeGesture.current;
     marqueeGesture.current = null;
+    // Land any pending frame first so the hit-test reads the exact rect.
+    marqueeWrites.current?.flush();
     const rect = useDragStore.getState().marquee;
     useDragStore.getState().setMarquee(null);
     if (!g) return;
@@ -458,25 +486,24 @@ export function SlideStage({
   );
 
   return (
+    <SlideEditorBridgeProvider value={EDITOR_BRIDGE}>
     <div
       ref={containerRef}
-      {...(interactive
-        ? aiAttrs({
-            component: "slide-canvas",
-            type: "slide",
-            id: slide.id,
-            parentId: blockId,
-            order: slide.order,
-            purpose: slide.ai.purpose,
-            label: `Slide canvas: ${slide.title ?? `slide ${slide.order + 1}`}`,
-          })
-        : { "aria-hidden": true as const })}
+      {...aiAttrs({
+        component: "slide-canvas",
+        type: "slide",
+        id: slide.id,
+        parentId: blockId,
+        order: slide.order,
+        purpose: slide.ai.purpose,
+        label: `Slide canvas: ${slide.title ?? `slide ${slide.order + 1}`}`,
+      })}
       onPointerDown={elementsInteractive ? marqueeDown : undefined}
       onPointerMove={elementsInteractive ? marqueeMove : undefined}
       onPointerUp={elementsInteractive ? marqueeUp : undefined}
       // Keep canvas clicks from bubbling to BlockFrame, which would replace
       // the slide/element selection with the whole-block selection.
-      onClick={interactive ? (e) => e.stopPropagation() : undefined}
+      onClick={(e) => e.stopPropagation()}
       onContextMenu={
         elementsInteractive
           ? (e) => {
@@ -502,10 +529,8 @@ export function SlideStage({
       }
       className={cn(
         "relative aspect-video w-full",
-        interactive && zoom > 1 ? "overflow-auto scrollbar-thin" : "overflow-hidden",
-        interactive
-          ? "rounded-xl shadow-[0_2px_16px_rgba(16,24,40,0.08)] ring-1 ring-stone-200/80"
-          : "pointer-events-none rounded-lg",
+        zoom > 1 ? "overflow-auto scrollbar-thin" : "overflow-hidden",
+        "rounded-xl shadow-[0_2px_16px_rgba(16,24,40,0.08)] ring-1 ring-stone-200/80",
         className
       )}
     >
@@ -533,7 +558,7 @@ export function SlideStage({
               slide={slide}
               blockId={blockId}
               lessonId={lessonId}
-              interactive={interactive}
+              interactive
             />
           ) : (
             <>
@@ -551,19 +576,18 @@ export function SlideStage({
                   lessonId={lessonId}
                   themeId={slide.style.theme.id}
                   scale={scale}
-                  interactive={interactive}
+                  interactive
                 />
               ))}
-              {interactive && (
-                <MultiSelectionBox slide={slide} blockId={blockId} scale={scale} />
-              )}
-              {interactive && <GuideOverlay slideId={slide.id} scale={scale} />}
-              {interactive && <MarqueeOverlay />}
+              <MultiSelectionBox slide={slide} blockId={blockId} scale={scale} />
+              <GuideOverlay slideId={slide.id} scale={scale} />
+              <MarqueeOverlay />
             </>
           )}
         </div>
         </div>
       )}
     </div>
+    </SlideEditorBridgeProvider>
   );
 }

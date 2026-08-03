@@ -91,7 +91,35 @@ and put reusable primitives in `components/ui/`.
   replacing the Sparkles tile, pill buttons; student-path accents sky→teal). Its nav links
   collapse to the hamburger below `lg` (the mono links don't fit at md).
   `components/ui/background-paths.tsx` default tint is now `text-orange-400`.
-- `/dashboard` — creator dashboard (moved here from `/` when the landing took root)
+- `/dashboard` — creator dashboard — **REAL since the 2026-07-08 portal split**
+  (was lib/data.ts mock): one batched `.in(courseIds)` load (live pubs,
+  enrollments, review rollups, open agent_findings, draft learner_messages) +
+  a spotlight-course funnel; pure math in `lib/analytics/creatorHome.ts`;
+  revenue = honest coming-soon card. Cards deep-link `/studio?course={id}`.
+  **Top of page = the creator identity band** (2026-07-11,
+  `components/dashboard/CreatorIdentityHeader.tsx`, both branches):
+  edit-in-place avatar (immediate save + old-object cleanup) + name/headline/
+  bio inline editor + dashed ghost prompts for missing pieces (this IS the
+  profile nudge — don't re-add one to AttentionRail/OnboardingHero).
+  Persistence shared with /settings via `lib/profile/clientProfile.ts` — edit
+  profile-save behavior THERE, never in the components.
+- `/home`, `/my-courses`, `/explore` — the **STUDENT PORTAL** (2026-07-08,
+  route group `app/(student)/`, editor-free shell
+  `components/shell/StudentSidebar.tsx`, learn-blue accent `--color-learn-*`).
+  Home = continue-hero + streak/accuracy stat band + review queue + offline
+  AI-tutor PREVIEW (`components/student/TutorPanel.tsx`); data via
+  `my_learning()` v2 / `marketplace_listings()` v2 / `my_activity_days()`
+  (migration `20260708000000_user_roles_portal.sql`). `profiles.role`
+  ('creator'|'learner') picks the post-login portal — a preference, NOT a
+  security boundary; portal switchers live in both sidebars. Full design:
+  `docs/portal-split.md`. ✅ **Both 2026-07 migrations (20260708000000 portal roles,
+  20260711000000 covers/creator identity) were APPLIED to the live project
+  on 2026-07-14** — the pre-migration degradation paths in the code remain
+  as defense for fresh environments.
+  All consumers degrade gracefully until then (`is_live ?? true`, role
+  fallback 'creator', covers → CoverArt fallback, instructor/extras sections
+  hidden, settings headline/bio + cover upload locked with a notice — full
+  matrix in `docs/creator-identity.md`).
 - `/studio` — Creator Studio, the core. Rebuilt (June 2026) as a **fully
   functional AI-native course editor**, then upgraded (V2, 2026-06-12) into a
   **Google-Slides-like authoring surface**: slides are a 1280×720 logical
@@ -174,15 +202,57 @@ and put reusable primitives in `components/ui/`.
 - `/api/ai/component-manifest` — JSON manifest of component types + allowed
   patch actions for AI agents.
 - `/marketplace` — REAL since Milestone 2: live public publications + the
-  caller's "My learning" (one tab); cards open `/learn/{slug}`.
+  caller's "My learning" (one tab); cards open `/learn/{slug}`. Since the
+  portal split it shares one card set with the student Explore page
+  (`components/learn/CourseCards.tsx` — keep `data-ai-tool=
+  "marketplace-course-card"`); `is_live === false` rows render unlinked.
+  **Covers (2026-07-11):** `courses.cover_image_url` is **live-mutable CARD
+  metadata, never snapshotted** (the M2 rule — refresh the cover without
+  republishing); rides `marketplace_listings()`/`my_learning()` v3 (columns
+  APPENDED) + the landing RPC; cards without one render the deterministic
+  `CoverArt` gradient+initial (`components/learn/CoverArt.tsx`,
+  hydration-safe). Direct `courses` selects naming the column retry WITHOUT
+  it pre-migration. Upload = `CoverImageCard` on the publish panel
+  (`data-ai-tool` `course-cover-upload`/`course-cover-input`; path
+  `{uid}/covers/{courseId}/…` via `lib/images/resize.ts` — the existing
+  per-user storage policies are the write gate; jpeg/png/webp only, no SVG).
 - `/learn/[slug]` + `/learn/[slug]/[lessonId]` — the PUBLIC learner runtime
   (route group `app/(learn)/`, own minimal shell) — see the Student learning
-  runtime section.
-- `/marketing`, `/analytics`, `/exports`, `/settings` — in-app placeholder
-  pages under `app/(app)/` sharing the Sidebar+Topbar shell in `app/(app)/layout.tsx`.
-- `/login` — email/password auth (Supabase); honors `?redirectTo=`.
-  `app/(app)/layout.tsx` + `lib/supabase/middleware.ts` redirect signed-out
-  visitors here (`/learn/*` stays public).
+  runtime section. **Landing redesigned 2026-07-11** (`docs/creator-identity.md`):
+  glow hero + serif title + meta chips (learner count/rating when
+  `course_landing_extras` resolves), sticky conversion card w/ aspect-video
+  cover (uploaded `cover_image_url` or the deterministic `CoverArt` fallback;
+  the 4 CTA states + "Your progress" literal preserved), "This course
+  includes" (`lib/learn/courseIncludes.ts`, snapshot-derived), "What you'll
+  learn" = plan.outcomes + prerequisites, restyled `CourseOutline`,
+  `#instructor` section (`InstructorCard`: avatar/headline/stats/clamped bio),
+  OG cover via `generateMetadata` + react `cache()`. Extras ride the
+  `course_landing_extras` definer RPC → `fetchCourseLandingExtras`
+  (`lib/learn/landingExtras.ts`, null on ANY error → sections hide).
+- `/exports` — the LAST lib/data.ts mock placeholder page under `app/(app)/`
+  (Sidebar+Topbar shell); `/marketing` + `/analytics` are real.
+- `/settings` — **REAL since 2026-07-11** (was a lib/data.ts placeholder):
+  `ProfileSettings` (avatar upload → client downscale → course-assets under
+  own `{uid}/avatar/…` → `profiles.avatar_url`; name/headline/bio w/ counters
+  + `lib/profile/schema.ts` zod; PGRST204 missing-column retry + amber notice
+  pre-migration; live "How learners see you" preview; `data-ai-tool`
+  `settings-profile-form`/`settings-save`) + `AccountCard` (email, plan
+  badge, default-portal radio → `profiles.role`).
+- `/login` — email/password auth (Supabase); honors `?redirectTo=`. Signup has
+  a learner/creator role picker (default inferred from redirectTo); sign-in
+  without redirectTo routes by `profiles.role` (learner → /home). The
+  middleware PROTECTED regex also covers home|my-courses|explore — when adding
+  a top-level in-app route, add its prefix or it ships public.
+- Perf conventions (2026-07-08): heavy routes have shape-matched `loading.tsx`
+  skeletons (`components/ui/Skeleton.tsx`) + per-group `error.tsx`; shiki is
+  lazy-imported in `lib/course/slide/highlight.ts`; keep server fetch waves
+  parallel (Promise.all) and access-checks BEFORE admin-client reads.
+- Editor agent chat status model (2026-07-08): client-side contract in
+  `docs/portal-split.md` § Agent chat — `thinking` ends ONLY on done/error;
+  `assistant_message` settles the bubble via `settleAssistantMessage`; tool
+  names render through `lib/ai/toolLabels.ts` (drift-guarded by
+  `verify:portal` — add a label when adding a tool); the plan modal minimizes
+  rather than discarding.
 
 ## Supabase (auth + persistence)
 
@@ -348,13 +418,19 @@ Learner behaviour telemetry end-to-end: an append-only event stream, nightly
 SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
 (Zod-first, pure modules) + migration `20260702050000_analytics_events.sql`.
 
-- **Contract** (`lib/analytics/events.ts`): 9-type discriminated union
-  (lesson_started, slide_viewed{slideId,dwellMs}, video_progress{quartile},
-  video_completed, quiz_started, quiz_submitted{attemptId},
-  homework_submitted, lesson_completed, session_heartbeat) — every event
-  carries publicationId/version/courseId/lessonId + a uuid `clientEventId`
-  (idempotency) + clientTs. **camelCase on the wire** (matches /api/learn),
-  `mapEventToColumns` → the snake row. Batch ≤100.
+- **Contract** (`lib/analytics/events.ts`): discriminated union — TEN learner
+  types (lesson_started, slide_viewed{slideId,dwellMs},
+  video_progress{quartile}, video_completed, quiz_started,
+  quiz_submitted{attemptId}, homework_submitted, lesson_completed,
+  session_heartbeat, and M10's **slide_feedback**{blockId,slideId,reaction
+  helpful|confusing,comment ≤500 nullable — append-only, LATEST reaction wins
+  per (user,slide) IN THE ROLLUP, toggle state via the own-rows-only
+  `my_slide_feedback` RPC}) + five M7 comms delivery types — every learner
+  event carries publicationId/version/courseId/lessonId + a uuid
+  `clientEventId` (idempotency) + clientTs. **camelCase on the wire** (matches
+  /api/learn), `mapEventToColumns` → the snake row (reaction/feedback_comment
+  are real CHECKed columns). Batch ≤100 (comms types excluded from the batch
+  schema — webhook-emitted only).
 - **HYBRID emission (the trust split):** the browser emits ENGAGEMENT events
   only; the AUTHORITATIVE events are SERVER-emitted from the existing writers
   (`lib/analytics/serverEmit.ts`, admin client, never throws): quiz_submitted
@@ -404,18 +480,45 @@ SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
   bucket resolved from quiz_answer_keys AT ROLLUP TIME into `key_value` so
   the dashboard never touches the admin client; null for short_answer),
   video retention (distinct users per quartile; video_completed ⇒ q4),
-  learner_flags (inactive: enrolled-active + coalesce(max(last_activity),
-  enrolled_at) < now()−7d; repeated failure: ≥2 attempts <60% on one block —
+  learner_flags (M8: computed by the EXTRACTED
+  `private.recompute_learner_flags` — migration `20260707010000` — inactive
+  (`inactive_incomplete`, renamed duration-neutral): enrolled-active +
+  coalesce(max(last_activity), enrolled_at) < now()−**4d** (was 7d); repeated
+  failure: ≥2 attempts <60% on one block —
   detail = {quizzes:[{blockId,failedAttempts,lastScorePct}]}).
   `public.refresh_course_analytics(cid)` = author-gated manual refresh (the
   dashboard's "Refresh data"); `private.refresh_all_course_analytics()` runs
   nightly via **pg_cron** (`0 3 * * *`, extension created in-migration).
+  **M10 slide feedback** (migration `20260707030000`):
+  `rollup_content_feedback` — per slide + per lesson (slide_id null = lesson
+  row), distinct-learner counts deduped to each learner's LATEST reaction,
+  confusing_pct (flag threshold in TS `feedbackOutlier`: ≥0.4 @ n≥3), comment
+  samples from the latest set; recomputed by
+  `private.recompute_content_feedback` via the two refresh wrappers. UI:
+  thumbs pair + tap-to-elaborate note in `LearnSlideDeck` (students only);
+  dashboard = the Content health "Slide health" table (dwell ⋈ feedback, one
+  per-slide surface, comments inline) + the funnel's Feedback column — NO
+  separate feedback tab.
+  **M9 course reviews** (migration `20260707020000`): `course_reviews`
+  (rating 1–5 CHECK, UNIQUE (course,user), upsert-on-resubmit; is_public
+  reserved/unread) — eligibility (`private.is_review_eligible` = enrollment
+  completed OR progress ≥70%, the roster formula; TS mirror
+  `REVIEW_ELIGIBLE_PROGRESS_PCT`) enforced in BOTH the `submit_course_review`
+  RPC and the RLS write policies; `review_prompt_state`/`dismiss_review_prompt`
+  RPCs drive the learner ask (slide-in on the player, persistent "Your review"
+  section on the landing — `components/learn/CourseReview.tsx`, pure
+  show/gap/cap logic in `lib/learn/reviews.ts`, 7d gap / 3-ask cap on
+  `enrollments.review_dismiss*`); `rollup_course_reviews` (per-course
+  count/avg/distribution, recomputed by the two refresh wrappers) feeds the
+  Overview `ReviewsCard` (+ live recent-text reads under author RLS,
+  `?reviewsPage=`). Reviews are DIRECT human input — never change-set-gated.
 - **Threshold single-source rule:** raw stats live ONLY in SQL (dashboard
   never recomputes); item-analysis flag thresholds live ONLY in
   `lib/analytics/flags.ts` (red: pct_correct<40 & n≥20 · distractor ≥2× key ·
   discrimination <0.1 · dwell skim/stall vs the publication's median-of-
-  medians); the stuck-queue constants (7d/2/0.60) unavoidably exist in BOTH —
-  `verify-analytics.ts` regex-asserts the migration still encodes the TS
+  medians); the stuck-queue constants (4d/2/0.60 + the 14d nudge cooldown)
+  unavoidably exist in BOTH — `verify-analytics.ts` regex-asserts the M8
+  migration (`20260707010000`, where the SQL now lives) still encodes the TS
   values, so drift trips CI. `lib/analytics/stats.ts` = pure percentile_cont
   + pointBiserial mirrors, golden-tested against the SQL.
 - **Dashboard** `/studio/[courseId]/analytics` (+ `learners/[learnerId]`),
@@ -446,7 +549,7 @@ SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
   best-effort), event-driven rollup freshness (nightly + manual is the
   contract; the dashboard shows "refreshed X ago").
 
-## Maintenance agent + learner comms (Milestones 5+6, 2026-07-03)
+## Maintenance agent + learner comms (Milestones 5+6, 2026-07-03; M7 delivery tracking 2026-07-07)
 
 > Full design: **`docs/agent-architecture.md`** (orchestrator/subagents/budgets/
 > triggers/safety rails) — read it before touching `lib/ai/maintenance.ts`,
@@ -497,13 +600,24 @@ SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
   client + real OpenAI client — the `course_roster`/`course_analytics_overview`
   RPCs allow `service_role` for this) · threshold
   (`private.file_threshold_findings` after every rollup recompute — one OPEN
-  finding per question, reasons aggregated, deduped by a partial unique index
-  on `(course_id, dedupe_key) where status='open'`; studio header "N findings"
+  finding per question, reasons aggregated, and (M8) ONE per learner under
+  `learner_risk:<userId>` (matches TS `dedupeKeyForFinding` so Analyst
+  adoption fires — the old per-flavor keys never collided), deduped by a
+  partial unique index on `(course_id, dedupe_key) where status='open'`;
+  **M8 nudge guards at filing time**: opted-out, suppressed (M7), and
+  recently-messaged learners (14d `NUDGE_COOLDOWN_DAYS` vs learner_messages)
+  are skipped — one check-in per silence; the Stuck queue still SHOWS every
+  stuck learner (manual outreach unrestricted) and each row now shows the last
+  check-in's delivery outcome; studio header "N findings"
   badge via StudioLoader → agentStore.openFindings; AgentPanel "Review flagged
   issues" chip sends a canned analyze message that adopts them).
 - **M6 `lib/comms/*`** — STANDALONE seam (the marketing branch's email suite is
   unmerged; these mirror its patterns at different paths — don't unify until
   the branches merge). **Resend via `fetch`, NO SDK (runtime deps stay 14)**;
+  the provider RETRIES transport errors + 429/5xx (3 attempts, backoff) and
+  every send carries `Idempotency-Key` = the message id so a retry never
+  double-sends (2026-07-07 — a transient `fetch failed` used to park the row
+  in `failed`; non-429 4xx never retry);
   From-address pinned to RESEND_FROM ("<creator> via WiseSel <addr>");
   HMAC opt-out tokens purpose-prefixed `wisesel.comms-optout.v1` over
   `MARKETING_TOKEN_SECRET` (never cross-usable with marketing's tokens);
@@ -519,6 +633,28 @@ SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
   seam. UI: MessageComposer + DraftList (AgentPanel "Messages to review"),
   StuckQueueTab's "Draft follow-up" WIRED (deterministic template prefill, no
   model call; disabled+tooltip when opted out), learner-detail audit list.
+- **M7 delivery tracking (2026-07-07, Engagement & Retention wave — full doc
+  `docs/comms-delivery-tracking.md`):** every send carries Resend tags
+  (`send_source=learner_comms` + message/course/user ids, `learnerCommsTags`)
+  and seeds `learner_messages.delivery_status` + `delivery_events`; the
+  Svix-verified webhook `app/api/comms/webhooks/resend` (own secret
+  `RESEND_COMMS_WEBHOOK_SECRET` — Resend endpoints are account-wide, each
+  suite ignores the other's events) maps delivered/opened/clicked/bounced/
+  complained into five `comms_email_*` types in the ONE analytics contract
+  (course-only envelope — publication/version/lesson NULL, DB-checked;
+  `client_event_id` = `uuidFromSvixId(svix-id)` so the UNIQUE constraint IS
+  the idempotency store; the CLIENT batch schema excludes them + the ingest
+  RPC rejects them; the learner is attributed from the learner_messages ROW,
+  never a tag), advances the trail via the service-role-only
+  `apply_comms_delivery` RPC (rank-monotone — out-of-order never downgrades;
+  svixId-deduped, cap 50; email.sent/delivery_delayed = trail-only notes), and
+  SUPPRESSES on hard bounce (`Permanent` only — Transient/Undetermined never)
+  / complaint → `comms_suppressions` (per-user, RLS-on ZERO policies) —
+  `approveAndSend` re-checks it AT SEND TIME (`reason:"suppressed"`, row stays
+  draft); DraftList/composer/learner-detail show delivery chips + the
+  suppressed state. The shared verifier `lib/webhooks/svix.ts` (manual HMAC,
+  deps stay 14) now backs the MARKETING webhook too — closing its missing
+  replay-tolerance gap. Migration `20260707000000`.
 - **Tables** (migration `20260703000000`): `agent_runs` (course_id, quoted
   `"trigger"` chat|scheduled|threshold — reserved word, quote it in raw SQL —
   status queued|running|completed|failed, scope/budget_used/report jsonb),
@@ -532,15 +668,25 @@ SQL rollups, and a per-course creator dashboard. Core = `lib/analytics/*`
   n=41, distractor 3× the key, discrimination .05] → scheduled run → ≥1
   evidence-annotated proposal → Accept applies to the draft → Reject restores
   BYTE-FOR-BYTE → budgets ≤ cap → rails: no publication writes, no enrollment
-  mutation, ZERO sends) · `verify:comms` (27 pure) · `verify:comms:int` (20 —
-  draft→edit→approve→send + **opt-out enforced at the seam** + the opt-out
-  route token flow + RLS). `npm run seed:fixtures` seeds a demo fixture.
-  **`npm test`** chains every pure suite (~900 checks). ⚠ PostgREST multi-row
+  mutation, ZERO sends) · `verify:comms` (61 pure — incl. M7: Svix verifier w/
+  tamper+replay, event mapping w/ bounce taxonomy, uuid determinism, tags, the
+  contract extension) · `verify:comms:int` (46 — draft→edit→approve→send +
+  **opt-out enforced at the seam** + the opt-out route token flow + RLS +
+  M7: webhook end-to-end, duplicate-svix-id exactly once, rank-monotone
+  trail, suppression blocks the seam, attribution edges, forgery surface).
+  `npm run seed:fixtures` seeds a demo fixture.
+  **`npm test`** chains every pure suite (incl. `verify:portal` 166 and
+  `verify:identity` 90 — `scripts/verify-creator-identity.ts`: image sizing/
+  storage paths/mime gate, profile schema + completeness, includes summary,
+  landing-extras degradation; 2026-07-11). ⚠ PostgREST multi-row
   inserts unify columns across rows (missing keys → explicit nulls) — seed
   scripts must carry not-null columns on EVERY row.
 - **Env**: `NEXT_PUBLIC_SITE_URL` + `CRON_SECRET` (new, in .env.local +
   .env.example), `RESEND_API_KEY`/`RESEND_FROM`/`MARKETING_TOKEN_SECRET`
-  (already present), optional `COMMS_PROVIDER=mock` + `MAINTENANCE_*` budgets.
+  (already present), optional `COMMS_PROVIDER=mock` + `MAINTENANCE_*` budgets,
+  and (M7) `RESEND_COMMS_WEBHOOK_SECRET` — the learner-comms webhook's
+  per-endpoint Svix secret (distinct from marketing's `RESEND_WEBHOOK_SECRET`;
+  unset → the route 503s, sends still work, delivery status stays 'sent').
 
 ## AI Content Agent (OpenAI) — `lib/ai/*` (2026-06-15)
 

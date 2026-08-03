@@ -23,7 +23,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { buildEvent, type AnalyticsEventInput } from "@/lib/analytics/events";
+// assembleClientEvent = the zod-free sibling of events.ts buildEvent (PERF-1
+// D1): schema validation stays server-side in the ingest route — importing
+// the zod contract here shipped the zod core to every learner bundle.
+import { assembleClientEvent } from "@/lib/analytics/eventConstants";
+import type { AnalyticsEventInput } from "@/lib/analytics/events";
 import { createAnalyticsQueue } from "@/lib/analytics/client";
 
 const FLUSH_INTERVAL_MS = 10_000;
@@ -65,7 +69,7 @@ export function AnalyticsProvider({
       if (!queue) return;
       try {
         queue.enqueue(
-          buildEvent({ publicationId, version, courseId, lessonId }, input)
+          assembleClientEvent({ publicationId, version, courseId, lessonId }, input)
         );
       } catch (err) {
         // A malformed event must never break the lesson — drop it loudly.

@@ -6,6 +6,7 @@
  * picker reads only small indexed tables.
  */
 
+import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowRight, BarChart3, BookOpen, Users } from "lucide-react";
@@ -13,23 +14,42 @@ import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 export default async function AnalyticsPickerPage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) redirect("/login?redirectTo=/analytics");
 
-  const { data: courses, error } = await supabase
+  // cover_image_url ships in migration 20260711000000 (course covers) —
+  // a pre-migration DB errors on the column, so retry with the old list.
+  type PickerCourse = {
+    id: string;
+    title: string;
+    description: string | null;
+    status: string;
+    updated_at: string;
+    cover_image_url?: string | null;
+  };
+  let courses: PickerCourse[];
+  const withCovers = await supabase
     .from("courses")
-    .select("id, title, description, status, updated_at")
+    .select("id, title, description, status, updated_at, cover_image_url")
     .eq("author_id", user.id)
     .order("updated_at", { ascending: false });
-  if (error) throw error;
+  if (!withCovers.error) {
+    courses = withCovers.data ?? [];
+  } else {
+    const { data, error } = await supabase
+      .from("courses")
+      .select("id, title, description, status, updated_at")
+      .eq("author_id", user.id)
+      .order("updated_at", { ascending: false });
+    if (error) throw error;
+    courses = data ?? [];
+  }
 
   const courseIds = (courses ?? []).map((c) => c.id);
   const [pubs, enrollments] =
@@ -90,9 +110,23 @@ export default async function AnalyticsPickerPage() {
               >
                 <Card className="flex h-full flex-col p-5 transition-all hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-[0_8px_24px_rgba(68,48,28,0.08)] group-focus-visible:ring-2 group-focus-visible:ring-brand-300">
                   <div className="flex items-start justify-between gap-3">
-                    <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
-                      <BarChart3 className="size-5" aria-hidden />
-                    </span>
+                    {course.cover_image_url ? (
+                      <span className="block size-10 shrink-0 overflow-hidden rounded-xl bg-stone-100">
+                        {/* Fixed 40px box — width/height picks a tiny variant,
+                            not the stored 1600w cover (PERF-1 D3). */}
+                        <Image
+                          src={course.cover_image_url}
+                          alt=""
+                          width={40}
+                          height={40}
+                          className="h-full w-full object-cover"
+                        />
+                      </span>
+                    ) : (
+                      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+                        <BarChart3 className="size-5" aria-hidden />
+                      </span>
+                    )}
                     {version !== undefined ? (
                       <Badge tone="green" dot>
                         Live v{version}

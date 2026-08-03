@@ -19,6 +19,8 @@ export interface CourseCard {
   status: string;
   level: string | null;
   updated_at: string;
+  /** Optional — column ships in migration 20260711000000; absent pre-migration. */
+  cover_image_url?: string | null;
 }
 
 function CreateCard({ first }: { first: boolean }) {

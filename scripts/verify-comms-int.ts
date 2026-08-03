@@ -1,5 +1,5 @@
 /**
- * Learner-comms integration test against LIVE Supabase (Milestone 6).
+ * Learner-comms integration test against LIVE Supabase (Milestone 6 + M7).
  * Run: `npx tsx scripts/verify-comms-int.ts`  (npm run verify:comms:int)
  * Requires SUPABASE_SERVICE_ROLE_KEY in .env.local. Uses the MOCK provider —
  * nothing leaves the machine.
@@ -8,6 +8,15 @@
  * OPT-OUT IS ENFORCED AT THE SEND SEAM (flip comms_opt_out → approveAndSend
  * refuses, the row stays draft, the provider records nothing) — not just in
  * the UI. Also the signed opt-out route flow and the author-only RLS surface.
+ *
+ * M7 adds the delivery-webhook path end-to-end: delivered/opened/clicked
+ * events mint comms analytics events + advance the message's delivery trail
+ * (rank-monotone — out-of-order events never downgrade), duplicate svix-ids
+ * process exactly once, hard bounce + complaint SUPPRESS the learner (and
+ * approveAndSend refuses), soft bounce doesn't, unattributable/foreign events
+ * are ignored, the tag fallback covers the send-race, forged user_id tags are
+ * ignored (row wins), and no client can forge a comms event or call the
+ * delivery RPC.
  *
  * Throwaway *@example.com users can't be deleted with the anon key — clean
  * them in Supabase → Auth. The course is deleted at the end (cascades).
@@ -28,10 +37,16 @@ import { readFileSync } from "node:fs";
 }
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/database.types";
+import type { Database, Json } from "@/lib/database.types";
+import { buildCommsDeliveryEvent, mapEventToColumns } from "@/lib/analytics/events";
 import { getMockSends, resetMockSends } from "@/lib/comms/mockProvider";
 import { approveAndSend, createDraft, updateDraft } from "@/lib/comms/service";
 import { createOptOutToken } from "@/lib/comms/tokens";
+import {
+  processResendCommsEvent,
+  uuidFromSvixId,
+  type ResendWebhookPayload,
+} from "@/lib/comms/webhook";
 import { createBlock, createLesson, createModule } from "@/lib/course/factories";
 import { courseDocToRows, defaultCourseTheme } from "@/lib/course/persistence";
 import type { CourseDocument } from "@/lib/course/types";
@@ -260,8 +275,341 @@ async function main() {
       body: [{ kind: "paragraph", text: "x" }] as never,
     });
     check("non-authors can't insert messages", learnerInsert.error !== null);
+
+    /* ── 5. M7: delivery webhook — happy path + idempotency ── */
+    console.log("\n— M7: delivery webhook —");
+    // Section 3's opt-out POST left the learner opted out — reset for sends.
+    await admin
+      .from("enrollments")
+      .update({ comms_opt_out: false })
+      .eq("course_id", courseId)
+      .eq("user_id", learner.userId);
+
+    const commsEventCount = async () => {
+      const res = await admin
+        .from("learning_events")
+        .select("id", { count: "exact", head: true })
+        .eq("course_id", courseId)
+        .like("event_type", "comms\\_%");
+      if (res.error) throw res.error;
+      return res.count ?? 0;
+    };
+    const messageState = async (id: string) => {
+      const res = await admin
+        .from("learner_messages")
+        .select("status, delivery_status, delivery_events, provider_message_id")
+        .eq("id", id)
+        .single();
+      if (res.error) throw res.error;
+      return {
+        ...res.data,
+        trail: (res.data.delivery_events ?? []) as { type: string; via?: string; svixId?: string }[],
+      };
+    };
+    const mkPayload = (
+      type: string,
+      emailId: string,
+      extra: Record<string, unknown> = {},
+      tagOverrides: Record<string, string> = {}
+    ): ResendWebhookPayload => ({
+      type,
+      created_at: new Date().toISOString(),
+      data: {
+        email_id: emailId,
+        tags: {
+          send_source: "learner_comms",
+          course_id: courseId,
+          user_id: learner.userId,
+          ...tagOverrides,
+        },
+        ...extra,
+      },
+    });
+
+    const draft2 = await createDraft(author.client, {
+      courseId,
+      userId: learner.userId,
+      subject: "Delivery-tracked check-in",
+      body: [{ kind: "paragraph", text: "Hello again" }],
+    });
+    const sent2 = await approveAndSend(admin, draft2.id);
+    check("M7 fixture send succeeds", sent2.ok);
+    const afterSend = await messageState(draft2.id);
+    check(
+      "send seeds delivery_status='sent' + the trail",
+      afterSend.delivery_status === "sent" &&
+        afterSend.trail.length === 1 &&
+        afterSend.trail[0].type === "sent" &&
+        afterSend.trail[0].via === "send"
+    );
+    const emailId2 = afterSend.provider_message_id!;
+    const tagsFor2 = { message_id: draft2.id };
+
+    const baseCount = await commsEventCount();
+    const del1 = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", emailId2, {}, tagsFor2),
+      "msg-int-del-1"
+    );
+    check("delivered event processed", del1.outcome === "processed");
+    const deliveredRow = await admin
+      .from("learning_events")
+      .select("event_type, user_id, course_id, publication_id, lesson_id, metadata")
+      .eq("client_event_id", uuidFromSvixId("msg-int-del-1"))
+      .maybeSingle();
+    check(
+      "comms event landed with the Svix-derived id + course-only envelope",
+      deliveredRow.data?.event_type === "comms_email_delivered" &&
+        deliveredRow.data?.user_id === learner.userId &&
+        deliveredRow.data?.course_id === courseId &&
+        deliveredRow.data?.publication_id === null &&
+        deliveredRow.data?.lesson_id === null &&
+        (deliveredRow.data?.metadata as Record<string, unknown>)?.messageId === draft2.id
+    );
+    const afterDel = await messageState(draft2.id);
+    check(
+      "delivery_status advanced to 'delivered' + trail entry",
+      afterDel.delivery_status === "delivered" &&
+        afterDel.trail.some((e) => e.svixId === "msg-int-del-1")
+    );
+
+    const dup = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", emailId2, {}, tagsFor2),
+      "msg-int-del-1"
+    );
+    const afterDup = await messageState(draft2.id);
+    check(
+      "duplicate svix-id processed exactly once (event + trail)",
+      dup.outcome === "duplicate" &&
+        (await commsEventCount()) === baseCount + 1 &&
+        afterDup.trail.filter((e) => e.svixId === "msg-int-del-1").length === 1
+    );
+
+    await processResendCommsEvent(admin, mkPayload("email.opened", emailId2, {}, tagsFor2), "msg-int-open-1");
+    check("opened advances to 'opened'", (await messageState(draft2.id)).delivery_status === "opened");
+    const lateDel = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", emailId2, {}, tagsFor2),
+      "msg-int-del-2"
+    );
+    check(
+      "out-of-order 'delivered' after 'opened' never downgrades (rank-monotone)",
+      lateDel.outcome === "processed" && (await messageState(draft2.id)).delivery_status === "opened"
+    );
+    await processResendCommsEvent(
+      admin,
+      mkPayload("email.clicked", emailId2, { click: { link: "https://example.test/learn/x" } }, tagsFor2),
+      "msg-int-click-1"
+    );
+    const clickRow = await admin
+      .from("learning_events")
+      .select("metadata")
+      .eq("client_event_id", uuidFromSvixId("msg-int-click-1"))
+      .maybeSingle();
+    check(
+      "clicked advances to 'clicked' + event carries the url",
+      (await messageState(draft2.id)).delivery_status === "clicked" &&
+        (clickRow.data?.metadata as Record<string, unknown>)?.url === "https://example.test/learn/x"
+    );
+
+    const countBeforeSentNote = await commsEventCount();
+    const sentNote = await processResendCommsEvent(
+      admin,
+      mkPayload("email.sent", emailId2, {}, tagsFor2),
+      "msg-int-sent-1"
+    );
+    check(
+      "email.sent is trail-only (recorded, no analytics event minted)",
+      sentNote.outcome === "trail_only" &&
+        sentNote.recorded === true &&
+        (await commsEventCount()) === countBeforeSentNote &&
+        (await messageState(draft2.id)).trail.some((e) => e.svixId === "msg-int-sent-1")
+    );
+
+    const authorEvents = await author.client
+      .from("learning_events")
+      .select("id")
+      .eq("course_id", courseId)
+      .like("event_type", "comms\\_%");
+    check(
+      "author reads comms events under RLS",
+      authorEvents.error === null && (authorEvents.data ?? []).length >= 4
+    );
+    const learnerEvents = await learner.client
+      .from("learning_events")
+      .select("id")
+      .eq("course_id", courseId);
+    check(
+      "learners read no events (unchanged)",
+      learnerEvents.error === null && (learnerEvents.data ?? []).length === 0
+    );
+
+    /* ── 6. M7: bounce taxonomy → suppression → send blocked ── */
+    console.log("\n— M7: suppression —");
+    const draft3 = await createDraft(author.client, {
+      courseId,
+      userId: learner.userId,
+      subject: "Bounce fixture",
+      body: [{ kind: "paragraph", text: "Hi" }],
+    });
+    const sent3 = await approveAndSend(admin, draft3.id);
+    check("bounce fixture send succeeds", sent3.ok);
+    const emailId3 = (await messageState(draft3.id)).provider_message_id!;
+
+    await processResendCommsEvent(
+      admin,
+      mkPayload("email.bounced", emailId3, { bounce: { type: "Transient", subType: "MailboxFull" } }, { message_id: draft3.id }),
+      "msg-int-soft-1"
+    );
+    const softSupp = await admin
+      .from("comms_suppressions")
+      .select("reason")
+      .eq("user_id", learner.userId)
+      .maybeSingle();
+    check(
+      "soft bounce does NOT suppress (status still advances to 'bounced')",
+      softSupp.data === null && (await messageState(draft3.id)).delivery_status === "bounced"
+    );
+
+    await processResendCommsEvent(
+      admin,
+      mkPayload("email.bounced", emailId3, { bounce: { type: "Permanent", subType: "General" } }, { message_id: draft3.id }),
+      "msg-int-hard-1"
+    );
+    const hardSupp = await admin
+      .from("comms_suppressions")
+      .select("reason, detail")
+      .eq("user_id", learner.userId)
+      .maybeSingle();
+    check(
+      "hard bounce suppresses (reason=hard_bounce + provenance detail)",
+      hardSupp.data?.reason === "hard_bounce" &&
+        (hardSupp.data?.detail as Record<string, unknown>)?.messageId === draft3.id
+    );
+
+    const draft4 = await createDraft(author.client, {
+      courseId,
+      userId: learner.userId,
+      subject: "Must not send — suppressed",
+      body: [{ kind: "paragraph", text: "Hi" }],
+    });
+    const sendsBefore = getMockSends().length;
+    const blockedBySupp = await approveAndSend(admin, draft4.id);
+    check(
+      "approveAndSend refuses a suppressed learner",
+      !blockedBySupp.ok && blockedBySupp.reason === "suppressed"
+    );
+    check(
+      "…row stays draft + provider recorded nothing",
+      (await messageState(draft4.id)).status === "draft" && getMockSends().length === sendsBefore
+    );
+
+    await admin.from("comms_suppressions").delete().eq("user_id", learner.userId);
+    await processResendCommsEvent(
+      admin,
+      mkPayload("email.complained", emailId2, {}, tagsFor2),
+      "msg-int-comp-1"
+    );
+    const compSupp = await admin
+      .from("comms_suppressions")
+      .select("reason")
+      .eq("user_id", learner.userId)
+      .maybeSingle();
+    check("complaint suppresses (reason=complaint)", compSupp.data?.reason === "complaint");
+    const learnerSuppRead = await learner.client
+      .from("comms_suppressions")
+      .select("user_id")
+      .eq("user_id", learner.userId);
+    const authorSuppRead = await author.client
+      .from("comms_suppressions")
+      .select("user_id")
+      .eq("user_id", learner.userId);
+    check(
+      "comms_suppressions is server-only (zero policies — nobody reads via RLS)",
+      learnerSuppRead.error === null &&
+        (learnerSuppRead.data ?? []).length === 0 &&
+        authorSuppRead.error === null &&
+        (authorSuppRead.data ?? []).length === 0
+    );
+
+    /* ── 7. M7: attribution edges ── */
+    console.log("\n— M7: attribution —");
+    const unattributable = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", "re_unknown_email", {}, { message_id: crypto.randomUUID() }),
+      "msg-int-unattr-1"
+    );
+    check("unknown email_id + unknown tag → ignored (route 200s)", unattributable.outcome === "ignored");
+    const countBeforeForeign = await commsEventCount();
+    const foreign = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", emailId2, {}, { send_source: "marketing", message_id: draft2.id }),
+      "msg-int-foreign-1"
+    );
+    check(
+      "foreign send_source → ignored, no event minted",
+      foreign.outcome === "ignored" && (await commsEventCount()) === countBeforeForeign
+    );
+
+    // The send-race fallback: a webhook arriving before provider_message_id
+    // committed resolves via the message_id tag (provider id still null).
+    const draft5 = await createDraft(author.client, {
+      courseId,
+      userId: learner.userId,
+      subject: "Race fixture — never sent",
+      body: [{ kind: "paragraph", text: "Hi" }],
+    });
+    const race = await processResendCommsEvent(
+      admin,
+      mkPayload("email.delivered", "re_race_1", {}, { message_id: draft5.id }),
+      "msg-int-race-1"
+    );
+    check("tag fallback attributes when provider id is unset", race.outcome === "processed");
+
+    const forged = await processResendCommsEvent(
+      admin,
+      mkPayload("email.opened", "re_race_1", {}, { message_id: draft5.id, user_id: author.userId }),
+      "msg-int-forged-1"
+    );
+    const forgedRow = await admin
+      .from("learning_events")
+      .select("user_id")
+      .eq("client_event_id", uuidFromSvixId("msg-int-forged-1"))
+      .maybeSingle();
+    check(
+      "forged user_id tag ignored — attribution comes from the message row",
+      forged.outcome === "processed" && forgedRow.data?.user_id === learner.userId
+    );
+
+    /* ── 8. M7: no client can forge delivery telemetry ── */
+    console.log("\n— M7: forgery surface —");
+    const forgedEvent = buildCommsDeliveryEvent(
+      { eventType: "comms_email_open", courseId, messageId: draft2.id },
+      { clientEventId: crypto.randomUUID() }
+    );
+    const forgedIngest = await learner.client.rpc("ingest_learning_events", {
+      p_events: [mapEventToColumns(forgedEvent, learner.userId)] as unknown as Json,
+    });
+    check(
+      "ingest RPC rejects comms events (no publication envelope)",
+      forgedIngest.error !== null
+    );
+    const forgedDirect = await learner.client
+      .from("learning_events")
+      .insert(mapEventToColumns(forgedEvent, learner.userId) as never);
+    check("direct RLS insert of a comms event rejected", forgedDirect.error !== null);
+    const forgedRpc = await learner.client.rpc("apply_comms_delivery", {
+      p_message_id: draft2.id,
+      p_status: "clicked",
+      p_entry: { type: "clicked", svixId: "forged" } as unknown as Json,
+    });
+    check("apply_comms_delivery denied to authenticated clients", forgedRpc.error !== null);
   } finally {
     console.log("\n— Cleanup —");
+    // Suppression is user-keyed (not course-cascaded) — clear it explicitly so
+    // reruns and other suites never inherit a suppressed throwaway learner.
+    await admin.from("comms_suppressions").delete().eq("user_id", learner.userId);
     const del = await author.client.from("courses").delete().eq("id", courseId);
     check("fixture course deleted (messages cascade)", del.error === null, del.error?.message);
   }

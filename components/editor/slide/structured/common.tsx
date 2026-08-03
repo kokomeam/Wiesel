@@ -9,8 +9,6 @@
  */
 
 import type { CSSProperties, ReactNode } from "react";
-import { updateTemplateContentPatch } from "@/lib/course/commands";
-import { useEditorStore } from "@/lib/course/store";
 import type { RichText } from "@/lib/course/types";
 import {
   BADGE,
@@ -20,6 +18,7 @@ import {
   badgeBorder,
   withAlpha,
 } from "@/lib/course/slide/structured/styleConstants";
+import { useSlideEditorBridge } from "../editorBridge";
 import { StickerGlyph } from "../elements/StickerElement";
 
 export interface StructuredCtx {
@@ -57,13 +56,15 @@ export function EditableText({
   placeholder?: string;
   children?: ReactNode;
 }) {
-  const apply = useEditorStore((s) => s.apply);
+  // The editing seam: null outside the editor canvas (read-only SlideView /
+  // learner runtime), so this file never imports the store or commands.
+  const bridge = useSlideEditorBridge();
   const text = value?.text ?? "";
 
   // Break long words so a stray no-space string can never overflow its card.
   const safe: CSSProperties = { overflowWrap: "break-word", wordBreak: "break-word", ...style };
 
-  if (!ctx.interactive) {
+  if (!ctx.interactive || !bridge) {
     return (
       <span className={className} style={safe}>
         {children ?? (text || placeholder || "")}
@@ -92,8 +93,8 @@ export function EditableText({
         const next = (e.currentTarget.textContent ?? "").trim();
         if (next !== text) {
           // Manual edit resets emphasis runs to plain text (like bullets).
-          apply(updateTemplateContentPatch(ctx.blockId, ctx.slideId, [...path, "text"], next), "human");
-          apply(updateTemplateContentPatch(ctx.blockId, ctx.slideId, [...path, "runs"], undefined), "human");
+          bridge.apply(bridge.commands.updateTemplateContentPatch(ctx.blockId, ctx.slideId, [...path, "text"], next));
+          bridge.apply(bridge.commands.updateTemplateContentPatch(ctx.blockId, ctx.slideId, [...path, "runs"], undefined));
         }
       }}
     >

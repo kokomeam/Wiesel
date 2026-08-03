@@ -8,7 +8,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
 import { createMarketingServices } from "@/lib/marketing/services/factory";
 import { selectCourseForAuthor } from "@/lib/marketing/persistence";
@@ -38,9 +38,7 @@ export async function socialRouteAuth(
   courseId?: string | null
 ): Promise<SocialRouteAuth | NextResponse> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const course = await selectCourseForAuthor(supabase, user.id, courseId ?? null);

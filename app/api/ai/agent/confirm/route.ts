@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 import { resumeAgentTurn } from "@/lib/ai/agentLoop";
 import { encodeSSE, type AgentEvent } from "@/lib/ai/events";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 
 function sseResponse(stream: ReadableStream<Uint8Array>): Response {
   return new Response(stream, {
@@ -54,9 +54,7 @@ interface ConfirmBody {
 
 export async function POST(req: Request): Promise<Response> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   let body: ConfirmBody;

@@ -8,7 +8,7 @@ import Link from "next/link";
 import { ArrowRight, Users } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { getAccountSummary } from "@/lib/marketing/analytics";
 import { loadAudienceContacts } from "@/lib/marketing/persistence";
 
@@ -25,11 +25,11 @@ function Stat({ label, value }: { label: string; value: number | string }) {
 
 export default async function MarketingOverviewPage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const summary = await getAccountSummary(supabase, user!.id);
-  const contacts = await loadAudienceContacts(supabase, user!.id, 50);
+  const user = await getSessionUser();
+  const [summary, contacts] = await Promise.all([
+    getAccountSummary(supabase, user!.id),
+    loadAudienceContacts(supabase, user!.id, 50),
+  ]);
   const f = summary.funnel;
 
   return (

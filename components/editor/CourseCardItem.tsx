@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState, useTransition } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowRight, BarChart3, Trash2 } from "lucide-react";
@@ -33,7 +34,14 @@ function statusLabel(status: string): string {
 }
 
 function editedAt(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  // timeZone pinned: this client component is SSR'd, and a UTC server vs a
+  // local-TZ browser can disagree on the date near midnight (hydration mismatch).
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 export function CourseCardItem({ course }: { course: CourseCard }) {
@@ -63,9 +71,23 @@ export function CourseCardItem({ course }: { course: CourseCard }) {
       <Link href={`/studio?course=${course.id}`} className="group block focus:outline-none">
         <Card className="flex h-full flex-col p-5 transition-all hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-[0_8px_24px_rgba(68,48,28,0.08)] group-focus-visible:ring-2 group-focus-visible:ring-brand-300">
           <div className="flex items-start justify-between gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl brand-gradient text-[11px] font-bold text-white">
-              {initials(title)}
-            </span>
+            {course.cover_image_url ? (
+              <span className="block size-10 shrink-0 overflow-hidden rounded-xl bg-stone-100">
+                {/* Fixed 40px box — width/height picks a tiny variant, not
+                    the stored 1600w cover (PERF-1 D3). */}
+                <Image
+                  src={course.cover_image_url}
+                  alt=""
+                  width={40}
+                  height={40}
+                  className="h-full w-full object-cover"
+                />
+              </span>
+            ) : (
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl brand-gradient text-[11px] font-bold text-white">
+                {initials(title)}
+              </span>
+            )}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"

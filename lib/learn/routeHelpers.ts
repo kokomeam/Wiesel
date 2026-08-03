@@ -8,7 +8,7 @@ import { NextResponse } from "next/server";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { Database } from "@/lib/database.types";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { LearnError, learnErrorStatus } from "./errors";
 
 type DB = SupabaseClient<Database>;
@@ -17,17 +17,14 @@ export async function requireUser(): Promise<
   | { ok: true; supabase: DB; user: User }
   | { ok: false; response: NextResponse }
 > {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) {
     return {
       ok: false,
       response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
     };
   }
-  return { ok: true, supabase, user };
+  return { ok: true, supabase: await createClient(), user };
 }
 
 export async function parseBody<T extends z.ZodType>(

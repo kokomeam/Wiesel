@@ -7,14 +7,19 @@
  * publication's snapshot and that every file path sits under the caller's own
  * uid folder (the storage policies enforce the same on upload — this guards
  * against submitting SOMEONE ELSE'S uploaded object paths).
+ *
+ * PERF-1 C1: the RLS visibility gate stays a NARROW meta select; the
+ * immutable snapshot itself comes from the publication cache instead of a
+ * full-row fetch + strict re-parse per POST.
  */
 
 import { NextResponse } from "next/server";
 import { emitServerEvent } from "@/lib/analytics/serverEmit";
+import type { PublicationSnapshot } from "@/lib/course/publish/schemas";
 import { LearnError } from "@/lib/learn/errors";
 import { learnErrorResponse, parseBody, requireUser } from "@/lib/learn/routeHelpers";
 import { HomeworkSubmissionRequestSchema } from "@/lib/learn/schemas";
-import { parsePublicationSnapshot, type PublicationRow } from "@/lib/learn/resolve";
+import { getCachedSnapshot } from "@/lib/learn/publicationCache";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -23,10 +28,9 @@ export const dynamic = "force-dynamic";
 /** The block must be a homework/exercise block in the snapshot; returns its
  *  lesson id (analytics context) or null when not submittable. */
 function locateSubmittableBlock(
-  row: PublicationRow,
+  snapshot: PublicationSnapshot,
   blockId: string
 ): { lessonId: string } | null {
-  const snapshot = parsePublicationSnapshot(row);
   for (const courseModule of snapshot.modules) {
     for (const lesson of courseModule.lessons) {
       const block = lesson.blocks.find((b) => b.id === blockId);
@@ -55,15 +59,18 @@ export async function POST(request: Request) {
       }
     }
 
-    // RLS-scoped read: resolves only if the caller may see this publication.
+    // RLS-scoped NARROW read: resolves only if the caller may see this
+    // publication (the visibility gate — snapshot bytes never ride it).
     const publication = await supabase
       .from("course_publications")
-      .select("*")
+      .select("id, course_id, version")
       .eq("id", publicationId)
       .maybeSingle();
     if (publication.error) throw publication.error;
     if (!publication.data) throw new LearnError("not_found", "Publication not found.");
-    const location = locateSubmittableBlock(publication.data, blockId);
+
+    const { snapshot } = await getCachedSnapshot(publicationId);
+    const location = locateSubmittableBlock(snapshot, blockId);
     if (!location) {
       throw new LearnError("not_found", "That assignment isn't part of this publication.");
     }

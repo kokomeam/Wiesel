@@ -1,0 +1,332 @@
+{
+  "dashboard": {
+    "path": "/dashboard",
+    "cold": {
+      "ttfb": 1075.3000000715256,
+      "fcp": 1148,
+      "lcp": 1440,
+      "cls": 0,
+      "domInteractive": 1139.8999999761581,
+      "load": 1169.3999999761581,
+      "docBytes": 22267,
+      "jsWireBytes": 468895,
+      "jsCount": 23,
+      "totalWireBytes": 674415,
+      "clientDataRequests": 0,
+      "dataReqSample": []
+    },
+    "coldRuns": [
+      {
+        "ttfb": 1075.3000000715256,
+        "fcp": 1148,
+        "lcp": 1464,
+        "cls": 0,
+        "domInteractive": 1139.8999999761581,
+        "load": 1169.3999999761581,
+        "docBytes": 22212,
+        "jsWireBytes": 458339,
+        "jsCount": 21,
+        "totalWireBytes": 660874,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1048.1000000238419,
+        "fcp": 1124,
+        "lcp": 1440,
+        "cls": 0,
+        "domInteractive": 1116.3999999761581,
+        "load": 1146.1999999284744,
+        "docBytes": 24258,
+        "jsWireBytes": 468895,
+        "jsCount": 23,
+        "totalWireBytes": 676401,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1283.7999999523163,
+        "fcp": 1356,
+        "lcp": 1364,
+        "cls": 0,
+        "domInteractive": 1357.3999999761581,
+        "load": 1375.6000000238419,
+        "docBytes": 22267,
+        "jsWireBytes": 468895,
+        "jsCount": 23,
+        "totalWireBytes": 674415,
+        "clientDataRequests": 0
+      }
+    ],
+    "transitions": {
+      "error": "TimeoutError: page.waitForFunction: Timeout 30000ms exceeded."
+    }
+  },
+  "studio": {
+    "path": "/studio",
+    "cold": {
+      "ttfb": 1105.6000000238419,
+      "fcp": 1180,
+      "lcp": 1460,
+      "cls": 0,
+      "domInteractive": 1178.5,
+      "load": 1196.2999999523163,
+      "docBytes": 11011,
+      "jsWireBytes": 734487,
+      "jsCount": 25,
+      "totalWireBytes": 931118,
+      "clientDataRequests": 0,
+      "dataReqSample": []
+    },
+    "coldRuns": [
+      {
+        "ttfb": 1386.5,
+        "fcp": 1456,
+        "lcp": 1772,
+        "cls": 0,
+        "domInteractive": 1470.5,
+        "load": 1479.8000000715256,
+        "docBytes": 11011,
+        "jsWireBytes": 668597,
+        "jsCount": 22,
+        "totalWireBytes": 864136,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1105.6000000238419,
+        "fcp": 1180,
+        "lcp": 1460,
+        "cls": 0,
+        "domInteractive": 1178.5,
+        "load": 1196.2999999523163,
+        "docBytes": 11720,
+        "jsWireBytes": 734487,
+        "jsCount": 25,
+        "totalWireBytes": 931829,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1003.1000000238419,
+        "fcp": 1076,
+        "lcp": 1400,
+        "cls": 0,
+        "domInteractive": 1089.8000000715256,
+        "load": 1098.7000000476837,
+        "docBytes": 11011,
+        "jsWireBytes": 734487,
+        "jsCount": 25,
+        "totalWireBytes": 931118,
+        "clientDataRequests": 0
+      }
+    ],
+    "transitions": {
+      "hasLink": true,
+      "clickToUrl": 234.5,
+      "clickToContent": 1089.7999999523163,
+      "clickFeedback": 16,
+      "backNav": 17.199999928474426,
+      "forwardRevisit": 5
+    }
+  },
+  "learn-lesson": {
+    "path": "/learn/econ-fixture-d5eace/98e34ffe-fbe3-4b45-be37-29a1dfcc50f7",
+    "cold": {
+      "ttfb": 674.1000000238419,
+      "fcp": 720,
+      "lcp": 1068,
+      "cls": 0,
+      "domInteractive": 1033.1000000238419,
+      "load": 1033.6000000238419,
+      "docBytes": 17110,
+      "jsWireBytes": 607600,
+      "jsCount": 24,
+      "totalWireBytes": 803666,
+      "clientDataRequests": 0,
+      "dataReqSample": []
+    },
+    "coldRuns": [
+      {
+        "ttfb": 684.1999999284744,
+        "fcp": 720,
+        "lcp": 1120,
+        "cls": 0,
+        "domInteractive": 1088.5,
+        "load": 1089,
+        "docBytes": 17459,
+        "jsWireBytes": 607600,
+        "jsCount": 24,
+        "totalWireBytes": 803998,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 665.7000000476837,
+        "fcp": 712,
+        "lcp": 1020,
+        "cls": 0,
+        "domInteractive": 993.9000000953674,
+        "load": 995.8000000715256,
+        "docBytes": 17110,
+        "jsWireBytes": 607600,
+        "jsCount": 24,
+        "totalWireBytes": 803665,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 674.1000000238419,
+        "fcp": 720,
+        "lcp": 1068,
+        "cls": 0,
+        "domInteractive": 1033.1000000238419,
+        "load": 1033.6000000238419,
+        "docBytes": 17110,
+        "jsWireBytes": 607600,
+        "jsCount": 24,
+        "totalWireBytes": 803666,
+        "clientDataRequests": 0
+      }
+    ],
+    "transitions": {
+      "hasLink": true,
+      "clickToUrl": 87.59999990463257,
+      "clickToContent": 1396.6999999284744,
+      "clickFeedback": 56,
+      "backNav": 19.59999990463257,
+      "forwardRevisit": 11.100000023841858
+    },
+    "slideAdvance": {
+      "advanceMs": [
+        14.399999976158142
+      ]
+    }
+  },
+  "studio-analytics": {
+    "path": "/studio/1d730f8c-fc9e-4e87-9eb7-6a2a654506bd/analytics",
+    "cold": {
+      "ttfb": 1013.5,
+      "fcp": 1084,
+      "lcp": 1404,
+      "cls": 0,
+      "domInteractive": 1084.2000000476837,
+      "load": 1101.7000000476837,
+      "docBytes": 16529,
+      "jsWireBytes": 325809,
+      "jsCount": 17,
+      "totalWireBytes": 526547,
+      "clientDataRequests": 0,
+      "dataReqSample": []
+    },
+    "coldRuns": [
+      {
+        "ttfb": 1018.3000000715256,
+        "fcp": 1088,
+        "lcp": 1428,
+        "cls": 0,
+        "domInteractive": 1084.2000000476837,
+        "load": 1101.7000000476837,
+        "docBytes": 16529,
+        "jsWireBytes": 325809,
+        "jsCount": 17,
+        "totalWireBytes": 528548,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 971.8000000715256,
+        "fcp": 1036,
+        "lcp": 1372,
+        "cls": 0,
+        "domInteractive": 1052.5,
+        "load": 1052.6000000238419,
+        "docBytes": 16529,
+        "jsWireBytes": 325809,
+        "jsCount": 17,
+        "totalWireBytes": 525960,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1013.5,
+        "fcp": 1084,
+        "lcp": 1404,
+        "cls": 0,
+        "domInteractive": 1097.2000000476837,
+        "load": 1106.3999999761581,
+        "docBytes": 15700,
+        "jsWireBytes": 325809,
+        "jsCount": 17,
+        "totalWireBytes": 526547,
+        "clientDataRequests": 0
+      }
+    ],
+    "transitions": {
+      "hasLink": true,
+      "clickToUrl": 423.60000002384186,
+      "clickToContent": 1681.7000000476837,
+      "clickFeedback": 64,
+      "backNav": 22.700000047683716,
+      "forwardRevisit": 8.200000047683716
+    }
+  },
+  "marketing": {
+    "path": "/marketing",
+    "cold": {
+      "ttfb": 1027.2000000476837,
+      "fcp": 1096,
+      "lcp": 1384,
+      "cls": 0,
+      "domInteractive": 1358.1000000238419,
+      "load": 1361.5,
+      "docBytes": 16975,
+      "jsWireBytes": 388003,
+      "jsCount": 19,
+      "totalWireBytes": 583912,
+      "clientDataRequests": 0,
+      "dataReqSample": []
+    },
+    "coldRuns": [
+      {
+        "ttfb": 1000.5999999046326,
+        "fcp": 1068,
+        "lcp": 1384,
+        "cls": 0,
+        "domInteractive": 1342.5999999046326,
+        "load": 1344.1999999284744,
+        "docBytes": 16897,
+        "jsWireBytes": 388003,
+        "jsCount": 19,
+        "totalWireBytes": 583912,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1027.2000000476837,
+        "fcp": 1096,
+        "lcp": 1376,
+        "cls": 0,
+        "domInteractive": 1358.1000000238419,
+        "load": 1361.5,
+        "docBytes": 16975,
+        "jsWireBytes": 388003,
+        "jsCount": 19,
+        "totalWireBytes": 583145,
+        "clientDataRequests": 0
+      },
+      {
+        "ttfb": 1059.8999999761581,
+        "fcp": 1136,
+        "lcp": 1464,
+        "cls": 0,
+        "domInteractive": 1382.2999999523163,
+        "load": 1384.5999999046326,
+        "docBytes": 16975,
+        "jsWireBytes": 388003,
+        "jsCount": 19,
+        "totalWireBytes": 585757,
+        "clientDataRequests": 0
+      }
+    ],
+    "transitions": {
+      "hasLink": true,
+      "clickToUrl": 1080.6000000238419,
+      "clickToContent": 2303.899999976158,
+      "clickFeedback": 16,
+      "backNav": 13.699999928474426,
+      "forwardRevisit": 8.900000095367432
+    }
+  }
+}

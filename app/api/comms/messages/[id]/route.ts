@@ -68,7 +68,11 @@ export async function POST(
   const outcome = await approveAndSend(createAdminClient(), id);
   if (!outcome.ok) {
     const status =
-      outcome.reason === "opted_out" || outcome.reason === "bad_status" ? 409 : 502;
+      outcome.reason === "opted_out" ||
+      outcome.reason === "suppressed" ||
+      outcome.reason === "bad_status"
+        ? 409
+        : 502;
     return NextResponse.json(
       { error: outcome.reason, detail: outcome.detail ?? null },
       { status }

@@ -7,9 +7,20 @@
  * shared image dialog mount here.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
-import { BarChart3, Eye, Focus, Minimize2, Redo2, Rocket, RotateCcw, Undo2 } from "lucide-react";
+import {
+  BarChart3,
+  Eye,
+  Focus,
+  Loader2,
+  Minimize2,
+  Redo2,
+  Rocket,
+  RotateCcw,
+  Undo2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { aiAttrs, toolAttrs } from "@/lib/course/aiAttributes";
@@ -21,8 +32,7 @@ import { useAgentStore } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
 import { AICommandBar } from "./AICommandBar";
 import { AgentConfirmHost } from "./agent/AgentConfirmHost";
-import { AgentPlanHost } from "./agent/AgentPlanHost";
-import { AgentPanel } from "./agent/AgentPanel";
+import { AgentFlashToast } from "./agent/AgentFlashToast";
 import { CollapsedRail } from "./CollapsedRail";
 import { CourseOutlineSidebar } from "./CourseOutlineSidebar";
 import { CoursePage } from "./CoursePage";
@@ -30,13 +40,57 @@ import { CreationFlowBar } from "./CreationFlowBar";
 import { EditableName } from "./EditableName";
 import { ModulePage } from "./ModulePage";
 import { PlanPage } from "./plan/PlanPage";
-import { PublishPanel } from "./plan/PublishPanel";
 import { InspectorPanel } from "./InspectorPanel";
 import { LessonWorkspace } from "./LessonWorkspace";
 import { CanvasContextMenu } from "./slide/CanvasContextMenu";
 import { isTextLike, measuredContentHeight } from "./slide/elements/measureTextLike";
-import { GlobalImageDialog } from "./slide/ImageUploadDialog";
 import { useEditorShortcuts } from "./useEditorShortcuts";
+
+/* ── Modal/panel-gated subsystems load on demand (PERF-1 D — studio split). ──
+ * Each is a separate chunk the main studio bundle never pays for:
+ *  - PublishPanel: whole publish pipeline (preflight/hash/snapshot/diff) —
+ *    only when the Publish step opens.
+ *  - AgentPanel: the docked chat (pulls comms DraftList/MessageComposer) —
+ *    gated below on "has ever been open" so a collapse never unmounts a
+ *    loaded panel (transcript + in-flight stream survive re-opens).
+ *  - GlobalImageDialog: only when an image-upload request opens it.
+ *  - AgentPlanHost: the plan-review modal — the ONLY framer-motion importer
+ *    on the studio route; loads on the first pending plan. Its always-on
+ *    companion (AgentFlashToast) is framer-free and mounted statically here.
+ * The shell itself renders behind StudioLoader's effect gate (never in SSR
+ * HTML), so no `ssr:` option is needed. */
+const PublishPanel = dynamic(
+  () => import("./plan/PublishPanel").then((m) => m.PublishPanel),
+  {
+    loading: () => (
+      <div className="flex flex-1 items-center justify-center py-24">
+        <Loader2 className="size-5 animate-spin text-stone-400" aria-label="Loading the publish step" />
+      </div>
+    ),
+  }
+);
+const AgentPanel = dynamic(() => import("./agent/AgentPanel").then((m) => m.AgentPanel), {
+  // Rail-shaped placeholder so the layout doesn't jump on first open.
+  loading: () => (
+    <aside
+      aria-label="AI Content Agent"
+      className="flex w-[360px] shrink-0 items-center justify-center border-l border-stone-200 bg-white"
+    >
+      <Loader2 className="size-5 animate-spin text-stone-300" aria-label="Loading the agent panel" />
+    </aside>
+  ),
+});
+const GlobalImageDialog = dynamic(
+  () => import("./slide/ImageUploadDialog").then((m) => m.GlobalImageDialog),
+  {
+    loading: () => (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/30 p-6" role="presentation">
+        <Loader2 className="size-5 animate-spin text-white" aria-label="Loading the image picker" />
+      </div>
+    ),
+  }
+);
+const AgentPlanHost = dynamic(() => import("./agent/AgentPlanHost").then((m) => m.AgentPlanHost));
 
 function initials(title: string): string {
   return (
@@ -94,6 +148,21 @@ export function CourseEditorShell() {
   const collapsed = useUIStore((s) => s.collapsed);
   const focusMode = useUIStore((s) => s.focusMode);
   const togglePanel = useUIStore((s) => s.togglePanel);
+  const imageDialogOpen = useUIStore((s) => s.imageDialog !== null);
+  const hasPendingOutline = useAgentStore((s) => s.pendingOutline !== null);
+
+  // "Has ever been opened" latches (render-phase derived state, the repo's
+  // standard pattern) for the lazy subsystems. The agent panel keys off the
+  // uiStore collapse state itself, so EVERY open path — rail click, focus-mode
+  // exit, layout reset, a keyboard shortcut — triggers the first chunk load;
+  // once loaded it stays mounted (hidden while collapsed) so the transcript
+  // and any in-flight run survive collapse/expand. The plan host stays mounted
+  // after the first plan so reopen + exit animations keep working.
+  const agentPanelOpen = !collapsed.agentPanel;
+  const [agentPanelLoaded, setAgentPanelLoaded] = useState(agentPanelOpen);
+  if (agentPanelOpen && !agentPanelLoaded) setAgentPanelLoaded(true);
+  const [planHostLoaded, setPlanHostLoaded] = useState(hasPendingOutline);
+  if (hasPendingOutline && !planHostLoaded) setPlanHostLoaded(true);
   const enterFocusMode = useUIStore((s) => s.enterFocusMode);
   const exitFocusMode = useUIStore((s) => s.exitFocusMode);
   const resetLayout = useUIStore((s) => s.resetLayout);
@@ -329,23 +398,29 @@ export function CourseEditorShell() {
         </div>
 
         <div className="hidden lg:flex">
-          {collapsed.agentPanel ? (
+          {collapsed.agentPanel && (
             <CollapsedRail
               label="AI Agent"
               side="right"
               onExpand={() => togglePanel("agentPanel")}
             />
-          ) : (
-            <AgentPanel />
+          )}
+          {agentPanelLoaded && (
+            <div className={collapsed.agentPanel ? "hidden" : "flex min-h-0"}>
+              <AgentPanel />
+            </div>
           )}
         </div>
       </div>
       )}
 
-      <GlobalImageDialog />
+      {imageDialogOpen && <GlobalImageDialog />}
       <CanvasContextMenu />
       <AgentConfirmHost />
-      <AgentPlanHost />
+      {planHostLoaded && <AgentPlanHost />}
+      {/* Always mounted (framer-free) — rollback toasts must surface even
+          before the lazy plan host ever loads. */}
+      <AgentFlashToast />
     </div>
   );
 }

@@ -13,6 +13,15 @@
 
 import { create } from "zustand";
 import type { PlanOutline } from "@/lib/ai/events";
+import {
+  beginAccept,
+  beginReject,
+  confirmResolve,
+  rollbackAccept,
+  rollbackReject,
+  type ChangeSetSnapshot,
+  type ResolveAction,
+} from "@/lib/perf/optimistic";
 
 /** Which phase of the content pipeline the agent is in (drives the sidebar
  *  indicator). `null` for the single-turn edit path / when idle. */
@@ -64,6 +73,15 @@ export interface PendingNode {
   op: string;
 }
 
+/** A pending block-highlight entry (blockId → this). */
+export interface PendingBlock {
+  changeSetId: string;
+  evidence?: unknown;
+}
+
+/** What an optimistic Accept cleared — restored verbatim on failure. */
+export type AgentChangeSetSnapshot = ChangeSetSnapshot<PendingBlock, PendingNode, PendingChangeSet>;
+
 /** A destructive action the agent proposed and is PAUSED on, awaiting the
  *  user's confirm/cancel (echoed back to /api/ai/agent/confirm to resume). */
 export interface PendingConfirmation {
@@ -100,6 +118,17 @@ interface AgentState {
   pendingConfirmation: PendingConfirmation | null;
   /** Which pipeline phase the agent is in (sidebar indicator). */
   phase: AgentPhase;
+  /** The phase event's `detail` field — per-lesson progress in a module build,
+   *  e.g. "Linked lists (2/4)". Drives the StatusStrip's humanized copy. */
+  phaseDetail: string | null;
+  /** Epoch ms of the LAST SSE event received (stamped in dispatch — event
+   *  handlers may call Date.now(); render may not). Drives the heartbeat
+   *  "Still working…" softening after a long silence. */
+  lastEventAt: number | null;
+  /** Whether the plan-review MODAL is open. Closing it (Escape / backdrop)
+   *  KEEPS `pendingOutline` — the plan is only discarded by the explicit
+   *  Discard button. Reset true whenever a new plan_outline arrives. */
+  planModalOpen: boolean;
   /** The latest validation status line for the in-flight generation. */
   validation: ValidationStatus | null;
   /** The latest soft quality report (lint + optional review suggestions). */
@@ -113,10 +142,20 @@ interface AgentState {
   openFindings: number;
   /** blockId → the pending change-set it belongs to (drives the highlight);
    *  `evidence` present on maintenance proposals (the evidence card). */
-  pendingBlocks: Record<string, { changeSetId: string; evidence?: unknown }>;
+  pendingBlocks: Record<string, PendingBlock>;
   /** module/lesson id → its pending STRUCTURAL change (outline-sidebar highlight). */
   pendingNodes: Record<string, PendingNode>;
   changeSets: Record<string, PendingChangeSet>;
+  /** change-set id → its in-flight resolution (PERF-1 B3 optimistic review):
+   *  "accept" cleared its chrome optimistically; "reject" keeps the chrome but
+   *  dims + disables it while the server revert runs. Doubles as the
+   *  double-fire guard — begin* refuse an id already here. */
+  resolving: Record<string, ResolveAction>;
+  /** Transient failure toast (optimistic rollbacks) — rendered by
+   *  AgentFlashToast at the shell level so it surfaces even with the panel
+   *  collapsed. `flashId` bumps per show so identical text re-shows. */
+  flash: string | null;
+  flashId: number;
   /** Block ids touched during the in-flight turn (bound to its change-set on
    *  the change_set event). */
   turnBlockIds: string[];
@@ -130,6 +169,13 @@ interface AgentState {
   startTurn: (userText: string) => void;
   resumeTurn: () => void;
   appendAssistant: (delta: string) => void;
+  /** Settle the current streaming bubble's text (streaming → false) WITHOUT
+   *  touching `thinking`/`phase` — a mid-run assistant_message (e.g. the
+   *  structure path's plan summary) must not kill the working indicator.
+   *  `done` remains the one terminal that calls finishTurn. */
+  settleAssistantMessage: (content: string) => void;
+  /** Stamp `lastEventAt` — called from dispatch for every SSE event. */
+  markEvent: () => void;
   addToolStart: (toolCallId: string, tool: string) => void;
   resolveTool: (toolCallId: string, ok: boolean, summary: string, blockId?: string) => void;
   registerChangeSet: (id: string, count: number, summary?: string, structuralCount?: number, evidence?: unknown) => void;
@@ -137,16 +183,28 @@ interface AgentState {
   setOpenFindings: (n: number) => void;
   setCheckpoint: (reason: string | null) => void;
   setPendingConfirmation: (c: PendingConfirmation | null) => void;
-  setPhase: (phase: AgentPhase) => void;
+  setPhase: (phase: AgentPhase, detail?: string | null) => void;
+  setPlanModalOpen: (open: boolean) => void;
   setValidation: (v: ValidationStatus | null) => void;
   setQualityReport: (q: QualityReport | null) => void;
   setPendingOutline: (o: PendingOutline | null) => void;
   finishTurn: (finalText: string) => void;
   setError: (msg: string | null) => void;
-  clearChangeSet: (changeSetId: string) => void;
+  showFlash: (message: string) => void;
+  /** Optimistically clear a change-set's review chrome for Accept; returns the
+   *  snapshot to restore on failure, or null when the id is unknown / already
+   *  resolving (double-fire guard). Pure logic in lib/perf/optimistic.ts. */
+  beginAcceptChangeSet: (changeSetId: string) => AgentChangeSetSnapshot | null;
+  rollbackAcceptChangeSet: (snapshot: AgentChangeSetSnapshot) => void;
+  /** Mark a change-set 'reverting' (dim + disable its chrome). False when the
+   *  id is unknown / already resolving (double-fire guard). */
+  beginRejectChangeSet: (changeSetId: string) => boolean;
+  rollbackRejectChangeSet: (changeSetId: string) => void;
+  /** Success terminal for accept AND reject: drop the review state. */
+  confirmResolveChangeSet: (changeSetId: string) => void;
 }
 
-export const useAgentStore = create<AgentState>((set) => ({
+export const useAgentStore = create<AgentState>((set, get) => ({
   conversationId: null,
   messages: [],
   toolCards: [],
@@ -155,6 +213,9 @@ export const useAgentStore = create<AgentState>((set) => ({
   checkpoint: null,
   pendingConfirmation: null,
   phase: null,
+  phaseDetail: null,
+  lastEventAt: null,
+  planModalOpen: false,
   validation: null,
   qualityReport: null,
   pendingOutline: null,
@@ -163,6 +224,9 @@ export const useAgentStore = create<AgentState>((set) => ({
   pendingBlocks: {},
   pendingNodes: {},
   changeSets: {},
+  resolving: {},
+  flash: null,
+  flashId: 0,
   turnBlockIds: [],
   autoApprovePlan: false,
 
@@ -206,6 +270,9 @@ export const useAgentStore = create<AgentState>((set) => ({
       checkpoint: null,
       pendingConfirmation: null,
       phase: null,
+      phaseDetail: null,
+      lastEventAt: Date.now(),
+      planModalOpen: false,
       validation: null,
       qualityReport: null,
       pendingOutline: null,
@@ -229,6 +296,9 @@ export const useAgentStore = create<AgentState>((set) => ({
       checkpoint: null,
       pendingConfirmation: null,
       pendingOutline: null,
+      planModalOpen: false,
+      phaseDetail: null,
+      lastEventAt: Date.now(),
       validation: null,
       qualityReport: null,
       turnBlockIds: [],
@@ -244,9 +314,34 @@ export const useAgentStore = create<AgentState>((set) => ({
       const last = messages[messages.length - 1];
       if (last && last.role === "assistant" && last.streaming) {
         messages[messages.length - 1] = { ...last, text: last.text + delta };
+      } else {
+        // The previous bubble was settled mid-run (e.g. by the structure path's
+        // plan summary) — open a NEW streaming bubble so later narration is
+        // never silently dropped.
+        messages.push({ id: crypto.randomUUID(), role: "assistant", text: delta, streaming: true });
       }
       return { messages };
     }),
+
+  settleAssistantMessage: (content) =>
+    set((s) => {
+      const messages = [...s.messages];
+      const last = messages[messages.length - 1];
+      if (last && last.role === "assistant" && last.streaming) {
+        messages[messages.length - 1] = {
+          ...last,
+          text: content.trim() ? content : last.text,
+          streaming: false,
+        };
+      } else if (content.trim()) {
+        // No open bubble (a prior message already settled it) — a non-empty
+        // assistant_message still deserves its own bubble.
+        messages.push({ id: crypto.randomUUID(), role: "assistant", text: content, streaming: false });
+      }
+      return { messages };
+    }),
+
+  markEvent: () => set({ lastEventAt: Date.now() }),
 
   addToolStart: (toolCallId, tool) =>
     set((s) =>
@@ -286,13 +381,16 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   setPendingConfirmation: (c) => set({ pendingConfirmation: c }),
 
-  setPhase: (phase) => set({ phase }),
+  setPhase: (phase, detail) => set({ phase, phaseDetail: detail ?? null }),
+
+  setPlanModalOpen: (open) => set({ planModalOpen: open }),
 
   setValidation: (v) => set({ validation: v }),
 
   setQualityReport: (q) => set({ qualityReport: q }),
 
-  setPendingOutline: (o) => set({ pendingOutline: o }),
+  // A new plan opens the review modal; clearing the plan closes it.
+  setPendingOutline: (o) => set({ pendingOutline: o, planModalOpen: !!o }),
 
   setMaintenance: (m) => set({ maintenance: m }),
 
@@ -311,23 +409,63 @@ export const useAgentStore = create<AgentState>((set) => ({
       }
       // Don't drop the phase while paused for outline approval (the pipeline
       // resumes on approve); otherwise the turn is over → clear it.
-      return { messages, thinking: false, phase: s.pendingOutline ? s.phase : null };
+      return {
+        messages,
+        thinking: false,
+        phase: s.pendingOutline ? s.phase : null,
+        phaseDetail: s.pendingOutline ? s.phaseDetail : null,
+      };
     }),
 
-  setError: (msg) => set({ error: msg, thinking: false, phase: null }),
+  setError: (msg) => set({ error: msg, thinking: false, phase: null, phaseDetail: null }),
 
-  clearChangeSet: (changeSetId) =>
-    set((s) => {
-      const pendingBlocks = Object.fromEntries(
-        Object.entries(s.pendingBlocks).filter(([, v]) => v.changeSetId !== changeSetId)
-      );
-      const pendingNodes = Object.fromEntries(
-        Object.entries(s.pendingNodes).filter(([, v]) => v.changeSetId !== changeSetId)
-      );
-      const changeSets = { ...s.changeSets };
-      delete changeSets[changeSetId];
-      return { pendingBlocks, pendingNodes, changeSets };
-    }),
+  showFlash: (message) => set((s) => ({ flash: message, flashId: s.flashId + 1 })),
+
+  beginAcceptChangeSet: (changeSetId) => {
+    const s = get();
+    const result = beginAccept<PendingBlock, PendingNode, PendingChangeSet>(
+      { pendingBlocks: s.pendingBlocks, pendingNodes: s.pendingNodes, changeSets: s.changeSets, resolving: s.resolving },
+      changeSetId
+    );
+    if (!result) return null;
+    set(result.slice);
+    return result.snapshot;
+  },
+
+  rollbackAcceptChangeSet: (snapshot) =>
+    set((s) =>
+      rollbackAccept<PendingBlock, PendingNode, PendingChangeSet>(
+        { pendingBlocks: s.pendingBlocks, pendingNodes: s.pendingNodes, changeSets: s.changeSets, resolving: s.resolving },
+        snapshot
+      )
+    ),
+
+  beginRejectChangeSet: (changeSetId) => {
+    const s = get();
+    const slice = beginReject<PendingBlock, PendingNode, PendingChangeSet>(
+      { pendingBlocks: s.pendingBlocks, pendingNodes: s.pendingNodes, changeSets: s.changeSets, resolving: s.resolving },
+      changeSetId
+    );
+    if (!slice) return false;
+    set(slice);
+    return true;
+  },
+
+  rollbackRejectChangeSet: (changeSetId) =>
+    set((s) =>
+      rollbackReject<PendingBlock, PendingNode, PendingChangeSet>(
+        { pendingBlocks: s.pendingBlocks, pendingNodes: s.pendingNodes, changeSets: s.changeSets, resolving: s.resolving },
+        changeSetId
+      )
+    ),
+
+  confirmResolveChangeSet: (changeSetId) =>
+    set((s) =>
+      confirmResolve<PendingBlock, PendingNode, PendingChangeSet>(
+        { pendingBlocks: s.pendingBlocks, pendingNodes: s.pendingNodes, changeSets: s.changeSets, resolving: s.resolving },
+        changeSetId
+      )
+    ),
 }));
 
 /** True when a block has a pending agent change (editor highlight). */
@@ -345,4 +483,10 @@ export function usePendingEvidence(blockId: string): unknown {
  *  or null. */
 export function usePendingNodeChangeSetId(nodeId: string): string | null {
   return useAgentStore((s) => s.pendingNodes[nodeId]?.changeSetId ?? null);
+}
+
+/** A change-set's in-flight resolution ("reject" dims + disables its review
+ *  chrome while the server revert runs), or null when actionable. */
+export function useChangeSetResolving(changeSetId: string | null): ResolveAction | null {
+  return useAgentStore((s) => (changeSetId ? (s.resolving[changeSetId] ?? null) : null));
 }

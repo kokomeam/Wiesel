@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { IntentLink } from "@/components/perf/IntentLink";
 import {
   CheckCircle2,
   ChevronRight,
@@ -86,7 +87,7 @@ export function CourseNavSidebar(props: Props) {
           onClick={() => setMobileOpen(true)}
           className="inline-flex items-center gap-2 rounded-full border border-stone-200/80 bg-white px-3.5 py-2 text-sm font-medium text-stone-700 shadow-[0_1px_2px_rgba(68,48,28,0.05)] transition-colors hover:border-stone-300"
         >
-          <ListTree className="size-4 text-brand-500" aria-hidden />
+          <ListTree className="size-4 text-learn-600" aria-hidden />
           Contents
           <span className="tabular-nums text-stone-400">
             {props.completedCount}/{props.totalCount}
@@ -204,7 +205,7 @@ function NavContent({
         </div>
         {!authorPreview && (
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-100">
-            <div className="brand-gradient h-full rounded-full transition-[width] duration-500" style={{ width: `${pct}%` }} />
+            <div className="learn-gradient h-full rounded-full transition-[width] duration-500" style={{ width: `${pct}%` }} />
           </div>
         )}
       </div>
@@ -247,24 +248,24 @@ function NavContent({
                     const active = lesson.id === currentLessonId;
                     return (
                       <li key={lesson.id}>
-                        <Link
+                        <IntentLink
                           href={`/learn/${slug}/${lesson.id}`}
                           aria-current={active ? "page" : undefined}
                           onClick={onClose}
                           className={cn(
                             "relative flex items-center gap-2.5 rounded-lg py-1.5 pl-3 pr-2 text-[13px] transition-colors",
                             active
-                              ? "bg-brand-50 font-medium text-stone-900"
+                              ? "bg-learn-50 font-medium text-stone-900"
                               : "text-stone-600 hover:bg-stone-50 hover:text-stone-900"
                           )}
                         >
                           {active && (
-                            <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-brand-500" />
+                            <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-learn-500" />
                           )}
                           <StatusDot status={lesson.status} />
                           <span className="min-w-0 flex-1 truncate">{lesson.title}</span>
                           {lesson.status === "in_progress" && lesson.pct > 0 ? (
-                            <span className="shrink-0 text-[10px] font-medium tabular-nums text-brand-600">
+                            <span className="shrink-0 text-[10px] font-medium tabular-nums text-learn-700">
                               {lesson.pct}%
                             </span>
                           ) : lesson.estimatedMinutes ? (
@@ -272,7 +273,7 @@ function NavContent({
                               {lesson.estimatedMinutes}m
                             </span>
                           ) : null}
-                        </Link>
+                        </IntentLink>
                       </li>
                     );
                   })}
@@ -292,7 +293,7 @@ function StatusDot({ status }: { status: NavLessonStatus }) {
   }
   return (
     <Circle
-      className={cn("size-4 shrink-0", status === "in_progress" ? "text-brand-500" : "text-stone-300")}
+      className={cn("size-4 shrink-0", status === "in_progress" ? "text-learn-500" : "text-stone-300")}
       aria-label={status === "in_progress" ? "In progress" : "Not started"}
     />
   );

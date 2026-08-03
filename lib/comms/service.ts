@@ -9,10 +9,15 @@
  *   2. enrollments.comms_opt_out RE-READ at send time — opted-out returns
  *      {ok:false, reason:"opted_out"} and the row STAYS draft ('failed' is
  *      reserved for provider errors),
- *   3. recipient resolved server-side (auth.users email via the admin API —
+ *   3. comms_suppressions RE-READ at send time (Milestone 7) — a hard-bounced
+ *      or complained address returns {ok:false, reason:"suppressed"} and the
+ *      row STAYS draft (sender-reputation protection),
+ *   4. recipient resolved server-side (auth.users email via the admin API —
  *      never from the client payload),
- *   4. rendered at send time from the stored body (what the author last saw),
- *   5. every attempt logged (structured console line + the row itself).
+ *   5. rendered at send time from the stored body (what the author last saw),
+ *   6. every attempt logged (structured console line + the row itself), and a
+ *      successful send seeds delivery_status='sent' + the delivery trail that
+ *      the Resend webhook (lib/comms/webhook.ts) advances.
  *
  * Drafting runs on the AUTHOR-scoped client (RLS enforces course ownership);
  * approveAndSend takes the ADMIN client (it must read auth.users + the
@@ -24,7 +29,14 @@ import type { Database, Json } from "@/lib/database.types";
 import { getCommsProvider } from "./factory";
 import { renderEmail } from "./render";
 import { optOutUrl } from "./tokens";
-import { CommsError, EmailBodySchema, type EmailBody } from "./types";
+import {
+  CommsError,
+  EmailBodySchema,
+  LEARNER_COMMS_SEND_SOURCE,
+  type EmailBody,
+  type EmailTag,
+  type SuppressionReason,
+} from "./types";
 
 type DB = SupabaseClient<Database>;
 
@@ -84,7 +96,44 @@ export async function updateDraft(
 
 export type SendOutcome =
   | { ok: true; message: LearnerMessageRow }
-  | { ok: false; reason: "opted_out" | "bad_status" | "no_recipient" | "provider_error"; detail?: string };
+  | {
+      ok: false;
+      reason: "opted_out" | "suppressed" | "bad_status" | "no_recipient" | "provider_error";
+      detail?: string;
+    };
+
+/** The correlation tags every learner-comms send carries (Milestone 7). The
+ *  webhook resolves the message from these + provider_message_id; the LEARNER
+ *  is always re-resolved from the learner_messages row, never from a tag. */
+export function learnerCommsTags(
+  messageId: string,
+  courseId: string,
+  userId: string
+): EmailTag[] {
+  return [
+    { name: "send_source", value: LEARNER_COMMS_SEND_SOURCE },
+    { name: "message_id", value: messageId },
+    { name: "course_id", value: courseId },
+    { name: "user_id", value: userId },
+  ];
+}
+
+/** Suppression lookup for a set of learners (admin client — the table is
+ *  server-only by design). Returns userId → reason for suppressed users. */
+export async function getSuppressions(
+  admin: DB,
+  userIds: string[]
+): Promise<Record<string, SuppressionReason>> {
+  if (userIds.length === 0) return {};
+  const { data, error } = await admin
+    .from("comms_suppressions")
+    .select("user_id, reason")
+    .in("user_id", [...new Set(userIds)]);
+  if (error) throw error;
+  return Object.fromEntries(
+    (data ?? []).map((r) => [r.user_id, r.reason as SuppressionReason])
+  );
+}
 
 export async function approveAndSend(admin: DB, messageId: string): Promise<SendOutcome> {
   const loaded = await admin
@@ -116,6 +165,25 @@ export async function approveAndSend(admin: DB, messageId: string): Promise<Send
       JSON.stringify({ tag: "comms_send", messageId, outcome: "opted_out" })
     );
     return { ok: false, reason: "opted_out" };
+  }
+
+  // ── The suppression gate (M7): hard bounce / complaint = never send. ──
+  const suppression = await admin
+    .from("comms_suppressions")
+    .select("reason")
+    .eq("user_id", message.user_id)
+    .maybeSingle();
+  if (suppression.error) throw suppression.error;
+  if (suppression.data) {
+    console.log(
+      JSON.stringify({
+        tag: "comms_send",
+        messageId,
+        outcome: "suppressed",
+        reason: suppression.data.reason,
+      })
+    );
+    return { ok: false, reason: "suppressed", detail: suppression.data.reason };
   }
 
   // ── Resolve recipient + sender + course (all server-side). ──
@@ -156,15 +224,28 @@ export async function approveAndSend(admin: DB, messageId: string): Promise<Send
       text,
       fromName,
       unsubscribeUrl,
+      idempotencyKey: messageId,
+      tags: learnerCommsTags(messageId, message.course_id, message.user_id),
       meta: { messageId, courseId: message.course_id },
     });
+    const sentAt = new Date().toISOString();
     const updated = await admin
       .from("learner_messages")
       .update({
         status: "sent",
-        sent_at: new Date().toISOString(),
+        sent_at: sentAt,
         provider_message_id: result.providerMessageId,
         error: null,
+        delivery_status: "sent",
+        // Seed the trail; the Resend webhook appends svixId-deduped entries.
+        delivery_events: [
+          {
+            type: "sent",
+            at: sentAt,
+            via: "send",
+            detail: { providerMessageId: result.providerMessageId },
+          },
+        ] as unknown as Json,
       })
       .eq("id", messageId)
       .select("*")

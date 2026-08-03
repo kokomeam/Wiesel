@@ -10,7 +10,7 @@
  * any member is locked — unlock to transform the group.
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type React from "react";
 import { cn } from "@/lib/cn";
 import { resizeElementPatch } from "@/lib/course/commands";
@@ -24,7 +24,12 @@ import {
 import { buildCandidates, snapEdges, type SnapCandidates } from "@/lib/course/slide/snap";
 import { useEditorStore } from "@/lib/course/store";
 import { growAwareResizePatch } from "./elements/measureTextLike";
-import { useDragStore, type GuideLine } from "@/lib/editor/dragStore";
+import {
+  createFrameCoalescer,
+  useDragStore,
+  type FrameCoalescer,
+  type GuideLine,
+} from "@/lib/editor/dragStore";
 import type { Slide } from "@/lib/course/types";
 import { HANDLES } from "./ElementView";
 import {
@@ -32,7 +37,9 @@ import {
   isCorner,
   rawResize,
   SNAP_SCREEN_PX,
+  writeDragSession,
   type ResizeHandle,
+  type SessionUpdate,
 } from "./useElementDrag";
 
 interface BoxGesture {
@@ -73,6 +80,16 @@ export function MultiSelectionBox({
     s.session && s.session.slideId === slide.id ? s.session : null
   );
   const gesture = useRef<BoxGesture | null>(null);
+  // One dragStore write per frame during the bbox transform (A5 §6); flushed
+  // on pointer-up so the committed member frames are exact.
+  const writes = useRef<FrameCoalescer<SessionUpdate> | null>(null);
+  if (writes.current === null) {
+    writes.current = createFrameCoalescer(writeDragSession);
+  }
+  useEffect(() => {
+    const w = writes.current;
+    return () => w?.cancel();
+  }, []);
 
   if (
     selection.kind !== "elements" ||
@@ -210,15 +227,15 @@ export function MultiSelectionBox({
       };
     }
 
-    const drag = useDragStore.getState();
-    if (!drag.session) drag.setSession({ blockId, slideId: slide.id, frames, guides });
-    else drag.updateSession(frames, guides);
+    writes.current?.push({ blockId, slideId: slide.id, frames, guides });
   }
 
   function onPointerUp() {
     const g = gesture.current;
     gesture.current = null;
     if (!g) return;
+    // Land any pending frame first so the commit reads the exact geometry.
+    writes.current?.flush();
     const drag = useDragStore.getState();
     const frames = drag.session?.frames;
     drag.setSession(null);

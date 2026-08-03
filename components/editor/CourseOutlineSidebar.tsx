@@ -40,8 +40,9 @@ function SortableLesson({
   lesson: LessonNode;
   module: CourseModule;
 }) {
-  const doc = useEditorStore((s) => s.doc);
-  const apply = useEditorStore((s) => s.apply);
+  // No whole-doc subscription here (A5 §2.1): the doc is only needed inside
+  // the delete-confirm click handler — read it via getState() there, so a
+  // patch anywhere in the course doesn't fan out per outline row.
   const activeLessonId = useEditorStore((s) => s.activeLessonId);
   const openLesson = useEditorStore((s) => s.openLesson);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -108,6 +109,7 @@ function SortableLesson({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
+          const { doc, apply } = useEditorStore.getState();
           void confirmDeleteLesson(doc, apply, lesson.id);
         }}
         aria-label={`Delete lesson ${lesson.title}`}
@@ -121,10 +123,9 @@ function SortableLesson({
 }
 
 function SortableModule({ module, index }: { module: CourseModule; index: number }) {
-  const doc = useEditorStore((s) => s.doc);
+  // Same as SortableLesson: doc/apply only feed click handlers — getState().
   const selection = useEditorStore((s) => s.selection);
   const select = useEditorStore((s) => s.select);
-  const apply = useEditorStore((s) => s.apply);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: module.id });
 
@@ -188,7 +189,9 @@ function SortableModule({ module, index }: { module: CourseModule; index: number
             title="Add lesson"
             aria-label={`Add lesson to ${module.title}`}
             onClick={() =>
-              apply(addLessonPatch(module.id, module.lessons.length), "human")
+              useEditorStore
+                .getState()
+                .apply(addLessonPatch(module.id, module.lessons.length), "human")
             }
             className="grid size-5 place-items-center rounded-md text-stone-300 transition-colors hover:bg-stone-100 hover:text-brand-600"
           >
@@ -198,7 +201,10 @@ function SortableModule({ module, index }: { module: CourseModule; index: number
             type="button"
             title="Delete module"
             aria-label={`Delete module ${module.title}`}
-            onClick={() => void confirmDeleteModule(doc, apply, module.id)}
+            onClick={() => {
+              const { doc, apply } = useEditorStore.getState();
+              void confirmDeleteModule(doc, apply, module.id);
+            }}
             className="grid size-5 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
           >
             <Trash2 className="size-3" />

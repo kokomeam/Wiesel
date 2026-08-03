@@ -14,6 +14,7 @@ import { useRef, useState } from "react";
 import { CheckCircle2, FileText, Lightbulb, Paperclip, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { HomeworkBlock } from "@/lib/course/types";
+import { IMMUTABLE_ASSET_CACHE_SECONDS } from "@/lib/images/cacheControl";
 import { createClient } from "@/lib/supabase/client";
 import { RevealPanel } from "./readOnlyBlocks";
 
@@ -83,7 +84,10 @@ export function LearnHomework({
         const path = `${userId}/homework/${courseId}/${block.id}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
         const { error: uploadError } = await supabase.storage
           .from("course-assets")
-          .upload(path, file, { upsert: false });
+          .upload(path, file, {
+            cacheControl: IMMUTABLE_ASSET_CACHE_SECONDS,
+            upsert: false,
+          });
         if (uploadError) throw uploadError;
         uploaded.push({ name: file.name, path });
       }
@@ -268,7 +272,10 @@ export function LearnHomework({
                   )}
                   aria-hidden
                 />
-                <span className="flex-1">
+                {/* suppressHydrationWarning: the timestamp is deliberately in
+                    the VIEWER's locale/TZ, so the SSR text (server TZ) can
+                    legitimately differ from the client render. */}
+                <span className="flex-1" suppressHydrationWarning>
                   Submitted {new Date(submission.createdAt).toLocaleString()}
                   {submission.fileCount > 0
                     ? ` · ${submission.fileCount} ${submission.fileCount === 1 ? "file" : "files"}`

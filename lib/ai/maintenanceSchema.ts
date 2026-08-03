@@ -50,8 +50,12 @@ export type CommsDraft = z.infer<typeof CommsDraftSchema>;
 
 /* ─────────────────────────── Dedupe + priority ─────────────────────────── */
 
-/** Mirrors the SQL filing's dedupe keys (migration 20260703000000): one finding
- *  per QUESTION, one per (learner, risk flavor). */
+/** Mirrors the SQL filing's dedupe keys (migration 20260707010000): one
+ *  finding per QUESTION (`question:<id>`), ONE per learner
+ *  (`learner_risk:<userId>` — M8 merged the per-flavor keys; the old
+ *  `learner_<flagType>:<userId>` scheme never collided with this function's
+ *  output, so Analyst adoption silently never fired for learner risks and one
+ *  learner could yield several findings/drafts in a single run). */
 export function dedupeKeyForFinding(f: Finding): string {
   if (f.targets.questionId) return `question:${f.targets.questionId}`;
   if (f.kind === "learner_risk" && f.targets.userId) {

@@ -15,6 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { IMMUTABLE_ASSET_CACHE_SECONDS } from "@/lib/images/cacheControl";
 
 export const DECK_IMPORT_BUCKET = "deck-imports";
 
@@ -80,6 +81,10 @@ export async function uploadObject(
 ): Promise<UploadResult> {
   const { error } = await supabase.storage.from(DECK_IMPORT_BUCKET).upload(args.path, args.bytes, {
     contentType: args.contentType,
+    // Long-lived object cache: a signed URL's token changes on every re-sign,
+    // so the browser cache key rotates with it — an overwritten page can never
+    // be served stale through a fresh signed URL.
+    cacheControl: IMMUTABLE_ASSET_CACHE_SECONDS,
     upsert: args.upsert ?? true,
   });
   if (error) return { ok: false, error: error.message };

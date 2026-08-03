@@ -8,7 +8,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { listLeadListsWithCounts, listSenderIdentities, selectCourseForAuthor } from "@/lib/marketing/persistence";
 import { CampaignWizard } from "./CampaignWizard";
 
@@ -20,9 +20,7 @@ export default async function NewCampaignPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 

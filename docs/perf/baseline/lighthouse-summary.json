@@ -1,0 +1,202 @@
+{
+  "dashboard:mobile": {
+    "finalUrl": "http://localhost:3100/dashboard",
+    "perfScore": 0.69,
+    "lcpMs": 6302.028849999999,
+    "fcpMs": 1216.2166,
+    "cls": 0,
+    "tbtMs": 18,
+    "ttfbMs": 3818.216,
+    "interactiveMs": 6307.501774999999,
+    "totalBytes": 824552,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "studio:mobile": {
+    "finalUrl": "http://localhost:3100/studio",
+    "perfScore": 0.72,
+    "lcpMs": 6568.92575,
+    "fcpMs": 1067.5703,
+    "cls": 0,
+    "tbtMs": 44,
+    "ttfbMs": 3477.683,
+    "interactiveMs": 6576.425750000001,
+    "totalBytes": 1083710,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "learn-lesson:mobile": {
+    "finalUrl": "http://localhost:3100/learn/econ-fixture-d5eace/98e34ffe-fbe3-4b45-be37-29a1dfcc50f7",
+    "perfScore": 0.74,
+    "lcpMs": 5977.9965,
+    "fcpMs": 1211.777,
+    "cls": 0.00002147783078183729,
+    "tbtMs": 156,
+    "ttfbMs": 1888.481,
+    "interactiveMs": 5984.907650000001,
+    "totalBytes": 947360,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "studio-analytics:mobile": {
+    "finalUrl": "http://localhost:3100/studio/1d730f8c-fc9e-4e87-9eb7-6a2a654506bd/analytics",
+    "perfScore": 0.74,
+    "lcpMs": 7440.722,
+    "fcpMs": 1715.464,
+    "cls": 0,
+    "tbtMs": 9,
+    "ttfbMs": 1666.099,
+    "interactiveMs": 7449.381799999999,
+    "totalBytes": 763441,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "marketing:mobile": {
+    "finalUrl": "http://localhost:3100/marketing",
+    "perfScore": 0.76,
+    "lcpMs": 5243.1525,
+    "fcpMs": 1218.174,
+    "cls": 0,
+    "tbtMs": 31,
+    "ttfbMs": 2928.018,
+    "interactiveMs": 5250.19815,
+    "totalBytes": 825793,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "dashboard:desktop": {
+    "finalUrl": "http://localhost:3100/dashboard",
+    "perfScore": 0.95,
+    "lcpMs": 1106.0350000000003,
+    "fcpMs": 332.276,
+    "cls": 0,
+    "tbtMs": 0,
+    "ttfbMs": 1677.719,
+    "interactiveMs": 1107.1143000000004,
+    "totalBytes": 829927,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "studio:desktop": {
+    "finalUrl": "http://localhost:3100/studio",
+    "perfScore": 0.96,
+    "lcpMs": 1234.77,
+    "fcpMs": 293.908,
+    "cls": 0,
+    "tbtMs": 0,
+    "ttfbMs": 2185.567,
+    "interactiveMs": 1234.7700000000002,
+    "totalBytes": 1082995,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "learn-lesson:desktop": {
+    "finalUrl": "http://localhost:3100/learn/econ-fixture-d5eace/98e34ffe-fbe3-4b45-be37-29a1dfcc50f7",
+    "perfScore": 0.93,
+    "lcpMs": 1115.77,
+    "fcpMs": 342.308,
+    "cls": 0,
+    "tbtMs": 132,
+    "ttfbMs": 623.3340000000001,
+    "interactiveMs": 1117.77,
+    "totalBytes": 954423,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "studio-analytics:desktop": {
+    "finalUrl": "http://localhost:3100/studio/1d730f8c-fc9e-4e87-9eb7-6a2a654506bd/analytics",
+    "perfScore": 0.82,
+    "lcpMs": 2766.684,
+    "fcpMs": 862.228,
+    "cls": 0,
+    "tbtMs": 0,
+    "ttfbMs": 1503.4070000000002,
+    "interactiveMs": 2768.684,
+    "totalBytes": 764007,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  },
+  "marketing:desktop": {
+    "finalUrl": "http://localhost:3100/marketing",
+    "perfScore": 0.81,
+    "lcpMs": 2559.7700000000004,
+    "fcpMs": 866.5899999999999,
+    "cls": 0,
+    "tbtMs": 0,
+    "ttfbMs": 2644.597,
+    "interactiveMs": 2567.7700000000004,
+    "totalBytes": 844963,
+    "imgAudits": {
+      "modernFormats": 1,
+      "properlySized": 0.5,
+      "offscreenLazy": 1,
+      "lcpLazyLoaded": null,
+      "prioritizeLcp": null,
+      "fontDisplay": 1,
+      "renderBlocking": 1
+    }
+  }
+}

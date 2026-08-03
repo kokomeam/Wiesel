@@ -7,6 +7,7 @@
  * back through the Zod schemas at the tool boundary.
  */
 
+import { cache } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import type {
@@ -274,6 +275,22 @@ export async function selectCourseForAuthor(
     .maybeSingle();
   return data ?? null;
 }
+
+/**
+ * PERF-1 C1: request-deduped course resolution. The marketing layout's
+ * AgentDock and the hub page resolve the SAME default course — react cache()
+ * collapses them to ONE query per request (the server supabase client is
+ * itself a per-request singleton, so the arguments match by identity).
+ * cache() keys on the exact argument list, so callers normalize preferId to
+ * null (never undefined / omitted); a page carrying ?course= passes the id
+ * and deliberately gets its own resolution. Outside a React request the
+ * wrapper degrades to a plain call (React's no-dispatcher fallback), so
+ * scripts/tests can use it too. The uncached original stays exported.
+ */
+export const selectCourseForAuthorCached = cache(
+  (supabase: DB, authorId: string, preferId: string | null) =>
+    selectCourseForAuthor(supabase, authorId, preferId)
+);
 
 export async function listAuthorCourses(supabase: DB, authorId: string): Promise<{ id: string; title: string }[]> {
   const { data } = await supabase

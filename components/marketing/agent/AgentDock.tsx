@@ -5,25 +5,47 @@
  * pill on every marketing page opens a right-hand slide-over with the SAME
  * AgentPanel the full-screen page and the campaign builder embed use.
  *
- * The panel stays MOUNTED while the dock is closed (translated off-screen,
- * inert) so the transcript survives open/close within a visit; the hub's
- * ask-bar seeds a message through agentDockStore and the panel auto-sends it.
+ * The chat panel is next/dynamic-loaded on the FIRST open (PERF-1 D — the
+ * dock mounts on every /marketing page, but most visits never open it), then
+ * stays MOUNTED while the dock is closed (translated off-screen, inert) so
+ * the transcript survives open/close within a visit; the hub's ask-bar seeds
+ * a message through agentDockStore and the panel auto-sends it. The pill and
+ * the slide-over chrome stay static — only the panel chunk is lazy.
  *
  * Hidden where a chat already owns the surface: the full-screen /marketing/agent
  * page and the campaign builder (which embeds its own panel).
  */
 
+import { useState } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Maximize2, Wand2, X } from "lucide-react";
-import { AgentPanel } from "@/components/marketing/agent/AgentPanel";
+import { Loader2, Maximize2, Wand2, X } from "lucide-react";
 import { useAgentDockStore } from "@/lib/marketing/agentDockStore";
 import { cn } from "@/lib/cn";
+
+const AgentPanel = dynamic(
+  () => import("@/components/marketing/agent/AgentPanel").then((m) => m.AgentPanel),
+  {
+    // Only ever visible during the first open, inside the slide-over body.
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="size-5 animate-spin text-stone-300" aria-label="Loading the agent" />
+      </div>
+    ),
+  }
+);
 
 export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
   const pathname = usePathname();
   const params = useSearchParams();
   const { open, seed, openDock, closeDock, clearSeed } = useAgentDockStore();
+
+  // "Has ever been opened" latch (render-phase derived state): the panel chunk
+  // loads on the first open and the panel stays mounted afterwards, so closing
+  // the dock keeps the transcript exactly as before.
+  const [panelLoaded, setPanelLoaded] = useState(open);
+  if (open && !panelLoaded) setPanelLoaded(true);
 
   // Surfaces that already own a chat: full-screen agent + the campaign builder.
   const hidden =
@@ -74,7 +96,9 @@ export function AgentDock({ defaultCourseId }: { defaultCourseId: string }) {
           </button>
         </div>
         <div className="min-h-0 flex-1 px-3 pb-3">
-          <AgentPanel courseId={courseId} seed={open ? seed : null} onSeedConsumed={clearSeed} />
+          {panelLoaded && (
+            <AgentPanel courseId={courseId} seed={open ? seed : null} onSeedConsumed={clearSeed} />
+          )}
         </div>
       </div>
 

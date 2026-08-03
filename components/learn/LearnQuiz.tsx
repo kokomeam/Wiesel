@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, RotateCcw, XCircle } from "lucide-react";
+import { CheckCircle2, RotateCcw, Sparkles, XCircle } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { PublishedQuizBlock, PublishedQuizQuestion } from "@/lib/course/publish/schemas";
 import type {
@@ -124,6 +124,12 @@ export function LearnQuiz({
           <>
             <p className="text-sm font-medium text-stone-800">
               Score: {result.score}/{result.maxScore}
+              {result.score === result.maxScore ? (
+                <span className="ml-2 inline-flex items-center gap-1 align-middle text-emerald-600">
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                  Perfect score
+                </span>
+              ) : null}
               {result.attemptNumber ? (
                 <span className="ml-2 font-normal text-stone-400">
                   attempt {result.attemptNumber}

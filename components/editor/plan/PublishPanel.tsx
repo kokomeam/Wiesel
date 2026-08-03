@@ -40,6 +40,7 @@ import type {
 import { buildPublicationSnapshot } from "@/lib/course/publish/snapshot";
 import { isValidSlug, publicCoursePath, slugifyTitle } from "@/lib/course/publish/slug";
 import { useEditorStore } from "@/lib/course/store";
+import { CoverImageCard } from "@/components/editor/publish/CoverImageCard";
 import { SubmissionsCard } from "./SubmissionsCard";
 
 interface RemoteStatus {
@@ -381,6 +382,13 @@ export function PublishPanel() {
             </div>
           </div>
         )}
+
+        {/* ── cover image (creator-identity lane) — card art for the course
+            landing + marketplace; saves straight to courses.cover_image_url,
+            independent of the publish snapshot ── */}
+        <div className={publication ? "mt-4" : "mt-8"}>
+          <CoverImageCard courseId={doc.id} />
+        </div>
 
         {/* ── pre-flight ── */}
         <div className="mt-4 rounded-2xl border border-stone-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(68,48,28,0.05)]">

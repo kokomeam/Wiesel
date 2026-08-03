@@ -128,7 +128,20 @@ export function ElementView({
   scale: number | null;
   interactive: boolean;
 }) {
-  const selection = useEditorStore((s) => s.selection);
+  // Per-element boolean selectors (A5 §2.3): subscribing to the whole
+  // `selection` re-rendered EVERY mounted element on ANY selection change.
+  // These flip only when THIS element's selected state changes; scope and
+  // sibling data are read via getState() inside handlers.
+  const inSingle = useEditorStore(
+    (s) => interactive && s.selection.kind === "element" && s.selection.id === el.id
+  );
+  const inMulti = useEditorStore(
+    (s) =>
+      interactive &&
+      s.selection.kind === "elements" &&
+      s.selection.slideId === slideId &&
+      s.selection.ids.includes(el.id)
+  );
   const select = useEditorStore((s) => s.select);
 
   /** Current entered-group scope (only meaningful on this slide). */
@@ -179,13 +192,6 @@ export function ElementView({
     el.type === "shape" && (el.shape === "line" || el.shape === "arrow");
   const endpointDrag = useEndpointDrag(el as LineShape, blockId, slideId, scale);
 
-  const inSingle =
-    interactive && selection.kind === "element" && selection.id === el.id;
-  const inMulti =
-    interactive &&
-    selection.kind === "elements" &&
-    selection.slideId === slideId &&
-    selection.ids.includes(el.id);
   const selected = inSingle || inMulti;
   const frame = transient ?? el;
   const hidden = el.visible === false;

@@ -1,12 +1,21 @@
 "use client";
 
 /**
- * Filmstrip of true mini-previews (SlideStage in thumbnail mode). Selecting
- * a thumbnail drives both the canvas and the inspector. Hover exposes
- * duplicate/delete; the strip itself can be collapsed from SlideDeckEditor.
+ * Filmstrip of true mini-previews (the store-free SlideView — thumbnails
+ * carry no per-element store subscriptions, so selection changes and drags
+ * never re-render them; A5 §4). Selecting a thumbnail drives both the canvas
+ * and the inspector. Hover exposes duplicate/delete; the strip itself can be
+ * collapsed from SlideDeckEditor.
+ *
+ * PERF (A5 §1.1, §5): the strip is windowed horizontally (fixed 152 px pitch,
+ * visible ± 2 via the shared useVirtualRows) so a long deck mounts ~a dozen
+ * stages instead of all of them, and lint runs synchronously ONLY for the
+ * active slide — off-screen thumbs aren't mounted at all and visible inactive
+ * thumbs lint in an idle callback (cancelled on unmount), so a keystroke in
+ * the active slide never pays a whole-deck lint pass.
  */
 
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
@@ -18,14 +27,20 @@ import {
 import { lintSlide } from "@/lib/course/lint";
 import { altTextFor, speakerNotesFor } from "@/lib/course/ai/templates";
 import { useEditorStore } from "@/lib/course/store";
+import { useVirtualRows } from "@/lib/perf/virtualRows";
 import type { Slide } from "@/lib/course/types";
-import { SlideStage } from "../slide/SlideStage";
+import { SlideView } from "../slide/SlideView";
+
+/** Thumbnail pitch along the scroll axis: w-36 (144) + the pr-2 gap (8).
+ *  useVirtualRows requires the gap INSIDE the item. */
+const THUMB_PITCH_PX = 152;
 
 /* The reducer deep-clones the whole doc per patch, so slide object identity
  * changes even for untouched slides — plain memo would never hit. Compare
  * structurally instead, caching the JSON per slide object (WeakMap) so each
- * snapshot is stringified at most once. Skipping a thumbnail re-render also
- * skips its lintSlide pass. */
+ * snapshot is stringified at most once. Windowing bounds the cost: only the
+ * ~visible slides are mounted, so a keystroke restringifies a dozen slides,
+ * not the whole deck (A5 §5). */
 const slideJsonCache = new WeakMap<Slide, string>();
 function jsonOf(slide: Slide): string {
   let s = slideJsonCache.get(slide);
@@ -36,30 +51,47 @@ function jsonOf(slide: Slide): string {
   return s;
 }
 
+/** requestIdleCallback with a setTimeout fallback (Safari). */
+function scheduleIdle(cb: () => void): () => void {
+  if (typeof requestIdleCallback === "function") {
+    const id = requestIdleCallback(cb, { timeout: 500 });
+    return () => cancelIdleCallback(id);
+  }
+  const id = window.setTimeout(cb, 120);
+  return () => window.clearTimeout(id);
+}
+
 const Thumbnail = memo(
   function Thumbnail({
     slide,
     index,
     deckId,
-    lessonId,
     active,
     onSelect,
   }: {
     slide: Slide;
     index: number;
     deckId: string;
-    lessonId: string;
     active: boolean;
     onSelect: (slideId: string) => void;
   }) {
     const apply = useEditorStore((s) => s.apply);
-    const hintCount = lintSlide(slide, {
-      blockId: deckId,
-      speakerNotesFor,
-      altTextFor,
-    }).length;
+    // Inactive thumbs lint off the interaction path; the ACTIVE slide lints
+    // synchronously below so its badge is never a frame behind an edit.
+    const [idleHints, setIdleHints] = useState(0);
+    useEffect(() => {
+      if (active) return;
+      return scheduleIdle(() => {
+        setIdleHints(
+          lintSlide(slide, { blockId: deckId, speakerNotesFor, altTextFor }).length
+        );
+      });
+    }, [slide, deckId, active]);
+    const hintCount = active
+      ? lintSlide(slide, { blockId: deckId, speakerNotesFor, altTextFor }).length
+      : idleHints;
     return (
-      <div className="group/thumb relative shrink-0">
+      <div className="group/thumb relative shrink-0 pr-2">
         <button
           type="button"
           {...aiAttrs({
@@ -80,18 +112,19 @@ const Thumbnail = memo(
             active ? "ring-2 ring-brand-400" : "ring-stone-200 hover:ring-stone-300"
           )}
         >
-          <SlideStage slide={slide} blockId={deckId} lessonId={lessonId} mode="thumbnail" />
+          <SlideView slide={slide} />
         </button>
         <span className="absolute bottom-1 left-1.5 rounded bg-white/85 px-1 text-[9px] font-medium text-stone-500">
           {index + 1}
         </span>
         {hintCount > 0 && (
           <span
-            className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-amber-400"
+            className="absolute right-3.5 top-1.5 size-1.5 rounded-full bg-amber-400"
             title={`${hintCount} quality suggestion${hintCount > 1 ? "s" : ""}`}
           />
         )}
-        <div className="absolute -top-1.5 right-1/2 z-10 flex translate-x-1/2 gap-0.5 opacity-0 transition-opacity group-hover/thumb:opacity-100">
+        {/* centered on the 144px thumb (the root is 152px wide incl. the gap) */}
+        <div className="absolute -top-1.5 left-[72px] z-10 flex -translate-x-1/2 gap-0.5 opacity-0 transition-opacity group-hover/thumb:opacity-100">
           <button
             type="button"
             title="Duplicate slide"
@@ -125,39 +158,45 @@ const Thumbnail = memo(
     prev.index === next.index &&
     prev.active === next.active &&
     prev.deckId === next.deckId &&
-    prev.lessonId === next.lessonId &&
     (prev.slide === next.slide || jsonOf(prev.slide) === jsonOf(next.slide))
 );
 
 export function SlideThumbnailStrip({
   slides,
   deckId,
-  lessonId,
   activeId,
   onSelect,
 }: {
   slides: Slide[];
   deckId: string;
-  lessonId: string;
   activeId: string | undefined;
   onSelect: (slideId: string) => void;
 }) {
   const apply = useEditorStore((s) => s.apply);
   const themeId = slides[0]?.style.theme.id;
+  const { containerRef, start, end, padStart, padEnd } = useVirtualRows({
+    restoreId: `filmstrip:${deckId}`,
+    count: slides.length,
+    itemSize: THUMB_PITCH_PX,
+    overscan: 2,
+    horizontal: true,
+    initialViewport: 800,
+  });
 
   return (
-    <div className="flex items-stretch gap-2 overflow-x-auto p-1 scrollbar-thin">
-      {slides.map((slide, i) => (
+    <div ref={containerRef} className="flex items-stretch overflow-x-auto p-1 scrollbar-thin">
+      {padStart > 0 && <div aria-hidden className="shrink-0" style={{ width: padStart }} />}
+      {slides.slice(start, end).map((slide, i) => (
         <Thumbnail
           key={slide.id}
           slide={slide}
-          index={i}
+          index={start + i}
           deckId={deckId}
-          lessonId={lessonId}
           active={slide.id === activeId}
           onSelect={onSelect}
         />
       ))}
+      {padEnd > 0 && <div aria-hidden className="shrink-0" style={{ width: padEnd }} />}
       <button
         type="button"
         aria-label="Add slide"

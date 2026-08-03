@@ -6,6 +6,11 @@
  * (user_id, course_id, server_ts) path — the ONE sanctioned raw-event read),
  * approximate time spent, and current flags. This view is also the substrate
  * for future agent tooling ("draft follow-up" reads exactly this).
+ *
+ * PERF-1 C1: one learner_detail_bundle RPC round trip (author-gated inside;
+ * the learner's roster row is computed for THIS learner only) + the cached
+ * immutable snapshot for title maps. The timeline pages by KEYSET cursor
+ * (?before= an event's server_ts) instead of OFFSET.
  */
 
 import Link from "next/link";
@@ -21,25 +26,23 @@ import {
   Clock3,
 } from "lucide-react";
 import { buildSnapshotMaps, type SnapshotMaps } from "@/lib/analytics/dashboard";
+import { loadLearnerDetail, type TimelineEvent } from "@/lib/analytics/dashboardLoader";
 import { describeLearnerFlag, type LearnerFlagType } from "@/lib/analytics/flags";
-import { getLivePublicationByCourse, parsePublicationSnapshot } from "@/lib/learn/resolve";
-import { createClient } from "@/lib/supabase/server";
+import { getCachedSnapshot } from "@/lib/learn/publicationCache";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Stat } from "@/components/ui/Stat";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { formatDate, formatDwell, timeAgo } from "@/components/studio/analytics/format";
 import { RiskBadge, rosterFlags } from "@/components/studio/analytics/LearnersTab";
 import { cn } from "@/lib/cn";
-import type { Database } from "@/lib/database.types";
 
 export const dynamic = "force-dynamic";
 
-const TIMELINE_PAGE_SIZE = 50;
-
-type EventRow = Database["public"]["Tables"]["learning_events"]["Row"];
-
-function eventLabel(event: EventRow, maps: SnapshotMaps): string {
-  const lesson = maps.lessonTitles.get(event.lesson_id) ?? "a lesson";
+function eventLabel(event: TimelineEvent, maps: SnapshotMaps): string {
+  // Comms delivery events (M7) carry no lesson — course-scoped envelope.
+  const lesson =
+    (event.lesson_id ? maps.lessonTitles.get(event.lesson_id) : undefined) ?? "a lesson";
   const block = event.block_id ? maps.blocks.get(event.block_id) : undefined;
   const blockName = block?.title || block?.lessonTitle || "";
   switch (event.event_type) {
@@ -61,6 +64,16 @@ function eventLabel(event: EventRow, maps: SnapshotMaps): string {
       return `Completed “${lesson}”`;
     case "session_heartbeat":
       return `Studying “${lesson}”`;
+    case "comms_email_delivered":
+      return "A check-in email was delivered";
+    case "comms_email_open":
+      return "Opened a check-in email";
+    case "comms_email_click":
+      return "Clicked a link in a check-in email";
+    case "comms_email_bounce":
+      return "A check-in email bounced";
+    case "comms_email_complaint":
+      return "Marked a check-in email as spam";
     default:
       return event.event_type;
   }
@@ -71,91 +84,37 @@ export default async function LearnerDetailPage({
   searchParams,
 }: {
   params: Promise<{ courseId: string; learnerId: string }>;
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ before?: string }>;
 }) {
   const { courseId, learnerId } = await params;
-  const { page: rawPage } = await searchParams;
-  const page = Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1);
+  const { before: rawBefore } = await searchParams;
+  // Keyset cursor: an event server_ts. Anything unparseable = first page.
+  const before =
+    rawBefore && !Number.isNaN(Date.parse(rawBefore)) ? rawBefore : undefined;
 
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) redirect(`/login?redirectTo=/studio/${courseId}/analytics`);
 
-  const course = await supabase
-    .from("courses")
-    .select("id, title, author_id")
-    .eq("id", courseId)
-    .maybeSingle();
-  if (course.error) throw course.error;
-  if (!course.data || course.data.author_id !== user.id) notFound();
+  // ONE round trip (the RPC authorizes internally — null → 404).
+  const detail = await loadLearnerDetail(supabase, courseId, learnerId, before);
+  if (!detail) notFound();
+  const { publication, learner } = detail;
+  if (!publication || !learner) notFound();
 
-  const publication = await getLivePublicationByCourse(supabase, courseId);
-  if (!publication) notFound();
-  const snapshot = parsePublicationSnapshot(publication);
+  // Immutable snapshot (cached forever keyed by publication id) → title maps.
+  const { snapshot } = await getCachedSnapshot(publication.id);
   const maps = buildSnapshotMaps(snapshot);
 
-  // Everything below is author-readable under RLS; the roster RPC re-verifies
-  // authorship itself. Timeline pagination fetches one extra row for hasMore.
-  const from = (page - 1) * TIMELINE_PAGE_SIZE;
-  const [rosterRes, progressRes, attemptsRes, eventsRes, heartbeatRes, flagsRes, messagesRes] =
-    await Promise.all([
-      supabase.rpc("course_roster", { cid: courseId }),
-      supabase
-        .from("learn_progress")
-        .select("lesson_id, status, pct, last_activity_at")
-        .eq("course_id", courseId)
-        .eq("user_id", learnerId),
-      supabase
-        .from("quiz_attempts")
-        .select("*, question_responses(*)")
-        .eq("course_id", courseId)
-        .eq("user_id", learnerId)
-        .order("submitted_at", { ascending: false }),
-      supabase
-        .from("learning_events")
-        .select("*")
-        .eq("user_id", learnerId)
-        .eq("course_id", courseId)
-        .order("server_ts", { ascending: false })
-        .range(from, from + TIMELINE_PAGE_SIZE), // one extra row → hasMore
-      supabase
-        .from("learning_events")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", learnerId)
-        .eq("course_id", courseId)
-        .eq("event_type", "session_heartbeat"),
-      supabase
-        .from("learner_flags")
-        .select("*")
-        .eq("course_id", courseId)
-        .eq("user_id", learnerId),
-      supabase
-        .from("learner_messages")
-        .select("id, subject, status, sent_at, created_at")
-        .eq("course_id", courseId)
-        .eq("user_id", learnerId)
-        .order("created_at", { ascending: false }),
-    ]);
-  for (const res of [rosterRes, progressRes, attemptsRes, eventsRes, flagsRes]) {
-    if (res.error) throw res.error;
-  }
-
-  const learner = (rosterRes.data ?? []).find((r) => r.user_id === learnerId);
-  if (!learner) notFound();
-
-  const progressByLesson = new Map(
-    (progressRes.data ?? []).map((r) => [r.lesson_id, r])
-  );
-  const attempts = attemptsRes.data ?? [];
-  const events = eventsRes.data ?? [];
-  const hasMore = events.length > TIMELINE_PAGE_SIZE;
-  const visibleEvents = hasMore ? events.slice(0, TIMELINE_PAGE_SIZE) : events;
-  const heartbeats = heartbeatRes.count ?? 0;
-  const flags = flagsRes.data ?? [];
-  const learnerMessages = messagesRes.data ?? [];
+  const progressByLesson = new Map(detail.progress.map((r) => [r.lesson_id, r]));
+  const attempts = detail.attempts;
+  const visibleEvents = detail.events;
+  const hasMore = detail.hasMoreEvents;
+  const heartbeats = detail.heartbeatCount;
+  const flags = detail.flags;
+  const learnerMessages = detail.messages;
   const orderedLessons = snapshot.modules.flatMap((m) => m.lessons);
+  const oldestVisibleTs = visibleEvents.at(-1)?.server_ts;
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 lg:p-8">
@@ -164,7 +123,7 @@ export default async function LearnerDetailPage({
         className="inline-flex items-center gap-1 text-sm text-stone-500 transition-colors hover:text-stone-800"
       >
         <ChevronLeft className="size-4" aria-hidden />
-        {course.data.title} — Learners
+        {detail.course.title} — Learners
       </Link>
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -186,7 +145,7 @@ export default async function LearnerDetailPage({
           value={`${Number(learner.progress_pct ?? 0).toFixed(0)}%`}
           sub={`${learner.completed_lessons}/${learner.total_lessons} lessons`}
         />
-        <Stat label="Quiz attempts" value={String(attempts.length)} />
+        <Stat label="Quiz attempts" value={String(detail.attemptCount)} />
         <Stat
           label="Time spent (approx.)"
           value={heartbeats > 0 ? `${Math.round((heartbeats * 60) / 60)}m` : "—"}
@@ -347,31 +306,44 @@ export default async function LearnerDetailPage({
         <Card>
           <CardHeader title="Messages" subtitle="Check-ins drafted or sent to this learner" />
           <ul className="divide-y divide-stone-100">
-            {learnerMessages.map((m) => (
-              <li key={m.id} className="flex items-center gap-3 px-5 py-2.5">
-                <span className="min-w-0 flex-1 truncate text-sm text-stone-700">{m.subject}</span>
-                <span
-                  className={cn(
-                    "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                    m.status === "sent"
+            {learnerMessages.map((m) => {
+              // M7: past 'sent', show where the delivery actually got to.
+              const chip =
+                m.status === "sent" &&
+                m.delivery_status &&
+                !["none", "sent"].includes(m.delivery_status)
+                  ? m.delivery_status
+                  : m.status;
+              const tone =
+                chip === "bounced" || chip === "complained" || chip === "failed"
+                  ? "bg-rose-100 text-rose-700"
+                  : chip === "delivered"
+                    ? "bg-sky-100 text-sky-700"
+                    : chip === "sent" || chip === "opened" || chip === "clicked"
                       ? "bg-emerald-100 text-emerald-700"
-                      : m.status === "failed"
-                        ? "bg-rose-100 text-rose-700"
-                        : "bg-amber-100 text-amber-700"
-                  )}
-                >
-                  {m.status}
-                </span>
-                <span className="shrink-0 text-xs tabular-nums text-stone-400">
-                  {timeAgo(m.sent_at ?? m.created_at)}
-                </span>
-              </li>
-            ))}
+                      : "bg-amber-100 text-amber-700";
+              return (
+                <li key={m.id} className="flex items-center gap-3 px-5 py-2.5">
+                  <span className="min-w-0 flex-1 truncate text-sm text-stone-700">{m.subject}</span>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                      tone
+                    )}
+                  >
+                    {chip}
+                  </span>
+                  <span className="shrink-0 text-xs tabular-nums text-stone-400">
+                    {timeAgo(m.sent_at ?? m.created_at)}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </Card>
       ) : null}
 
-      {/* ── Activity timeline (raw events, paginated) ── */}
+      {/* ── Activity timeline (raw events, keyset-paginated) ── */}
       <Card>
         <CardHeader
           title="Activity timeline"
@@ -381,9 +353,9 @@ export default async function LearnerDetailPage({
           <div className="p-5">
             <EmptyState
               icon={Activity}
-              title={page === 1 ? "No activity recorded yet" : "No more activity"}
+              title={!before ? "No activity recorded yet" : "No more activity"}
               hint={
-                page === 1
+                !before
                   ? "Events appear here as this learner studies — slide views, video progress, quiz attempts."
                   : "You've reached the end of this learner's history."
               }
@@ -407,11 +379,11 @@ export default async function LearnerDetailPage({
             ))}
           </ul>
         )}
-        {page > 1 || hasMore ? (
+        {before || hasMore ? (
           <div className="flex items-center justify-between border-t border-stone-100 px-5 py-3">
-            {page > 1 ? (
+            {before ? (
               <Link
-                href={`/studio/${courseId}/analytics/learners/${learnerId}?page=${page - 1}`}
+                href={`/studio/${courseId}/analytics/learners/${learnerId}`}
                 className="inline-flex items-center gap-1 text-sm font-medium text-stone-600 hover:text-stone-900"
               >
                 <ArrowLeft className="size-3.5" aria-hidden /> Newer
@@ -419,10 +391,12 @@ export default async function LearnerDetailPage({
             ) : (
               <span />
             )}
-            <span className="text-xs text-stone-400">Page {page}</span>
-            {hasMore ? (
+            <span className="text-xs text-stone-400">
+              {before ? `Before ${formatDate(before)}` : "Latest activity"}
+            </span>
+            {hasMore && oldestVisibleTs ? (
               <Link
-                href={`/studio/${courseId}/analytics/learners/${learnerId}?page=${page + 1}`}
+                href={`/studio/${courseId}/analytics/learners/${learnerId}?before=${encodeURIComponent(oldestVisibleTs)}`}
                 className="inline-flex items-center gap-1 text-sm font-medium text-stone-600 hover:text-stone-900"
               >
                 Older <ChevronRight className="size-3.5" aria-hidden />

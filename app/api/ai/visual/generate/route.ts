@@ -21,7 +21,7 @@ import { loadCourseDoc, upsertBlock } from "@/lib/ai/serverPersistence";
 import { setSlideTemplatePatch } from "@/lib/course/commands";
 import { applyCoursePatch } from "@/lib/course/patches";
 import { findBlock, findSlide } from "@/lib/course/queries";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import type { CourseDocument, ImageReferenceContent, ImageSupportingContent, ProseContent, RichText, SlideTemplate } from "@/lib/course/types";
 
 type ImageContent = ImageReferenceContent | ImageSupportingContent;
@@ -48,9 +48,7 @@ function imageToProse(content: ImageContent): SlideTemplate {
 
 export async function POST(req: Request): Promise<Response> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   let body: { courseId?: string; blockId?: string; slideId?: string };

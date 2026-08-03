@@ -6,11 +6,12 @@
  * uses hand-written ids instead, so server and client renders stay identical.
  */
 
+import { newId } from "./id";
 import { componentManifest, defaultAIMeta, manifestTypeForElementType } from "./manifest";
 import { defaultFrameFor } from "./slide/geometry";
 import { elementFromPlaceholder, findLayout } from "./slide/layouts";
 import { DEFAULT_STICKER_ID } from "./slide/stickers";
-import { STRUCTURED_LAYOUTS, findStructuredLayout } from "./slide/structuredLayouts";
+import { STRUCTURED_LAYOUT_META, findStructuredLayoutMeta } from "./slide/structuredLayoutsCore";
 import { DEFAULT_THEME_ID, findTheme, themeRef } from "./slide/themes";
 import type {
   BlockType,
@@ -34,9 +35,7 @@ import type {
   VideoLessonBlock,
 } from "./types";
 
-export function newId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
-}
+export { newId } from "./id";
 
 /**
  * Module / lesson / block ids are FULL UUIDs because they are the primary
@@ -142,7 +141,7 @@ export function createStructuredSlide(
   layoutId: StructuredLayoutId,
   themeId: SlideThemeId = DEFAULT_THEME_ID
 ): Slide {
-  const def = findStructuredLayout(layoutId) ?? STRUCTURED_LAYOUTS[0];
+  const def = findStructuredLayoutMeta(layoutId) ?? STRUCTURED_LAYOUT_META[0];
   const theme = findTheme(themeId);
   const template = def.seed();
   return {

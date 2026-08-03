@@ -8,9 +8,9 @@
  */
 
 import { useState } from "react";
-import { Send, X } from "lucide-react";
+import { Send, ShieldAlert, X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import type { EmailBlock, EmailBody } from "@/lib/comms/types";
+import type { EmailBlock, EmailBody, SuppressionReason } from "@/lib/comms/types";
 
 export interface ComposerSeed {
   messageId?: string; // present = editing an existing draft
@@ -20,6 +20,10 @@ export interface ComposerSeed {
   findingId?: string | null;
   subject: string;
   body: EmailBody;
+  /** M7: set when the learner's address is suppressed (hard bounce /
+   *  complaint) — the send button is replaced by the suppressed notice.
+   *  Advisory only; the send seam re-checks server-side. */
+  suppressedReason?: SuppressionReason | null;
 }
 
 export function MessageComposer({
@@ -79,11 +83,18 @@ export function MessageComposer({
           body: JSON.stringify({ action: "approve_send" }),
         });
         if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+          const payload = (await res.json().catch(() => null)) as {
+            error?: string;
+            detail?: string | null;
+          } | null;
           throw new Error(
             payload?.error === "opted_out"
               ? "This learner has opted out of course emails — the message stays a draft."
-              : (payload?.error ?? "Send failed")
+              : payload?.error === "suppressed"
+                ? "This learner's address is suppressed (bounced or complained) — the message stays a draft."
+                : payload?.error === "provider_error"
+                  ? `The email provider couldn't send this message — ${payload.detail ?? "unknown error"}. The message is kept; you can retry.`
+                  : (payload?.detail ?? payload?.error ?? "Send failed")
           );
         }
         onSaved?.("sent");
@@ -161,18 +172,26 @@ export function MessageComposer({
           >
             {busy === "save" ? "Saving…" : "Save draft"}
           </button>
-          <button
-            type="button"
-            disabled={busy !== null || subject.trim().length === 0}
-            onClick={() => void handle("send")}
-            className={cn(
-              "brand-gradient inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand-600/25 transition-opacity hover:opacity-95",
-              (busy !== null || subject.trim().length === 0) && "opacity-60"
-            )}
-          >
-            <Send className="size-3.5" />
-            {busy === "send" ? "Sending…" : "Approve & send"}
-          </button>
+          {seed.suppressedReason ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700">
+              <ShieldAlert className="size-3.5" aria-hidden />
+              Suppressed: {seed.suppressedReason === "hard_bounce" ? "bounced" : "complained"} —
+              sending disabled
+            </span>
+          ) : (
+            <button
+              type="button"
+              disabled={busy !== null || subject.trim().length === 0}
+              onClick={() => void handle("send")}
+              className={cn(
+                "brand-gradient inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand-600/25 transition-opacity hover:opacity-95",
+                (busy !== null || subject.trim().length === 0) && "opacity-60"
+              )}
+            >
+              <Send className="size-3.5" />
+              {busy === "send" ? "Sending…" : "Approve & send"}
+            </button>
+          )}
         </div>
       </div>
     </div>

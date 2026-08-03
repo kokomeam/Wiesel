@@ -7,8 +7,10 @@
  * (campaign_id,status) indexes.
  */
 
+import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { rpcJson } from "@/lib/supabase/rpcJson";
 import { countAudienceContacts, listAuthorCourses } from "./persistence";
 import type { AnalyticsEventType, SubscriberStatus } from "./types";
 
@@ -151,13 +153,60 @@ const ZERO_FUNNEL: AnalyticsSummary["funnel"] = {
   enrollments: 0,
 };
 
+/** Wire contract of the `marketing_account_counts` RPC (migration
+ *  20260718100000) — per-course GROUP BY counts, author-gated in-DB. */
+const AccountCountsSchema = z.object({
+  event_counts: z.array(z.object({ course_id: z.string(), type: z.string(), n: z.number() })),
+  subscriber_counts: z.array(z.object({ course_id: z.string(), status: z.string(), n: z.number() })),
+  hard_bounce_counts: z.array(z.object({ course_id: z.string(), n: z.number() })),
+});
+
 /** Account-level rollup across every course the creator owns. `totalContacts` is
- *  distinct people (audience_contact); the funnel sums per-course activity. */
+ *  distinct people (audience_contact); the funnel sums per-course activity.
+ *  ONE grouped-count RPC round trip replaces the former per-course
+ *  getAnalyticsSummary fan-out (~13 exact counts × N courses — PERF-1
+ *  diagnosis §A3 / A6 #15); the funnel math mirrors getAnalyticsSummary. */
 export async function getAccountSummary(supabase: DB, authorId: string): Promise<AccountSummary> {
-  const courses = await listAuthorCourses(supabase, authorId);
-  const perCourse = await Promise.all(
-    courses.map(async (c) => ({ id: c.id, title: c.title, funnel: (await getAnalyticsSummary(supabase, c.id)).funnel }))
-  );
+  const [courses, counts, totalContacts] = await Promise.all([
+    listAuthorCourses(supabase, authorId),
+    rpcJson(supabase, "marketing_account_counts", {}, AccountCountsSchema),
+    countAudienceContacts(supabase, authorId),
+  ]);
+
+  const eventsByCourse = new Map<string, Map<string, number>>();
+  for (const r of counts.event_counts) {
+    const m = eventsByCourse.get(r.course_id) ?? new Map<string, number>();
+    m.set(r.type, r.n);
+    eventsByCourse.set(r.course_id, m);
+  }
+  const subsByCourse = new Map<string, Map<string, number>>();
+  for (const r of counts.subscriber_counts) {
+    const m = subsByCourse.get(r.course_id) ?? new Map<string, number>();
+    m.set(r.status, r.n);
+    subsByCourse.set(r.course_id, m);
+  }
+
+  const perCourse = courses.map((c) => {
+    const ev = (type: AnalyticsEventType) => eventsByCourse.get(c.id)?.get(type) ?? 0;
+    const subs = subsByCourse.get(c.id);
+    // Same semantics as getAnalyticsSummary: leads = distinct subscribers over
+    // the KNOWN statuses; enrollments = the materialized 'enrolled' state,
+    // falling back to enrollment events.
+    const totalSubscribers = SUBSCRIBER_STATUSES.reduce((a, s) => a + (subs?.get(s) ?? 0), 0);
+    return {
+      id: c.id,
+      title: c.title,
+      funnel: {
+        views: ev("page_view"),
+        leads: totalSubscribers,
+        emailsSent: ev("email_sent"),
+        emailDelivered: ev("email_delivered"),
+        emailOpens: ev("email_open"),
+        emailClicks: ev("email_click"),
+        enrollments: Math.max(subs?.get("enrolled") ?? 0, ev("enrollment")),
+      },
+    };
+  });
   const funnel = perCourse.reduce<AnalyticsSummary["funnel"]>(
     (acc, c) => ({
       views: acc.views + c.funnel.views,
@@ -170,7 +219,6 @@ export async function getAccountSummary(supabase: DB, authorId: string): Promise
     }),
     { ...ZERO_FUNNEL }
   );
-  const totalContacts = await countAudienceContacts(supabase, authorId);
   return { totalContacts, funnel, courses: perCourse };
 }
 

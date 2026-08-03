@@ -8,7 +8,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { getAnalyticsSummary, queryAnalyticsEvents } from "@/lib/marketing/analytics";
 import { selectCourseForAuthor } from "@/lib/marketing/persistence";
 import type { SubscriberStatus } from "@/lib/marketing/types";
@@ -63,9 +63,7 @@ export default async function MarketingAnalyticsPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 

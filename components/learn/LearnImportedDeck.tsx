@@ -2,10 +2,12 @@
 
 /**
  * Student viewer for imported decks (PPT/PDF rendered to page images). Pages
- * arrive as short-lived signed URLs resolved server-side for enrolled
- * learners; when they expire mid-session an image error triggers a refetch
- * from /api/learn/deck/[id]. Reaching the last page reports the deck as
- * viewed (its completion signal — binary, paged-to-the-end).
+ * arrive as short-lived signed URLs from /api/learn/deck/[id] — fetched
+ * LAZILY on mount when no initial view is provided (PERF-1 C1: the signed
+ * page URLs are OFF the lesson page's critical path); when they expire
+ * mid-session an image error triggers a refetch through the same machinery.
+ * Reaching the last page reports the deck as viewed (its completion signal —
+ * binary, paged-to-the-end).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,6 +15,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { ImportedDeckBlock } from "@/lib/course/types";
 import type { DeckImportView } from "@/lib/course/imports/deckImportTypes";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 export function LearnImportedDeck({
   block,
@@ -25,6 +28,7 @@ export function LearnImportedDeck({
   onDeckViewed?: () => void;
 }) {
   const [view, setView] = useState(initialView);
+  const [loading, setLoading] = useState(initialView === null);
   const [index, setIndex] = useState(0);
   const viewedRef = useRef(false);
 
@@ -39,6 +43,29 @@ export function LearnImportedDeck({
     }
   }, [block.deckImportId]);
 
+  // Lazy initial load: the page no longer server-resolves signed URLs.
+  // setState happens only inside the promise callbacks (react-hooks rule).
+  useEffect(() => {
+    if (initialView !== null) return;
+    let cancelled = false;
+    fetch(`/api/learn/deck/${block.deckImportId}`)
+      .then(async (res) =>
+        res.ok ? ((await res.json()) as { deck?: DeckImportView }) : null
+      )
+      .then((body) => {
+        if (!cancelled && body?.deck) setView(body.deck);
+      })
+      .catch(() => {
+        /* the unavailable state below explains; paging retries via refresh */
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialView, block.deckImportId]);
+
   const pages = view?.pages ?? [];
   const page = pages[index];
 
@@ -48,6 +75,18 @@ export function LearnImportedDeck({
       onDeckViewed?.();
     }
   }, [index, pages.length, onDeckViewed]);
+
+  if (!view && loading) {
+    return (
+      <div
+        role="status"
+        aria-label="Loading deck"
+        className="overflow-hidden rounded-xl border border-stone-200/80 bg-white"
+      >
+        <Skeleton className="aspect-video w-full rounded-none" />
+      </div>
+    );
+  }
 
   if (!view || view.status !== "ready" || pages.length === 0) {
     return (

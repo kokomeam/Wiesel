@@ -6,9 +6,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { updateElementPatch } from "@/lib/course/commands";
-import { useEditorStore } from "@/lib/course/store";
 import type { SlideElement } from "@/lib/course/types";
+import { useSlideEditorBridge } from "../editorBridge";
 
 type CodeEl = Extract<SlideElement, { type: "code_block" }>;
 
@@ -23,7 +22,8 @@ export function CodeElement({
   slideId: string;
   editable: boolean;
 }) {
-  const apply = useEditorStore((s) => s.apply);
+  // null outside the editor canvas (read-only SlideView) — edits are inert.
+  const bridge = useSlideEditorBridge();
   const [draft, setDraft] = useState<string | null>(null);
   const cancelled = useRef(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -58,8 +58,8 @@ export function CodeElement({
         spellCheck={false}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
-          if (!cancelled.current && draft !== el.code) {
-            apply(updateElementPatch(blockId, slideId, el.id, { code: draft }), "human");
+          if (!cancelled.current && draft !== el.code && bridge) {
+            bridge.apply(bridge.commands.updateElementPatch(blockId, slideId, el.id, { code: draft }));
           }
           setDraft(null);
         }}

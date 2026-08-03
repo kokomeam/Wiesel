@@ -19,6 +19,7 @@ import {
   buildEvent,
   mapEventToColumns,
   type AnalyticsEventInput,
+  type CommsDeliveryEvent,
   type EventContext,
 } from "./events";
 
@@ -45,4 +46,32 @@ export async function emitServerEvent(
   } catch (err) {
     console.error("[analytics] server emit failed", input.eventType, err);
   }
+}
+
+export type CommsEmitOutcome = "inserted" | "duplicate" | "error";
+
+/**
+ * Emit one comms delivery event (Milestone 7 — the Resend webhook is the only
+ * caller). Unlike emitServerEvent this REPORTS the outcome: the webhook uses
+ * "duplicate" (same Svix-derived clientEventId already landed) to flag a
+ * redelivery, and "error" to 500 so Svix retries — a delivery event must not
+ * be silently dropped the way best-effort engagement telemetry can be.
+ */
+export async function emitCommsDeliveryEvent(
+  admin: DB,
+  userId: string,
+  event: CommsDeliveryEvent
+): Promise<CommsEmitOutcome> {
+  const { data, error } = await admin
+    .from("learning_events")
+    .upsert([mapEventToColumns(event, userId)], {
+      onConflict: "client_event_id",
+      ignoreDuplicates: true,
+    })
+    .select("id");
+  if (error) {
+    console.error("[analytics] comms emit failed", event.eventType, error.message);
+    return "error";
+  }
+  return (data ?? []).length > 0 ? "inserted" : "duplicate";
 }

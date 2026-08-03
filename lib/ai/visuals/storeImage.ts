@@ -13,6 +13,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { IMMUTABLE_ASSET_CACHE_SECONDS } from "@/lib/images/cacheControl";
 import type { GeneratedImage } from "../modelClient";
 
 const BUCKET = "course-assets";
@@ -47,6 +48,7 @@ export async function storeGeneratedImage(
   const path = `${ownerId}/ai-visuals/${courseId}/${crypto.randomUUID()}.${extFor(image.mimeType)}`;
   const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
     contentType: image.mimeType,
+    cacheControl: IMMUTABLE_ASSET_CACHE_SECONDS,
     upsert: false,
   });
   if (error) {

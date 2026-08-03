@@ -12,7 +12,7 @@
  *    endpoint (Google-Slides line behavior).
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type React from "react";
 import { setLineEndpointsPatch } from "@/lib/course/commands";
 import { SLIDE_H, SLIDE_W } from "@/lib/course/slide/geometry";
@@ -23,9 +23,9 @@ import {
 } from "@/lib/course/slide/snap";
 import { findSlide } from "@/lib/course/queries";
 import { useEditorStore } from "@/lib/course/store";
-import { useDragStore } from "@/lib/editor/dragStore";
+import { createFrameCoalescer, useDragStore, type FrameCoalescer } from "@/lib/editor/dragStore";
 import type { LineGeometry, SlideElement } from "@/lib/course/types";
-import { SNAP_SCREEN_PX } from "./useElementDrag";
+import { SNAP_SCREEN_PX, writeDragSession, type SessionUpdate } from "./useElementDrag";
 
 type LineShape = Extract<SlideElement, { type: "shape" }>;
 
@@ -60,6 +60,16 @@ export function useEndpointDrag(
   scale: number | null
 ) {
   const gesture = useRef<EndpointGesture | null>(null);
+  // One dragStore write per frame (A5 §6); flushed on pointer-up so the
+  // committed endpoints match the last pointer position exactly.
+  const writes = useRef<FrameCoalescer<SessionUpdate> | null>(null);
+  if (writes.current === null) {
+    writes.current = createFrameCoalescer(writeDragSession);
+  }
+  useEffect(() => {
+    const w = writes.current;
+    return () => w?.cancel();
+  }, []);
 
   function begin(e: React.PointerEvent, which: "p1" | "p2") {
     if (!scale || el.locked || e.button !== 0) return;
@@ -134,16 +144,20 @@ export function useEndpointDrag(
         ? { x1: ra.x, y1: ra.y, x2: rb.x, y2: rb.y }
         : { x1: rb.x, y1: rb.y, x2: ra.x, y2: ra.y };
 
-    const drag = useDragStore.getState();
-    const frames = { [el.id]: { x: fx, y: fy, width: fw, height: fh, points } };
-    if (!drag.session) drag.setSession({ blockId, slideId, frames, guides: [] });
-    else drag.updateSession(frames, []);
+    writes.current?.push({
+      blockId,
+      slideId,
+      frames: { [el.id]: { x: fx, y: fy, width: fw, height: fh, points } },
+      guides: [],
+    });
   }
 
   function onPointerUp() {
     const g = gesture.current;
     gesture.current = null;
     if (!g) return;
+    // Land any pending frame first so the commit reads the exact endpoints.
+    writes.current?.flush();
     const drag = useDragStore.getState();
     const t = drag.session?.frames[el.id];
     drag.setSession(null);

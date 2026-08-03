@@ -3,7 +3,8 @@ import { ConfirmHost } from "@/components/editor/ConfirmHost";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
 import { UIHydrator } from "@/components/shell/UIHydrator";
-import { createClient } from "@/lib/supabase/server";
+import { getSessionUser } from "@/lib/supabase/server";
+import { getSessionProfile } from "@/lib/supabase/sessionProfile";
 
 function initialsFrom(name: string): string {
   return (
@@ -22,22 +23,15 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
 
   // Belt-and-suspenders with the middleware guard: never render the studio
   // chrome to a signed-out visitor.
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("display_name")
-    .eq("id", user.id)
-    .maybeSingle();
+  const profile = await getSessionProfile();
 
-  const name = profile?.display_name || user.email?.split("@")[0] || "Creator";
+  const name = profile?.displayName || user.email?.split("@")[0] || "Creator";
   const sidebarUser = {
     name,
     email: user.email ?? "",

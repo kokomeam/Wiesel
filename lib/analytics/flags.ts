@@ -1,24 +1,32 @@
 /**
- * Flag thresholds + decision logic (Milestone 3/4). PURE — applied at render
- * time by the dashboard over rollup rows; the raw statistics themselves are
- * computed once in SQL and never recomputed here.
+ * Flag thresholds + decision logic (Milestone 3/4; inactivity retuned in M8).
+ * PURE — applied at render time by the dashboard over rollup rows; the raw
+ * statistics themselves are computed once in SQL and never recomputed here.
  *
  * ⚠ The STUCK-LEARNER constants are MIRRORED in the migration
- * (supabase/migrations/20260702050000_analytics_events.sql, learner_flags
- * section) because the nightly cron needs them in SQL — edit BOTH together.
- * verify-analytics.ts asserts these TS values match the documented SQL.
+ * (supabase/migrations/20260707010000_inactivity_nudge_tuning.sql —
+ * recompute_learner_flags + file_threshold_findings) because the nightly cron
+ * needs them in SQL — edit BOTH together. verify-analytics.ts asserts these
+ * TS values match the documented SQL.
  */
 
 /* ───────────────── Stuck-queue thresholds (SQL mirror) ─────────────────── */
 
-/** Enrolled + active but silent for this many days → inactive_7d_incomplete. */
-export const INACTIVE_DAYS = 7;
+/** Enrolled + active but silent for this many days → inactive_incomplete.
+ *  M8: 7 → 4 (dropout concentrates in week one; the flag was renamed
+ *  duration-neutral so the identifier can't lie about the threshold). */
+export const INACTIVE_DAYS = 4;
 /** This many failing attempts on the SAME quiz → repeated_quiz_failure… */
 export const FAILURE_MIN_ATTEMPTS = 2;
 /** …where "failing" means score/maxScore strictly below this fraction. */
 export const FAILURE_SCORE_PCT = 0.6;
+/** M8 nudge cooldown: a learner with ANY learner_messages row for the course
+ *  within this window is skipped by the nightly finding filing — one check-in
+ *  per silence, not a drumbeat. (Manual outreach from the Stuck queue stays
+ *  unrestricted; this guards only the automatic pipeline.) */
+export const NUDGE_COOLDOWN_DAYS = 14;
 
-export type LearnerFlagType = "inactive_7d_incomplete" | "repeated_quiz_failure";
+export type LearnerFlagType = "inactive_incomplete" | "repeated_quiz_failure";
 
 /* ─────────────── Item-analysis thresholds (TS-only truth) ──────────────── */
 
@@ -79,6 +87,27 @@ export function questionFlags(q: QuestionStatsInput): QuestionFlag[] {
   return flags;
 }
 
+/* ─────────────── Slide-feedback flags (M10, TS-only truth) ─────────────── */
+
+/** Below this many latest-reaction respondents a slide's ratio is noise. */
+export const FEEDBACK_MIN_N = 3;
+/** Flag when at least this fraction of reactions are "confusing". */
+export const CONFUSING_RATIO_FLAG = 0.4;
+
+/**
+ * Classify a slide's learner feedback (counts are already deduped to each
+ * learner's LATEST reaction by the rollup). Applied at render time by the
+ * Content health tab — the same pattern as questionFlags/dwellOutlier.
+ */
+export function feedbackOutlier(
+  helpfulCount: number,
+  confusingCount: number
+): "confusing" | null {
+  const total = helpfulCount + confusingCount;
+  if (total < FEEDBACK_MIN_N) return null;
+  return confusingCount / total >= CONFUSING_RATIO_FLAG ? "confusing" : null;
+}
+
 /* ───────────────────── Slide-dwell outliers ────────────────────────────── */
 
 /** Below this many viewers a slide's dwell median is too noisy to flag. */
@@ -127,7 +156,7 @@ export function describeLearnerFlag(
   flagType: LearnerFlagType,
   detail: Record<string, unknown>
 ): string {
-  if (flagType === "inactive_7d_incomplete") {
+  if (flagType === "inactive_incomplete") {
     const completed = typeof detail.completedLessons === "number" ? detail.completedLessons : 0;
     const total = typeof detail.totalLessons === "number" ? detail.totalLessons : 0;
     const last = typeof detail.lastActivityAt === "string" ? new Date(detail.lastActivityAt) : null;

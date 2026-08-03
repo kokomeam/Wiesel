@@ -1,6 +1,6 @@
 import { cn } from "@/lib/cn";
 
-type Tone = "brand" | "green" | "amber" | "sky" | "rose" | "slate";
+type Tone = "brand" | "green" | "amber" | "sky" | "rose" | "slate" | "learn";
 
 const tones: Record<Tone, string> = {
   brand: "bg-brand-50 text-brand-700 ring-brand-100",
@@ -9,6 +9,8 @@ const tones: Record<Tone, string> = {
   sky: "bg-sky-50 text-sky-700 ring-sky-100",
   rose: "bg-rose-50 text-rose-700 ring-rose-100",
   slate: "bg-stone-100 text-stone-600 ring-stone-200",
+  // Student-portal accent (see the --color-learn-* ramp in globals.css).
+  learn: "bg-learn-50 text-learn-700 ring-learn-100",
 };
 
 export function Badge({

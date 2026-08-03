@@ -1,0 +1,32 @@
+# The pure verification chain (no live Supabase, no browser, no secrets):
+# every suite in `npm test` runs against in-memory fixtures/mock providers by
+# design (the *:int and *:browser suites are deliberately NOT in the chain).
+# NEXT_PUBLIC_* placeholders satisfy module-load-time env reads in a few
+# libs; nothing dials out.
+
+name: test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pure-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test

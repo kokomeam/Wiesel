@@ -347,6 +347,7 @@ async function main() {
     questionStats: questionStats as CourseAnalytics["questionStats"],
     slideDwell: [],
     videoRetention: [],
+    contentFeedback: [],
     flags: [
       { course_id: "c", user_id: "u2", flag_type: "repeated_quiz_failure", detail: {}, computed_at: "" },
     ] as CourseAnalytics["flags"],

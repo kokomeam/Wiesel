@@ -6,6 +6,9 @@ import {
   FileDown,
   Store,
   Settings,
+  Home,
+  BookOpen,
+  Compass,
   type LucideIcon,
 } from "lucide-react";
 
@@ -16,7 +19,7 @@ export interface NavItem {
   badge?: string;
 }
 
-/** Primary product areas — drives the sidebar and active-state highlighting. */
+/** Creator portal areas — drives the creator sidebar and active-state highlighting. */
 export const mainNav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Creator Studio", href: "/studio", icon: Wand2 },
@@ -28,4 +31,11 @@ export const mainNav: NavItem[] = [
 
 export const secondaryNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
+];
+
+/** Student portal areas — drives the (student) shell (see StudentSidebar). */
+export const learnerNav: NavItem[] = [
+  { label: "Home", href: "/home", icon: Home },
+  { label: "My courses", href: "/my-courses", icon: BookOpen },
+  { label: "Explore", href: "/explore", icon: Compass },
 ];

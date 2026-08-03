@@ -18,6 +18,24 @@
   --color-brand-900: #7c2d12;
   --color-brand-950: #431407;
 
+  /* Learner scale (calm sky-blue — the student portal's identity accent).
+     Named ramp on purpose: raw sky-* already carries three unrelated meanings
+     (studio module chrome, agent question cards, delivery chips), so the
+     student identity gets its own greppable, swappable namespace. Usage
+     follows the 60/30/10 rule: paper+white surfaces dominate, brand orange
+     stays the primary action color, learn-* is the student-side accent. */
+  --color-learn-50: #f0f9ff;
+  --color-learn-100: #e0f2fe;
+  --color-learn-200: #bae6fd;
+  --color-learn-300: #7dd3fc;
+  --color-learn-400: #38bdf8;
+  --color-learn-500: #0ea5e9;
+  --color-learn-600: #0284c7;
+  --color-learn-700: #0369a1;
+  --color-learn-800: #075985;
+  --color-learn-900: #0c4a6e;
+  --color-learn-950: #082f49;
+
   /* App surface tokens (warm paper) */
   --color-canvas: #faf7f1;
   --color-line: #ece7de;
@@ -75,5 +93,105 @@
 
   .brand-gradient {
     background-image: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+  }
+
+  /* Student-portal counterpart to .brand-gradient — same rationing rules:
+     CTAs, active states, progress fills; never ambient washes. */
+  .learn-gradient {
+    background-image: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
+  }
+
+  /* Display serif (Fraunces) — utility twin of [font-family:var(--font-display)]. */
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  /* Mono uppercase eyebrow label — color comes from the callsite's text-* class. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+  }
+
+  /* Soft top-centered ambient glow behind content. Recolor per surface by
+     setting the custom property inline, e.g.
+     style={{ "--glow-color": "rgba(125,211,252,0.25)" }} for learn-blue
+     (the ONE recolor mechanism — no .glow-* variant classes). Softness comes
+     from the gradient falloff itself, not filter: blur (perf). */
+  .paper-glow {
+    position: relative;
+    isolation: isolate;
+  }
+  .paper-glow::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: -12rem;
+    left: 50%;
+    transform: translateX(-50%);
+    /* Never wider than the container — 120% overhung unclipped and created
+       horizontal scroll on mobile (decorative blob; slightly narrower on
+       small screens is invisible). */
+    width: min(60rem, 100%);
+    height: 24rem;
+    background: radial-gradient(
+      ellipse at center,
+      var(--glow-color, rgba(253, 186, 116, 0.28)) 0%,
+      transparent 60%
+    );
+    pointer-events: none;
+  }
+
+  /* Faint film-grain texture overlay (~3%) for large flat surfaces. */
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    pointer-events: none;
+  }
+
+  /* Rendering containment for server-rendered repeated rows/cards (PERF-1 D2,
+     AC-PERF-12) — the framework equivalent of virtualization for RSC tables:
+     off-screen elements skip layout + paint (render work bounded by the
+     viewport) while the DOM/payload stays server-shaped. Placeholder extent
+     comes from --cv-size (a height estimate; width is irrelevant for
+     block-level rows, and `auto` remembers the real size once rendered).
+     NOTE: containment has no effect on internal table boxes (<tr>/<tbody>,
+     css-contain-1 §3) — table surfaces apply this to their scroll WRAPPER
+     (the whole table skips as one unit); per-row bounding for those tables
+     is the recorded C2-backlog pagination item. */
+  .cv-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto var(--cv-size, 56px);
+  }
+
+  /* Single-run shimmer for loading skeletons (see components/ui/Skeleton). */
+  .skeleton-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .skeleton-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.65),
+      transparent
+    );
+    animation: skeleton-sweep 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-sweep {
+    100% {
+      transform: translateX(100%);
+    }
   }
 }

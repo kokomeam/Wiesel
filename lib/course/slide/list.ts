@@ -10,7 +10,7 @@
  * DETERMINISTIC ids and is render-safe).
  */
 
-import { newId } from "../factories";
+import { newId } from "../id";
 import type {
   ListMarkerKind,
   SlideListContent,

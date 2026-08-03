@@ -6,7 +6,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { getSocialPost } from "@/lib/marketing/social/repository";
 import { signImageUrl } from "@/lib/marketing/social/images";
 import { executeMarketingTool } from "@/lib/marketing/tools";
@@ -18,9 +18,7 @@ export const dynamic = "force-dynamic";
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const post = await getSocialPost(supabase, id);

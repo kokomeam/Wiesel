@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertCircle,
   Captions,
@@ -30,8 +31,30 @@ import { parseVtt, type CaptionCue } from "@/lib/video/captions";
 import { hasTrim, trimmedDurationSeconds } from "@/lib/video/videoStatus";
 import { formatDuration } from "@/lib/video/recorderConfig";
 import { VideoPreviewPlayer } from "./VideoPreviewPlayer";
-import { VideoStudioModal } from "./VideoStudioModal";
 import { useVideoAsset } from "./useVideoAsset";
+
+// The whole recording/upload/trim subsystem loads on first open (PERF-1 D1 —
+// §A4 studio monolith: ~2,600 lines statically bundled for a modal). It only
+// ever mounts after an explicit click, so the loading state is honest feedback:
+// the same overlay + panel chrome the modal renders, with a spinner inside.
+const VideoStudioModal = dynamic(
+  () => import("./VideoStudioModal").then((m) => m.VideoStudioModal),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-stone-950/50 p-4 backdrop-blur-sm sm:p-6">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Video studio"
+          className="my-auto grid w-full max-w-3xl place-items-center rounded-2xl border border-stone-200 bg-white p-16 shadow-2xl"
+        >
+          <Loader2 className="size-5 animate-spin text-stone-400" aria-label="Loading the video studio" />
+        </div>
+      </div>
+    ),
+  }
+);
 
 export function VideoBlock({ block, lessonId }: { block: VideoLessonBlock; lessonId: string }) {
   const apply = useEditorStore((s) => s.apply);

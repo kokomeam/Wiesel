@@ -59,3 +59,52 @@ export const useDragStore = create<DragState>()((set) => ({
     set((s) => (s.session ? { session: { ...s.session, frames, guides } } : s)),
   setMarquee: (rect) => set({ marquee: rect }),
 }));
+
+/* ────────────────────── pointermove write coalescing ─────────────────────
+ * Raw pointermove fires >250/s on gaming mice while the screen paints at
+ * 60–120 Hz — writing the drag store per event re-renders every subscribed
+ * element several times per frame for frames that never paint (diagnosis
+ * A5 §6). Gestures push their latest computed payload here; ONE store write
+ * lands per animation frame (latest wins). `flush()` on pointer-up writes
+ * synchronously so the committed patch reads the exact final position —
+ * one-undo-per-gesture semantics are untouched. */
+
+export interface FrameCoalescer<T> {
+  /** Record the latest payload; schedules one write on the next frame. */
+  push(value: T): void;
+  /** Write any pending payload NOW (pointer-up) so commits read exact state. */
+  flush(): void;
+  /** Drop any pending payload without writing (unmount mid-gesture). */
+  cancel(): void;
+}
+
+export function createFrameCoalescer<T>(write: (value: T) => void): FrameCoalescer<T> {
+  let pending: { value: T } | null = null;
+  let rafId: number | null = null;
+  const run = () => {
+    rafId = null;
+    if (pending) {
+      const { value } = pending;
+      pending = null;
+      write(value);
+    }
+  };
+  return {
+    push(value) {
+      pending = { value };
+      if (rafId === null) rafId = requestAnimationFrame(run);
+    },
+    flush() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      run();
+    },
+    cancel() {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = null;
+      pending = null;
+    },
+  };
+}

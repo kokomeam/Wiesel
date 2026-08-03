@@ -16,7 +16,39 @@ export type FunnelRow = Database["public"]["Tables"]["rollup_lesson_funnel"]["Ro
 export type QuestionStatsRow = Database["public"]["Tables"]["rollup_question_stats"]["Row"];
 export type SlideDwellRow = Database["public"]["Tables"]["rollup_slide_dwell"]["Row"];
 export type VideoRetentionRow = Database["public"]["Tables"]["rollup_video_retention"]["Row"];
+export type ContentFeedbackRow =
+  Database["public"]["Tables"]["rollup_content_feedback"]["Row"];
 export type LearnerFlagRow = Database["public"]["Tables"]["learner_flags"]["Row"];
+
+/** rollup_content_feedback.recent_comments entries. */
+export interface FeedbackComment {
+  userId: string;
+  reaction: "helpful" | "confusing";
+  comment: string;
+  at: string;
+}
+
+export function parseFeedbackComments(value: unknown): FeedbackComment[] {
+  if (!Array.isArray(value)) return [];
+  return (value as unknown[]).flatMap((c) => {
+    if (typeof c !== "object" || c === null) return [];
+    const candidate = c as Record<string, unknown>;
+    if (
+      typeof candidate.comment !== "string" ||
+      (candidate.reaction !== "helpful" && candidate.reaction !== "confusing")
+    ) {
+      return [];
+    }
+    return [
+      {
+        userId: typeof candidate.userId === "string" ? candidate.userId : "",
+        reaction: candidate.reaction,
+        comment: candidate.comment,
+        at: typeof candidate.at === "string" ? candidate.at : "",
+      },
+    ];
+  });
+}
 export type RosterRow =
   Database["public"]["Functions"]["course_roster"]["Returns"][number];
 
@@ -37,6 +69,8 @@ export interface CourseAnalytics {
   questionStats: QuestionStatsRow[];
   slideDwell: SlideDwellRow[];
   videoRetention: VideoRetentionRow[];
+  /** M10: per-slide rows (slide_id set) + per-lesson rows (slide_id null). */
+  contentFeedback: ContentFeedbackRow[];
   flags: LearnerFlagRow[];
   roster: RosterRow[];
   /** Newest rollup computed_at (null = rollups never ran for this pub). */
@@ -48,7 +82,7 @@ export async function loadCourseAnalytics(
   courseId: string,
   publicationId: string
 ): Promise<CourseAnalytics> {
-  const [funnel, questions, dwell, video, flags, overviewRes, rosterRes] =
+  const [funnel, questions, dwell, video, feedback, flags, overviewRes, rosterRes] =
     await Promise.all([
       supabase
         .from("rollup_lesson_funnel")
@@ -67,12 +101,25 @@ export async function loadCourseAnalytics(
         .from("rollup_video_retention")
         .select("*")
         .eq("publication_id", publicationId),
+      supabase
+        .from("rollup_content_feedback")
+        .select("*")
+        .eq("publication_id", publicationId),
       supabase.from("learner_flags").select("*").eq("course_id", courseId),
       supabase.rpc("course_analytics_overview", { cid: courseId }),
       supabase.rpc("course_roster", { cid: courseId }),
     ]);
 
-  for (const res of [funnel, questions, dwell, video, flags, overviewRes, rosterRes]) {
+  for (const res of [
+    funnel,
+    questions,
+    dwell,
+    video,
+    feedback,
+    flags,
+    overviewRes,
+    rosterRes,
+  ]) {
     if (res.error) throw res.error;
   }
 
@@ -88,6 +135,7 @@ export async function loadCourseAnalytics(
     questionStats: questions.data ?? [],
     slideDwell: dwell.data ?? [],
     videoRetention: video.data ?? [],
+    contentFeedback: feedback.data ?? [],
     flags: flags.data ?? [],
     roster: rosterRes.data ?? [],
     computedAt,

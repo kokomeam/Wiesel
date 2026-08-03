@@ -1,0 +1,59 @@
+# PERF-1 E3 — the performance gate (AC-PERF-11/13/15).
+#
+# Blocks merges on: per-route JS budgets (scripts/verify-bundle-budgets.ts —
+# the BUDGETS map is the single source of truth) and the Lighthouse lab
+# assertions (scripts/verify-lighthouse-budgets.ts — CLS/TBT/image audits;
+# LCP/TTFB absolutes are RUM-monitored, never CI-gated, per the standing
+# alerts-not-gates rule; see docs/perf/README.md).
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   NEXT_PUBLIC_SUPABASE_URL        (required — build + gates)
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY   (required — gates self-provision users)
+#   SUPABASE_SERVICE_ROLE_KEY       (required — server code paths at runtime)
+# Optional (features degrade gracefully without them; not needed by the gates):
+#   OPENAI_API_KEY, RESEND_API_KEY, RESEND_FROM, MARKETING_TOKEN_SECRET,
+#   MUX_TOKEN_ID, MUX_TOKEN_SECRET, CRON_SECRET, NEXT_PUBLIC_SITE_URL
+#
+# NOTE: both gate scripts provision throwaway *@example.com users in the
+# target Supabase project (they cannot be deleted with the anon key — repo
+# convention; point CI at a non-production project if that matters).
+
+name: perf
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perf-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      NEXT_PUBLIC_SITE_URL: http://localhost:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+      - name: Production build
+        run: npm run build
+      - name: Pure perf suites
+        run: npm run verify:perf
+      - name: Route JS budgets
+        run: npm run verify:budgets
+      - name: Lighthouse assertions (desktop lab)
+        # chrome-launcher finds the runner's preinstalled google-chrome; do
+        # NOT point CHROME_PATH at Playwright's chromium (no-paint under
+        # Lighthouse — see scripts/verify-lighthouse-budgets.ts header).
+        run: npm run verify:budgets:lh

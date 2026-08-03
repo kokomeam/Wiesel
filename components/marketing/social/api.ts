@@ -6,7 +6,7 @@
  * the SSE reader for /generate, and the export-telemetry pings.
  */
 
-import type { GenerateRequest, SocialPost } from "@/lib/marketing/social/schemas";
+import type { GenerateRequest, SocialPost, SocialPostListItem } from "@/lib/marketing/social/schemas";
 import type { SocialBatch, VoiceProfileRecord } from "@/lib/marketing/social/repository";
 
 export class SocialApiError extends Error {
@@ -82,8 +82,10 @@ export interface MutationResult {
 
 export const socialApi = {
   getPost: (id: string) => request<{ post: SocialPost }>(`/api/marketing/social-posts/${id}`),
+  // LIST rows are the narrow projection (no sourceText/aiMetadata/performance/
+  // externalRef) — the editor hydrates the full row via getPost.
   list: (params: Record<string, string>) =>
-    request<{ posts: SocialPost[]; nextCursor: string | null; batches?: SocialBatch[] }>(
+    request<{ posts: SocialPostListItem[]; nextCursor: string | null; batches?: SocialBatch[] }>(
       `/api/marketing/social-posts?${new URLSearchParams(params)}`
     ),
   patch: (id: string, body: Record<string, unknown>) =>

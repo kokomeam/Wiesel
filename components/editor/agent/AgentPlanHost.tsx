@@ -3,9 +3,17 @@
 /**
  * The agent's PLAN review — a prominent modal mounted at the EDITOR shell level
  * (not inside the collapsible AgentPanel) so a proposed lesson/module plan always
- * surfaces and never scrolls past. Driven by `agentStore.pendingOutline`;
- * Approve runs the generation pipeline, Discard sets it aside. Auto-approve
- * (off by default) skips this entirely server-side.
+ * surfaces and never scrolls past. Driven by `agentStore.pendingOutline` +
+ * `planModalOpen`; Approve runs the generation pipeline. Escape / backdrop only
+ * CLOSE the modal (the plan is expensive — a stray click must never destroy it);
+ * the AgentPanel's pending-plan card reopens it. Discard is ONLY the explicit
+ * button (here and on the panel card). Auto-approve (off by default) skips this
+ * entirely server-side.
+ *
+ * PERF-1 D: this host is the studio's only framer-motion importer, so the shell
+ * next/dynamic-loads it on the FIRST pending plan (and keeps it mounted after).
+ * Anything that must be mounted unconditionally (AgentFlashToast) lives in the
+ * shell now — never add always-on UI back into this file.
  */
 
 import { useEffect } from "react";
@@ -37,21 +45,24 @@ function SlideList({ rows }: { rows: SlideRow[] }) {
 
 export function AgentPlanHost() {
   const pending = useAgentStore((s) => s.pendingOutline);
+  const planModalOpen = useAgentStore((s) => s.planModalOpen);
+  const setPlanModalOpen = useAgentStore((s) => s.setPlanModalOpen);
   const { approvePlan } = useAgentStream();
   const reduce = useReducedMotion();
-  const open = !!pending;
+  const open = !!pending && planModalOpen;
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        void approvePlan("discard");
+        // Close, don't discard — the plan stays pending (reopen from the panel).
+        setPlanModalOpen(false);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, approvePlan]);
+  }, [open, setPlanModalOpen]);
 
   if (typeof document === "undefined") return null;
 
@@ -78,7 +89,7 @@ export function AgentPlanHost() {
             type="button"
             aria-hidden
             tabIndex={-1}
-            onClick={() => void approvePlan("discard")}
+            onClick={() => setPlanModalOpen(false)}
             className="absolute inset-0 cursor-default bg-stone-900/40 backdrop-blur-[2px]"
           />
           <motion.div
@@ -169,7 +180,7 @@ export function AgentPlanHost() {
             </div>
           </motion.div>
         </motion.div>
-      )}
+        )}
     </AnimatePresence>,
     document.body
   );

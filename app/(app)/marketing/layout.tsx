@@ -6,16 +6,16 @@
  */
 
 import { Suspense } from "react";
-import { createClient } from "@/lib/supabase/server";
-import { selectCourseForAuthor } from "@/lib/marketing/persistence";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
+import { selectCourseForAuthorCached } from "@/lib/marketing/persistence";
 import { AgentDock } from "@/components/marketing/agent/AgentDock";
 
 export default async function MarketingLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const course = user ? await selectCourseForAuthor(supabase, user.id) : null;
+  const user = await getSessionUser();
+  // PERF-1 C1: react cache()d — the hub page resolves the same default
+  // course, so layout + page share ONE query per request.
+  const course = user ? await selectCourseForAuthorCached(supabase, user.id, null) : null;
 
   return (
     <>

@@ -19,7 +19,7 @@ export function parseFlags(value: unknown): RosterFlag[] {
     if (typeof f !== "object" || f === null) return [];
     const candidate = f as { type?: unknown; detail?: unknown };
     if (
-      candidate.type !== "inactive_7d_incomplete" &&
+      candidate.type !== "inactive_incomplete" &&
       candidate.type !== "repeated_quiz_failure"
     ) {
       return [];
@@ -92,7 +92,15 @@ export function LearnersTab({
         title="Roster"
         subtitle={`${roster.length} learner${roster.length === 1 ? "" : "s"}`}
       />
-      <div className="overflow-x-auto">
+      {/* PERF-1 D2 (A5 §6, A6 #23): CSS containment has no effect on <tr>
+          (internal table boxes), so the skippable unit is the table's scroll
+          wrapper — the whole roster skips layout/paint while off-screen.
+          Row-level DOM/payload bounding is the recorded C2-backlog roster
+          pagination item. Estimate ≈ 61px/row + header. */}
+      <div
+        className="cv-row overflow-x-auto"
+        style={{ "--cv-size": `${44 + roster.length * 61}px` } as React.CSSProperties}
+      >
         <table className="w-full text-left text-sm">
           <thead>
             <tr>

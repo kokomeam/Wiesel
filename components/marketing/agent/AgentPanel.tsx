@@ -8,7 +8,7 @@
  * inbox uses; reversible/auto-executed results stay quiet tool lines.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUp, Loader2, Sparkles } from "lucide-react";
 import { decodeSSE, type AgentFollowUp } from "@/lib/marketing/agent/events";
@@ -27,11 +27,140 @@ type Item =
   | { kind: "question"; questionId: string; question: QuestionSpec }
   | { kind: "error"; text: string };
 
+// UI polish (2026-07-08): render-only humanized tool labels — stored item data,
+// event shapes, and the 'run' matching status are untouched.
+const TOOL_LABELS: Record<string, string> = {
+  generate_email_sequence: "Drafting the email sequence",
+  generate_landing_page: "Drafting the landing page",
+  generate_followup: "Drafting a follow-up email",
+  generate_email_variants: "Drafting email variants",
+  build_audience_list: "Building the audience list",
+  add_leads_to_list: "Adding contacts to the list",
+  remove_leads_from_list: "Removing contacts from the list",
+  import_leads: "Importing contacts",
+  create_campaign: "Creating the campaign",
+  launch_campaign: "Launching the campaign",
+  pause_campaign: "Pausing the campaign",
+  resume_campaign: "Resuming the campaign",
+  cancel_campaign: "Cancelling the campaign",
+  pause_sequence: "Pausing the sequence",
+  resume_sequence: "Resuming the sequence",
+  activate_sequence: "Activating the sequence",
+  send_broadcast: "Sending a broadcast",
+  send_test_email: "Sending a test email",
+  send_consent_confirmations: "Asking contacts to confirm consent",
+  publish_landing_page: "Publishing the landing page",
+  review_campaign_compliance: "Checking compliance",
+  analyze_course_for_marketing: "Analyzing your course",
+  get_analytics_summary: "Reading your analytics",
+  create_sender_identity: "Setting up the sender identity",
+};
+
+// UI polish (2026-07-08): snake_case → sentence-case fallback for unmapped tools.
+function marketingToolLabel(tool: string): string {
+  const mapped = TOOL_LABELS[tool];
+  if (mapped) return mapped;
+  const words = tool.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// UI polish (2026-07-08): tool-aware in-progress copy (display only; the stored
+// summary/status strings are unchanged).
+function marketingToolRunningCopy(tool: string): string {
+  if (/^(get_|list_|query_|analyze_|review_)/.test(tool)) return "Looking at your current setup…";
+  if (/^generate_/.test(tool)) return "Writing a draft for you…";
+  return "Working on it…";
+}
+
+// UI polish (2026-07-08): accessible label for the status glyph.
+function toolStatusLabel(status: string): string {
+  if (status === "needs_clarification") return "Needs your input";
+  if (status === "pending_approval") return "Waiting for approval";
+  if (status === "error") return "Couldn't finish";
+  return "Done";
+}
+
 const SUGGESTIONS = [
   "Generate a landing page and a launch sequence",
   "How's my funnel doing?",
   "Draft a followup for people who viewed but didn't enroll",
 ];
+
+/** One transcript row, memoized on item identity (PERF-1 D5, A5 §2.2's
+ *  un-memoized map): setItems only ever replaces the entry being updated (the
+ *  streaming assistant tail / the resolving tool card), so a per-flush render
+ *  re-renders that row alone — settled history bails out. */
+const ItemRow = memo(function ItemRow({ it }: { it: Item }) {
+  if (it.kind === "user")
+    return (
+      <div className="ml-auto max-w-[85%] rounded-2xl bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
+        {it.text}
+      </div>
+    );
+  if (it.kind === "assistant")
+    return (
+      <div className="max-w-[90%] whitespace-pre-wrap rounded-2xl bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
+        {it.text}
+      </div>
+    );
+  if (it.kind === "observation")
+    return (
+      <div className="flex items-center gap-2 px-1 text-xs text-stone-400">
+        <Sparkles className="size-3.5" /> {it.text}
+      </div>
+    );
+  if (it.kind === "tool")
+    return (
+      <div className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
+        <span
+          className={
+            "mt-0.5 grid size-4 place-items-center rounded " +
+            (it.status === "run"
+              ? "bg-amber-100 text-amber-700"
+              : it.status === "error"
+                ? "bg-red-100 text-red-700"
+                : it.status === "pending_approval"
+                  ? "bg-red-100 text-red-700"
+                  : it.status === "needs_clarification"
+                    ? "bg-sky-100 text-sky-700"
+                    : "bg-emerald-100 text-emerald-700")
+          }
+        >
+          {/* UI polish (2026-07-08): accessible text/title on the bare glyphs (glyphs unchanged) */}
+          {it.status === "run" ? (
+            <Loader2 className="size-3 animate-spin" aria-label="Working" />
+          ) : (
+            <span role="img" title={toolStatusLabel(it.status)} aria-label={toolStatusLabel(it.status)}>
+              {it.status === "needs_clarification" ? "?" : "✓"}
+            </span>
+          )}
+        </span>
+        {/* UI polish (2026-07-08): humanized tool name + tool-aware running copy (render only) */}
+        <span className="font-medium text-stone-600">{marketingToolLabel(it.tool)}</span>
+        <span className="text-stone-500">— {it.status === "run" ? marketingToolRunningCopy(it.tool) : it.summary}</span>
+        {it.status === "executed" ? (
+          <span className="ml-auto shrink-0 rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700 ring-1 ring-inset ring-sky-100">
+            auto · policy
+          </span>
+        ) : null}
+      </div>
+    );
+  if (it.kind === "approval") return <ApprovalCard pending={it.pending} compact />;
+  if (it.kind === "question")
+    return (
+      <QuestionCard
+        questionId={it.questionId}
+        question={it.question.question}
+        options={it.question.options}
+        compact
+      />
+    );
+  return (
+    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+      {it.text}
+    </div>
+  );
+});
 
 export function AgentPanel({
   courseId,
@@ -146,6 +275,34 @@ export function AgentPanel({
     setInput("");
     push({ kind: "user", text: message });
     setStreaming(true);
+    // Coalesce assistant_delta frames (PERF-1 D5, A5 §2.2's per-token setItems):
+    // buffer and flush at most once per animation frame — 50ms timer fallback,
+    // hidden tabs starve rAF — as ONE appendAssistant; every non-delta event
+    // flushes first, so transcript order is unchanged. Local to the run — the
+    // `streaming` guard means one stream at a time.
+    let deltaBuf = "";
+    let deltaRaf: number | null = null;
+    let deltaTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushDeltas = () => {
+      if (deltaRaf !== null) {
+        cancelAnimationFrame(deltaRaf);
+        deltaRaf = null;
+      }
+      if (deltaTimer !== null) {
+        clearTimeout(deltaTimer);
+        deltaTimer = null;
+      }
+      if (!deltaBuf) return;
+      const text = deltaBuf;
+      deltaBuf = "";
+      appendAssistant(text);
+    };
+    const queueDelta = (text: string) => {
+      deltaBuf += text;
+      if (deltaRaf !== null || deltaTimer !== null) return;
+      deltaRaf = requestAnimationFrame(flushDeltas);
+      deltaTimer = setTimeout(flushDeltas, 50);
+    };
     try {
       const res = await fetch("/api/marketing/agent", {
         method: "POST",
@@ -165,9 +322,13 @@ export function AgentPanel({
         for (const frame of frames) {
           const ev = decodeSSE(frame);
           if (!ev) continue;
+          if (ev.type === "assistant_delta") {
+            queueDelta(ev.text);
+            continue;
+          }
+          flushDeltas(); // buffered text lands before any other event's row
           if (ev.type === "conversation") convoRef.current = ev.conversationId;
           else if (ev.type === "observation") push({ kind: "observation", text: ev.summary });
-          else if (ev.type === "assistant_delta") appendAssistant(ev.text);
           else if (ev.type === "tool_start") push({ kind: "tool", tool: ev.tool, summary: "working…", status: "run" });
           else if (ev.type === "tool_result")
             setItems((prev) => {
@@ -204,8 +365,10 @@ export function AgentPanel({
         }
       }
     } catch (err) {
+      flushDeltas(); // the error row must land after every received token
       push({ kind: "error", text: err instanceof Error ? err.message : "Something went wrong." });
     } finally {
+      flushDeltas(); // a stream that closes mid-delta still lands its text
       setStreaming(false);
     }
   }
@@ -236,70 +399,23 @@ export function AgentPanel({
           </div>
         ) : null}
 
-        {items.map((it, i) => {
-          if (it.kind === "user")
-            return (
-              <div key={i} className="ml-auto max-w-[85%] rounded-2xl bg-brand-50 px-4 py-2.5 text-sm text-brand-900 ring-1 ring-brand-100">
-                {it.text}
-              </div>
-            );
-          if (it.kind === "assistant")
-            return (
-              <div key={i} className="max-w-[90%] whitespace-pre-wrap rounded-2xl bg-white px-4 py-2.5 text-sm text-stone-700 ring-1 ring-stone-200">
-                {it.text}
-              </div>
-            );
-          if (it.kind === "observation")
-            return (
-              <div key={i} className="flex items-center gap-2 px-1 text-xs text-stone-400">
-                <Sparkles className="size-3.5" /> {it.text}
-              </div>
-            );
-          if (it.kind === "tool")
-            return (
-              <div key={i} className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50/60 px-3 py-2 text-xs">
-                <span
-                  className={
-                    "mt-0.5 grid size-4 place-items-center rounded " +
-                    (it.status === "run"
-                      ? "bg-amber-100 text-amber-700"
-                      : it.status === "error"
-                        ? "bg-red-100 text-red-700"
-                        : it.status === "pending_approval"
-                          ? "bg-red-100 text-red-700"
-                          : it.status === "needs_clarification"
-                            ? "bg-sky-100 text-sky-700"
-                            : "bg-emerald-100 text-emerald-700")
-                  }
-                >
-                  {it.status === "run" ? <Loader2 className="size-3 animate-spin" /> : it.status === "needs_clarification" ? "?" : "✓"}
-                </span>
-                <span className="font-mono text-stone-500">{it.tool}</span>
-                <span className="text-stone-500">— {it.summary}</span>
-                {it.status === "executed" ? (
-                  <span className="ml-auto shrink-0 rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700 ring-1 ring-inset ring-sky-100">
-                    auto · policy
-                  </span>
-                ) : null}
-              </div>
-            );
-          if (it.kind === "approval") return <ApprovalCard key={i} pending={it.pending} compact />;
-          if (it.kind === "question")
-            return (
-              <QuestionCard
-                key={i}
-                questionId={it.questionId}
-                question={it.question.question}
-                options={it.question.options}
-                compact
-              />
-            );
-          return (
-            <div key={i} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {it.text}
-            </div>
-          );
-        })}
+        {items.map((it, i) => (
+          <ItemRow key={i} it={it} />
+        ))}
+
+        {/* UI polish (2026-07-08): transient thinking row while streaming with no
+            in-progress assistant/tool item (additive; CSS pulse is frozen by the
+            global prefers-reduced-motion guard). */}
+        {streaming &&
+        !(() => {
+          const last = items[items.length - 1];
+          return last?.kind === "assistant" || (last?.kind === "tool" && last.status === "run");
+        })() ? (
+          <div className="flex items-center gap-2 px-1 text-xs text-stone-400" aria-live="polite">
+            <span className="size-2 animate-pulse rounded-full bg-brand-400" aria-hidden="true" />
+            Thinking…
+          </div>
+        ) : null}
       </div>
 
       <form

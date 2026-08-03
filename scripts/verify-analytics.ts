@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
   AnalyticsBatchSchema,
   buildEvent,
+  FEEDBACK_COMMENT_MAX_CHARS,
   mapEventToColumns,
   MAX_BATCH_EVENTS,
   type AnalyticsEvent,
@@ -26,15 +27,28 @@ import {
   DISTRACTOR_RATIO,
   dwellOutlier,
   DWELL_MIN_N,
+  CONFUSING_RATIO_FLAG,
   FAILURE_MIN_ATTEMPTS,
   FAILURE_SCORE_PCT,
+  FEEDBACK_MIN_N,
+  feedbackOutlier,
   INACTIVE_DAYS,
+  NUDGE_COOLDOWN_DAYS,
   LOW_DISCRIMINATION,
   LOW_PCT_CORRECT,
   LOW_PCT_MIN_N,
   questionFlags,
 } from "@/lib/analytics/flags";
 import { median, p90, percentileCont, pointBiserial } from "@/lib/analytics/stats";
+import {
+  parseReviewPromptState,
+  REVIEW_ELIGIBLE_PROGRESS_PCT,
+  REVIEW_MAX_PROMPT_DISMISSALS,
+  REVIEW_REPROMPT_GAP_DAYS,
+  REVIEW_TEXT_MAX_CHARS,
+  shouldShowReviewPrompt,
+  type ReviewPromptState,
+} from "@/lib/learn/reviews";
 
 let pass = 0,
   fail = 0;
@@ -240,18 +254,38 @@ function main() {
   /* ── 4. Flags + SQL drift guard ── */
   console.log("\n— Flags —");
   check(
-    "stuck constants match the documented SQL (7d / 2 / 0.60)",
-    INACTIVE_DAYS === 7 && FAILURE_MIN_ATTEMPTS === 2 && FAILURE_SCORE_PCT === 0.6
+    "stuck constants match the documented SQL (4d / 2 / 0.60 / 14d cooldown)",
+    INACTIVE_DAYS === 4 &&
+      FAILURE_MIN_ATTEMPTS === 2 &&
+      FAILURE_SCORE_PCT === 0.6 &&
+      NUDGE_COOLDOWN_DAYS === 14
   );
+  // The authoritative SQL moved to the M8 migration (recompute_learner_flags +
+  // file_threshold_findings live there now) — drift-guard THAT file.
   const migration = readFileSync(
-    new URL("../supabase/migrations/20260702050000_analytics_events.sql", import.meta.url),
+    new URL(
+      "../supabase/migrations/20260707010000_inactivity_nudge_tuning.sql",
+      import.meta.url
+    ),
     "utf8"
   );
   check(
     "migration SQL still encodes the same thresholds",
     migration.includes(`interval '${INACTIVE_DAYS} days'`) &&
       migration.includes(`count(*) >= ${FAILURE_MIN_ATTEMPTS}`) &&
-      migration.includes(`< ${FAILURE_SCORE_PCT.toFixed(2)}`)
+      migration.includes(`< ${FAILURE_SCORE_PCT.toFixed(2)}`) &&
+      migration.includes(`interval '${NUDGE_COOLDOWN_DAYS} days'`)
+  );
+  check(
+    "SQL files learner risks under the TS dedupe-key scheme (adoption mirror)",
+    migration.includes(`'learner_risk:' || f.user_id`) &&
+      !migration.includes("'learner_' || lf.flag_type")
+  );
+  check(
+    "SQL filing carries the M8 nudge guards (opt-out / suppression / cooldown)",
+    migration.includes("en.comms_opt_out") &&
+      migration.includes("comms_suppressions") &&
+      migration.includes("learner_messages lm")
   );
 
   const base = {
@@ -313,7 +347,7 @@ function main() {
 
   check(
     "describe inactive flag",
-    describeLearnerFlag("inactive_7d_incomplete", {
+    describeLearnerFlag("inactive_incomplete", {
       lastActivityAt: new Date(Date.now() - 12 * 86_400_000).toISOString(),
       completedLessons: 3,
       totalLessons: 8,
@@ -324,6 +358,146 @@ function main() {
     describeLearnerFlag("repeated_quiz_failure", {
       quizzes: [{ blockId: BLOCK, failedAttempts: 3, lastScorePct: 45 }],
     }).includes("3 failing attempts")
+  );
+
+  /* ── 4a2. Slide feedback (M10) — contract, mapping, flag, drift guard ── */
+  console.log("\n— Slide feedback (M10) —");
+  const feedbackCtx = {
+    publicationId: "88888888-8888-4888-8888-888888888888",
+    version: 1,
+    courseId: "99999999-9999-4999-8999-999999999999",
+    lessonId: "77777777-7777-4777-8777-777777777777",
+  };
+  const feedbackEvent = buildEvent(feedbackCtx, {
+    eventType: "slide_feedback",
+    blockId: BLOCK,
+    slideId: "slide-1",
+    reaction: "confusing",
+    comment: "Lost me at step 3",
+  });
+  check(
+    "slide_feedback is CLIENT-reportable (batch schema accepts it)",
+    AnalyticsBatchSchema.safeParse({ events: [feedbackEvent] }).success
+  );
+  check(
+    "comment over the cap rejected; empty-string rejected; null accepted",
+    !AnalyticsBatchSchema.safeParse({
+      events: [{ ...feedbackEvent, comment: "x".repeat(FEEDBACK_COMMENT_MAX_CHARS + 1) }],
+    }).success &&
+      !AnalyticsBatchSchema.safeParse({ events: [{ ...feedbackEvent, comment: "" }] }).success &&
+      AnalyticsBatchSchema.safeParse({ events: [{ ...feedbackEvent, comment: null }] }).success
+  );
+  check(
+    "bad reaction rejected by the contract",
+    !AnalyticsBatchSchema.safeParse({ events: [{ ...feedbackEvent, reaction: "meh" }] }).success
+  );
+  const feedbackRow = mapEventToColumns(feedbackEvent, "00000000-0000-4000-8000-000000000000");
+  check(
+    "column mapping: reaction + feedback_comment + slide_id + full envelope",
+    feedbackRow.reaction === "confusing" &&
+      feedbackRow.feedback_comment === "Lost me at step 3" &&
+      feedbackRow.slide_id === "slide-1" &&
+      feedbackRow.publication_id === feedbackCtx.publicationId &&
+      feedbackRow.lesson_id === feedbackCtx.lessonId
+  );
+  check(
+    "non-feedback events map null reaction/comment",
+    mapEventToColumns(buildEvent(feedbackCtx, { eventType: "lesson_started" }), "u").reaction ===
+      null
+  );
+  check(
+    `feedbackOutlier: under min n (${FEEDBACK_MIN_N}) → null`,
+    feedbackOutlier(1, 1) === null
+  );
+  check(
+    `feedbackOutlier: confusing ratio ≥ ${CONFUSING_RATIO_FLAG} at n≥${FEEDBACK_MIN_N} → flagged`,
+    feedbackOutlier(1, 2) === "confusing" && feedbackOutlier(3, 2) === "confusing"
+  );
+  check(
+    "feedbackOutlier: mostly-helpful slides don't flag",
+    feedbackOutlier(4, 1) === null && feedbackOutlier(10, 0) === null
+  );
+  const feedbackMigration = readFileSync(
+    new URL("../supabase/migrations/20260707030000_slide_feedback.sql", import.meta.url),
+    "utf8"
+  );
+  check(
+    "feedback migration SQL mirrors the TS constants (comment cap · reaction enum · event type)",
+    feedbackMigration.includes(
+      `char_length(feedback_comment) <= ${FEEDBACK_COMMENT_MAX_CHARS}`
+    ) &&
+      feedbackMigration.includes("reaction in ('helpful','confusing')") &&
+      feedbackMigration.includes("'slide_feedback'")
+  );
+
+  /* ── 4b. Course reviews (M9) — prompt logic + SQL drift guard ── */
+  console.log("\n— Course reviews (M9) —");
+  const NOW = 1_700_000_000_000;
+  const promptBase: ReviewPromptState = {
+    enrolled: true,
+    eligible: true,
+    review: null,
+    dismissCount: 0,
+    dismissedAt: null,
+    creatorName: "Prof. Ada",
+  };
+  check("fresh eligible learner → prompt shows", shouldShowReviewPrompt(promptBase, NOW));
+  check(
+    "not enrolled / not eligible → no prompt",
+    !shouldShowReviewPrompt({ ...promptBase, enrolled: false }, NOW) &&
+      !shouldShowReviewPrompt({ ...promptBase, eligible: false }, NOW)
+  );
+  check(
+    "already reviewed → no prompt",
+    !shouldShowReviewPrompt(
+      { ...promptBase, review: { rating: 5, reviewText: null, updatedAt: "2026-07-01" } },
+      NOW
+    )
+  );
+  const recentDismiss = new Date(NOW - 2 * 86_400_000).toISOString();
+  const staleDismiss = new Date(
+    NOW - (REVIEW_REPROMPT_GAP_DAYS + 1) * 86_400_000
+  ).toISOString();
+  check(
+    "dismissed recently → wait out the gap",
+    !shouldShowReviewPrompt({ ...promptBase, dismissCount: 1, dismissedAt: recentDismiss }, NOW)
+  );
+  check(
+    "dismissed longer than the gap ago → re-surface",
+    shouldShowReviewPrompt({ ...promptBase, dismissCount: 1, dismissedAt: staleDismiss }, NOW)
+  );
+  check(
+    `dismissed ${REVIEW_MAX_PROMPT_DISMISSALS}× → never again (cap)`,
+    !shouldShowReviewPrompt(
+      { ...promptBase, dismissCount: REVIEW_MAX_PROMPT_DISMISSALS, dismissedAt: staleDismiss },
+      NOW
+    )
+  );
+  check(
+    "defensive: count>0 with no timestamp still shows",
+    shouldShowReviewPrompt({ ...promptBase, dismissCount: 1, dismissedAt: null }, NOW)
+  );
+  check(
+    "prompt-state parse roundtrips + rejects garbage",
+    parseReviewPromptState({ ...promptBase }).creatorName === "Prof. Ada" &&
+      (() => {
+        try {
+          parseReviewPromptState({ enrolled: "yes" });
+          return false;
+        } catch {
+          return true;
+        }
+      })()
+  );
+  const reviewsMigration = readFileSync(
+    new URL("../supabase/migrations/20260707020000_course_reviews.sql", import.meta.url),
+    "utf8"
+  );
+  check(
+    "review migration SQL mirrors the TS constants (eligibility % · rating bounds · text cap)",
+    reviewsMigration.includes(`>= ${REVIEW_ELIGIBLE_PROGRESS_PCT}`) &&
+      reviewsMigration.includes("between 1 and 5") &&
+      reviewsMigration.includes(`left(trim(p_review_text), ${REVIEW_TEXT_MAX_CHARS})`)
   );
 
   /* ── 5. Batching queue ── */

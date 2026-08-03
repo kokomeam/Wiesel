@@ -8,7 +8,11 @@
  * model-generated — the agent only supplies `{ language, code }`.
  */
 
-import { createHighlighter, createJavaScriptRegexEngine, type Highlighter } from "shiki";
+// Shiki is LAZY-loaded (dynamic import below): a type-only import here keeps
+// the (large) highlighter out of every bundle that can merely REACH a
+// code_walkthrough slide — code-free lessons never download it. The exported
+// API is unchanged; callers already treat highlighting as async.
+import type { Highlighter } from "shiki";
 
 /** Languages we preload. Anything else falls back to plain text. */
 export const CODE_LANGS = [
@@ -52,11 +56,14 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: [CODE_THEME],
-      langs: [...CODE_LANGS],
-      engine: createJavaScriptRegexEngine(),
-    });
+    highlighterPromise = import("shiki").then(
+      ({ createHighlighter, createJavaScriptRegexEngine }) =>
+        createHighlighter({
+          themes: [CODE_THEME],
+          langs: [...CODE_LANGS],
+          engine: createJavaScriptRegexEngine(),
+        })
+    );
   }
   return highlighterPromise;
 }

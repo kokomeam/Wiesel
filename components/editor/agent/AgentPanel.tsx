@@ -7,14 +7,51 @@
  * on-brand studio chrome; the ambition lives in the agent behind it.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, BarChart3, Check, CheckCheck, ChevronDown, Layers, Lightbulb, ListTree, PanelRightClose, Presentation, ShieldCheck, Sparkles, Square, X } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUp,
+  BarChart3,
+  CheckCheck,
+  ChevronDown,
+  ClipboardList,
+  Eye,
+  FolderTree,
+  Image as ImageIcon,
+  Layers,
+  LayoutGrid,
+  Lightbulb,
+  ListTree,
+  PanelRightClose,
+  PenLine,
+  Presentation,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/cn";
 import { DraftList } from "@/components/comms/DraftList";
+import {
+  AGENT_MAINTENANCE_COPY,
+  AGENT_PHASE_COPY,
+  friendlyToolDone,
+  friendlyToolLabel,
+  TOOL_LABELS,
+  type ToolCategory,
+} from "@/lib/ai/toolLabels";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useEditorStore } from "@/lib/course/store";
-import { useAgentStore, type QualityReport, type ValidationStatus } from "@/lib/editor/agentStore";
+import {
+  useAgentStore,
+  type AgentChatMessage,
+  type AgentToolCard,
+  type QualityReport,
+  type ValidationStatus,
+} from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
+import { Markdown } from "./Markdown";
+import { StatusStrip } from "./StatusStrip";
 import { useAgentStream } from "./useAgentStream";
 
 /** A calm validation status line ("Found 4 missing slides. Repairing…", "Final
@@ -92,27 +129,80 @@ function QualityReportCard({ report, onImprove }: { report: QualityReport; onImp
   );
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  get_course_context: "Read course context",
-  list_modules: "List modules",
-  list_lessons: "List lessons",
-  list_course_outline: "Read course outline",
-  get_lesson: "Read lesson",
-  get_block: "Read block",
-  create_module: "Create module",
-  create_lesson: "Create lesson",
-  rename_lesson: "Rename lesson",
-  move_lesson: "Move lesson",
-  create_block: "Add block",
-  delete_block: "Delete block",
-  reorder_blocks: "Reorder blocks",
-  write_slide_deck: "Write slide deck",
-  write_quiz: "Write knowledge check",
-  write_homework: "Write practice",
-  write_lecture_text: "Write lecture",
-  delete_module: "Delete module",
-  delete_lesson: "Delete lesson",
+/** Category → lucide glyph for the tool cards' icon chips (labels live in
+ *  lib/ai/toolLabels.ts — drift-guarded against the real tool registry). */
+const TOOL_CATEGORY_ICON: Record<ToolCategory, LucideIcon> = {
+  read: Eye,
+  write: PenLine,
+  slides: LayoutGrid,
+  visual: ImageIcon,
+  structure: FolderTree,
+  analytics: BarChart3,
 };
+
+/** The transcript's tool activity, grouped at RENDER time: a run of ≥2
+ *  consecutive completed 'read' cards collapses into one compact row (the
+ *  store's toolCards array is untouched). */
+type ToolRenderItem =
+  | { kind: "card"; card: AgentToolCard }
+  | { kind: "readGroup"; key: string; count: number };
+
+function groupToolCards(cards: AgentToolCard[]): ToolRenderItem[] {
+  const items: ToolRenderItem[] = [];
+  let run: AgentToolCard[] = [];
+  const flush = () => {
+    if (run.length >= 2) items.push({ kind: "readGroup", key: run[0].toolCallId, count: run.length });
+    else for (const c of run) items.push({ kind: "card", card: c });
+    run = [];
+  };
+  for (const c of cards) {
+    if (c.status === "done" && TOOL_LABELS[c.tool]?.icon === "read") run.push(c);
+    else {
+      flush();
+      items.push({ kind: "card", card: c });
+    }
+  }
+  flush();
+  return items;
+}
+
+/** One compact tool-activity card: category icon chip (status-toned), a 12px
+ *  friendly label (never raw snake_case), and a clamped summary line. */
+function ToolCardRow({ card }: { card: AgentToolCard }) {
+  const meta = TOOL_LABELS[card.tool];
+  const Icon = TOOL_CATEGORY_ICON[meta?.icon ?? "write"];
+  const title =
+    card.status === "done"
+      ? friendlyToolDone(card.tool)
+      : card.status === "running"
+        ? `${friendlyToolLabel(card.tool)}…`
+        : friendlyToolLabel(card.tool);
+  // A tool_result with no prior tool_start stores its summary AS the tool name —
+  // don't render the same sentence twice.
+  const showSummary = !!card.summary && card.summary !== card.tool;
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5">
+      <span
+        className={cn(
+          "mt-px grid size-5 shrink-0 place-items-center rounded-md",
+          card.status === "done" && "bg-emerald-50 text-emerald-600",
+          card.status === "running" && "bg-amber-50 text-amber-600",
+          card.status === "error" && "bg-rose-50 text-rose-600"
+        )}
+      >
+        <Icon className={cn("size-3", card.status === "running" && "animate-pulse")} aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] font-medium leading-5 text-stone-700">{title}</span>
+        {showSummary && (
+          <span className={cn("block text-[11px] leading-snug line-clamp-2", card.status === "error" ? "text-rose-500" : "text-stone-400")}>
+            {card.summary}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
 
 const SUGGESTIONS = [
   "Write a 5-slide intro deck for this lesson",
@@ -149,6 +239,28 @@ function TypingDots() {
   );
 }
 
+/** One transcript bubble, memoized on message identity: appends replace only the
+ *  last streaming entry in the store, so a per-flush transcript render re-renders
+ *  ONLY that bubble — settled history bails out (PERF-1 D5, A5 §2.2's un-memoized
+ *  inline map). */
+const MessageBubble = memo(function MessageBubble({ m }: { m: AgentChatMessage }) {
+  // A settled-empty assistant bubble (a plan-only turn) has nothing to say —
+  // don't render an empty pill.
+  if (m.role === "assistant" && !m.text && !m.streaming) return null;
+  return (
+    <div
+      className={cn(
+        "max-w-[88%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed",
+        m.role === "user"
+          ? "ml-auto bg-brand-50 text-brand-900 ring-1 ring-brand-100"
+          : "mr-auto bg-stone-50 text-stone-700"
+      )}
+    >
+      {m.role === "assistant" ? (m.text ? <Markdown text={m.text} /> : <TypingDots />) : m.text}
+    </div>
+  );
+});
+
 export function AgentPanel() {
   const messages = useAgentStore((s) => s.messages);
   const toolCards = useAgentStore((s) => s.toolCards);
@@ -165,21 +277,44 @@ export function AgentPanel() {
   const openFindings = useAgentStore((s) => s.openFindings);
   const autoApprovePlan = useAgentStore((s) => s.autoApprovePlan);
   const setAutoApprovePlan = useAgentStore((s) => s.setAutoApprovePlan);
+  const setPlanModalOpen = useAgentStore((s) => s.setPlanModalOpen);
   const togglePanel = useUIStore((s) => s.togglePanel);
-  const { send, resolve, stop } = useAgentStream();
+  const { send, resolve, stop, approvePlan } = useAgentStream();
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Stick to the bottom as content arrives. While streaming (thinking) the jump
+  // is INSTANT — a smooth scroll re-fired every flush never settles and costs a
+  // compositor animation each time (A5 §6.8); the one smooth scroll happens on
+  // settle, when `thinking` flips false.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    const el = scrollRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior: thinking ? "auto" : "smooth" });
   }, [messages, toolCards, thinking]);
 
   const pendingBlocks = useAgentStore((s) => s.pendingBlocks);
+  const resolving = useAgentStore((s) => s.resolving);
   const doc = useEditorStore((s) => s.doc);
   const courseId = useEditorStore((s) => s.courseId);
-  const pendingSets = Object.values(changeSets);
+  // Keyed on the store object, NOT rebuilt per render — a fresh Object.values
+  // array here was a dep of `groups`, defeating its memo and forcing the doc
+  // walk on every streamed token (A5 §2.2 / AgentPanel.tsx:271 pre-fix).
+  const pendingSets = useMemo(() => Object.values(changeSets), [changeSets]);
   const pendingCount = pendingSets.reduce((n, cs) => n + cs.count, 0);
+  // A reject in flight (server-authoritative revert) disables the review bar;
+  // accepted sets leave `changeSets` optimistically, so they never linger here.
+  const rejecting = pendingSets.some((cs) => resolving[cs.id] === "reject");
+
+  // The modules×lessons×blocks walk runs only when the doc itself changes
+  // (every patch clones the doc, so identity IS the change signal).
+  const slideBlockIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of doc.modules) for (const l of m.lessons) for (const b of l.blocks) {
+      if (b.type === "slide_deck" || b.type === "imported_deck") ids.add(b.id);
+    }
+    return ids;
+  }, [doc]);
 
   // Group the pending changes so STRUCTURE isn't buried inside "N changes": split
   // into Structure (module/lesson ops), Slide (slide_deck blocks) and Content
@@ -187,10 +322,6 @@ export function AgentPanel() {
   // the doc) counts as content.
   const groups = useMemo(() => {
     const structure = pendingSets.reduce((n, cs) => n + (cs.structuralCount ?? 0), 0);
-    const slideBlockIds = new Set<string>();
-    for (const m of doc.modules) for (const l of m.lessons) for (const b of l.blocks) {
-      if (b.type === "slide_deck" || b.type === "imported_deck") slideBlockIds.add(b.id);
-    }
     let slide = 0;
     let content = 0;
     for (const id of Object.keys(pendingBlocks)) {
@@ -198,36 +329,31 @@ export function AgentPanel() {
       else content++;
     }
     return { structure, slide, content };
-  }, [pendingSets, pendingBlocks, doc]);
+  }, [pendingSets, pendingBlocks, slideBlockIds]);
 
   const blocked = thinking || !!pendingConfirmation || !!pendingOutline;
 
-  const PHASE_LABEL: Record<string, string> = {
-    plan: "Planning",
-    generate: "Generating",
-    validate: "Checking the plan",
-    repair: "Repairing",
-    review: "Reviewing",
-    critique: "Reviewing",
-  };
-  const MAINTENANCE_LABEL: Record<string, string> = {
-    analyze: "Reading learner analytics",
-    findings: "Prioritizing findings",
-    remediate: "Proposing fixes",
-    comms: "Drafting check-ins",
-    report: "Wrapping up",
-  };
   const statusText = pendingOutline
     ? "Review the plan"
     : pendingConfirmation
       ? "Paused — needs your OK"
       : maintenance && thinking
-        ? `${MAINTENANCE_LABEL[maintenance.stage]}…`
+        ? `${AGENT_MAINTENANCE_COPY[maintenance.stage] ?? "Working"}…`
         : phase && thinking
-          ? `${PHASE_LABEL[phase]}…`
+          ? `${AGENT_PHASE_COPY[phase] ?? "Working"}…`
           : thinking
             ? "Working…"
             : "Ready";
+
+  // The last user message — the error box's "Try again" re-sends it.
+  const lastUserText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].text;
+    }
+    return null;
+  }, [messages]);
+
+  const toolItems = useMemo(() => groupToolCards(toolCards), [toolCards]);
 
   function submit() {
     if (!input.trim() || blocked) return;
@@ -301,50 +427,28 @@ export function AgentPanel() {
         ) : (
           <>
             {messages.map((m) => (
-              <div
-                key={m.id}
-                className={cn(
-                  "max-w-[88%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed",
-                  m.role === "user"
-                    ? "ml-auto bg-brand-50 text-brand-900 ring-1 ring-brand-100"
-                    : "mr-auto bg-stone-50 text-stone-700"
-                )}
-              >
-                {m.text || (m.streaming ? <TypingDots /> : null)}
-              </div>
+              <MessageBubble key={m.id} m={m} />
             ))}
 
-            {toolCards.length > 0 && (
+            {toolItems.length > 0 && (
               <div className="space-y-1.5">
-                {toolCards.map((c) => (
-                  <div
-                    key={c.toolCallId}
-                    className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs"
-                  >
-                    <span
-                      className={cn(
-                        "mt-px grid size-4 shrink-0 place-items-center rounded",
-                        c.status === "done" && "bg-emerald-50 text-emerald-600 ring-1 ring-emerald-200",
-                        c.status === "running" && "bg-amber-50 text-amber-600 ring-1 ring-amber-200",
-                        c.status === "error" && "bg-rose-50 text-rose-600 ring-1 ring-rose-200"
-                      )}
+                {toolItems.map((item) =>
+                  item.kind === "readGroup" ? (
+                    <div
+                      key={item.key}
+                      className="flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5"
                     >
-                      {c.status === "done" ? (
-                        <Check className="size-2.5" />
-                      ) : c.status === "error" ? (
-                        <X className="size-2.5" />
-                      ) : (
-                        <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
-                      )}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="font-medium text-stone-700">
-                        {TOOL_LABELS[c.tool] ?? c.tool ?? "Working"}
+                      <span className="grid size-5 shrink-0 place-items-center rounded-md bg-stone-100 text-stone-500">
+                        <Eye className="size-3" aria-hidden />
                       </span>
-                      {c.summary && <span className="block text-stone-400">{c.summary}</span>}
-                    </span>
-                  </div>
-                ))}
+                      <span className="text-[12px] font-medium text-stone-600">
+                        Reviewed the course ({item.count} steps)
+                      </span>
+                    </div>
+                  ) : (
+                    <ToolCardRow key={item.card.toolCallId} card={item.card} />
+                  )
+                )}
               </div>
             )}
 
@@ -354,8 +458,30 @@ export function AgentPanel() {
               </div>
             )}
             {pendingOutline && (
-              <div className="rounded-xl border border-brand-200 bg-brand-50/60 px-3 py-2 text-xs text-brand-800">
-                A {pendingOutline.kind === "module" ? "module" : "lesson"} plan is ready — review it to continue.
+              <div className="rounded-xl border border-brand-200 bg-brand-50/60 px-3 py-2.5 text-xs text-brand-800">
+                <p>
+                  A {pendingOutline.kind === "module" ? "module" : "lesson"} plan is ready for your
+                  review.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPlanModalOpen(true)}
+                    {...toolAttrs({ tool: "agent-review-plan", action: "AGENT_PLAN_REVIEW", label: "Review the plan" })}
+                    className="inline-flex items-center gap-1 rounded-full brand-gradient px-3 py-1 text-xs font-semibold text-white shadow-sm"
+                  >
+                    <ClipboardList className="size-3" aria-hidden />
+                    Review plan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void approvePlan("discard")}
+                    {...toolAttrs({ tool: "agent-discard-plan", action: "AGENT_PLAN_DISCARD", label: "Discard the plan" })}
+                    className="rounded-full px-2.5 py-1 text-[11px] font-medium text-stone-500 transition-colors hover:bg-white hover:text-stone-700"
+                  >
+                    Discard
+                  </button>
+                </div>
               </div>
             )}
             {validation && <ValidationLine validation={validation} thinking={thinking} />}
@@ -367,7 +493,7 @@ export function AgentPanel() {
               >
                 <p className="flex items-center gap-1.5 text-xs font-semibold text-brand-800">
                   <BarChart3 className="size-3.5" aria-hidden />
-                  {maintenance.detail ?? MAINTENANCE_LABEL[maintenance.stage]}
+                  {maintenance.detail ?? AGENT_MAINTENANCE_COPY[maintenance.stage] ?? "Working"}
                 </p>
                 {maintenance.findings.length > 0 && (
                   <ul className="mt-1.5 space-y-1">
@@ -398,13 +524,33 @@ export function AgentPanel() {
               </div>
             )}
             {checkpoint && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                {checkpoint}
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+                <p>{checkpoint}</p>
+                <button
+                  type="button"
+                  disabled={thinking}
+                  onClick={() => send("Please continue where you left off.")}
+                  {...toolAttrs({ tool: "agent-continue", action: "AGENT_SEND", label: "Continue where you left off" })}
+                  className="mt-2 inline-flex items-center gap-1 rounded-full brand-gradient px-3 py-1 text-xs font-semibold text-white shadow-sm transition-opacity disabled:opacity-40"
+                >
+                  Continue
+                </button>
               </div>
             )}
             {error && (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                {error}
+                <p>{error}</p>
+                {lastUserText && !thinking && (
+                  <button
+                    type="button"
+                    onClick={() => send(lastUserText)}
+                    {...toolAttrs({ tool: "agent-retry", action: "AGENT_SEND", label: "Try the last message again" })}
+                    className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-rose-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-rose-700 transition-colors hover:bg-rose-100"
+                  >
+                    <RotateCcw className="size-3" aria-hidden />
+                    Try again
+                  </button>
+                )}
               </div>
             )}
           </>
@@ -432,17 +578,19 @@ export function AgentPanel() {
             <span className="flex-1" />
             <button
               type="button"
+              disabled={rejecting}
               onClick={() => resolveAll("reject")}
               {...toolAttrs({ tool: "agent-reject-all", action: "REJECT_CHANGES", label: "Reject changes" })}
-              className="rounded-full px-2.5 py-1 text-xs font-medium text-stone-500 transition-colors hover:bg-white hover:text-stone-700"
+              className="rounded-full px-2.5 py-1 text-xs font-medium text-stone-500 transition-colors hover:bg-white hover:text-stone-700 disabled:pointer-events-none disabled:opacity-50"
             >
-              Reject
+              {rejecting ? "Rejecting…" : "Reject"}
             </button>
             <button
               type="button"
+              disabled={rejecting}
               onClick={() => resolveAll("accept")}
               {...toolAttrs({ tool: "agent-accept-all", action: "ACCEPT_CHANGES", label: "Accept changes" })}
-              className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 disabled:pointer-events-none disabled:opacity-50"
             >
               <CheckCheck className="size-3" />
               {/* Mid-run, accepting locks in what's built so far — lets the user gate
@@ -454,8 +602,10 @@ export function AgentPanel() {
       )}
 
       {/* Threshold findings invite — the nightly rollup flagged issues; one
-          click runs an analysis that adopts them. */}
-      {openFindings > 0 && !thinking && !maintenance && (
+          click runs an analysis that adopts them. Gated on `blocked` (not just
+          thinking): send() here bypasses submit()'s guard, and starting a turn
+          while a plan/confirmation is pending would silently discard it. */}
+      {openFindings > 0 && !blocked && !maintenance && (
         <div className="border-t border-stone-200 px-4 py-2.5">
           <button
             type="button"
@@ -477,6 +627,10 @@ export function AgentPanel() {
           </button>
         </div>
       )}
+
+      {/* Live working strip — the honest, humanized status while a run is in
+          flight (heartbeat inside softens the copy during SSE silences). */}
+      {thinking && <StatusStrip />}
 
       {/* Composer */}
       <div className="border-t border-stone-200 p-3">

@@ -10,16 +10,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { acceptChangeSet, rejectChangeSet } from "@/lib/ai/changeSet";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   const { id } = await params;

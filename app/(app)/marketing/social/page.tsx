@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import {
   listAuthorCourses,
   selectCourseForAuthor,
@@ -26,9 +26,7 @@ export default async function SocialPostsPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   if (!user) return null; // the (app) layout redirects signed-out visitors
 
   const { course: coursePref } = await searchParams;
@@ -50,7 +48,9 @@ export default async function SocialPostsPage({
   }
 
   const [{ posts }, batches, voiceProfile, modulesRes] = await Promise.all([
-    listSocialPosts(supabase, {}, { limit: 100 }),
+    // Scoped to the resolved course (PERF-1 hygiene, diagnosis A6 #26): the
+    // queue used to ship every course's posts unfiltered into the RSC payload.
+    listSocialPosts(supabase, { courseId: course.id }, { limit: 100 }),
     listBatches(supabase),
     loadSocialVoiceProfile(supabase),
     supabase.from("modules").select("id,title,course_id").eq("course_id", course.id).order("order"),

@@ -24,9 +24,10 @@ export interface UseVideoAsset extends State {
 
 export function useVideoAsset(
   videoAssetId: string | null | undefined,
-  opts?: { initialStatus?: VideoRowStatus; pollMs?: number }
+  opts?: { initialStatus?: VideoRowStatus; pollMs?: number; readyPollMs?: number }
 ): UseVideoAsset {
   const pollMs = opts?.pollMs ?? 3000;
+  const readyPollMs = opts?.readyPollMs ?? 10000;
   const [state, setState] = useState<State>({ view: null, loading: Boolean(videoAssetId), error: null });
   const inFlight = useRef(false);
   const mounted = useRef(true);
@@ -81,12 +82,20 @@ export function useVideoAsset(
   const liveStatus = view?.status ?? opts?.initialStatus ?? "processing";
   const mp4Status = view?.mp4Status ?? null;
   const captionStatus = view?.captionStatus ?? null;
+  // isActiveVideoStatus still decides WHETHER to poll (unchanged semantics);
+  // the INTERVAL backs off once the video is watchable. PERF-1 hygiene
+  // (diagnosis A6 #28): each poll tick is a live Mux API call — poll fast (3s)
+  // only while the preview is genuinely unwatchable (uploading/processing, or
+  // ready with the MP4 rendition still preparing); once it's playable and the
+  // only pending work is caption generation, 10s is plenty.
   const isActive = Boolean(videoAssetId) && isActiveVideoStatus(liveStatus, mp4Status, captionStatus);
+  const playable = liveStatus === "ready" && mp4Status !== "preparing";
+  const intervalMs = playable ? readyPollMs : pollMs;
   useEffect(() => {
     if (!isActive) return;
-    const interval = setInterval(() => void fetchOnce(), pollMs);
+    const interval = setInterval(() => void fetchOnce(), intervalMs);
     return () => clearInterval(interval);
-  }, [isActive, fetchOnce, pollMs]);
+  }, [isActive, fetchOnce, intervalMs]);
 
   const refetch = useCallback(() => fetchOnce(), [fetchOnce]);
 

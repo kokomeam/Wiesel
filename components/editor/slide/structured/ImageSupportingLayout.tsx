@@ -10,6 +10,7 @@
  */
 
 import type { ImageSupportingContent } from "@/lib/course/types";
+import { SlideImage } from "../SlideImage";
 import { EditableText, Eyebrow, withAlpha, type StructuredCtx } from "./common";
 
 const PAD = 64;
@@ -91,8 +92,8 @@ export function ImageSupportingLayout({ content, ctx }: { content: ImageSupporti
         }}
       >
         {content.imageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={content.imageUrl} alt={content.alt} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          // 384/1280 = 30% of the logical canvas width (PERF-1 D3).
+          <SlideImage src={content.imageUrl} alt={content.alt} sizes="(max-width: 1280px) 30vw, 384px" />
         ) : (
           <div
             className="flex flex-col items-center justify-center font-mono uppercase"

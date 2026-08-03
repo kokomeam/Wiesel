@@ -63,6 +63,7 @@ import {
   SocialPostPatchSchema,
   ToneSchema,
   type SocialPost,
+  type SocialPostListItem,
 } from "../social/schemas";
 import { defineMarketingTool, MarketingToolError, type MarketingToolContext } from "./types";
 
@@ -100,12 +101,14 @@ async function requirePost(ctx: MarketingToolContext, postId: string): Promise<S
   return post;
 }
 
-function postSummaryLine(p: SocialPost): string {
+// Both take the narrow LIST projection (a full SocialPost is structurally
+// assignable) — they only read queue-card fields.
+function postSummaryLine(p: SocialPostListItem): string {
   const preview = p.body.replace(/\s+/g, " ").slice(0, 90);
   return `[${p.platform} · ${p.funnelStage} · ${p.status} · v${p.version}] ${preview}…`;
 }
 
-function compactPost(p: SocialPost) {
+function compactPost(p: SocialPostListItem) {
   return {
     id: p.id,
     platform: p.platform,

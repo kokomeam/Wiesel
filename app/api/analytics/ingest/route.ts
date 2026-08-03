@@ -15,6 +15,10 @@
  * nothing` — replaying a batch (retry after a false-negative, double flush)
  * changes nothing.
  *
+ * perf_vital (PERF-1 E1) rides through UNCHANGED: it is in the shared
+ * AnalyticsBatchSchema, and the RPC itself skips the course-scope checks for
+ * exactly that type (migration 20260718100100) — no special-casing here.
+ *
  * Rate limiting is BEST-EFFORT per server instance (an in-memory sliding
  * window; serverless cold starts reset it, instances don't share it). That's
  * an abuse damper, not a quota — a healthy client sends ~1 batch per 10s.

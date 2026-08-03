@@ -10,12 +10,33 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { Database } from "@/lib/database.types";
 
 /** In-app routes that require a signed-in user. Marketing ("/", "/educators")
- *  and "/login" are intentionally public. */
+ *  and "/login" are intentionally public. Covers BOTH portals: the creator
+ *  (app) group and the student (student) group (/home, /my-courses, /explore).
+ *  /learn/* stays public (its lesson page self-gates). When adding a new
+ *  top-level in-app route, add its prefix here or it silently ships public. */
 const PROTECTED =
-  /^\/(dashboard|studio|analytics|exports|marketing|marketplace|settings)(\/|$)/;
+  /^\/(dashboard|studio|analytics|exports|marketing|marketplace|settings|home|my-courses|explore)(\/|$)/;
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
+
+  // Anonymous fast path (PERF-1 C1): with no Supabase auth cookies there is no
+  // session to refresh and getUser() would be a guaranteed-null network round
+  // trip. Public pages (/, /educators, /learn/*, /p/*) render with ZERO auth
+  // RTT for signed-out visitors; protected pages still bounce to /login.
+  const hasAuthCookies = request.cookies
+    .getAll()
+    .some((c) => c.name.startsWith("sb-") && c.name.includes("-auth-token"));
+  if (!hasAuthCookies) {
+    const path = request.nextUrl.pathname;
+    if (PROTECTED.test(path)) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.searchParams.set("redirectTo", path);
+      return NextResponse.redirect(url);
+    }
+    return response;
+  }
 
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

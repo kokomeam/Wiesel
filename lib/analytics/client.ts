@@ -11,7 +11,10 @@
  * survive the page teardown.
  */
 
-import { MAX_BATCH_EVENTS, type AnalyticsEvent } from "./events";
+// Zod-free import — this module rides in learner client bundles (PERF-1 D1:
+// importing the full events.ts contract drags the zod core into the route).
+import { MAX_BATCH_EVENTS } from "./eventConstants";
+import type { AnalyticsEvent } from "./events";
 
 export interface AnalyticsQueueOptions {
   endpoint?: string;

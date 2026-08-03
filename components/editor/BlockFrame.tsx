@@ -27,7 +27,7 @@ import { cn } from "@/lib/cn";
 import { aiAttrs } from "@/lib/course/aiAttributes";
 import { deleteBlockPatch, reorderBlockPatch, updateBlockTitlePatch } from "@/lib/course/commands";
 import { useEditorStore } from "@/lib/course/store";
-import { usePendingChangeSetId, usePendingEvidence } from "@/lib/editor/agentStore";
+import { useChangeSetResolving, usePendingChangeSetId, usePendingEvidence } from "@/lib/editor/agentStore";
 import type { BlockType, LessonBlock, QualityHint } from "@/lib/course/types";
 import { EvidenceCard, parseEvidence } from "./agent/EvidenceCard";
 import { useAgentStream } from "./agent/useAgentStream";
@@ -84,6 +84,10 @@ export function BlockFrame({
   const pendingEvidence = usePendingEvidence(block.id);
   const { resolve } = useAgentStream();
   const pending = Boolean(pendingChangeSetId);
+  // While a reject is in flight the chrome dims + disables (optimistic B3
+  // feedback); the doc revert itself stays server-authoritative. An accepted
+  // set clears its chrome optimistically, so it never renders as resolving.
+  const reverting = useChangeSetResolving(pendingChangeSetId) === "reject";
   // The maintenance run's evidence card — WHY this change is proposed, shown
   // above the content, before Accept/Reject.
   const evidence = pending ? parseEvidence(pendingEvidence) : null;
@@ -113,10 +117,13 @@ export function BlockFrame({
         selectBlock();
       }}
       data-ai-pending={pending ? "" : undefined}
+      data-ai-reverting={reverting ? "" : undefined}
       className={cn(
         "group rounded-2xl border bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-shadow",
         pending
-          ? "border-amber-300 ring-2 ring-amber-200/70"
+          ? reverting
+            ? "border-amber-200 ring-2 ring-amber-100/60"
+            : "border-amber-300 ring-2 ring-amber-200/70"
           : selected
             ? "border-brand-300 ring-2 ring-brand-200/60"
             : "border-stone-200/80 hover:shadow-[0_2px_8px_rgba(16,24,40,0.06)]"
@@ -139,17 +146,18 @@ export function BlockFrame({
         {pending && (
           <div className="flex items-center gap-1" data-ai-block-pending="">
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-              Agent
+              {reverting ? "Reverting…" : "Agent"}
             </span>
             <button
               type="button"
               aria-label="Accept agent change"
               data-ai-tool="block-accept"
+              disabled={reverting}
               onClick={(e) => {
                 e.stopPropagation();
                 if (pendingChangeSetId) void resolve(pendingChangeSetId, "accept");
               }}
-              className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-100"
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-100 disabled:pointer-events-none disabled:opacity-40"
             >
               <Check className="size-3" />
               Accept
@@ -158,11 +166,12 @@ export function BlockFrame({
               type="button"
               aria-label="Reject agent change"
               data-ai-tool="block-reject"
+              disabled={reverting}
               onClick={(e) => {
                 e.stopPropagation();
                 if (pendingChangeSetId) void resolve(pendingChangeSetId, "reject");
               }}
-              className="rounded-full px-2 py-0.5 text-[11px] font-medium text-stone-500 transition-colors hover:bg-stone-100"
+              className="rounded-full px-2 py-0.5 text-[11px] font-medium text-stone-500 transition-colors hover:bg-stone-100 disabled:pointer-events-none disabled:opacity-40"
             >
               Reject
             </button>

@@ -18,7 +18,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import type { SocialPlatform, SocialPostStatus } from "./constants";
 import { SocialVersionConflictError } from "./errors";
-import type { PostPerformance, SocialPost, SocialVoiceProfile } from "./schemas";
+import type { PostPerformance, SocialPost, SocialPostListItem, SocialVoiceProfile } from "./schemas";
 
 type DB = SupabaseClient<Database>;
 type PostRow = Database["public"]["Tables"]["social_post"]["Row"];
@@ -66,6 +66,51 @@ export function rowToSocialPost(row: PostRow): SocialPost {
   };
 }
 
+/** LIST projection — every column EXCEPT the four heavyweight ones the queue
+ *  never renders (source_text / ai_metadata / performance / external_ref).
+ *  PERF-1 hygiene (diagnosis A6 #26). Keep in sync with `rowToPostListItem`. */
+const POST_LIST_COLUMNS =
+  "id,creator_id,course_id,module_id,lesson_id,campaign_id,batch_id,batch_order," +
+  "source_type,platform,post_type,goal,funnel_stage,audience,tone,body,cta,hashtags," +
+  "image_url,image_storage_path,image_alt_text,suggested_image_idea,planned_post_at," +
+  "status,posted_manually_at,version,deleted_at,created_at,updated_at";
+
+type PostListRow = Omit<PostRow, "source_text" | "ai_metadata" | "performance" | "external_ref">;
+
+function rowToPostListItem(row: PostListRow): SocialPostListItem {
+  return {
+    id: row.id,
+    creatorId: row.creator_id,
+    courseId: row.course_id,
+    moduleId: row.module_id,
+    lessonId: row.lesson_id,
+    campaignId: row.campaign_id,
+    batchId: row.batch_id,
+    batchOrder: row.batch_order,
+    sourceType: row.source_type as SocialPost["sourceType"],
+    platform: row.platform as SocialPost["platform"],
+    postType: row.post_type,
+    goal: row.goal as SocialPost["goal"],
+    funnelStage: row.funnel_stage as SocialPost["funnelStage"],
+    audience: row.audience,
+    tone: row.tone as SocialPost["tone"],
+    body: row.body,
+    cta: row.cta,
+    hashtags: row.hashtags ?? [],
+    imageUrl: row.image_url,
+    imageStoragePath: row.image_storage_path,
+    imageAltText: row.image_alt_text,
+    suggestedImageIdea: row.suggested_image_idea,
+    plannedPostAt: row.planned_post_at,
+    status: row.status as SocialPost["status"],
+    postedManuallyAt: row.posted_manually_at,
+    version: row.version,
+    deletedAt: row.deleted_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export interface SocialBatch {
   id: string;
   creatorId: string;
@@ -107,7 +152,7 @@ export interface ListPostsFilter {
 }
 
 export interface ListPostsPage {
-  posts: SocialPost[];
+  posts: SocialPostListItem[];
   /** Pass back as `cursor` for the next page (updated_at of the last row). */
   nextCursor: string | null;
 }
@@ -118,7 +163,11 @@ export async function listSocialPosts(
   opts: { cursor?: string; limit?: number } = {}
 ): Promise<ListPostsPage> {
   const limit = Math.min(100, Math.max(1, opts.limit ?? 50));
-  let q = supabase.from("social_post").select("*").order("updated_at", { ascending: false }).limit(limit);
+  let q = supabase
+    .from("social_post")
+    .select(POST_LIST_COLUMNS)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
   if (!filter.includeDeleted) q = q.is("deleted_at", null);
   if (filter.status) q = q.eq("status", filter.status);
   if (filter.platform) q = q.eq("platform", filter.platform);
@@ -128,7 +177,9 @@ export async function listSocialPosts(
   if (opts.cursor) q = q.lt("updated_at", opts.cursor);
   const { data, error } = await q;
   if (error) throw new Error(`listSocialPosts: ${error.message}`);
-  const posts = (data ?? []).map(rowToSocialPost);
+  // The column list exceeds PostgREST's type-parser depth → cast (the shape is
+  // pinned by POST_LIST_COLUMNS ↔ PostListRow, both defined together above).
+  const posts = ((data ?? []) as unknown as PostListRow[]).map(rowToPostListItem);
   return { posts, nextCursor: posts.length === limit ? posts[posts.length - 1].updatedAt : null };
 }
 

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PanelLeftClose, PanelLeft, Plus } from "lucide-react";
+import { PanelLeftClose, PanelLeft, Plus, GraduationCap } from "lucide-react";
+import { IntentLink } from "@/components/perf/IntentLink";
 import { mainNav, secondaryNav } from "@/lib/nav";
 import { createNewCourse } from "@/app/(app)/studio/actions";
 import { cn } from "@/lib/cn";
@@ -22,7 +23,7 @@ function NavLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
   const active = isActive(pathname, item.href);
   const Icon = item.icon;
   return (
-    <Link
+    <IntentLink
       href={item.href}
       title={collapsed ? item.label : undefined}
       className={cn(
@@ -45,7 +46,7 @@ function NavLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
           {item.badge}
         </span>
       )}
-    </Link>
+    </IntentLink>
   );
 }
 
@@ -105,6 +106,35 @@ export function Sidebar({
           <NavLink key={item.href} item={item} collapsed={collapsed} />
         ))}
       </nav>
+
+      {/* Portal switch — every account can learn; role only picks the default. */}
+      <div className={cn("pb-2", collapsed ? "px-2.5" : "px-3")}>
+        <IntentLink
+          href="/home"
+          title={collapsed ? "Switch to learner home" : undefined}
+          className={cn(
+            "group flex items-start gap-2.5 rounded-xl border border-stone-200/80 bg-stone-50/60 transition-colors hover:border-learn-200 hover:bg-learn-50/50",
+            collapsed ? "justify-center px-0 py-2.5" : "px-3.5 py-3"
+          )}
+        >
+          <GraduationCap
+            className={cn(
+              "size-4 shrink-0 text-stone-400 transition-colors group-hover:text-learn-600",
+              !collapsed && "mt-0.5"
+            )}
+          />
+          {!collapsed && (
+            <span className="min-w-0">
+              <span className="block text-xs font-semibold text-stone-700 group-hover:text-learn-800">
+                Switch to learner home
+              </span>
+              <span className="block text-[11px] leading-snug text-stone-400">
+                Your courses, progress, and reviews
+              </span>
+            </span>
+          )}
+        </IntentLink>
+      </div>
 
       {/* User + collapse toggle */}
       <div

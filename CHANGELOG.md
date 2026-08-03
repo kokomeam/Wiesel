@@ -6,6 +6,566 @@ Playwright script driving the real UI through its `data-ai-*` attributes.
 Part C = the approved AUDIT.md items (all except #1 persistence — Supabase
 is next — #5 multi-selection styling, and #8 canvas a11y).
 
+## PERF-1 Phases D+E — rendering, bundles, RUM, CI guardrails, 2026-07-23
+
+Closes the wave (checkpoint report: `docs/perf/PERF-1_checkpoint3.md`; local
+repro: `docs/perf/README.md`). All five route JS budgets now PASS
+(`npm run verify:budgets` — dashboard 174/250 · studio 544/550 [renegotiated
+in-map with the chunk decomposition] · learn 212/250 · analytics 172/250 ·
+marketing 250/300, gzip wire, load-bounded) and Lighthouse image/stability
+assertions are 40/40 (`verify:budgets:lh`).
+
+- **D1:** the learner route no longer imports the editor — `SlideView`
+  read-only renderer + zod-free registry split (`structuredLayoutsCore` /
+  `layoutRegistry`), source-graph-proven; studio's modal subsystems all
+  `next/dynamic` (recorder/publish/plan/image-dialog/agent-panel,
+  transcript-preserving latches); framer-motion out of every hot route
+  (ConfirmDialog + CourseReview CSS transitions); supabase-js out of the
+  shell (SignOutButton → server action) and lazy at the identity band,
+  settings, and homework block; **the zod core out of every non-editor
+  route** via zod-free splits (`lib/analytics/eventConstants`,
+  `lib/learn/reviewsShared`, `lib/profile/limits`) — the RUM reporter had
+  been dragging the full zod contract into every page.
+- **D2:** dependency-free `lib/perf/virtualRows.ts` (26 checks, scroll
+  restoration) on DraftList (+ comms API bounded 200) and the studio
+  filmstrip; PostQueue memoized; server tables get `content-visibility`
+  containment (per-row is spec-impossible in `<table>`; documented).
+- **D3:** `next/image` pipeline (remotePatterns Supabase+Mux, AVIF/WebP)
+  across covers/avatars/cards/landing-LCP (+`priority`/`fetchPriority`);
+  ONE `SlideImage` for all slide surfaces (allowlist mirror + blob/data
+  fallback); `uses-responsive-images` 0.5 → 1.0 on every route.
+- **D4:** Fraunces italic dropped (~29 KB off every route's preload).
+- **D5 (proven fixes only):** editor whole-doc subscriptions →
+  getState()/per-element selectors; rAF-coalesced pointermove (exact
+  pointerup flush); filmstrip windowed + lint scoped; agent SSE per-frame
+  delta batching + memoized bubbles + incremental markdown (fuzzed ×873
+  states) + the defeated doc-walk memo fixed.
+- **E1/E2:** `perf_vital` in the ONE analytics contract + ingest RPC
+  (NULL-course envelope, CHECK-scoped columns, idempotent; forged-uid test
+  live — `verify:analytics:int` 104), `web-vitals` reporter in the root
+  layout (sampling env; dep-freeze exception is directive-mandated),
+  `perf_vitals_daily` P50/75/95 view with alerts-not-gates thresholds.
+- **E3:** the repo's FIRST CI — `.github/workflows/perf.yml` (build →
+  verify:perf → budgets → Lighthouse) + `test.yml` (the 32-suite pure
+  chain); budget gate + LH gate self-provision their fixtures (CI-portable);
+  deliberate-regression demonstration captured in README then reverted.
+- Final lab (desktop): TTFB 538–886 ms (was 919–2664), LCP 0.9–1.2 s (was
+  2.5–6.6); mobile LH scores 78–85 (was 69–76), TBT ≤31 ms. Gates:
+  `npm test` 32 suites · `verify:perf:rt` 20 · `verify:perf:browser` 39+2.
+
+## PERF-1 Phases B+C — perceived performance + data layer, 2026-07-17
+
+Diagnosis (Phase A) lives in `docs/perf/PERF-1_diagnosis.md`; caching rules in
+`docs/perf/caching-policy.md`. Every §2 CI target failed at baseline (mobile
+LCP 5.2–7.4 s, TTFB all > 800 ms, 13–28 server round trips per view, route JS
+391–639 KB gz). This wave = do-less-work + do-work-earlier + honest feedback.
+
+- **Auth tax collapsed (C1):** `getSessionUser` = `react cache()`d
+  `auth.getUser()` (`lib/supabase/server.ts`) — one network auth call per
+  render pass (was 3–4); `createClient` is a per-request singleton;
+  `getSessionProfile` (`lib/supabase/sessionProfile.ts`) kills the duplicate
+  layout/page profile reads. Middleware no longer runs on `/api/*` (every
+  handler self-authenticates) and short-circuits with ZERO auth round trips
+  for anonymous visitors on public pages. 41 files swept.
+- **One bundle RPC per hot route (C1):** `creator_dashboard()`,
+  `studio_course_bundle()`, `learn_lesson_state()`,
+  `course_analytics_bundle()` + `learner_detail_bundle()`,
+  `marketing_hub_bundle()` — SECURITY DEFINER, STABLE, auth pinned inside,
+  Zod-parsed via `lib/supabase/rpcJson.ts`, loaders take the client as a
+  parameter (counting-client testable, AC-PERF-07). Warm views: **1–2 data
+  round trips** (were 10–24). Counts moved into SQL GROUP BYs (enrollments,
+  sequences overview, findings); `learner_messages` latest-per-user via
+  DISTINCT ON; learner-detail timeline switched offset→keyset (`?before=`);
+  quiz attempts capped at 25 (+ exact `attempt_count`); marketing hub
+  approvals/questions bounded to 20; approval previews now STREAM behind the
+  shell (React `use()` + per-card Suspense) instead of blocking first paint.
+- **Immutable snapshot cache (B5/C1):** `lib/learn/publicationCache.ts` —
+  narrow RLS-scoped meta resolve (authorization never cached) + the
+  DB-trigger-immutable body in the Next data cache keyed by publication id
+  (`revalidate: false` is provably correct) + a bounded parsed-Zod memo. The
+  full-snapshot fetch+parse that ran on every lesson view, every
+  progress/quiz/homework POST, every analytics tab, and the student home is
+  now 0 round trips warm. Imported-deck views moved off the lesson SSR
+  critical path (lazy client fetch).
+- **DB layer (C3, applied live):** hot SELECT policies rewritten from per-row
+  `private.can_read_course(course_id)` calls to per-statement hashed
+  semi-joins (blocks/lessons/modules/analytics_event/learning_events/
+  change_set*/conversations/messages; EXPLAIN before→after: per-row filter,
+  190 buffers → hashed SubPlan, 7 buffers); `course_reviews`' two permissive
+  SELECTs merged; 37 FK/functional indexes added (incl.
+  `course_publications(published_at) WHERE live+public`, social queue
+  `(creator_id, updated_at)`, revision-budget + heartbeat covers), 6
+  redundant prefix indexes dropped; `course_publications.lesson_count/
+  module_count` persisted at publish (immutability-trigger-guarded,
+  backfilled) so `marketplace_listings()`/`my_learning()`/
+  `is_review_eligible` stop re-expanding snapshot jsonb per row;
+  `social_post.regenerated_from_post_id` drift reconciled into migrations.
+  `verify:publish:int` (50) + `verify:learn:int` (61) green post-swap.
+- **Perceived performance (B):** honest `NavProgress` top bar (starts ≤100 ms
+  on nav intent, trickles asymptotically, completes only on real route
+  change; never a fake timer) + `IntentLink` hover/focus/touch full-route
+  prefetch (80 ms debounce, ≤3 concurrent, 30 s TTL —
+  `lib/perf/intentPrefetch.ts`) + `staleTimes {dynamic:30}` making the Router
+  Cache the client data cache + preconnects to Supabase/Mux origins. All
+  eight route skeletons geometry-matched to their real layouts (B2).
+  Optimistic UI with tested rollback (B3): change-set Accept (instant
+  pending-clear, snapshot-restore on failure), Reject ("reverting" chrome —
+  doc revert stays server-authoritative; `suspendAutosaveForReject` ordering
+  preserved), learner review submit/dismiss, settings portal radio
+  (`lib/perf/optimistic.ts` machines). B6 View Transitions: N/A — stable
+  React 19.2.4 ships no ViewTransition (evidence in the checkpoint report).
+- **Assets (C4/C5):** `cacheControl: 31536000` on all five storage upload
+  sites (UUID-immutable objects; was 1 h default); slide lookahead warms
+  slides N+1/N+2 images (≤2 concurrent, saveData/2g-gated, session-deduped —
+  `lib/learn/lookahead.ts`); learn-landing LCP cover `fetchPriority="high"`.
+- **Also:** `PostEditor.tsx` un-binaried (raw NUL → ` ` escape).
+- **Tests:** `verify:perf` (26 intent + 35 optimistic + 26 lookahead, in the
+  `npm test` chain — 27 suites green), `verify:perf:browser` +
+  `verify-perf-rt.ts` (AC-PERF-02..10), five per-RPC live smoke suites
+  (25+19+21+50+12 checks) run at migration time.
+
+## Dashboard creator identity band (edit-in-place), 2026-07-11 (follow-up)
+
+The "about the author" editor moved to the TOP of `/dashboard`:
+`components/dashboard/CreatorIdentityHeader.tsx` replaces the plain
+PageHeader in BOTH branches (has-courses + zero-course onboarding). Avatar
+uploads save IMMEDIATELY (hover the photo → Change; upload → avatar-only row
+update → previous object removed; a failed row update removes the upload);
+"Edit profile" swaps the text block for an inline name/headline/bio form with
+counters; missing pieces render as dashed ghost prompts (the band IS the
+completion nudge — the AttentionRail profile row and the OnboardingHero
+settings link were removed as redundant). Pre-migration a headline/bio save
+keeps the editor OPEN with the amber unlock notice (closing would display
+text that never persisted). Persistence extracted into
+`lib/profile/clientProfile.ts` (`uploadAvatarImage` / `saveProfileFields` /
+`saveAvatarUrl` / `removeCourseAsset` / `isMissingColumnError`) — ONE
+implementation shared with Settings' ProfileSettings (refactored to consume
+it; behavior byte-identical) so the two surfaces can't drift. Adversarially reviewed (5
+confirmed findings, all fixed): avatar-pick vs in-flight-save interlock (a
+stale text save could persist a deleted avatar URL — the photo button now
+guards `saving` too), the raw display_name is edited instead of the derived
+email-prefix fallback (a fallback must never be silently persisted into
+world-readable profiles — blank field forces an explicit name; /settings got
+the same fix), a name-only pre-migration save now closes + flashes (the
+unlock notice only shows when TYPED headline/bio failed to persist — both
+surfaces), flash timers are ref-held/cleared, and errors/upload progress are
+announced (role="alert" + sr-only status; the photo buttons use aria-disabled
++ guard so keyboard focus survives the file dialog). Suite:
+verify-portal-browser section 9b (band renders, photo affordance,
+edit-in-place save in both migration modes) — 39 checks total.
+
+## Course covers + creator identity + landing redesign, 2026-07-11
+
+Courses got real cover images, creators got a public identity (avatar +
+headline + bio + card-safe stats), and the public `/learn/[slug]` landing was
+redesigned into a proper conversion page. Full architecture doc:
+`docs/creator-identity.md`.
+
+- **Schema** (migration `20260711000000_course_covers_creator_identity.sql` —
+  ⚠ written 2026-07-11; APPLIED to the live DB 2026-07-14 along with
+  `20260708000000_user_roles_portal.sql`; apply IN ORDER; every consumer
+  degrades gracefully until both land): `courses.cover_image_url`
+  (live-mutable CARD metadata, deliberately never snapshotted — the M2 rule,
+  so a creator can refresh the cover without republishing);
+  `profiles.headline`/`profiles.bio` (CHECK caps 120/2000 mirroring
+  `lib/profile/schema.ts`; `avatar_url` existed since the core schema —
+  profiles is world-readable, so all three are PUBLIC by design);
+  **`course_landing_extras(p_course_id)`** definer RPC (anon+authenticated;
+  zero rows unless a live publication exists — unpublish hides the sections;
+  returns cover + creator card fields + card-safe AGGREGATES only: distinct
+  learners across ALL the creator's courses, live course count, review count,
+  review-count-weighted avg rating, plus per-course student/review stats —
+  never emails, never review bodies, never enrollment rows); `my_learning()`
+  v3 + `marketplace_listings()` v3 with cover/creator columns APPENDED (never
+  reordered). Types hand-spliced into `lib/database.types.ts`.
+- **Pure libs**: `lib/images/resize.ts` (`fitWithin` never-upscale ·
+  `centerCrop` · `extForMime` — jpeg/png/webp ONLY, SVG rejected as an XSS
+  vector on a public bucket, GIF rejected [canvas would flatten it] ·
+  `coverStoragePath` `{uid}/covers/{courseId}/{id}.{ext}` +
+  `avatarStoragePath` `{uid}/avatar/{id}.{ext}` — uid FIRST, so the EXISTING
+  per-user `course-assets` storage policies are the write gate; no new
+  policies) · `lib/images/clientResize.ts` (canvas downscale, square
+  center-crop for avatars, falls back to the ORIGINAL bytes on any decode/
+  canvas failure) · `lib/profile/schema.ts` (`PROFILE_LIMITS` 80/120/2000,
+  `CreatorProfileFormSchema`, `profileCompleteness` — blank strings count as
+  missing) · `lib/learn/courseIncludes.ts` (`summarizeCourseContents` +
+  `courseIncludesItems` computed from the publication SNAPSHOT, never draft
+  rows — the numbers always match what a learner receives) ·
+  `lib/learn/landingExtras.ts` (`fetchCourseLandingExtras` → null on ANY
+  error/zero-rows/parse failure; the landing never 500s over an optional
+  read).
+- **UI primitives**: Card variants (`default`/`elevated`/`interactive`/
+  `tinted` + tone), Button size `lg` + hover lift + per-variant focus rings,
+  PageHeader eyebrow/tone + bigger serif title, Stat icon/tone chips;
+  globals.css utilities `.font-display`/`.eyebrow`/`.paper-glow`
+  (`--glow-color`)/`.grain` — ⚠ Tailwind v4 dev server must RESTART to emit
+  newly added custom utilities (prod builds fine).
+- **`/learn/[slug]` landing redesign**: warm glow hero, serif 5xl title, meta
+  chips (+ learner count and rating when extras are present), "Created by"
+  row linking `#instructor`; sticky elevated conversion card with an
+  aspect-video cover (uploaded image, else the deterministic `CoverArt`
+  gradient+initial fallback — `components/learn/CoverArt.tsx`, keyed off the
+  course id, hydration-safe) — the 4 CTA states preserved ("Your progress"
+  literal kept for the browser suite); "This course includes" derived list;
+  "What you'll learn" = the plan's real `outcomes` as a checklist in a tinted
+  card + prerequisites footnote; restyled `CourseOutline` (number medallions,
+  sans titles, per-lesson type icon chips via `primaryType`, open-state ring,
+  Expand/Collapse all); instructor section (`#instructor`: eyebrow + serif
+  name + `InstructorCard` w/ avatar, headline, stats, clamped bio + Show
+  more); `CourseReviewSection` eyebrow → brand-700; `generateMetadata` w/ OG
+  cover image, deduped against the page render via react `cache()`; learn
+  layout header widened to max-w-6xl; reshaped `loading.tsx`.
+- **Covers on every card**: `CourseCards.tsx` media zones (ListingCard
+  aspect-video, MyLearningCard aspect-[2/1]; title moved into the body;
+  creator avatar row; CTA fills on hover; 7 accent gradients),
+  CourseHealthCard cover thumb, CourseCardItem gallery cover, analytics
+  course-picker cover thumb. Direct `courses` selects that name the new
+  column retry WITHOUT it pre-migration (dashboard, analytics picker).
+- **Settings is REAL** (was a `lib/data.ts` placeholder):
+  `app/(app)/settings/page.tsx` + `components/settings/ProfileSettings.tsx`
+  (avatar upload → client downscale → `course-assets` under the caller's own
+  `{uid}/avatar/…` → `profiles.avatar_url`; display name/headline/bio with
+  live counters + zod; PGRST204 missing-column retry + an amber "unlocks once
+  the migration is applied" notice; live "How learners see you" preview;
+  `data-ai-tool="settings-profile-form"`/`"settings-save"`) + `AccountCard`
+  (email, plan badge, default-portal radio writing `profiles.role`). New
+  **CoverImageCard** on the publish panel (16:9 preview, upload/replace/
+  remove, saves immediately — the cover is NOT part of the snapshot; locked
+  state pre-migration; a failed row update rolls the just-uploaded object
+  back; `data-ai-tool="course-cover-upload"`/`"course-cover-input"`).
+- **Polish**: login glow + elevated card; student home (learn paper-glow,
+  eyebrow, continue-hero cover strip/wash + watermark, colored stat chips,
+  two-tier section headings); explore/my-courses headers + learn-gradient
+  active filter chips; dashboard (brand glow, Stat icons, brand eyebrows,
+  AttentionRail "Complete your creator profile" row via
+  `profileCompleteness`, OnboardingHero nudge); lesson page meta eyebrow
+  above the h1; LearnLessonView sticky bar bg-white/90 + learn-tinted
+  objective callout.
+- **Tests**: new `npm run verify:identity`
+  (`scripts/verify-creator-identity.ts`, 90 pure checks — sizing math,
+  storage paths, mime gate, profile schema/completeness, includes summary,
+  landing-extras degradation contract) chained into `npm test`. Browser
+  suites pass in BOTH modes (pre-migration degraded + post-migration).
+
+## Portal split + UI redesign (student portal · creator dashboard · agent UX · perf), 2026-07-08
+
+Large-scale UX overhaul splitting the product into a **student portal** and a
+**creator portal** with role-aware routing, plus a real-data creator dashboard,
+learn-experience polish, an editor-agent chat overhaul, and a perceived-perf
+pass. Full architecture doc: `docs/portal-split.md`.
+
+- **Roles** (migration `20260708000000_user_roles_portal.sql` — ⚠ written but
+  applied to the live project on 2026-07-14; all consumers degrade gracefully until
+  it is): `profiles.role` ('creator'|'learner', a routing PREFERENCE not a
+  security boundary), `private.handle_new_user` now stamps role from signup
+  metadata AND fixes the display_name key mismatch ('display_name' vs
+  'name'/'full_name' — every signup name was silently dropped before) +
+  backfills; `my_activity_days()` definer RPC (streaks — the sanctioned
+  learner read over author-only `learning_events`); `my_learning()` v2
+  (lateral pub join: unpublished courses no longer vanish — new `is_live`
+  flag; + `avg_rating`/`review_count`); `marketplace_listings()` v2 (rating
+  fields). `lib/database.types.ts` spliced by hand.
+- **Auth**: signup gained an "I'm here to learn / to teach" role picker
+  (default inferred from `redirectTo`); sign-in with no `redirectTo` routes by
+  role (learner → `/home`, creator → `/dashboard`).
+- **Student portal** `app/(student)/` (`/home`, `/my-courses`, `/explore`) with
+  its own editor-free shell (`components/shell/StudentSidebar.tsx`) and a new
+  first-class **learn-blue accent ramp** (`--color-learn-*` + `.learn-gradient`
+  in globals.css; Badge tone `learn`, Button variant `learn`,
+  `components/ui/ProgressBar`). Home = continue-hero (snapshot +
+  `buildCourseProgressSummary`, null continue = course done), streak/lessons/
+  accuracy/in-progress stat band, my-courses grid, worst-first quiz review
+  queue + homework-awaiting-review, and an explicitly-labeled offline **AI
+  Tutor preview** chat (`components/student/TutorPanel.tsx`). Pure helpers in
+  `lib/learn/studentHome.ts`. Portal switchers live in both sidebars; the
+  middleware PROTECTED regex covers the new prefixes.
+- **Creator dashboard** `/dashboard` rebuilt on real data (was lib/data.ts
+  mock): one batched `.in(courseIds)` load (live pubs, enrollments, review
+  rollups, open agent_findings, draft learner_messages) + spotlight-course
+  funnel from `rollup_lesson_funnel`; honest empty states; revenue is an
+  explicit coming-soon card (no fake numbers). Pure math in
+  `lib/analytics/creatorHome.ts`. Course cards deep-link `/studio?course={id}`
+  (the old page's bare `/studio` bug) and `/studio/{id}/analytics`.
+- **Marketplace/Explore share one card set** (`components/learn/CourseCards.tsx`
+  — MyLearningCard/ListingCard/StarRating/accentFor; `data-ai-tool`
+  anchor kept); `is_live === false` renders an unlinked "No longer available"
+  card.
+- **Learn polish**: course landing outline → collapsible module accordions with
+  per-module progress (`CourseOutline.tsx`); lesson blocks got type-identity
+  icon chips + collapsible TEXT blocks (content stays MOUNTED — dwell/track
+  lifecycles untouched); `CompletionChecklist` derives "what's left" from the
+  server's own `lessonTrackables`; `LessonCelebration` animates on in-session
+  completion with a Next-up CTA; sticky micro-progress pill; quiz perfect-score
+  flourish. All `data-ai-tool` anchors preserved (browser suite compatible).
+- **Editor agent chat UX** (client-side only, wire protocol untouched): fixed
+  the lying spinner (mid-run `assistant_message` no longer ends the turn;
+  `done` is the one terminal) and silently-dropped narration (new bubble when
+  the last one settled); humanized `StatusStrip` (phase + streamed `detail` +
+  running-tool label + 8s-silence heartbeat); complete 41-tool friendly-label
+  registry `lib/ai/toolLabels.ts` with a drift-guard test; checkpoints have a
+  Continue button, errors a Try-again; the plan modal survives Escape/backdrop
+  (explicit Discard only); markdown-lite rendering in assistant bubbles.
+  Marketing AgentPanel got 4 minimal render-only polish touches (commented
+  `UI polish (2026-07-08)` for the parallel workstream).
+- **Perf**: 9 route-shaped `loading.tsx` skeletons + per-group `error.tsx`
+  (there were ZERO before), parallelized fetch waves (creator analytics page
+  ~5→2 round trips; marketplace; learn pages), lazy-loaded shiki
+  (`lib/course/slide/highlight.ts`), `next/dynamic` ReviewSlideIn.
+- **Tests**: new `npm run verify:portal` (student-home 35 + creator-home 42 +
+  agent-ux 89 = 166 pure checks) chained into `npm test` — full chain
+  **1,297 passed / 0 failed**; build + lint green; verify:learn / verify:slides
+  / verify:reject / verify:marketing:sync re-ran green after the touches.
+
+## Learner-comms send resilience (retry + idempotency), 2026-07-07
+
+A live send from the Stuck queue failed with an opaque "provider error" — the
+row's stored error was just `fetch failed`: ONE transient transport drop (dev
+machine behind a system proxy; Node's fetch connects directly and flickers)
+permanently parked the message in `failed`, because the comms provider had
+zero retries and the composer discarded the route's `detail`.
+
+- **Provider retries** (`lib/comms/resendProvider.ts`): transport errors and
+  429/5xx retry up to 3 attempts with 500ms/1500ms backoff; non-429 4xx (our
+  request's fault — unverified domain, bad recipient) surface immediately,
+  never retried. Injectable `fetchImpl`/`sleep` for pure tests.
+- **Idempotency** (`types.ts` + `service.ts`): every send carries Resend's
+  `Idempotency-Key` = the learner_messages id, so a retry after a LOST
+  RESPONSE (or the author re-sending a failed row whose first attempt
+  actually landed) can never double-send.
+- **Actionable errors**: `describeTransportError` unwraps undici's buried
+  `cause` (`fetch failed (ECONNRESET)` instead of `fetch failed`); the
+  composer now shows the route's `detail` for provider errors instead of the
+  bare reason code.
+- **Tests**: 6 new checks in `verify:comms` (67 total) — retry-then-succeed,
+  3-attempt exhaustion with the descriptive message, 5xx retry, 4xx
+  never-retried, Idempotency-Key on every attempt, cause unwrapping.
+  `verify:comms:int` re-ran green (46).
+
+## Granular slide feedback (M10), 2026-07-07
+
+Fourth milestone of the Engagement & Retention wave: a low-friction per-slide
+reaction (👍 helpful / 👎 confusing + optional capped note) that rides the
+EXISTING analytics pipeline end to end — the 10th learner event type in the
+one Zod contract, the same batching client SDK, the same ingest RPC with
+server-pinned user_id, zero new pipeline. Migration
+`20260707030000_slide_feedback.sql`.
+
+- **Contract** (`lib/analytics/events.ts`): `slide_feedback` = envelope +
+  `blockId`/`slideId` + `reaction` enum + `comment` (≤500,
+  `FEEDBACK_COMMENT_MAX_CHARS`, nullable — empty string rejected). Client-
+  reportable (in `ClientBatchEventSchema`); mapped to real `reaction`/
+  `feedback_comment` columns (the M3 typed-extras convention, both DB-CHECKed)
+  by the recreated ingest RPC. **Idempotency contract:** append-only — a
+  toggle emits a NEW event; **latest reaction wins per (user, slide)** is
+  enforced in the rollup (`distinct on … server_ts desc`), never by mutating
+  the log.
+- **Rollup** `rollup_content_feedback` (per slide + per lesson — slide_id
+  null = the lesson row summing its slides' per-(user,slide) latest
+  reactions): distinct-learner helpful/confusing counts, `confusing_pct`
+  (raw stat in SQL; the FLAG lives in TS — `feedbackOutlier`, ratio ≥ 0.4 at
+  n ≥ 3, the questionFlags/dwellOutlier pattern), and a newest-first sample
+  of non-null comments from the LATEST set (5/slide, 8/lesson — a superseded
+  toggle's comment drops out, latest wins uniformly). Recomputed by
+  `private.recompute_content_feedback`, wired into the two small refresh
+  wrappers (nightly + manual; the big recompute stays unrestated).
+- **Learner UI** (`LearnSlideDeck`): a thumbs pair under the deck reflecting
+  the learner's CURRENT reaction (seeded by the narrow `my_slide_feedback`
+  definer RPC — the caller's OWN latest reactions only; students still read
+  no learning_events rows) so it reads as a toggle; the note field reveals
+  only on tap-to-elaborate (a comment always rides a reaction) and sends
+  through the same `track()` batching path. Author previews render nothing
+  (`feedbackEnabled` = students only; `track()` is a no-op there anyway).
+- **Dashboard — no separate tab**: the Content health tab's dwell-outliers
+  card became the unified **"Slide health"** table — dwell outliers JOINED
+  with per-slide feedback (one row set: views, median dwell, 👍, 👎, Skimmed/
+  Stall/Confusing chips, rose-highlighted rows on the confusing flag, recent
+  comments inline under each row) — and the Lesson drop-off table gained a
+  per-lesson Feedback column. One content-health signal, not three surfaces.
+- **Tests:** `verify:analytics` 68→**77** pure (contract accept/reject,
+  comment cap + empty-string + bad-reaction, column mapping, feedbackOutlier
+  matrix, migration drift guard) · `verify:analytics:int` 79→**89** live
+  (ingest through the existing RPC, malformed rows rejected by the DB CHECKs,
+  a 3-toggle sequence collapsing to ONE latest reaction per learner, comment
+  sampling from the latest set only, lesson-level aggregation, idempotent
+  re-run, author-only rollup RLS, own-reactions-only RPC) · full `npm test`
+  (23 suites), lint, build green.
+
+## Course reviews — creator-only (M9), 2026-07-07
+
+Third milestone of the Engagement & Retention wave: learners who finish (or
+nearly finish) a course rate it 1–5 with optional text; creators read reviews
+on the analytics Overview. NO public display — `is_public` exists for a future
+wave with no UI/API/query path. Reviews are DIRECT human input (never through
+the change-set flow). Migration `20260707020000_course_reviews.sql`.
+
+- **Schema**: `course_reviews` (rating `CHECK between 1 and 5`, nullable text,
+  `UNIQUE (course_id, user_id)`, moddatetime `updated_at`) + prompt-dismissal
+  state on `enrollments` (`review_dismissed_at`/`review_dismiss_count`) +
+  `rollup_course_reviews` (per COURSE: count, avg, 1–5 distribution;
+  author-select RLS, zero client writes).
+- **Eligibility gated in SQL, twice**: `private.is_review_eligible` =
+  enrollment `completed` OR progress ≥ 70% (`sum(learn_progress.pct)` over the
+  live snapshot's lesson count — the exact `course_roster` formula; 70 is the
+  codebase's existing "almost done" threshold, mirrored as
+  `REVIEW_ELIGIBLE_PROGRESS_PCT` and drift-guarded). The gate lives in BOTH
+  the `submit_course_review` RPC (upsert semantics — editing is a
+  re-submission, never a second row) AND the RLS insert/update policies, so a
+  forged direct client insert fails identically. user_id is pinned to
+  auth.uid() everywhere; text trimmed + capped at 2000 chars server-side.
+- **RPCs** (authenticated-only, anon revoked): `submit_course_review` ·
+  `review_prompt_state` (one read: enrolled/eligible/review/dismissals +
+  creator name — the pages never recompute eligibility in TS) ·
+  `dismiss_review_prompt` (bumps the enrollment's dismissal state).
+- **Learner UX** (`components/learn/CourseReview.tsx`): a **non-blocking
+  slide-in card** (never a modal) on the lesson player near completion —
+  1–5 stars are the only required input (accessible radiogroup, large
+  targets); the comment box appears only AFTER a rating (progressive
+  disclosure); submit REPLACES the form in place with a confirmation
+  ("Thanks — this goes straight to {creator}", rating reflected back, edit
+  link). "Maybe later" persists server-side; the pure
+  `shouldShowReviewPrompt` (lib/learn/reviews.ts) re-surfaces after a 7-day
+  gap, capped at 3 total asks — the decision runs in the slide-in's mount
+  effect (react-hooks/purity bans Date.now() in render, including server
+  components). The course landing gets a persistent "Your review" section:
+  view + Edit (pre-populated) or a quiet inline form while
+  eligible-and-unreviewed (learner-initiated space — not gated by the nag
+  cap).
+- **Creator dashboard**: `ReviewsCard` folded into the analytics Overview —
+  average + star row, 1–5 distribution bars, count (from the rollup; "raw
+  stats live in SQL"), and recent review text read live under author RLS,
+  paginated via `?reviewsPage=` (the learner-detail timeline pattern).
+  `refresh_course_analytics` / nightly `refresh_all_course_analytics` now
+  also run `private.recompute_course_reviews` (the 20260703 precedent — the
+  big recompute is never restated; only the two small wrappers were).
+- **Tests:** `verify:analytics` 59→**68** pure (the shouldShow matrix:
+  fresh/ineligible/reviewed/gap/re-surface/cap/defensive, prompt-state parse,
+  SQL drift guard for eligibility % + rating bounds + text cap) ·
+  `verify:analytics:int` 63→**79** live (ineligible rejected by RPC AND
+  forged direct insert; the ≥70% PROGRESS branch and the COMPLETED branch
+  both submit; rating bounds at RPC and DB CHECK level; upsert = one row +
+  bumped updated_at; RLS matrix learner-own/author-all/stranger-none; the
+  unenrolled author can't review their own course; rollup count/avg/
+  distribution correct + idempotent + author-only; dismissals persist and
+  ride the prompt state; anon revoked) · full `npm test` (23 suites), lint,
+  build green.
+
+## Inactivity nudge tuning (M8), 2026-07-07
+
+Second milestone of the Engagement & Retention wave — the reduced scope the
+Task-0 decision gate produced (the inactivity signal already existed
+end-to-end: flag → filed finding → Analyst pickup → `stalled_nudge` template →
+approval flow; no new template, `stalled_nudge` IS the check-in nudge).
+Migration `20260707010000_inactivity_nudge_tuning.sql`.
+
+- **Threshold 7 → 4 days** (dropout concentrates in week one) and the flag
+  **renamed `inactive_7d_incomplete` → `inactive_incomplete`** (at 4 days the
+  old name would lie; existing rows migrated, check constraint + TS type +
+  `describeLearnerFlag` + dashboard renamed together). The learner-flag
+  computation was **extracted into `private.recompute_learner_flags`** so
+  future flag tuning never restates the big rollup function again;
+  `recompute_course_analytics` 3a–3d are byte-identical.
+- **Nudge guards at filing time** (`file_threshold_findings`): learner risks
+  are no longer filed for learners who **opted out** of comms, are
+  **suppressed** (M7 hard bounce/complaint), or have ANY `learner_messages`
+  row for the course within **14 days** (`NUDGE_COOLDOWN_DAYS` — one check-in
+  per silence; the old pipeline re-filed a fresh open finding every night once
+  a draft flipped the previous one to 'proposed', so the same learner could be
+  re-nudged run after run). Deliberate split: the dashboard Stuck queue still
+  SHOWS every stuck learner (creator visibility + manual outreach stay
+  unrestricted) — only the automatic draft-producing pipeline is guarded.
+- **Dedupe-key mismatch fixed** (the Task-0 audit find): SQL filed
+  `learner_<flagType>:<userId>` while TS `dedupeKeyForFinding` produces
+  `learner_risk:<userId>` — the keys never collided, so Analyst adoption never
+  fired for learner risks and one learner could yield several findings/drafts
+  in a single run. SQL now files **ONE finding per learner** under the TS key
+  (flavors merge; `repeated_quiz_failure`=high outranks inactivity=medium;
+  summary clamped ≤480 chars so a filed row can never fail FindingSchema
+  parse). Existing OPEN learner_risk rows were collapsed (newest kept, rest
+  dismissed) and re-keyed in the migration.
+- **Measurement hook (M7 pays off):** the Stuck queue rows now show the last
+  check-in's delivery outcome ("Last check-in 3d ago · opened") from
+  `learner_messages.delivery_status`, and Draft follow-up is disabled with an
+  honest tooltip for suppressed learners (advisory — the send seam re-checks).
+  The empty-state copy derives from `INACTIVE_DAYS` (no hardcoded "7+ days").
+- **Drift guard retargeted**: the stuck constants' SQL now lives in the M8
+  migration — `verify-analytics.ts` asserts THAT file encodes
+  `INACTIVE_DAYS=4` / 2 / 0.60 / `NUDGE_COOLDOWN_DAYS=14`, plus the
+  learner-risk key format mirror and the presence of all three guards.
+- **Tests:** `verify:analytics` 57→**59** pure · `verify:analytics:int`
+  55→**63** live (new M8 section: merged-key filing, one-per-learner,
+  high-severity flavor precedence, 5-day silence trips the 4-day threshold,
+  cooldown blocks → 15-day-old message unblocks, opt-out blocks, suppression
+  blocks, guards-lifted refiles) · `verify:maintenance` 35 + `:int` 25 green
+  (adoption now exercises the matched keys) · full `npm test` (23 suites),
+  lint, build green.
+
+## Learner comms — Resend delivery webhooks + suppression (M7), 2026-07-07
+
+First milestone of the Engagement & Retention wave. Per comms record we now
+know delivered / opened / clicked / bounced / complained, and a bad address is
+suppressed before it can damage sender reputation. Full architecture + Resend
+dashboard setup: `docs/comms-delivery-tracking.md`.
+
+- **Correlation at send time** (`lib/comms/service.ts` + `resendProvider.ts`):
+  every learner-comms send carries Resend `tags` (`send_source=learner_comms`,
+  `message_id`, `course_id`, `user_id` — `learnerCommsTags`) and seeds
+  `learner_messages.delivery_status='sent'` + the `delivery_events` trail.
+  `provider_message_id` (already persisted) stays the primary attribution key;
+  tags add the send-source filter + the send-race fallback.
+- **Shared Svix verifier** (`lib/webhooks/svix.ts`): the marketing route's
+  manual HMAC extracted into ONE function used by BOTH Resend webhook routes,
+  now WITH the ±5-minute timestamp tolerance (replay protection) the original
+  inline copy omitted — a real gap found by the wave's Task-0 audit. Manual
+  Node crypto by explicit decision (runtime deps stay at the guarded 14; the
+  muxClient precedent).
+- **New webhook** `POST /api/comms/webhooks/resend` (own per-endpoint secret
+  `RESEND_COMMS_WEBHOOK_SECRET` — Resend webhooks are account-wide, so this
+  endpoint and the marketing one each ignore the other's events): raw-body
+  read → Svix verify (401) / unset secret (503) → `lib/comms/webhook.ts`
+  processing → 200 even for unattributable/foreign events (Svix must never
+  retry-storm), 500 only on infrastructure failure (we WANT that retry).
+- **Event contract extended in place** (`lib/analytics/events.ts`): five
+  `comms_email_*` types in the SAME discriminated union / `learning_events`
+  table, with a course-only envelope (publication/version/lesson NULL — a DB
+  check keeps the full envelope mandatory for every learner type). Idempotency
+  = `client_event_id` DERIVED from the retry-stable `svix-id`
+  (`uuidFromSvixId`). The CLIENT batch schema composes only the learner nine —
+  a comms event 400s at ingest, the ingest RPC independently rejects it, and
+  the learner is attributed from the `learner_messages` ROW, never a tag
+  (forged `user_id` tags are ignored). `emitCommsDeliveryEvent` reports
+  inserted/duplicate/error (delivery events must not be silently dropped).
+- **Atomic trail** (`public.apply_comms_delivery`, service-role-only RPC):
+  `FOR UPDATE` lock; `delivery_status` climbs a rank ladder (none→sent→
+  delivered→opened→clicked→bounced→complained) so out-of-order/concurrent
+  webhooks never downgrade; trail entries dedupe by `svixId`, cap 50.
+  `email.sent`/`email.delivery_delayed` are trail-only notes (no event minted
+  — taxonomy stays clean). Side effects re-run on duplicate deliveries
+  (idempotent) so a retry after a partial failure self-heals.
+- **Suppression** (`comms_suppressions`, per-user, RLS-on ZERO policies — the
+  quiz_answer_keys precedent): hard bounce (`Permanent` only; `Transient`/
+  `Undetermined` never suppress) or complaint upserts it; `approveAndSend`
+  re-checks AT SEND TIME → `{ok:false, reason:"suppressed"}`, row stays draft.
+  UI: DraftList rows show delivery chips + a "suppressed: bounced/complained"
+  badge (suppression map rides the author-gated GET /api/comms/messages);
+  MessageComposer replaces Approve-&-send with the suppressed notice; the
+  learner-detail Messages list shows delivery status; the activity timeline
+  labels the five comms events (null-lesson safe).
+- **Migration** `20260707000000_comms_delivery_tracking.sql` (+ types regen —
+  which also picked up the live `social_post*` tables missing from the
+  committed types).
+- **Tests:** `verify:comms` 27→**61** pure (Svix verifier incl. tamper/replay/
+  tolerance-boundary, event mapping incl. bounce taxonomy + url cap, uuid
+  determinism, tag parsing both shapes + composition charset, contract
+  extension + batch rejection + column mapping) · `verify:comms:int` 20→**46**
+  live (webhook end-to-end: happy path, duplicate-svix-id-exactly-once,
+  rank-monotone out-of-order, trail-only email.sent, author-reads/learner-
+  reads-none RLS, soft-vs-hard bounce, suppression blocks the send seam,
+  complaint, unattributable/foreign ignored, send-race tag fallback, forged
+  user_id tag ignored, ingest-RPC + direct-RLS + delivery-RPC forgery surface).
+  Full regression green: `npm test` (every pure suite), `verify:analytics`
+  57 + `:int` 55, `verify:learn:int` 61, `verify:maintenance` 35 + `:int` 25,
+  lint, build.
+
 ## Marketing — the agent hand-wrote fake course URLs (`/courses/{id}`), 2026-07-07
 
 Live incident #4 of the day: a CTA in a SENT broadcast 404'd at

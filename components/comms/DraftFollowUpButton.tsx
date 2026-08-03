@@ -16,26 +16,33 @@ import { MessageComposer, type ComposerSeed } from "./MessageComposer";
 export function DraftFollowUpButton({
   seed,
   optedOut,
+  suppressed = false,
 }: {
   seed: ComposerSeed;
   optedOut: boolean;
+  /** M7/M8: the learner's address hard-bounced or complained — sending is
+   *  disabled (and the send seam re-checks suppression regardless). */
+  suppressed?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const blocked = optedOut || suppressed;
   return (
     <>
       <button
         type="button"
-        disabled={optedOut}
+        disabled={blocked}
         title={
           optedOut
             ? "This learner has opted out of course emails."
-            : "Draft a personal check-in from a template — you edit and approve before anything sends."
+            : suppressed
+              ? "This learner's address is suppressed (bounced or complained) — sending is disabled to protect deliverability."
+              : "Draft a personal check-in from a template — you edit and approve before anything sends."
         }
         data-ai-tool="comms-draft-followup"
         onClick={() => setOpen(true)}
         className={cn(
           "inline-flex h-9 items-center gap-2 rounded-full border px-4 text-sm font-medium transition-colors",
-          optedOut
+          blocked
             ? "cursor-not-allowed border-stone-200 bg-stone-50 text-stone-400"
             : "border-stone-200 bg-white text-stone-700 hover:border-brand-200 hover:bg-brand-50/50 hover:text-brand-700"
         )}

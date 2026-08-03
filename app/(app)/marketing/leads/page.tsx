@@ -8,7 +8,7 @@ import Link from "next/link";
 import { ArrowLeft, MailQuestion, ShieldCheck, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { listPendingApprovals } from "@/lib/marketing/gate";
 import { listLeadListsWithCounts, listSubscribersForCourse, selectCourseForAuthor } from "@/lib/marketing/persistence";
 import { engagementScores } from "@/lib/marketing/segments";
@@ -48,9 +48,7 @@ export default async function LeadsPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 
@@ -151,10 +149,17 @@ export default async function LeadsPage({
             )}
           </section>
 
-          {/* contacts table */}
+          {/* contacts table — PERF-1 D2 (A5 §6, A6 #23): containment has no
+              effect on <tr> (internal table boxes), so .cv-row goes on the
+              scroll wrapper — the whole render-capped 200-row table sits
+              below the lists and skips layout/paint until scrolled into
+              view (~41px/row + header). */}
           <section className="space-y-3">
             <h2 className="text-sm font-semibold text-stone-900">Contacts ({subscribers.length})</h2>
-            <div className="overflow-x-auto rounded-2xl border border-stone-200/80 bg-white shadow-[0_1px_2px_rgba(68,48,28,0.05)]">
+            <div
+              className="cv-row overflow-x-auto rounded-2xl border border-stone-200/80 bg-white shadow-[0_1px_2px_rgba(68,48,28,0.05)]"
+              style={{ "--cv-size": `${40 + Math.min(subscribers.length, 200) * 41}px` } as React.CSSProperties}
+            >
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-stone-200 bg-stone-50/60 text-left font-mono text-[10px] uppercase tracking-[0.1em] text-stone-400">

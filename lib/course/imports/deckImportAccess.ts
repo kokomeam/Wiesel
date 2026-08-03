@@ -7,6 +7,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { getSessionUser } from "@/lib/supabase/server";
 import type { DeckImportRow } from "./deckImportTypes";
 
 type DB = SupabaseClient<Database>;
@@ -16,11 +17,9 @@ export interface AuthedUser {
   email: string | null;
 }
 
-/** The signed-in user, or null. */
-export async function getAuthedUser(supabase: DB): Promise<AuthedUser | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+/** The signed-in (cookie-session) user, request-deduped, or null. */
+export async function getAuthedUser(): Promise<AuthedUser | null> {
+  const user = await getSessionUser();
   if (!user) return null;
   return { id: user.id, email: user.email ?? null };
 }
@@ -67,7 +66,7 @@ export async function requireDeckImportAccess(
   supabase: DB,
   deckImportId: string
 ): Promise<DeckImportAccess> {
-  const user = await getAuthedUser(supabase);
+  const user = await getAuthedUser();
   if (!user) return { ok: false, status: 401, message: "Sign in to continue." };
   const row = await loadOwnedDeckImport(supabase, deckImportId);
   if (!row || row.owner_id !== user.id) {

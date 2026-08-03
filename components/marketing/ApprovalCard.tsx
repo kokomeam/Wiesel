@@ -16,7 +16,7 @@
  * the thing that still needs the creator.
  */
 
-import { useState, useTransition } from "react";
+import { Suspense, use, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, Pencil, ShieldAlert, TriangleAlert, X } from "lucide-react";
 import {
@@ -45,6 +45,17 @@ export interface ApprovalCardProps {
   /** Surface the ActionResult (e.g. the hub's toast). */
   onResult?: (r: ActionResult) => void;
   onResolved?: (decision: "approved" | "denied") => void;
+  /**
+   * PERF-1 streamed previews (hub inbox): ONE shared promise of ALL pending
+   * live previews, index-aligned with the inbox. The card mounts with its
+   * non-preview data on first paint and ONLY the preview slot suspends on the
+   * promise — in-progress card state (a typed rejection note, an open edit
+   * form) survives the preview landing. Omit wherever `pending.preview` is
+   * already resolved (chat, builder, leads).
+   */
+  previewsPromise?: Promise<(Record<string, unknown> | null)[]>;
+  /** This card's index into `previewsPromise`'s resolved array. */
+  previewIndex?: number;
 }
 
 interface ChecklistItem {
@@ -139,7 +150,32 @@ function PreviewBlock({ preview }: { preview: Record<string, unknown> }) {
   );
 }
 
-export function ApprovalCard({ pending: initial, compact, onResult, onResolved }: ApprovalCardProps) {
+/** Resolves the SHARED previews promise with React use() — every slot on the
+ *  page suspends on the SAME promise, so one resolution fills every card with
+ *  no per-card refetch — and renders only its own action's preview. Lives
+ *  inside a <Suspense> that wraps ONLY the preview area, so the card around it
+ *  never remounts when the preview lands. */
+function StreamedPreviewSlot({
+  previews,
+  index,
+}: {
+  previews: Promise<(Record<string, unknown> | null)[]>;
+  index: number;
+}) {
+  const resolved = use(previews);
+  // A failed preview resolves null — degrade to the empty block, exactly what
+  // a card with no preview renders (the summary still tells the story).
+  return <PreviewBlock preview={resolved[index] ?? {}} />;
+}
+
+export function ApprovalCard({
+  pending: initial,
+  compact,
+  onResult,
+  onResolved,
+  previewsPromise,
+  previewIndex,
+}: ApprovalCardProps) {
   const router = useRouter();
   const [pending, setPending] = useState(initial);
   const [editing, setEditing] = useState(false);
@@ -155,8 +191,26 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
   const external = useApprovalSync((s) => s.actions[pending.actionId]);
   const markActionResolved = useApprovalSync((s) => s.markActionResolved);
   const attachActionFollowUp = useApprovalSync((s) => s.attachActionFollowUp);
+  // Mirror of the streamed preview once it lands: the approve button's effect
+  // label and Edit's defaults live OUTSIDE the preview slot, so they read this
+  // state. `.then` on the already-shared promise re-executes nothing.
+  const [streamed, setStreamed] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    if (!previewsPromise || previewIndex == null) return;
+    let alive = true;
+    previewsPromise
+      .then((all) => {
+        if (alive) setStreamed(all[previewIndex] ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [previewsPromise, previewIndex]);
 
-  const preview = pending.preview ?? {};
+  // An Edit "Save & re-preview" (setPending with a FRESH preview) must beat
+  // the original streamed one, hence pending.preview first.
+  const preview = pending.preview ?? streamed ?? {};
   const effectLabel = typeof preview.effectLabel === "string" ? preview.effectLabel : "run it";
   const editable = (pending.editableParams ?? []).filter((p) => p !== "body");
 
@@ -269,7 +323,13 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
             <p className="mt-1.5 text-sm text-stone-800">{pending.summary}</p>
           </div>
 
-          <PreviewBlock preview={preview} />
+          {pending.preview == null && previewsPromise != null && previewIndex != null ? (
+            <Suspense fallback={<p className="text-xs italic text-stone-400">computing live preview…</p>}>
+              <StreamedPreviewSlot previews={previewsPromise} index={previewIndex} />
+            </Suspense>
+          ) : (
+            <PreviewBlock preview={preview} />
+          )}
 
           {editing ? (
             <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3">
@@ -279,7 +339,7 @@ export function ApprovalCard({ pending: initial, compact, onResult, onResolved }
                     <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-stone-400">audience</span>
                     <select
                       className="mt-1 block w-full rounded-lg border border-stone-300/80 bg-white px-2 py-1.5 text-sm"
-                      value={draft[key] ?? String((pending.preview?.segment as string) ?? "all")}
+                      value={draft[key] ?? String((preview.segment as string) ?? "all")}
                       onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
                     >
                       {AUDIENCE_VALUES.map((v) => (

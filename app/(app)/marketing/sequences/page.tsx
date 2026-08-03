@@ -10,7 +10,7 @@ import { ArrowLeft, ArrowRight, Clock, Mail, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { SequenceLifecycleControls } from "@/components/marketing/LifecycleControls";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { loadCampaignForCourse, loadSequencesOverview, selectCourseForAuthor } from "@/lib/marketing/persistence";
 import { isEmailConfigured } from "@/lib/marketing/services/factory";
 
@@ -29,9 +29,7 @@ export default async function SequencesPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 

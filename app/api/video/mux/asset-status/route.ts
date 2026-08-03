@@ -35,5 +35,12 @@ export async function POST(req: Request): Promise<Response> {
 
   const provider = getVideoProvider();
   const view = await syncVideoAssetFromMux(supabase, provider, access.row);
-  return Response.json(view);
+  // PERF-1 hygiene (diagnosis A6 #28): this is the POLL response — while
+  // captions are unsettled (none/generating) don't carry the transcript twice
+  // (plain + VTT can be tens of KB) on every tick; a settled (ready/failed)
+  // response carries both for the caption overlay + the manage panel's
+  // transcript preview. The block-metadata mirror never includes transcript
+  // text (captionsFromView), so this changes only the wire payload.
+  const captionsSettled = view.captionStatus === "ready" || view.captionStatus === "failed";
+  return Response.json(captionsSettled ? view : { ...view, transcript: null, transcriptVtt: null });
 }

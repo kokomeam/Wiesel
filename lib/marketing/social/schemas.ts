@@ -208,6 +208,17 @@ export const SocialPostSchema = z.object({
 });
 export type SocialPost = z.infer<typeof SocialPostSchema>;
 
+/** What the LIST surface returns (queue cards + filters + the copy clamp).
+ *  PERF-1 hygiene (diagnosis A6 #26): the queue shipped ≤100 FULL rows —
+ *  source_text (≤8 KB each), ai_metadata, performance, external_ref — into
+ *  the RSC payload for 2-line-clamp cards. The list projection excludes those
+ *  four; the single-post GET (`getSocialPost`) keeps the full row and is what
+ *  feeds the editor. A full `SocialPost` is structurally assignable to this. */
+export type SocialPostListItem = Omit<
+  SocialPost,
+  "sourceText" | "aiMetadata" | "performance" | "externalRef"
+>;
+
 /** Content fields a versioned PATCH may touch (everything else is lifecycle-
  *  or system-owned and has its own path). */
 export const SocialPostPatchSchema = z

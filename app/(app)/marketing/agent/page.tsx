@@ -4,7 +4,7 @@
 
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { selectCourseForAuthor } from "@/lib/marketing/persistence";
 import { AgentPanel } from "@/components/marketing/agent/AgentPanel";
 
@@ -16,9 +16,7 @@ export default async function MarketingAgentPage({
   searchParams: Promise<{ course?: string }>;
 }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
   const { course: preferCourse } = await searchParams;
   const course = await selectCourseForAuthor(supabase, user!.id, preferCourse);
 

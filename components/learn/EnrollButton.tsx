@@ -53,7 +53,7 @@ export function EnrollButton({
         disabled={busy}
         data-ai-tool="learn-enroll"
         className={cn(
-          "brand-gradient flex h-10 w-full items-center justify-center rounded-full text-sm font-medium text-white shadow-sm shadow-brand-600/25 transition-opacity hover:opacity-95",
+          "brand-gradient flex h-11 w-full items-center justify-center rounded-full text-sm font-medium text-white shadow-sm shadow-brand-600/25 transition-all hover:-translate-y-px hover:shadow-md hover:shadow-brand-600/30 active:scale-[0.98]",
           busy && "pointer-events-none opacity-60"
         )}
       >
