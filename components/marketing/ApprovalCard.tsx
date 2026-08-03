@@ -198,7 +198,12 @@ export function ApprovalCard({
   useEffect(() => {
     if (!previewsPromise || previewIndex == null) return;
     let alive = true;
-    previewsPromise
+    // ⚠ Across the RSC boundary this arrives as a React Flight THENABLE, not a
+    // native Promise — its .then() returns undefined, so chaining .catch off it
+    // throws in the commit phase and takes the whole hub down to the route
+    // error boundary whenever a pending approval exists (found by the Wave-3
+    // gate diagnosis). Promise.resolve() normalizes it to a real Promise.
+    Promise.resolve(previewsPromise)
       .then((all) => {
         if (alive) setStreamed(all[previewIndex] ?? null);
       })
