@@ -21,16 +21,24 @@ export function LearnImportedDeck({
   block,
   initialView,
   onDeckViewed,
+  onPageChange,
 }: {
   block: ImportedDeckBlock;
   initialView: DeckImportView | null;
   /** Fired once, when the learner reaches the final page. */
   onDeckViewed?: () => void;
+  /** TUTOR-1 W4: fired on every landed page index (the tutor bus reads the
+   *  ambient page). Additive; unwired ⇒ no behavior change. */
+  onPageChange?: (index: number) => void;
 }) {
   const [view, setView] = useState(initialView);
   const [loading, setLoading] = useState(initialView === null);
   const [index, setIndex] = useState(0);
   const viewedRef = useRef(false);
+  const onPageChangeRef = useRef(onPageChange);
+  useEffect(() => {
+    onPageChangeRef.current = onPageChange;
+  });
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +83,11 @@ export function LearnImportedDeck({
       onDeckViewed?.();
     }
   }, [index, pages.length, onDeckViewed]);
+
+  // TUTOR-1 W4: publish the landed page to the tutor bus (additive).
+  useEffect(() => {
+    onPageChangeRef.current?.(index);
+  }, [index]);
 
   if (!view && loading) {
     return (

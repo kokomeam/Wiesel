@@ -51,10 +51,13 @@ export const dynamic = "force-dynamic";
 
 export default async function LessonPlayerPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string; lessonId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { slug, lessonId } = await params;
+  const sp = await searchParams;
   const supabase = await createClient();
 
   // The session read and the narrow slug resolve are independent — one wave.
@@ -141,6 +144,15 @@ export default async function LessonPlayerPage({
   }
 
   const videoData = videoDataFromState(lesson, state.video_assets);
+
+  // TUTOR-1 W4: a ?block=&slide= deep link scrolls the player to that block on
+  // mount (validated against THIS lesson's blocks — a bogus id is ignored).
+  const focusBlockId = typeof sp.block === "string" ? sp.block : null;
+  const focusSlideId = typeof sp.slide === "string" ? sp.slide : null;
+  const initialFocus =
+    focusBlockId && lesson.blocks.some((b) => b.id === focusBlockId)
+      ? { blockId: focusBlockId, slideId: focusSlideId }
+      : undefined;
 
   const navModules: NavModule[] = snapshot.modules.map((m) => ({
     id: m.id,
@@ -241,6 +253,12 @@ export default async function LessonPlayerPage({
                   : null
               }
               courseHref={`/learn/${meta.slug}`}
+              tutorEnvelope={{
+                courseId: meta.course_id,
+                publicationId: meta.id,
+                version: meta.version,
+              }}
+              initialFocus={initialFocus}
             />
           </AnalyticsProvider>
 

@@ -13,6 +13,7 @@ import { useCallback, useRef } from "react";
 import type { VideoLessonBlock } from "@/lib/course/types";
 import type { LearnerVideoData } from "@/lib/learn/media";
 import { VIDEO_COMPLETE_PCT } from "@/lib/learn/completion";
+import { createEngagementTracker } from "@/lib/learn/engagement";
 import { VideoPreviewPlayer } from "@/components/editor/lesson/video/VideoPreviewPlayer";
 import { useAnalytics } from "./AnalyticsProvider";
 
@@ -20,10 +21,14 @@ export function LearnVideo({
   block,
   data,
   onVideoProgress,
+  onPositionChange,
 }: {
   block: VideoLessonBlock;
   data: LearnerVideoData | null;
   onVideoProgress?: (pct: number) => void;
+  /** TUTOR-1 W4: fired on EVERY position tick (before the high-water gate) —
+   *  the tutor bus reads the ambient video position. Additive. */
+  onPositionChange?: (pct: number) => void;
 }) {
   const highWaterRef = useRef(0);
   const reportedBucketRef = useRef(-1);
@@ -31,9 +36,22 @@ export function LearnVideo({
   // emits video_completed (the app's own completion threshold — quartile 4).
   const { track } = useAnalytics();
   const reportedQuartileRef = useRef(0);
+  // TUTOR-1 W4: behavioral signals (scrub_back / rewatch) off the raw position
+  // stream — pure, deterministic (lib/learn/engagement.ts).
+  const engagementRef = useRef(createEngagementTracker());
 
   const handleProgress = useCallback(
     (pct: number) => {
+      // TUTOR-1 W4: the raw position feeds the tutor bus + the engagement
+      // tracker on EVERY tick (both need backward motion the high-water gate
+      // would swallow) — before the high-water early-return below.
+      onPositionChange?.(pct);
+      // content_engagement carries the course envelope + the signal only — the
+      // frozen W3 contract has NO blockId (the client can't know node ids; the
+      // signal rides metadata). See lib/analytics/events.ts:content_engagement.
+      const signal = engagementRef.current.feed(pct);
+      if (signal) track({ eventType: "content_engagement", signal });
+
       if (pct <= highWaterRef.current) return;
       highWaterRef.current = pct;
 
@@ -57,11 +75,16 @@ export function LearnVideo({
       const crossedComplete =
         pct >= VIDEO_COMPLETE_PCT && reportedBucketRef.current < VIDEO_COMPLETE_PCT / 10;
       if (bucket > reportedBucketRef.current || crossedComplete) {
+        // TUTOR-1 W4: emit the 'completed' engagement signal once, on the same
+        // crossing that reports completion progress.
+        if (crossedComplete) {
+          track({ eventType: "content_engagement", signal: "completed" });
+        }
         reportedBucketRef.current = Math.max(bucket, reportedBucketRef.current);
         onVideoProgress?.(pct);
       }
     },
-    [onVideoProgress, track, block.id]
+    [onVideoProgress, onPositionChange, track, block.id]
   );
 
   if (!data) {

@@ -10,7 +10,7 @@
  * records attempt N+1.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, RotateCcw, Sparkles, XCircle } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { PublishedQuizBlock, PublishedQuizQuestion } from "@/lib/course/publish/schemas";
@@ -33,12 +33,17 @@ export function LearnQuiz({
   publicationId,
   priorAttempts,
   onGraded,
+  onActivityChange,
 }: {
   block: PublishedQuizBlock;
   publicationId: string;
   /** The learner's attempt count so far (server-derived, shown as context). */
   priorAttempts: number;
   onGraded?: (progress: LessonProgressSnapshot | undefined) => void;
+  /** TUTOR-1 W4: true while the learner is mid-quiz (≥1 answer, not yet
+   *  graded) — the tutor bus reads it as ambient quizActive. Fires false on
+   *  unmount. Additive; unwired ⇒ no behavior change. */
+  onActivityChange?: (active: boolean) => void;
 }) {
   const [draft, setDraft] = useState<Draft>({});
   const [startedAt] = useState(() => new Date().toISOString());
@@ -58,6 +63,22 @@ export function LearnQuiz({
 
   const questions = block.questions;
   const answeredCount = questions.filter((q) => draft[q.id]).length;
+
+  // TUTOR-1 W4: publish "mid-quiz" to the tutor bus — true once ≥1 answer is
+  // in and the quiz isn't yet graded. The ref keeps the callback out of the
+  // effect deps (fires only on the boolean flipping), and the cleanup fires
+  // false on unmount so the sidebar never sees a stale active quiz.
+  const quizActive = answeredCount > 0 && result === null;
+  const onActivityChangeRef = useRef(onActivityChange);
+  useEffect(() => {
+    onActivityChangeRef.current = onActivityChange;
+  });
+  useEffect(() => {
+    onActivityChangeRef.current?.(quizActive);
+    return () => {
+      onActivityChangeRef.current?.(false);
+    };
+  }, [quizActive]);
 
   async function submit() {
     setBusy(true);

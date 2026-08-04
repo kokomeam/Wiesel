@@ -79,12 +79,20 @@ export type SlideFeedbackMap = Record<string, { reaction: SlideReaction; comment
 export function LearnSlideDeck({
   block,
   onSlidesViewed,
+  onSlideChange,
+  navRequest = null,
   feedbackEnabled = false,
   initialFeedback = {},
 }: {
   block: SlideDeckBlock;
   /** Called with newly viewed slide ids (already deduped + debounced). */
   onSlidesViewed?: (slideIds: string[]) => void;
+  /** TUTOR-1 W4: fired on every landed slide (id + index) — the tutor bus
+   *  reads the ambient slide. Additive; unwired ⇒ no behavior change. */
+  onSlideChange?: (slideId: string, index: number) => void;
+  /** TUTOR-1 W4: a jump REQUEST (not a controlled index) — the tutor "cite"
+   *  action bumps `nonce` to move the deck to `index`. Keyboard nav untouched. */
+  navRequest?: { index: number; nonce: number } | null;
   /** true for enrolled students only — author previews get no control. */
   feedbackEnabled?: boolean;
   /** slideId → the learner's latest reaction (server-loaded). */
@@ -102,8 +110,10 @@ export function LearnSlideDeck({
   // student AnalyticsProvider.
   const { track } = useAnalytics();
   const trackRef = useRef(track);
+  const onSlideChangeRef = useRef(onSlideChange);
   useEffect(() => {
     trackRef.current = track;
+    onSlideChangeRef.current = onSlideChange;
   });
   const [dwell] = useState(
     () =>
@@ -128,6 +138,8 @@ export function LearnSlideDeck({
     // M-R (D-2): while a same-tab studio recording is running, the visible
     // slide feeds the slide-sync capture (no-op outside a session).
     if (id) reportSlideShown(id);
+    // TUTOR-1 W4: publish the landed slide to the tutor bus (additive).
+    if (id) onSlideChangeRef.current?.(id, index);
   }, [index, slides, block.id, dwell]);
   useEffect(() => {
     const onVisibility = () => dwell.handleVisibilityChange();
@@ -192,6 +204,17 @@ export function LearnSlideDeck({
     },
     [slides.length]
   );
+
+  // TUTOR-1 W4: a citation jump from the tutor sidebar. Applied via the
+  // React-blessed "adjust state when a prop changes" pattern (setState during
+  // render, not in an effect) so a repeat request to the same slide (new nonce)
+  // still moves the deck without a cascading-render effect. The target is
+  // clamped so a stale index (e.g. from a prior version) can't crash.
+  const [appliedNavNonce, setAppliedNavNonce] = useState<number | null>(null);
+  if (navRequest != null && navRequest.nonce !== appliedNavNonce) {
+    setAppliedNavNonce(navRequest.nonce);
+    setIndex(Math.max(0, Math.min(slides.length - 1, navRequest.index)));
+  }
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent) => {

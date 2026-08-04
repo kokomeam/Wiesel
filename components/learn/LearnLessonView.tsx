@@ -22,7 +22,7 @@
  * (CollapsibleBlock keeps even those mounted).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   BookOpen,
@@ -42,6 +42,7 @@ import type { DeckImportView } from "@/lib/course/imports/deckImportTypes";
 import { lessonTrackables, VIDEO_COMPLETE_PCT, type TrackableUnit } from "@/lib/learn/completion";
 import type { LearnerVideoData } from "@/lib/learn/media";
 import type { LessonProgressSnapshot, ProgressState } from "@/lib/learn/schemas";
+import { useTutorStore } from "@/lib/learn/tutorStore";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { useAnalytics } from "./AnalyticsProvider";
 import { CollapsibleBlock } from "./CollapsibleBlock";
@@ -192,6 +193,8 @@ export function LearnLessonView({
   nextLesson,
   courseHref,
   onProgressChange,
+  tutorEnvelope,
+  initialFocus,
 }: {
   courseId: string;
   publicationId: string;
@@ -216,6 +219,14 @@ export function LearnLessonView({
   nextLesson: { title: string; href: string } | null;
   courseHref: string;
   onProgressChange?: (progress: LessonProgressView) => void;
+  /** TUTOR-1 W4: the publication envelope for the tutor bus. `version` isn't
+   *  otherwise a prop here; the page passes it (with courseId/publicationId for
+   *  self-containment). Absent ⇒ the bus stays inert (author-preview / no
+   *  tutor). */
+  tutorEnvelope?: { courseId: string; publicationId: string; version: number };
+  /** TUTOR-1 W4: a deep-link focus target (from ?block=&slide=) — scrolls to
+   *  the block and jumps the deck once on mount. */
+  initialFocus?: { blockId: string; slideId: string | null };
 }) {
   const isStudent = role === "student";
   const [progress, setProgress] = useState<LessonProgressView>(
@@ -296,6 +307,79 @@ export function LearnLessonView({
   }
 
   const blockById = useMemo(() => new Map(lesson.blocks.map((b) => [b.id, b])), [lesson]);
+
+  /* ───────────────────────── Tutor bus (TUTOR-1 W4) ─────────────────────── */
+  // This component is the seam between the page tree (players) and the layout
+  // tree (the tutor sidebar): it publishes ambient lesson context, forwards the
+  // player taps as ambient block/slide/position/quiz signals, and honours the
+  // sidebar's citation jumps by scrolling to a block + steering its deck.
+  const setAmbient = useTutorStore((s) => s.setAmbient);
+  const citationRequest = useTutorStore((s) => s.citationRequest);
+  const consumeCitation = useTutorStore((s) => s.consumeCitation);
+
+  // blockId → the block's <section> node (scrollIntoView target).
+  const sectionRefs = useRef(new Map<string, HTMLElement | null>());
+  const registerSection = useCallback(
+    (blockId: string) => (node: HTMLElement | null) => {
+      sectionRefs.current.set(blockId, node);
+    },
+    []
+  );
+  // blockId → a jump request handed to that slide deck (bumped nonce).
+  const [deckNav, setDeckNav] = useState<Record<string, { index: number; nonce: number }>>({});
+  const navNonceRef = useRef(0);
+
+  // Publish the lesson envelope on mount + whenever the lesson changes. `version`
+  // rides tutorEnvelope (not otherwise a prop here); absent ⇒ the bus is inert.
+  useEffect(() => {
+    setAmbient({
+      courseId: tutorEnvelope?.courseId ?? courseId,
+      publicationId: tutorEnvelope?.publicationId ?? publicationId,
+      version: tutorEnvelope?.version ?? null,
+      lessonId: lesson.id,
+      // A new lesson clears the last-interacted block context.
+      blockId: null,
+      slideId: null,
+      positionPct: null,
+      quizActive: null,
+    });
+  }, [setAmbient, tutorEnvelope, courseId, publicationId, lesson.id]);
+
+  // Scroll to a block + (for a slide deck) steer it to the cited slide. Shared
+  // by the sidebar citation subscription and the initial deep-link focus.
+  const focusBlock = useCallback(
+    (blockId: string, slideId: string | null) => {
+      const node = sectionRefs.current.get(blockId);
+      if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
+      const block = blockById.get(blockId);
+      if (slideId && block?.type === "slide_deck") {
+        const index = block.slides.findIndex((sl) => sl.id === slideId);
+        if (index >= 0) {
+          navNonceRef.current += 1;
+          const nonce = navNonceRef.current;
+          setDeckNav((prev) => ({ ...prev, [blockId]: { index, nonce } }));
+        }
+      }
+    },
+    [blockById]
+  );
+
+  // Sidebar → player: honour a citation targeting THIS lesson, then clear it.
+  useEffect(() => {
+    if (!citationRequest || citationRequest.lessonId !== lesson.id) return;
+    focusBlock(citationRequest.blockId, citationRequest.slideId);
+    consumeCitation();
+  }, [citationRequest, lesson.id, focusBlock, consumeCitation]);
+
+  // One-shot deep-link focus (?block=&slide=) on mount / lesson change.
+  const initialFocusKey = initialFocus ? `${initialFocus.blockId}:${initialFocus.slideId ?? ""}` : null;
+  useEffect(() => {
+    if (!initialFocus) return;
+    focusBlock(initialFocus.blockId, initialFocus.slideId);
+    // Fire once per target; focusBlock is stable across the lesson.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFocusKey]);
+
   const unitViews = trackables.map((unit) => ({ unit, ...unitView(unit, unitState) }));
   const checklistItems: ChecklistItem[] = unitViews.map(({ unit, fraction, detail, fallbackLabel }) => ({
     id: unit.blockId,
@@ -382,7 +466,12 @@ export function LearnLessonView({
         }
 
         return (
-          <section key={block.id} aria-label={block.title ?? meta.label}>
+          <section
+            key={block.id}
+            ref={registerSection(block.id)}
+            data-block-id={block.id}
+            aria-label={block.title ?? meta.label}
+          >
             <header className="mb-3 flex items-center gap-3">
               {chip}
               <div className="min-w-0">
@@ -407,6 +496,10 @@ export function LearnLessonView({
                 block={block}
                 feedbackEnabled={isStudent}
                 initialFeedback={slideFeedback}
+                navRequest={deckNav[block.id] ?? null}
+                onSlideChange={(slideId) =>
+                  setAmbient({ blockId: block.id, slideId, positionPct: null, quizActive: null })
+                }
                 onSlidesViewed={
                   isStudent
                     ? (slideIds) => {
@@ -425,6 +518,9 @@ export function LearnLessonView({
               <LearnImportedDeck
                 block={block}
                 initialView={deckViews[block.id] ?? null}
+                onPageChange={() =>
+                  setAmbient({ blockId: block.id, slideId: null, positionPct: null, quizActive: null })
+                }
                 onDeckViewed={
                   isStudent
                     ? () => {
@@ -442,6 +538,9 @@ export function LearnLessonView({
               <LearnVideo
                 block={block}
                 data={videoData[block.id] ?? null}
+                onPositionChange={(pct) =>
+                  setAmbient({ blockId: block.id, slideId: null, positionPct: pct, quizActive: null })
+                }
                 onVideoProgress={
                   isStudent
                     ? (pct) => {
@@ -461,6 +560,9 @@ export function LearnLessonView({
                 block={block}
                 publicationId={publicationId}
                 priorAttempts={quizAttemptCounts[block.id] ?? 0}
+                onActivityChange={(active) =>
+                  setAmbient({ blockId: block.id, slideId: null, positionPct: null, quizActive: active })
+                }
                 onGraded={(snapshot) => {
                   if (isStudent) noteQuizAttempted(block.id);
                   absorb(snapshot);
