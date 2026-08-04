@@ -65,10 +65,20 @@ function main() {
   const everyMetric = PERF_VITAL_METRICS.map((metric) =>
     buildPerfVitalEvent({ ...BASE, metric, value: metric === "CLS" ? 0.083 : BASE.value })
   );
-  check("all 5 metrics build + parse", everyMetric.length === 5);
+  check(
+    "every declared metric builds + parses",
+    everyMetric.length === PERF_VITAL_METRICS.length
+  );
   check(
     "CLS keeps its raw unitless float",
     everyMetric.find((e) => e.metric === "CLS")?.value === 0.083
+  );
+  check(
+    "TUTOR_TTFT (TUTOR-1) builds + parses as a perf_vital metric",
+    everyMetric.some((e) => e.metric === "TUTOR_TTFT") &&
+      ClientBatchEventSchema.safeParse(
+        buildPerfVitalEvent({ ...BASE, metric: "TUTOR_TTFT", value: 842 })
+      ).success
   );
   check(
     "perf_vital is in the CLIENT batch schema (unlike comms types)",
@@ -220,12 +230,39 @@ function main() {
   );
   check("event_type CHECK includes perf_vital", /'perf_vital'/.test(sql));
   check(
-    "metric list matches PERF_VITAL_METRICS",
-    sql.includes(`metric_name in (${PERF_VITAL_METRICS.map((m) => `'${m}'`).join(",")})`)
-  );
-  check(
     "route cap matches PERF_ROUTE_MAX_CHARS",
     sql.includes(`char_length(route) <= ${PERF_ROUTE_MAX_CHARS}`)
+  );
+
+  // The FULL metric list is now enumerated in the TUTOR_TTFT follow-up
+  // migration (20260804110000 re-creates learning_events_metric_name_check with
+  // the extended list). PERF_VITAL_METRICS grew — the original perf_vitals
+  // migration only ever knew the web-vitals five, so the current const is
+  // asserted against the migration that OWNS the live constraint today. The
+  // 5-member subset is still verified in the original file (it never dropped
+  // a metric — only added).
+  console.log("\n— migration drift guard (20260804110000 · TUTOR_TTFT) —");
+  const tutorSql = readFileSync(
+    new URL("../supabase/migrations/20260804110000_tutor_ttft_vital.sql", import.meta.url),
+    "utf8"
+  );
+  check(
+    "TUTOR_TTFT follow-up re-creates the metric_name CHECK",
+    /drop constraint learning_events_metric_name_check/.test(tutorSql) &&
+      /add constraint learning_events_metric_name_check/.test(tutorSql)
+  );
+  check(
+    "the re-created metric list matches PERF_VITAL_METRICS (incl. TUTOR_TTFT)",
+    tutorSql.includes(`metric_name in (${PERF_VITAL_METRICS.map((m) => `'${m}'`).join(",")})`)
+  );
+  check("TUTOR_TTFT is in PERF_VITAL_METRICS", PERF_VITAL_METRICS.includes("TUTOR_TTFT"));
+  check(
+    "the original five survive in the perf_vitals migration",
+    ["LCP", "INP", "CLS", "FCP", "TTFB"].every((m) => sql.includes(`'${m}'`))
+  );
+  check(
+    "alerts-never-gates rule is restated in the TUTOR_TTFT header",
+    /never\s+.*blocks|ALERTS-NOT-GATES|monitoring signal, not a quality gate/i.test(tutorSql)
   );
   check(
     "RPC skips BOTH scope checks for perf_vital",

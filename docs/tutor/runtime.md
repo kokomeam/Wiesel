@@ -24,8 +24,8 @@ lesson, charter) get byte-identical system+developer messages.
 One structured Luna call (30s per-turn deadline, learner pool) with a
 bounded ≤3-round tool loop over EXACTLY five tools (`tools.ts`,
 AC-T3.6): `get_lesson_context`, `get_mastery_summary`, `generate_practice`
-(Luna; uuid `practice_item_ref`, `itemBankRef` null [FWD], items carry no
-answer keys), `emit_evidence` (validates and RETURNS — the route emits),
+(Luna; uuid `practice_item_ref`, `itemBankRef` null [FWD], the item RIDES ITS
+OWN KEY — see below), `emit_evidence` (validates and RETURNS — the route emits),
 `propose_escalation` (the one service-role write: a `consent_pending`
 candidate). The output contract (`outputContract.ts`): marked prose
 (`⟦g⟧`/`⟦s⟧` spans), citations (≤8), rung, evidence (≤4), optional practice
@@ -46,6 +46,19 @@ the course's real concept nodes (flag `evidence_dropped`, mirroring
 EMISSION — only resolving uuids ever reach the analytics stream. The id tags
 are deterministic snapshot values, so L2 stays byte-stable per (publication,
 lesson) and no `TUTOR_PROMPT_VERSION` bump was needed (L0 untouched).
+
+Practice items ride their own key (Wave 4, Contract 5). `generate_practice`
+now AUTHORS the answer on each item — `correctChoiceIndex` (0..3) for an `mc`
+item, 1–3 `acceptedAnswers` for a `short` one, and a one-line `explanation`
+(all three `.nullable()` so a keyless or kind-mismatched item degrades to null
+rather than fabricating one). The key rides the SSE turn payload because
+practice is FORMATIVE and low-stakes: the client grades locally (mirroring the
+`short_answer` trim/lowercase semantics of `lib/learn/grading.ts`) and reveals
+the verdict + explanation only AFTER the learner answers, then POSTs
+`practice_answer`. The frozen route contract is unchanged — it takes
+`evidenceCorrect` FROM THE CLIENT — so the key here only decides the
+learner-visible result; the graded course-quiz invariants (`quiz_answer_keys`,
+server-only, stripped from every snapshot) are untouched.
 
 Post-processing order: **scaffolding → grounding**. Scaffolding clamps the
 opening rung per guidance style (socratic 1 / guided 2 / forward 3) and

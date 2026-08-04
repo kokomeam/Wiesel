@@ -551,15 +551,28 @@ async function main() {
     );
   }
 
-  // generate_practice mints uuid refs + itemBankRef null + nodeId tags.
+  // generate_practice mints uuid refs + itemBankRef null + nodeId tags + keys.
   {
     const model = createMockModelClient([], {
       model: LUNA,
       structured: {
         tutor_practice_gen: JSON.stringify({
           items: [
-            { nodeId: NODE_1, kind: "mc", prompt: "Where does price settle?", choices: ["Below", "Above", "At equilibrium", "Never"] },
-            { nodeId: NODE_2, kind: "short", prompt: "Define elasticity." },
+            {
+              nodeId: NODE_1,
+              kind: "mc",
+              prompt: "Where does price settle?",
+              choices: ["Below", "Above", "At equilibrium", "Never"],
+              correctChoiceIndex: 2,
+              explanation: "Equilibrium is where supply meets demand.",
+            },
+            {
+              nodeId: NODE_2,
+              kind: "short",
+              prompt: "Define elasticity.",
+              acceptedAnswers: ["responsiveness", "sensitivity to price"],
+              explanation: "Elasticity measures responsiveness to a price change.",
+            },
           ],
         }),
       },
@@ -574,6 +587,36 @@ async function main() {
     check("itemBankRef is null on every item", items.every((it) => it.itemBankRef === null));
     check("nodeId tags carried through", items[0].nodeId === NODE_1 && items[1].nodeId === NODE_2);
     check("mc item carries 4 choices; short item has null choices", items[0].choices?.length === 4 && items[1].choices === null);
+    // W4 (Contract 5): the item carries its own key when the mock supplies one.
+    check(
+      "mc item carries correctChoiceIndex; short's is null",
+      items[0].correctChoiceIndex === 2 && items[1].correctChoiceIndex === null
+    );
+    check(
+      "short item carries acceptedAnswers; mc's is null",
+      items[1].acceptedAnswers?.length === 2 && items[0].acceptedAnswers === null
+    );
+    check("both items carry a one-line explanation", !!items[0].explanation && !!items[1].explanation);
+  }
+
+  // A keyless item (the model omitted the key) mints with null key fields —
+  // nullable accepted, never fabricated.
+  {
+    const model = createMockModelClient([], {
+      model: LUNA,
+      structured: {
+        tutor_practice_gen: JSON.stringify({
+          items: [{ nodeId: NODE_1, kind: "mc", prompt: "Pick one.", choices: ["a", "b", "c", "d"] }],
+        }),
+      },
+    });
+    const deps = baseToolDeps({ model });
+    const out = await TUTOR_TOOLS.generate_practice.execute({ nodeIds: [NODE_1] } as never, deps);
+    const items = (out.data as { items: MintedPracticeItem[] }).items;
+    check(
+      "keyless mc item → null key fields (nullable accepted, no fabrication)",
+      items[0].correctChoiceIndex === null && items[0].acceptedAnswers === null && items[0].explanation === null
+    );
   }
 
   // A tool loop: model requests get_lesson_context, then answers → toolTrace length 1.

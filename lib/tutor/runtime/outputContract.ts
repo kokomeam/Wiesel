@@ -60,6 +60,20 @@ export type TurnCitation = z.infer<typeof TurnCitationSchema>;
  * distinguishes multiple-choice from short-answer; `choices` is present (and
  * non-null) only for `mc`. `itemBankRef` is reserved for a future item bank and
  * is ALWAYS null in Wave 3 (the tutor never references a persisted bank yet).
+ *
+ * ── W4 (Contract 5): the item now RIDES ITS OWN KEY ──────────────────────────
+ * Practice is formative and LOW-STAKES, so the answer key travels on the payload
+ * and the CLIENT grades locally (never a server round-trip to reveal correct):
+ *   • correctChoiceIndex — the correct choice (0..3) for an `mc` item, else null.
+ *   • acceptedAnswers    — the accepted short-answer strings (trim/lowercase
+ *                          match, ≤4), else null.
+ *   • explanation        — a one-line "why" revealed AFTER the learner answers.
+ * All three are `.nullable()` (the strict-schema rule — the JSON-schema converter
+ * makes optionals nullable on the wire, so the model emits null for the fields
+ * that don't apply). The frozen /api/learn/tutor `practice_answer` route still
+ * takes `evidenceCorrect` FROM THE CLIENT — the key here only decides the
+ * learner-visible verdict; it never touches the course-quiz answer-key invariants
+ * (those live in quiz_answer_keys, server-only, untouched).
  */
 export const TurnPracticeItemSchema = z.object({
   nodeId: z.string(),
@@ -67,6 +81,12 @@ export const TurnPracticeItemSchema = z.object({
   kind: z.enum(["mc", "short"]),
   prompt: z.string(),
   choices: z.array(z.string()).nullable().optional(),
+  /** The correct choice index (0..3) for an `mc` item; null for `short`. */
+  correctChoiceIndex: z.number().int().min(0).max(3).nullable().optional(),
+  /** Accepted short-answer strings (≤4, trim/lowercase match); null for `mc`. */
+  acceptedAnswers: z.array(z.string()).max(4).nullable().optional(),
+  /** A one-line explanation revealed after the learner answers. */
+  explanation: z.string().max(240).nullable().optional(),
   itemBankRef: z.null(),
 });
 export type TurnPracticeItem = z.infer<typeof TurnPracticeItemSchema>;

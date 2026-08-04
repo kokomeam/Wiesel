@@ -22,7 +22,17 @@ import type {
 export const FEEDBACK_COMMENT_MAX_CHARS = 500;
 
 export const PERF_ROUTE_MAX_CHARS = 200;
-export const PERF_VITAL_METRICS = ["LCP", "INP", "CLS", "FCP", "TTFB"] as const;
+// TUTOR_TTFT (TUTOR-1): the learner tutor's first-frame latency (ms) — an
+// app-scoped RUM vital riding the same perf_vital contract as the web-vitals
+// five. Alerts-not-gates, like every metric here.
+export const PERF_VITAL_METRICS = [
+  "LCP",
+  "INP",
+  "CLS",
+  "FCP",
+  "TTFB",
+  "TUTOR_TTFT",
+] as const;
 export const PERF_VITAL_RATINGS = ["good", "needs-improvement", "poor"] as const;
 
 export const MAX_BATCH_EVENTS = 100;

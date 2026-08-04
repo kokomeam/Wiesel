@@ -37,6 +37,12 @@ import {
   TUTOR_DEFAULT_WIDTH,
 } from "@/lib/learn/tutorStore";
 import { createEngagementTracker, type EngagementSignal } from "@/lib/learn/engagement";
+import {
+  gradePracticeAnswer,
+  selfReportStableKey,
+  ttftRating,
+  type TutorPracticeItem,
+} from "@/lib/learn/tutorClientTypes";
 
 let pass = 0,
   fail = 0;
@@ -247,6 +253,152 @@ async function main() {
         check(`${file} does not import ${label}`, importBlob.includes(needle) === false);
       }
     }
+  }
+
+  /* ─────────────────────── PRACTICE GRADING GOLDENS ────────────────────── */
+  console.log("\n— practice grading goldens (gradePracticeAnswer) —");
+  {
+    const mc = (correctChoiceIndex: number | null): TutorPracticeItem => ({
+      nodeId: "n1",
+      practiceItemRef: "p1",
+      kind: "mc",
+      prompt: "pick",
+      choices: ["a", "b", "c", "d"],
+      correctChoiceIndex,
+      acceptedAnswers: null,
+      explanation: null,
+      itemBankRef: null,
+    });
+    const short = (acceptedAnswers: string[] | null): TutorPracticeItem => ({
+      nodeId: "n1",
+      practiceItemRef: "p1",
+      kind: "short",
+      prompt: "spell",
+      choices: null,
+      correctChoiceIndex: null,
+      acceptedAnswers,
+      explanation: null,
+      itemBankRef: null,
+    });
+
+    // mc: correct / wrong / null-key → null.
+    check("mc correct choice → true", gradePracticeAnswer(mc(2), { choiceIndex: 2 }) === true);
+    check("mc wrong choice → false", gradePracticeAnswer(mc(2), { choiceIndex: 0 }) === false);
+    check("mc null choiceIndex → false", gradePracticeAnswer(mc(2), { choiceIndex: null }) === false);
+    check("mc null key → null (keyless, cannot grade)", gradePracticeAnswer(mc(null), { choiceIndex: 2 }) === null);
+
+    // short: accepted-answers match with trim/lowercase + whitespace/case variants.
+    const item = short(["Big O", "asymptotic"]);
+    check("short exact match → true", gradePracticeAnswer(item, { text: "Big O" }) === true);
+    check("short trims surrounding whitespace → true", gradePracticeAnswer(item, { text: "  Big O  " }) === true);
+    check("short lowercases the guess → true", gradePracticeAnswer(item, { text: "BIG O" }) === true);
+    check("short lowercase + whitespace variant → true", gradePracticeAnswer(item, { text: "  aSymPtoTic " }) === true);
+    // The accepted key itself is trimmed/lowercased too.
+    check(
+      "short trims/lowercases the accepted key too → true",
+      gradePracticeAnswer(short(["  ANSWER  "]), { text: "answer" }) === true
+    );
+    check("short non-member → false", gradePracticeAnswer(item, { text: "linear" }) === false);
+    check("short empty guess (non-member) → false", gradePracticeAnswer(item, { text: "" }) === false);
+
+    // short: empty / null key → null (keyless).
+    check("short empty accepted array → null", gradePracticeAnswer(short([]), { text: "anything" }) === null);
+    check("short null accepted → null", gradePracticeAnswer(short(null), { text: "anything" }) === null);
+  }
+
+  /* ─────────────────────── SELF-REPORT STABLE KEY ──────────────────────── */
+  console.log("\n— selfReportStableKey shape golden —");
+  {
+    // selfreport:{nodeId}:{lessonId}:{yyyy-mm-dd} — the iso date is day-sliced.
+    check(
+      "with lessonId → selfreport:node:lesson:yyyy-mm-dd",
+      selfReportStableKey("node-1", "lesson-9", "2026-08-04T13:45:07.512Z") === "selfreport:node-1:lesson-9:2026-08-04"
+    );
+    check(
+      "null lessonId falls back to 'course'",
+      selfReportStableKey("node-1", null, "2026-08-04T00:00:00.000Z") === "selfreport:node-1:course:2026-08-04"
+    );
+    // Day granularity — same day, different time → identical key.
+    check(
+      "same-day different time → identical key (day granularity)",
+      selfReportStableKey("n", "l", "2026-08-04T01:00:00Z") === selfReportStableKey("n", "l", "2026-08-04T23:59:59Z")
+    );
+  }
+
+  /* ─────────────────────────── TTFT THRESHOLDS ─────────────────────────── */
+  console.log("\n— ttftRating thresholds (good <1500 / ni <3000 / poor) —");
+  {
+    check("1499 → good", ttftRating(1499) === "good");
+    check("1500 → needs-improvement (boundary)", ttftRating(1500) === "needs-improvement");
+    check("2999 → needs-improvement", ttftRating(2999) === "needs-improvement");
+    check("3000 → poor (boundary)", ttftRating(3000) === "poor");
+  }
+
+  /* ──────────────────────── CLIENT-TYPES DRIFT GREPS ───────────────────── */
+  console.log("\n— tutorClientTypes ↔ contract/route drift greps —");
+  {
+    const clientTypes = readSource("lib/learn/tutorClientTypes.ts");
+    const contract = readSource("lib/tutor/runtime/outputContract.ts");
+    const route = readSource("app/api/learn/tutor/route.ts");
+
+    // Field names the client mirror MUST carry from the frozen output contract.
+    for (const field of ["correctChoiceIndex", "acceptedAnswers", "explanation", "practiceItemRef"]) {
+      check(
+        `client mirrors contract field '${field}'`,
+        contract.includes(field) && clientTypes.includes(field)
+      );
+    }
+    // The RAW model field is server-only: the client gets CLEANED prose, never the
+    // span-markered source. Contract has it; the client must NOT.
+    check("contract names proseWithSpanMarkers", contract.includes("proseWithSpanMarkers"));
+    check(
+      "client does NOT contain proseWithSpanMarkers (gets cleaned prose)",
+      clientTypes.includes("proseWithSpanMarkers") === false
+    );
+
+    // The SSE `turn` payload field list must appear in BOTH the route source and
+    // the client mirror (the client renders exactly these fields).
+    for (const field of ["prose", "spans", "citations", "rung", "practiceItems", "escalationProposal", "flags"]) {
+      check(
+        `SSE payload field '${field}' in both route + client mirror`,
+        route.includes(field) && clientTypes.includes(field)
+      );
+    }
+  }
+
+  /* ─────────────────── ZOD-FREE FENCE (extended set) ───────────────────── */
+  console.log("\n— zod-free fence (extended client set + transitive vitals) —");
+  {
+    // These files ride the learn route bundle: none may import zod, the runtime
+    // contract, or the zod-heavy analytics events module.
+    const fenced = [
+      "lib/learn/tutorClientTypes.ts",
+      "lib/learn/tutorHistory.ts",
+      "lib/learn/useTutorStream.ts",
+      "lib/learn/tutorVitals.ts",
+      "components/learn/tutor/TutorBody.tsx",
+      "components/learn/tutor/TutorEscalationCard.tsx",
+    ];
+    const banned = ['from "zod"', 'from "@/lib/tutor/runtime', 'from "@/lib/analytics/events"'];
+    for (const file of fenced) {
+      const src = readSource(file);
+      for (const needle of banned) {
+        check(`${file} does not contain ${needle}`, src.includes(needle) === false);
+      }
+    }
+    // tutorVitals imports lib/analytics/vitals (a zod-free builder) — ALLOWED.
+    // Assert the transitive honesty: vitals.ts itself contains no `from "zod"`.
+    const vitals = readSource("lib/analytics/vitals.ts");
+    check("lib/analytics/vitals.ts imports no zod (fence is transitive-honest)", vitals.includes('from "zod"') === false);
+  }
+
+  /* ─────────────────── ESCALATION FLAG-OFF JSX GATE ────────────────────── */
+  console.log("\n— escalation card gated behind the escalationsUi prop —");
+  {
+    const body = readSource("components/learn/tutor/TutorBody.tsx");
+    // The card must render ONLY behind the flag: a JSX conditional `escalationsUi &&`.
+    check("TutorBody gates TutorEscalationCard behind escalationsUi &&", /escalationsUi\s*&&/.test(body));
+    check("TutorBody references TutorEscalationCard", body.includes("TutorEscalationCard"));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

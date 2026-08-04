@@ -261,28 +261,44 @@ const GeneratePracticeParams = z.object({
     .describe("Preferred item kind (multiple-choice or short-answer)."),
 });
 
-/** The strict shape the practice-gen model returns. Practice items carry NO
- *  answer keys — the item is FORMATIVE; grading arrives later via the
- *  practice_answer evidence route, never baked into the tutor output. */
+/** The strict shape the practice-gen model returns. W4 (Contract 5): the item
+ *  now AUTHORS its own key + a one-line explanation — practice is FORMATIVE and
+ *  LOW-STAKES, so the client grades locally and the answer is revealed only AFTER
+ *  the learner answers. Every added field is `.nullable()` (the strict-schema
+ *  rule — the JSON-schema converter makes optionals nullable on the wire); the
+ *  prompt, not the schema, requires the key for the applicable kind. */
 const PracticeGenItemSchema = z.object({
   nodeId: z.string(),
   kind: z.enum(["mc", "short"]),
   prompt: z.string(),
   /** 4 choices when kind === "mc"; null/absent for short-answer. */
   choices: z.array(z.string()).nullable().optional(),
+  /** The correct choice index (0..3) for `mc`; null for `short`. */
+  correctChoiceIndex: z.number().int().min(0).max(3).nullable().optional(),
+  /** 1–3 accepted answers for `short` (trim/lowercase match); null for `mc`. */
+  acceptedAnswers: z.array(z.string()).max(4).nullable().optional(),
+  /** A one-line explanation shown after the learner answers. */
+  explanation: z.string().max(240).nullable().optional(),
 });
 const PracticeGenOutputSchema = z.object({
   items: z.array(PracticeGenItemSchema).min(1).max(3),
 });
 
 /** One minted practice item (the loop returns these to the model + the route
- *  persists nothing here — the item lives only for this turn until answered). */
+ *  persists nothing here — the item lives only for this turn until answered).
+ *  W4: it carries its OWN key so the client grades locally (formative). */
 export interface MintedPracticeItem {
   nodeId: string;
   practiceItemRef: string;
   kind: "mc" | "short";
   prompt: string;
   choices: string[] | null;
+  /** The correct choice index for `mc`; null for `short` or a keyless item. */
+  correctChoiceIndex: number | null;
+  /** Accepted short-answer strings for `short`; null for `mc` or keyless. */
+  acceptedAnswers: string[] | null;
+  /** A one-line explanation revealed after the learner answers; null if absent. */
+  explanation: string | null;
   /** [FWD] reserved for a future item bank — ALWAYS null in Wave 3. */
   itemBankRef: null;
 }
@@ -290,14 +306,14 @@ export interface MintedPracticeItem {
 const generatePractice: TutorTool<z.infer<typeof GeneratePracticeParams>> = {
   name: "generate_practice",
   description:
-    "Produce 1–3 short practice items targeted at named concept nodes. Each item is tagged with its node and a practice reference, so answering it feeds the learner's mastery. Offer practice when a concept firms up or the learner wants reps. Items carry NO answer keys — they are formative.",
+    "Produce 1–3 short practice items targeted at named concept nodes. Each item is tagged with its node and a practice reference, so answering it feeds the learner's mastery. Offer practice when a concept firms up or the learner wants reps. Items are FORMATIVE and low-stakes: author the answer key + a one-line explanation on each item, but the answer is revealed to the learner only AFTER they answer.",
   params: GeneratePracticeParams,
   async execute(args, deps) {
     const job = TUTOR_MODELS.practice_gen;
     const kindHint = args.kind ? ` Prefer ${args.kind} items.` : "";
     const call = await runStructuredCall(deps.model, {
       system:
-        "You author short FORMATIVE practice items grounded in this course's concepts. Return ONLY the JSON object. For a multiple-choice ('mc') item, provide exactly 4 plausible choices; for a short-answer ('short') item, omit choices. Do NOT include the answer — items are formative.",
+        "You author short FORMATIVE practice items grounded in this course's concepts. Return ONLY the JSON object. For a multiple-choice ('mc') item, provide exactly 4 plausible choices AND the 0-based index of the correct one in `correctChoiceIndex`. For a short-answer ('short') item, omit choices and give 1–3 accepted answers in `acceptedAnswers` (they'll be matched trim/lowercase). Add a one-line `explanation` on every item. The item is formative — the answer is shown only after the learner answers, so DO author the key.",
       input: `Generate practice items for concept node ids: ${args.nodeIds.join(", ")}.${kindHint}`,
       outputName: "tutor_practice_gen",
       outputSchema: PracticeGenOutputSchema,
@@ -316,12 +332,21 @@ const generatePractice: TutorTool<z.infer<typeof GeneratePracticeParams>> = {
     }
 
     // Mint a stable practiceItemRef per item; itemBankRef is [FWD]-carried null.
+    // The key rides the item (formative); a missing/kind-mismatched key is
+    // carried as null so the client renders a keyless "discuss with the tutor"
+    // card rather than fake-grading.
     const items: MintedPracticeItem[] = call.data.items.map((it) => ({
       nodeId: it.nodeId,
       practiceItemRef: crypto.randomUUID(),
       kind: it.kind,
       prompt: it.prompt,
       choices: it.kind === "mc" ? it.choices ?? null : null,
+      correctChoiceIndex: it.kind === "mc" ? it.correctChoiceIndex ?? null : null,
+      acceptedAnswers:
+        it.kind === "short" && it.acceptedAnswers && it.acceptedAnswers.length > 0
+          ? it.acceptedAnswers
+          : null,
+      explanation: it.explanation ?? null,
       itemBankRef: null,
     }));
 
