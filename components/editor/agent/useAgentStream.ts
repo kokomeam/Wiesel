@@ -120,6 +120,10 @@ function dispatch(ev: AgentEvent): boolean {
     case "checkpoint":
       s.setCheckpoint(ev.reason);
       return false;
+    case "queued":
+      // Learner-pool queue notice (W3.1) — never emitted on the creator editor
+      // stream; handled here only to keep the AgentEvent switch exhaustive.
+      return false;
     case "assistant_message":
       // Settle the bubble text ONLY — a mid-run assistant_message (the structure
       // path emits its plan summary BEFORE executing) must not flip `thinking`

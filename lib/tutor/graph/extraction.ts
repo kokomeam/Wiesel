@@ -19,10 +19,12 @@
  *   priors   ← from isAssumedPrior canonicals, deduped by title
  *   stage    ← stageExtractionResult (persist rows, then ONE change-set + fate row)
  *
- * EVERY model call routes through runStructuredCall with the TUTOR_MODELS config
- * and is cost-emitted via emitTutorModelCall (embeds use the DETERMINISTIC
- * synthetic response id `embed:{runId}:{batchIndex}` — the embeddings API returns
- * none — so a step retry re-emits as a no-op). A thrown error settles into
+ * EVERY model call routes through runStructuredCall with the TUTOR_MODELS config.
+ * Cost telemetry is emitted by the SINGLE interception point — the withPooledModel
+ * cost decorator wrapped around the client at Inngest assembly (W3.1 · D-2) — keyed
+ * `${runKey=runId}:${seq}` (deterministic + retry-stable for the sequential
+ * pipeline, so an Inngest step retry re-emits as a no-op). This module only
+ * ACCUMULATES usage (emitAndAccumulate). A thrown error settles into
  * {ok:false, checkpoint:<error>} — the Inngest wrapper owns retries.
  */
 
@@ -31,7 +33,6 @@ import type { Database } from "@/lib/database.types";
 import type { ModelClient } from "@/lib/ai/modelClient";
 import { runStructuredCall } from "@/lib/ai/subagent";
 import { TUTOR_MODELS, computeCostUsd } from "@/lib/ai/modelConfig";
-import { emitTutorModelCall } from "@/lib/tutor/telemetry";
 import { getCachedSnapshot } from "@/lib/learn/publicationCache";
 import type { PublicationSnapshot } from "@/lib/course/publish/schemas";
 import { resolveExtractionConfig, type ExtractionConfig } from "./config";
@@ -148,12 +149,18 @@ export function addUsage(
   totals.costUsd += computeCostUsd(usage, model) ?? 0;
 }
 
-/* ─────────────────────────── cost-emit helper ───────────────────────────── */
+/* ─────────────────────────── usage accumulation ─────────────────────────── */
 
 /**
- * Emit ONE model call's cost + accumulate its usage. Wraps emitTutorModelCall so
- * every call site is one line. For embeds pass a synthetic providerResponseId
- * (`embed:{runId}:{batchIndex}`) since the embeddings API returns none.
+ * Accumulate ONE model call's usage into the run totals.
+ *
+ * COST EMISSION MOVED (TUTOR-1 W3.1 · D-2): this used to ALSO call
+ * emitTutorModelCall inline, but cost telemetry is now emitted by the SINGLE
+ * interception point — the `withPooledModel` cost decorator wrapped around the
+ * client at Inngest assembly time. The pipelines keep accumulating usage here (the
+ * run report + budget math need it) but no longer emit. `deps`/`args` fields the
+ * decorator now owns (courseId/authorId/jobType/providerResponseId/latencyMs) are
+ * retained in the signature so the many call sites stay one-line and unchanged.
  */
 export async function emitAndAccumulate(
   deps: GraphExtractionDeps,
@@ -168,16 +175,12 @@ export async function emitAndAccumulate(
   },
   totals: UsageTotals
 ): Promise<void> {
-  await emitTutorModelCall(deps.supabase, {
-    courseId: args.courseId,
-    learnerUserId: null,
-    jobType: args.jobType,
-    model: args.model,
-    usage: args.usage,
-    latencyMs: args.latencyMs,
-    providerResponseId: args.providerResponseId,
-    emittedBy: args.authorId,
-  });
+  void deps;
+  void args.courseId;
+  void args.authorId;
+  void args.jobType;
+  void args.latencyMs;
+  void args.providerResponseId;
   addUsage(totals, args.usage, args.model);
 }
 

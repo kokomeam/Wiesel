@@ -54,6 +54,8 @@ import { MERGE_RESPONSE_NAME } from "@/lib/tutor/graph/canonicalize";
 import { EDGE_RESPONSE_NAME } from "@/lib/tutor/graph/edges";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
 import { tutorEventId } from "@/lib/tutor/telemetry";
+import { withPooledModel } from "@/lib/ai/subagent";
+import { readFileSync } from "node:fs";
 
 let pass = 0,
   fail = 0;
@@ -569,7 +571,7 @@ async function fullRun() {
   };
   const merge = { groups: [] as unknown[] };
   const edges = { edges: [{ sourceIndex: 0, targetIndex: 1, kind: "prerequisite", confidence: 0.9, evidenceQuote: "Scarcity precedes the new idea." }] };
-  const model = createMockModelClient([], { structured: { [PROPOSAL_RESPONSE_NAME]: proposal, [MERGE_RESPONSE_NAME]: merge, [EDGE_RESPONSE_NAME]: edges } });
+  const rawModel = createMockModelClient([], { structured: { [PROPOSAL_RESPONSE_NAME]: proposal, [MERGE_RESPONSE_NAME]: merge, [EDGE_RESPONSE_NAME]: edges } });
 
   const courseId = doc.id;
   const OWNER = doc.metadata.ownerId ?? crypto.randomUUID();
@@ -588,6 +590,13 @@ async function fullRun() {
   });
 
   const runId = crypto.randomUUID();
+  // W3.1 · D-2: cost telemetry now emits from the withPooledModel decorator (the
+  // inline emit was retired — emitAndAccumulate only ACCUMULATES usage now). Wrap the
+  // mock exactly as tutorGraphReconcile assembles it: creator pool + a cost context
+  // keyed runKey=runId → deterministic `${runId}:${seq}` ids, retry-stable.
+  const model = withPooledModel(rawModel, {
+    cost: { supabase: stub as never, courseId, emittedBy: OWNER, jobType: "reconciliation", runKey: runId },
+  });
   const result = await runGraphReconciliation(
     { supabase: stub as never, model, loadSnapshot: async () => ({ snapshot, version: 7 }), config: { canonSimThreshold: -1 } },
     { courseId, publicationId: crypto.randomUUID(), runId }
@@ -629,19 +638,33 @@ async function fullRun() {
   check("fate finding stamps the graph_reconciliation discriminator", !!findingInsert && ((findingInsert.arg as Record<string, unknown>).finding as Record<string, unknown>).discriminator === "graph_reconciliation");
   check("fate finding flipped to 'proposed' with the change_set_id", !!findingUpdate && (findingUpdate.arg as Record<string, unknown>).status === "proposed" && (findingUpdate.arg as Record<string, unknown>).change_set_id === "reconcile-cs-1");
 
-  // telemetry: proposals emit under 'reconciliation' with runId-scoped ids.
+  // Cost telemetry (W3.1 · D-2): the withPooledModel decorator emits ONE cost row per
+  // GATED model call — the reconcile fixture (one lesson, a 2-unit cluster, ≥2 active
+  // taught nodes after the diff) drives 5 gated calls in ORDER: propose → embed
+  // (canonicalize) → merge → embed (embedForMatching) → edge (reconcile-edges). The ids
+  // are now `${runId}:${seq}` (seq = the decorator's per-instance monotonic counter over
+  // the call order → 0..4), NOT the old `propose:{runId}:{lessonId}` / `reconcile-embed`
+  // synthetic ids the retired inline path minted.
   const telemetry = calls.filter((c) => c.method === "upsert(telemetry)");
-  check("model calls emit telemetry (≥1 proposal + embed)", telemetry.length >= 2, `telemetry=${telemetry.length}`);
-  const embedTelemetry = telemetry.find((c) => {
-    const first = ((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>;
-    return first.client_event_id === tutorEventId(`reconcile-embed:${runId}:0`);
-  });
-  check("the reconcile embed cost id is runId-scoped (reconcile-embed:{runId}:0)", !!embedTelemetry);
-  const proposalTelemetry = telemetry.find((c) => {
-    const first = ((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>;
-    return first.client_event_id === tutorEventId(`propose:${runId}:${lesson.id}`);
-  });
-  check("proposal cost id is runId-scoped (propose:{runId}:{lessonId})", !!proposalTelemetry);
+  const emittedIds = new Set(
+    telemetry.map((c) => (((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>).client_event_id as string)
+  );
+  check("model calls emit telemetry via the decorator (≥2: proposal + embed)", telemetry.length >= 2, `telemetry=${telemetry.length}`);
+  const expectSeqId = (seq: number) => emittedIds.has(tutorEventId(`${runId}:${seq}`));
+  check(
+    "cost ids are the deterministic `${runId}:${seq}` sequence 0..4",
+    [0, 1, 2, 3, 4].every(expectSeqId),
+    [...emittedIds].join(",")
+  );
+  check(
+    "proposal + embed cost ids are runId-scoped (retry-stable), not the retired synthetic ids",
+    expectSeqId(0) && expectSeqId(1) && !emittedIds.has(tutorEventId(`propose:${runId}:${lesson.id}`)) && !emittedIds.has(tutorEventId(`reconcile-embed:${runId}:0`))
+  );
+
+  // The inline emitTutorModelCall path is GONE from reconcile.ts — the decorator is the
+  // ONLY emitter (comments may still mention it; no CALL remains).
+  const reconcileSrc = readFileSync(new URL("../lib/tutor/graph/reconcile.ts", import.meta.url), "utf8");
+  check("reconcile.ts contains NO emitTutorModelCall call (inline emit retired)", !/emitTutorModelCall\s*\(/.test(reconcileSrc));
 }
 
 async function pendingGuard() {

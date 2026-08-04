@@ -123,6 +123,53 @@ async function main() {
   check("never more than 2 in flight", maxInFlight === 2, `max ${maxInFlight}`);
   check("semaphore fully released", sem.inFlight === 0);
 
+  /* ── 1b. Hardened Semaphore: FIFO wake order + abort-removal (W3.1) ── */
+  console.log("\n— Semaphore hardening (FIFO wake order + abort removal) —");
+  const settle = () => new Promise<void>((r) => setImmediate(r));
+  {
+    // FIFO wake order over THREE waiters behind a single held slot.
+    const s = new Semaphore(1);
+    const hold = await s.acquire();
+    const woke: number[] = [];
+    const rels: (() => void)[] = [];
+    for (let i = 0; i < 3; i++) s.acquire().then((rel) => { woke.push(i); rels.push(rel); });
+    await settle();
+    check("three waiters queued behind the held slot", s.queued === 3 && s.inFlight === 1);
+    hold();
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      const rel = rels.shift();
+      if (rel) rel();
+      await settle();
+    }
+    check("wake order is strict FIFO [0,1,2]", JSON.stringify(woke) === "[0,1,2]", JSON.stringify(woke));
+    check("drained after FIFO wake (inFlight=0, queued=0)", s.inFlight === 0 && s.queued === 0);
+  }
+  {
+    // Abort removal: an aborted waiter rejects with AbortError; the neighbour
+    // behind it is still admitted next (queue integrity preserved).
+    const s = new Semaphore(1);
+    const hold = await s.acquire();
+    const ctrl = new AbortController();
+    let aborted = false;
+    let neighbourWoke = false;
+    const pAbort = s.acquire(ctrl.signal).then(
+      (rel) => rel(),
+      (err) => { aborted = (err as Error).name === "AbortError"; }
+    );
+    const pNeighbour = s.acquire().then((rel) => { neighbourWoke = true; rel(); });
+    await settle();
+    check("two waiters queued (aborter is the head)", s.queued === 2);
+    ctrl.abort();
+    await settle();
+    check("aborted waiter rejects with an AbortError", aborted);
+    check("the abort removed only that waiter (neighbour still queued)", s.queued === 1);
+    hold();
+    await settle();
+    await Promise.all([pAbort, pNeighbour]);
+    check("the neighbour is admitted next after the abort", neighbourWoke && s.inFlight === 0 && s.queued === 0);
+  }
+
   /* ── 2. Structured call + budget truncation ── */
   console.log("\n— Structured calls + budgets —");
   const VerdictSchema = z.object({ verdict: z.string() });

@@ -4091,34 +4091,238 @@ export type Database = {
           },
         ]
       }
-      tutor_course_settings: {
+      tutor_charter_versions: {
         Row: {
-          budget_limit_usd: number | null
+          actor: string
           course_id: string
           created_at: string
+          id: string
+          snapshot: Json
+        }
+        Insert: {
+          actor: string
+          course_id: string
+          created_at?: string
+          id?: string
+          snapshot: Json
+        }
+        Update: {
+          actor?: string
+          course_id?: string
+          created_at?: string
+          id?: string
+          snapshot?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_charter_versions_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tutor_course_settings: {
+        Row: {
+          assessment_help: string
+          budget_limit_usd: number | null
+          course_canon: string
+          course_id: string
+          created_at: string
+          current_charter_version_id: string | null
           enabled: boolean
+          escalation_sensitivity: string
+          guidance_style: string
+          scope: string
+          tone_notes: string | null
           updated_at: string
         }
         Insert: {
+          assessment_help?: string
           budget_limit_usd?: number | null
+          course_canon?: string
           course_id: string
           created_at?: string
+          current_charter_version_id?: string | null
           enabled?: boolean
+          escalation_sensitivity?: string
+          guidance_style?: string
+          scope?: string
+          tone_notes?: string | null
           updated_at?: string
         }
         Update: {
+          assessment_help?: string
           budget_limit_usd?: number | null
+          course_canon?: string
           course_id?: string
           created_at?: string
+          current_charter_version_id?: string | null
           enabled?: boolean
+          escalation_sensitivity?: string
+          guidance_style?: string
+          scope?: string
+          tone_notes?: string | null
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "tutor_course_settings_charter_version_fkey"
+            columns: ["current_charter_version_id"]
+            isOneToOne: false
+            referencedRelation: "tutor_charter_versions"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "tutor_course_settings_course_id_fkey"
             columns: ["course_id"]
             isOneToOne: true
             referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tutor_escalation_candidates: {
+        Row: {
+          anchors: Json
+          course_id: string
+          created_at: string
+          id: string
+          learner_question: string
+          node_ids: Json
+          rung_trail: Json
+          status: string
+          tutor_proposed_answer: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          anchors?: Json
+          course_id: string
+          created_at?: string
+          id?: string
+          learner_question: string
+          node_ids?: Json
+          rung_trail?: Json
+          status?: string
+          tutor_proposed_answer?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          anchors?: Json
+          course_id?: string
+          created_at?: string
+          id?: string
+          learner_question?: string
+          node_ids?: Json
+          rung_trail?: Json
+          status?: string
+          tutor_proposed_answer?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_escalation_candidates_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tutor_threads: {
+        Row: {
+          course_id: string
+          created_at: string
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_threads_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tutor_turns: {
+        Row: {
+          block_id: string | null
+          content: string
+          course_id: string
+          created_at: string
+          grounding: Json
+          id: string
+          lesson_id: string | null
+          publication_id: string
+          response_id: string | null
+          role: string
+          rung: number | null
+          slide_id: string | null
+          thread_id: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          block_id?: string | null
+          content: string
+          course_id: string
+          created_at?: string
+          grounding?: Json
+          id?: string
+          lesson_id?: string | null
+          publication_id: string
+          response_id?: string | null
+          role: string
+          rung?: number | null
+          slide_id?: string | null
+          thread_id: string
+          user_id: string
+          version: number
+        }
+        Update: {
+          block_id?: string | null
+          content?: string
+          course_id?: string
+          created_at?: string
+          grounding?: Json
+          id?: string
+          lesson_id?: string | null
+          publication_id?: string
+          response_id?: string | null
+          role?: string
+          rung?: number | null
+          slide_id?: string | null
+          thread_id?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_turns_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "tutor_threads"
             referencedColumns: ["id"]
           },
         ]

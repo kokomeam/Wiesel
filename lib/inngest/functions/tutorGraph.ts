@@ -32,7 +32,7 @@ import {
 } from "../tutorGraphEvents";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { createOpenAIModelClient } from "@/lib/ai/providers/openai";
-import { withSemaphore } from "@/lib/ai/subagent";
+import { withPooledModel, poolFor } from "@/lib/ai/subagent";
 import { runGraphExtraction, type GraphExtractionResult } from "@/lib/tutor/graph/extraction";
 import { runGraphReconciliation, type GraphReconciliationResult } from "@/lib/tutor/graph/reconcile";
 
@@ -74,7 +74,23 @@ export const tutorGraphExtract = inngest.createFunction(
       }
 
       const admin = createAdminClient();
-      const model = withSemaphore(createOpenAIModelClient());
+
+      // Resolve the course author = the cost-telemetry principal (the decorator emits
+      // one tutor_model_call per gated call, keyed `${runId}:${seq}` = retry-stable).
+      const courseRow = await admin
+        .from("courses")
+        .select("author_id")
+        .eq("id", courseId)
+        .maybeSingle();
+      const emittedBy = courseRow.data?.author_id ?? courseId;
+
+      // W3.1 · D-2: route every model call (runTurn + embed) through the CREATOR pool
+      // + the single cost interception point. runKey=runId makes the cost ids
+      // deterministic so an Inngest step retry re-emits as a no-op.
+      const model = withPooledModel(createOpenAIModelClient(), {
+        pool: poolFor("creator"),
+        cost: { supabase: admin, courseId, emittedBy, jobType: "graph_extraction", runKey: runId },
+      });
 
       // The fate finding's run_id FK → agent_runs.id: the event's runId becomes
       // the run row's id. Idempotent (an Inngest retry upserts the same id) —
@@ -160,7 +176,21 @@ export const tutorGraphReconcile = inngest.createFunction(
       }
 
       const admin = createAdminClient();
-      const model = withSemaphore(createOpenAIModelClient());
+
+      // Resolve the course author = the cost principal (mirror the extract path).
+      const courseRow = await admin
+        .from("courses")
+        .select("author_id")
+        .eq("id", courseId)
+        .maybeSingle();
+      const emittedBy = courseRow.data?.author_id ?? courseId;
+
+      // W3.1 · D-2: CREATOR pool + the single cost interception point. runTurn calls
+      // emit under 'reconciliation'; the decorator forces embeds to 'embedding'.
+      const model = withPooledModel(createOpenAIModelClient(), {
+        pool: poolFor("creator"),
+        cost: { supabase: admin, courseId, emittedBy, jobType: "reconciliation", runKey: runId },
+      });
 
       // Mirror the extract path: mint/settle the agent_runs row (the fate
       // finding's run_id FK) with the event's runId as its id.

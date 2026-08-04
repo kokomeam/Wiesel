@@ -112,6 +112,10 @@ export type AgentEvent =
     }
   /** A very large job paused at a safe point and can be continued. */
   | { type: "checkpoint"; reason: string; completedSteps: number }
+  /** A pooled model call is WAITING for a concurrency slot (TUTOR-1 W3.1 · D-2):
+   *  emitted while a learner-pool `acquire` waits, so the UI can show "N ahead of
+   *  you". `position` is 1-based at enqueue time (1 = next to run). */
+  | { type: "queued"; position: number }
   /** The settled final assistant message for the turn (full text). */
   | { type: "assistant_message"; content: string }
   | { type: "error"; message: string }

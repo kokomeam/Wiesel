@@ -77,6 +77,8 @@ import { MERGE_RESPONSE_NAME } from "@/lib/tutor/graph/canonicalize";
 import { EDGE_RESPONSE_NAME } from "@/lib/tutor/graph/edges";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
 import { tutorEventId } from "@/lib/tutor/telemetry";
+import { withPooledModel } from "@/lib/ai/subagent";
+import { readFileSync } from "node:fs";
 
 let pass = 0,
   fail = 0;
@@ -755,11 +757,17 @@ async function main() {
   /* ───────────────────── FULL orchestrator (mock + stub) ─────────────────── */
   console.log("\n# full orchestrator run (mock model + recording stub supabase)");
   const responses = buildStructuredResponses(doc);
-  const model = createMockModelClient([], { structured: responses });
+  const rawModel = createMockModelClient([], { structured: responses });
   const calls: RecordedCall[] = [];
   const stub = makeStubSupabase({ authorId: OWNER, onCall: (c) => calls.push(c) });
 
   const runId = crypto.randomUUID();
+  // W3.1 · D-2: cost telemetry now emits from the withPooledModel decorator (the
+  // inline emit was retired). Wrap the mock exactly as the Inngest assembly does —
+  // creator pool + cost context keyed runKey=runId → deterministic `${runId}:${seq}`.
+  const model = withPooledModel(rawModel, {
+    cost: { supabase: stub as never, courseId: doc.id, emittedBy: OWNER, jobType: "graph_extraction", runKey: runId },
+  });
   const result = await runGraphExtraction(
     {
       supabase: stub as never,
@@ -845,30 +853,46 @@ async function main() {
   check("droppedEdges log surfaces the evidenceless drop", result.droppedEdges.some((d) => d.reason === "evidenceless"));
   check("droppedEdges log surfaces the low-confidence drop", result.droppedEdges.some((d) => d.reason === "low_confidence"));
 
-  // Cost telemetry: emitted once per model call — the per-lesson proposals (3) +
-  // one embed + one merge + one edge call. The embed carries the synthetic id.
+  // Cost telemetry (W3.1 · D-2): the withPooledModel decorator emits ONE cost row per
+  // GATED model call — 3 per-lesson proposals + one embed + one merge + one edge call
+  // = 6, exactly as before. The ids are now `${runId}:${seq}` (seq = the decorator's
+  // per-instance monotonic counter over the call ORDER: propose0,propose1,propose2,
+  // embed,merge,edges → 0..5). Deterministic + retry-stable: a re-run mints the SAME
+  // ids so an Inngest step retry re-emits as a no-op (asserted in the double-run below).
   const telemetry = calls.filter((c) => c.method === "upsert(telemetry)");
   check("a telemetry row per model call (>=6: 3 proposals + embed + merge + edges)", telemetry.length >= 6, `telemetry=${telemetry.length}`);
-  const embedTelemetry = telemetry.find((c) => {
-    const row = c.arg as unknown[];
-    const first = (row?.[0] ?? {}) as Record<string, unknown>;
-    return first.client_event_id === tutorEventId(`embed:${runId}:0`);
-  });
-  check("the embed cost is emitted with the deterministic synthetic id embed:{runId}:0", !!embedTelemetry);
-  // The proposal/merge/edge cost ids are ALSO runId-scoped (retry-stable), NOT the
-  // provider's responseId — so an Inngest step retry re-emits as a no-op instead of
-  // double-counting cost. Assert the first lesson's proposal cid is runId-scoped.
-  const firstLessonId = doc.modules[0].lessons[0].id;
-  const proposalTelemetry = telemetry.find((c) => {
-    const first = ((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>;
-    return first.client_event_id === tutorEventId(`propose:${runId}:${firstLessonId}`);
-  });
-  check("proposal cost ids are runId-scoped (retry-stable), not the provider responseId", !!proposalTelemetry);
-  const edgeTelemetry = telemetry.find((c) => {
-    const first = ((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>;
-    return first.client_event_id === tutorEventId(`edges:${runId}`);
-  });
-  check("edge cost id is runId-scoped (retry-stable)", !!edgeTelemetry);
+  const emittedIds = new Set(
+    telemetry.map((c) => (((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>).client_event_id as string)
+  );
+  const expectSeqId = (seq: number) => emittedIds.has(tutorEventId(`${runId}:${seq}`));
+  check("cost ids are the deterministic `${runId}:${seq}` sequence 0..5", [0, 1, 2, 3, 4, 5].every(expectSeqId), [...emittedIds].join(","));
+  check("the embed cost is emitted (its seq slot, 4th call = index 3)", expectSeqId(3));
+  check("proposal cost ids are runId-scoped (retry-stable), not the provider responseId", expectSeqId(0) && expectSeqId(1) && expectSeqId(2));
+  check("the edge cost id is runId-scoped (retry-stable)", expectSeqId(5));
+
+  // DOUBLE-RUN determinism: an identical re-run (Inngest retry) mints the SAME cost
+  // ids, so the upsert(onConflict client_event_id) no-ops instead of double-counting.
+  const rerunCalls: RecordedCall[] = [];
+  const rerunStub = makeStubSupabase({ authorId: OWNER, onCall: (c) => rerunCalls.push(c) });
+  await runGraphExtraction(
+    {
+      supabase: rerunStub as never,
+      model: withPooledModel(createMockModelClient([], { structured: responses }), {
+        cost: { supabase: rerunStub as never, courseId: doc.id, emittedBy: OWNER, jobType: "graph_extraction", runKey: runId },
+      }),
+      loadSnapshot: async () => ({ snapshot, version: 3 }),
+      config: { canonSimThreshold: -1, grainMaxPerLesson: 20, grainCourseMax: 200 },
+    },
+    { courseId: doc.id, publicationId: crypto.randomUUID(), runId }
+  );
+  const rerunIds = new Set(
+    rerunCalls.filter((c) => c.method === "upsert(telemetry)").map((c) => (((c.arg as unknown[])?.[0] ?? {}) as Record<string, unknown>).client_event_id as string)
+  );
+  check("a double-run mints IDENTICAL cost ids (retry-stable → no double-count)", [...emittedIds].every((id) => rerunIds.has(id)) && emittedIds.size === rerunIds.size);
+
+  // The inline emitTutorModelCall path is GONE — the decorator is the ONLY emitter.
+  const extractionSrc = readFileSync(new URL("../lib/tutor/graph/extraction.ts", import.meta.url), "utf8");
+  check("extraction.ts contains NO emitTutorModelCall call (inline emit retired)", !/emitTutorModelCall\s*\(/.test(extractionSrc));
 
   /* ───────────────── alreadyPending short-circuit ────────────────────────── */
   console.log("\n# alreadyPending short-circuit");
