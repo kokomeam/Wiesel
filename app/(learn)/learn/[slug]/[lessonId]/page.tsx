@@ -191,7 +191,7 @@ export default async function LessonPlayerPage({
           <div className="mb-8">
             <Link
               href={`/learn/${meta.slug}`}
-              className="inline-flex items-center gap-1 text-sm text-stone-500 transition-colors hover:text-stone-800"
+              className="inline-flex items-center gap-1 text-sm text-stone-600 transition-colors hover:text-stone-800"
             >
               <ChevronLeft className="h-4 w-4" aria-hidden />
               {snapshot.course.title}
@@ -274,7 +274,7 @@ export default async function LessonPlayerPage({
                   aria-hidden
                 />
                 <span className="min-w-0">
-                  <span className="block text-[11px] uppercase tracking-wide text-stone-400">
+                  <span className="block text-[11px] uppercase tracking-wide text-stone-600">
                     Previous
                   </span>
                   <span className="block truncate">{prev.title}</span>
@@ -289,7 +289,7 @@ export default async function LessonPlayerPage({
                 className="group flex min-w-0 items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-4 py-3 text-right text-sm text-stone-600 transition hover:-translate-y-0.5 hover:border-learn-200 hover:text-stone-900"
               >
                 <span className="min-w-0">
-                  <span className="block text-[11px] uppercase tracking-wide text-stone-400">
+                  <span className="block text-[11px] uppercase tracking-wide text-stone-600">
                     Next
                   </span>
                   <span className="block truncate">{next.title}</span>

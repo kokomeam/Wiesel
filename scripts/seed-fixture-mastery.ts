@@ -238,7 +238,12 @@ export async function seedMasteryCohort(
 
   // Insert three dedicated concept quiz blocks (A/B/C) into three real lessons so
   // the REAL grade path lands quiz_attempt_detail on a block a concept anchors to.
-  const lessons = fixture.doc.modules.flatMap((m) => m.lessons);
+  // Exclude the W4.4 video lesson (a deck-less lesson appended to module 1 for
+  // the browser suite) so the flattened lesson indices this cohort's anchors +
+  // goldens depend on stay byte-identical to the pre-video fixture.
+  const lessons = fixture.doc.modules
+    .flatMap((m) => m.lessons)
+    .filter((l) => !l.blocks.some((b) => b.type === "video"));
   const quizBlockIds = {
     A: crypto.randomUUID(),
     B: crypto.randomUUID(),

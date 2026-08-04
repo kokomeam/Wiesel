@@ -478,7 +478,7 @@ export function LearnLessonView({
                 <span
                   className={cn(
                     "block font-mono text-[11px] uppercase tracking-[0.18em]",
-                    meta.interactive ? "text-learn-700" : "text-stone-500"
+                    meta.interactive ? "text-learn-700" : "text-stone-600"
                   )}
                 >
                   {meta.label}

@@ -14,11 +14,16 @@ export function ProgressBar({
   tone = "brand",
   className,
   trackClassName,
+  label,
 }: {
   pct: number;
   tone?: "brand" | "learn" | "emerald";
   className?: string;
   trackClassName?: string;
+  /** Accessible name for the progressbar (WCAG aria-progressbar-name). Defaults
+   *  to a generic percentage label; pass a contextual one where the surface has
+   *  richer meaning ("Course progress", etc.). */
+  label?: string;
 }) {
   const clamped = Math.max(0, Math.min(100, Math.round(pct)));
   const fill =
@@ -33,6 +38,7 @@ export function ProgressBar({
       aria-valuenow={clamped}
       aria-valuemin={0}
       aria-valuemax={100}
+      aria-label={label ?? `${clamped}% complete`}
       className={cn("h-1.5 w-full overflow-hidden rounded-full bg-stone-200/70", trackClassName, className)}
     >
       <div className={cn("h-full rounded-full", fill)} style={{ width: `${clamped}%` }} />

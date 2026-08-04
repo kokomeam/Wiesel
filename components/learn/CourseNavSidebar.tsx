@@ -89,7 +89,7 @@ export function CourseNavSidebar(props: Props) {
         >
           <ListTree className="size-4 text-learn-600" aria-hidden />
           Contents
-          <span className="tabular-nums text-stone-400">
+          <span className="tabular-nums text-stone-500">
             {props.completedCount}/{props.totalCount}
           </span>
         </button>
@@ -198,7 +198,7 @@ function NavContent({
             {authorPreview ? "Course outline" : "Your progress"}
           </span>
           {!authorPreview && (
-            <span className="tabular-nums text-stone-400">
+            <span className="tabular-nums text-stone-500">
               {completedCount}/{totalCount}
             </span>
           )}
@@ -229,14 +229,14 @@ function NavContent({
                   aria-hidden
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block font-mono text-[10px] uppercase tracking-[0.15em] text-stone-400">
+                  <span className="block font-mono text-[10px] uppercase tracking-[0.15em] text-stone-500">
                     Module {mi + 1}
                     {hasCurrent && !open ? " · current" : ""}
                   </span>
                   <span className="block truncate text-[13px] font-medium text-stone-800">{mod.title}</span>
                 </span>
                 {!authorPreview && (
-                  <span className="shrink-0 text-[11px] tabular-nums text-stone-400">
+                  <span className="shrink-0 text-[11px] tabular-nums text-stone-500">
                     {done}/{mod.lessons.length}
                   </span>
                 )}
@@ -269,7 +269,7 @@ function NavContent({
                               {lesson.pct}%
                             </span>
                           ) : lesson.estimatedMinutes ? (
-                            <span className="shrink-0 text-[10px] tabular-nums text-stone-400">
+                            <span className="shrink-0 text-[10px] tabular-nums text-stone-500">
                               {lesson.estimatedMinutes}m
                             </span>
                           ) : null}

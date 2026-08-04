@@ -29,6 +29,8 @@ import {
   createModule,
   createQuestion,
   createSlide,
+  createVideoLessonBlock,
+  newRowId,
 } from "@/lib/course/factories";
 import { courseDocToRows, defaultCourseTheme } from "@/lib/course/persistence";
 import { publishCourse } from "@/lib/course/publish/service";
@@ -41,6 +43,7 @@ import type {
   QuizBlock,
   Slide,
   SlideDeckBlock,
+  VideoLessonBlock,
 } from "@/lib/course/types";
 
 // Node prefers supabase.co's IPv6 record; on this dev machine's IPv6-broken
@@ -149,9 +152,49 @@ function homework(title: string, instructions: string): HomeworkBlock {
   return hw;
 }
 
+/* ─────────────────────────── video fixture (TUTOR-1 W4.4) ────────────────── */
+// One READY video lesson so the browser suite can drive real video taps
+// (play / scrub-back → content_engagement) WITHOUT Mux. The block's asset
+// snapshot points at a `video_assets` row we insert with status 'ready' + a
+// local mp4Url (public/test-fixtures/sample-video.mp4). videoDataFromState /
+// learnerVideoData read `mp4_url` + `mp4_status` straight off that row (no Mux
+// round trip needed — there is no playback id, so the poster falls back to the
+// snapshot's, and the player renders from mp4Url alone).
+
+/** The stable ids the video fixture threads through (block + its authoritative
+ *  video_assets row). Minted once per seed so the suite can reference them. */
+export interface VideoFixtureIds {
+  lessonId: string;
+  blockId: string;
+  videoAssetId: string;
+  /** The public mp4 the ready asset serves — the local test-fixtures clip. */
+  mp4Url: string;
+}
+
+const VIDEO_FIXTURE_MP4_URL = "/test-fixtures/sample-video.mp4";
+
+/** A ready video block whose snapshot references `videoAssetId`. Duration ~3s
+ *  (the sample clip's length ballpark — the player reads the real duration from
+ *  loadedmetadata, this is only the snapshot fallback). */
+function readyVideoBlock(videoAssetId: string): VideoLessonBlock {
+  const block = createVideoLessonBlock(1, "Watch: markets in motion");
+  block.description =
+    "A short clip showing how a market moves toward equilibrium as buyers and sellers respond to price.";
+  block.asset = {
+    provider: "mux",
+    status: "ready",
+    videoAssetId,
+    durationSeconds: 3,
+  };
+  return block;
+}
+
 /** Build the deterministic Microeconomics course document. 3 modules, 12
- *  lessons; ≥2 quizzes + 1 homework across the course. */
-function buildMicroEconCourse(ownerId: string): CourseDocument {
+ *  lessons (13 with the video lesson); ≥2 quizzes + 1 homework across the
+ *  course. When `videoIds` is supplied a READY video lesson is appended to
+ *  module 1 (the ids are pre-minted so the caller can insert the matching
+ *  video_assets row + reference the block). */
+function buildMicroEconCourse(ownerId: string, videoIds?: VideoFixtureIds): CourseDocument {
   const courseId = crypto.randomUUID();
 
   // ── Module 1: Markets & scarcity ──
@@ -260,6 +303,19 @@ function buildMicroEconCourse(ownerId: string): CourseDocument {
       ],
     ]),
   ];
+
+  // A READY video lesson (TUTOR-1 W4.4) — appended to module 1 so a browser
+  // test can drive real video taps. Its ids are pre-minted by the caller so the
+  // matching video_assets row can be inserted + the block referenced.
+  if (videoIds) {
+    const videoLesson = createLesson("Watching markets move", 4);
+    videoLesson.id = videoIds.lessonId;
+    const videoBlock = readyVideoBlock(videoIds.videoAssetId);
+    videoBlock.id = videoIds.blockId;
+    videoBlock.order = 0;
+    videoLesson.blocks = [videoBlock];
+    m1.lessons.push(videoLesson);
+  }
 
   // ── Module 2: Equilibrium & elasticity ──
   const m2 = createModule("Equilibrium and Elasticity", 1);
@@ -521,11 +577,22 @@ export interface TutorFixture {
    *  accept/reject principal, and to load the course doc. */
   author: { client: DB; userId: string };
   doc: CourseDocument;
+  /** TUTOR-1 W4.4 — the READY video lesson (module 1) + its authoritative
+   *  video_assets row. Additive: pre-existing callers ignore it. */
+  video: VideoFixtureIds;
 }
 
 export async function seedTutorFixture(env: TutorFixtureEnv): Promise<TutorFixture> {
   const author = await provision(env.url, env.anon);
-  const doc = buildMicroEconCourse(author.userId);
+  // Pre-mint the video fixture ids so the block snapshot + the video_assets row
+  // reference the same asset id.
+  const video: VideoFixtureIds = {
+    lessonId: newRowId(),
+    blockId: newRowId(),
+    videoAssetId: newRowId(),
+    mp4Url: VIDEO_FIXTURE_MP4_URL,
+  };
+  const doc = buildMicroEconCourse(author.userId, video);
 
   const rows = courseDocToRows(doc, author.userId);
   for (const [table, data] of [
@@ -537,6 +604,24 @@ export async function seedTutorFixture(env: TutorFixtureEnv): Promise<TutorFixtu
     const { error } = await author.client.from(table).insert(data as never);
     if (error) throw new Error(`${table} insert: ${error.message}`);
   }
+
+  // Insert the authoritative video_assets row as the author (author-RLS write).
+  // A READY row with a local mp4_url — no Mux ids needed; the learner player
+  // reads mp4_url/mp4_status straight off it (learnerVideoData / videoDataFromState).
+  const videoRow = await author.client.from("video_assets").insert({
+    id: video.videoAssetId,
+    owner_id: author.userId,
+    course_id: doc.id,
+    lesson_id: video.lessonId,
+    block_id: video.blockId,
+    provider: "mux",
+    status: "ready",
+    mp4_url: video.mp4Url,
+    mp4_status: "ready",
+    duration_seconds: 3,
+    playback_policy: "public",
+  } as never);
+  if (videoRow.error) throw new Error(`video_assets insert: ${videoRow.error.message}`);
 
   const published = await publishCourse(author.client, doc, { visibility: "unlisted" });
   const live = await resolveLivePublicationBySlug(author.client, published.publication.slug);
@@ -551,6 +636,7 @@ export async function seedTutorFixture(env: TutorFixtureEnv): Promise<TutorFixtu
     slug: published.publication.slug,
     author: { client: author.client, userId: author.userId },
     doc,
+    video,
   };
 }
 
@@ -570,6 +656,7 @@ async function main() {
         slug: fx.slug,
         modules: fx.doc.modules.length,
         lessons: lessonCount,
+        videoLessonId: fx.video.lessonId,
       },
       null,
       2

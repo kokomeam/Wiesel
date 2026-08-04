@@ -110,3 +110,70 @@ emits `tutor_model_call` telemetry (`jobType: tutor_turn`, learner
 attributed). Cache posture: L0 alone as the system message keys the
 provider prompt cache; measured ratios live in the Wave-3 checkpoint
 (`smoke-tutor-cache.ts` — 10 turns incl. a deliberate 5-minute TTL probe).
+
+## The client — the learner sidebar (Wave 4)
+
+The tutor's ONLY learner surface: a persistent sidebar mounted by
+`app/(learn)/learn/[slug]/layout.tsx` (a layout so it survives lesson→lesson
+navigation without remounting — R-14). The SERVER decides mounting:
+`resolveTutorAccess` is the one gating truth, and only `kind === 'ok'`
+renders the client at all.
+
+| Caller | Sidebar | Evidence |
+| --- | --- | --- |
+| enrolled learner, tutor enabled | mounted | emitted (`'ok'` only) |
+| author preview | NOT mounted (no DOM) | never |
+| `enabled ≠ true` / no settings row | NOT mounted | never |
+| anonymous / not enrolled | NOT mounted | never |
+
+**The store** (`lib/learn/tutorStore.ts`, zod-free, persist name
+`wisesel.tutor.ui`, `skipHydration`): persisted per-learner `byUser` slices
+(`open`, `width` 300–520, `scrollPos`); transient `ambient` context
+(`courseId/publicationId/version/lessonId/blockId/slideId/positionPct/
+quizActive`), the `citationRequest` slot (nonce-keyed player jumps), a
+one-shot `seed` for composer prefill, and `suggestionDot`. It is the bus
+between the page tree (players) and the layout tree (sidebar) — the two
+never touch directly.
+
+**Tap points** (all additive optional props, inert when unwired):
+`LearnSlideDeck.onSlideChange`/`navRequest` (jump-request, not controlled
+index — keyboard nav untouched) · `LearnImportedDeck.onPageChange` ·
+`LearnVideo.onPositionChange` (fires BEFORE the high-water early-return;
+`content_engagement` signals `rewatch`/`scrub_back`/`completed` emit here
+via the pure episode detector `lib/learn/engagement.ts`) ·
+`LearnQuiz.onActivityChange` (`quizActive` = draft non-empty && ungraded;
+clears on grade and unmount). `LearnLessonView` wires them, stamps
+`data-block-id` anchors, resolves citation jumps (same-lesson scroll +
+deck jump; cross-lesson arrives via `?block=`/`?slide=` searchParams →
+`initialFocus`).
+
+**Bundle discipline** (AC-W4U.2): the eager shell (`TutorMount` +
+`TutorFrame` + store) rides the route JS (+4.0 KB gz like-for-like);
+`TutorBody` — the whole conversation — is a `next/dynamic` `ssr:false`
+chunk fetched on first open. The learn route budget (250 KB) gates every
+commit; warm-run methodology only (the first run after a cold build can
+spike ~+35–75 KB on prefetch-settling and means nothing).
+
+**Wire client** (`lib/learn/useTutorStream.ts` + zod-free mirrors in
+`lib/learn/tutorClientTypes.ts`, drift-grepped against `outputContract.ts`
+and the route): frame-split SSE reader, optimistic learner turn, `queued`
+→ "N ahead of you", inline error + Retry (no auto-reconnect), per-send
+abort. History replays from the learner's OWN `tutor_threads`/`tutor_turns`
+rows (RLS) — no new read route. TTFT is measured send→first-frame and
+emitted as the `TUTOR_TTFT` perf vital (migration `20260804110000`;
+alerts-not-gates — the turn is one non-streamed structured call, so TTFT ≈
+whole-turn latency by construction this wave).
+
+**Flag semantics** — `TUTOR_ESCALATIONS_UI` (server env, default OFF): off
+⇒ `escalationProposal` renders NOTHING (no consent affordance in the DOM;
+the tutor's uncertainty lives in its prose); on ⇒ the dormant consent card
+renders with delivery honestly labeled as arriving with Wave 6. No UI may
+imply delivery that cannot yet occur.
+
+**/home entry** (`lib/learn/tutorHome.ts` + `TutorEntryCard`): real
+own-thread snippets per tutor-ENABLED enrollment (the enabled set is read
+via admin only AFTER the enrollment-scoped course list — enrollment is the
+access check; fail-closed to no rail), deep links `?tutor=open` (+ a
+one-shot `?seed=`), and "Review with the tutor" on the review queue —
+gated on the same enabled set. The canned TutorPanel preview is DELETED and
+`verify-tutor-home` fences its copy out of the tree permanently.

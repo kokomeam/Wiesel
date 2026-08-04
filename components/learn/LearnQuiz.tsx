@@ -122,7 +122,7 @@ export function LearnQuiz({
         {questions.map((question, qi) => (
           <li key={question.id}>
             <p className="text-[15px] font-medium text-stone-800">
-              <span className="mr-2 text-stone-400">{qi + 1}.</span>
+              <span className="mr-2 text-stone-600">{qi + 1}.</span>
               {question.prompt}
             </p>
             <div className="mt-3">
@@ -181,7 +181,7 @@ export function LearnQuiz({
             >
               {busy ? "Checking…" : "Check my answers"}
             </button>
-            <span className="text-xs text-stone-400">
+            <span className="text-xs text-stone-600">
               {answeredCount}/{questions.length} answered
               {priorAttempts > 0 ? ` · ${priorAttempts} previous ${priorAttempts === 1 ? "attempt" : "attempts"}` : ""}
             </span>

@@ -85,7 +85,7 @@ export function StudentSidebar({
               <span className="block text-xs font-semibold text-stone-700 group-hover:text-brand-800">
                 Switch to creator studio
               </span>
-              <span className="block text-[11px] leading-snug text-stone-400">
+              <span className="block text-[11px] leading-snug text-stone-500">
                 Teach, create, and grow your audience
               </span>
             </span>
@@ -98,7 +98,7 @@ export function StudentSidebar({
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-stone-900">{user.name}</p>
-            <p className="truncate text-xs text-stone-400">{user.email}</p>
+            <p className="truncate text-xs text-stone-500">{user.email}</p>
           </div>
           <SignOutButton />
         </div>

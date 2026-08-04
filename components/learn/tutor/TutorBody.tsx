@@ -425,7 +425,7 @@ function TurnBubble({
   if (isLearner) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-3.5 py-2 text-sm leading-relaxed text-white">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-700 px-3.5 py-2 text-sm leading-relaxed text-white">
           {turn.content}
         </div>
       </div>
@@ -451,7 +451,7 @@ function TurnBubble({
           type="button"
           data-ai-tool="tutor-just-show-me"
           onClick={() => onSend("just show me")}
-          className="mt-2 text-[11px] font-medium text-stone-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-brand-700"
+          className="mt-2 text-[11px] font-medium text-stone-500 underline decoration-dotted underline-offset-2 transition-colors hover:text-brand-700"
         >
           Just show me
         </button>

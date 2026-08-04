@@ -173,3 +173,25 @@ emits.
 L4 collapses behind TUTOR_ENABLE_CHAINING) and remains OFF by default —
 foreground turns ship store:false. This wave was the last natural decision
 point; the checkpoint carries the note.
+
+## Wave 4 — the learner sidebar (appended 2026-08-04)
+
+The client path, end to end:
+
+```
+app/(learn)/learn/[slug]/layout.tsx  (server; resolveTutorAccess gates)
+  └─ TutorFrame (client, reflow) ─ children (the lesson page tree)
+  └─ TutorMount (client, EAGER ≤5KB: edge tab, ?tutor/?seed one-shot)
+       └─ next/dynamic ssr:false → TutorBody (LAZY chunk)
+            ├─ useTutorStream ── POST /api/learn/tutor (SSE: queued→turn→done)
+            ├─ tutorHistory ──── learner-own tutor_threads/turns (RLS)
+            ├─ practice cards ── practice_answer (client-graded, Contract 5)
+            ├─ self-report ───── self_report (stable-keyed)
+            └─ TUTOR_TTFT ────── perf_vital (alerts-not-gates)
+  players ⇄ lib/learn/tutorStore (ambient context · citationRequest · seed)
+```
+
+Trust boundaries unchanged from Wave 3: the route's access gate + the
+service-role-only assistant writes + the frozen event schema at emission.
+The client adds NO privileged path — its reads are the learner's own RLS
+rows, its writes go through the same four route actions.

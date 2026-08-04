@@ -80,6 +80,8 @@
     "verify:tutor-client": "tsx scripts/verify-tutor-client.ts",
     "verify:tutor-home": "tsx scripts/verify-tutor-home.ts",
     "verify:tutor:int": "tsx scripts/verify-tutor-graph-int.ts && tsx scripts/verify-tutor-extraction-int.ts && tsx scripts/verify-tutor-reconcile-int.ts && tsx scripts/verify-tutor-evidence-int.ts && tsx scripts/verify-tutor-threads-int.ts",
+    "verify:tutor:browser": "tsx scripts/verify-tutor-browser.ts",
+    "seed:tutor-demo": "tsx scripts/seed-tutor-demo.ts",
     "smoke:tutor": "tsx scripts/smoke-tutor-models.ts"
   },
   "dependencies": {
@@ -107,6 +109,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

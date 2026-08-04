@@ -275,7 +275,7 @@ export function LearnSlideDeck({
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-xs tabular-nums text-stone-400">
+          <span className="text-xs tabular-nums text-stone-600">
             {index + 1} / {slides.length}
           </span>
           <button
@@ -347,7 +347,7 @@ function SlideFeedbackControl({
 
   return (
     <div
-      className="mt-2 flex flex-wrap items-center gap-2 text-xs text-stone-400"
+      className="mt-2 flex flex-wrap items-center gap-2 text-xs text-stone-600"
       data-ai-id={`slide-feedback-${blockId}`}
     >
       <span>Was this slide helpful?</span>
