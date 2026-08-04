@@ -67,10 +67,20 @@ export const BUDGETS: Readonly<Record<string, number>> = {
   // dynamic-imported). Making the measurer async risks one-undo-per-commit
   // semantics for 77 KB on a desktop-first creator surface. Revisit if the
   // measurer is ever rebuilt without react-dom/server.
-  "/studio": 550,
+  //
+  // Renegotiated 550 → 600 on 2026-08-04 (TUTOR-1 W3.0 gate, Henry-approved):
+  // the worktree reconciliation merged the ratified recorder/clips editor
+  // surfaces (measured 589.8 post-merge vs 544 at PERF-1 close — feature
+  // weight, not a leak). A decomposition pass over the recorder/clips chunks
+  // is the flagged PERF-2 candidate before this number moves again.
+  "/studio": 600,
   "/learn/[slug]/[lessonId]": 250,
   "/studio/[courseId]/analytics": 250,
-  "/marketing": 300,
+  // Renegotiated 300 → 315 on 2026-08-04 (same gate/approval): the UI-1 hub
+  // overhaul + connected-publishing cards merged in at 308.1. Revisit with
+  // the same PERF-2 pass (ChatPublishCards is the first dynamic-import
+  // candidate if the hub grows again).
+  "/marketing": 315,
 };
 
 export const DEFAULT_BUDGET_KB = 250;
