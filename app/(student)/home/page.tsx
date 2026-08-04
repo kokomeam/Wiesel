@@ -1,7 +1,7 @@
 /**
  * /home — the student dashboard: continue-hero, stats band (streak / lessons /
  * quiz accuracy / in-progress), "Jump back in" course grid, "Worth a review"
- * quiz queue, and the AI-tutor preview rail.
+ * quiz queue, and the tutor entry rail (deep links into each course's tutor).
  *
  * Server component (like the /learn pages): my_learning() + my_activity_days()
  * RPCs plus own quiz_attempts / homework_submissions rows, then publication
@@ -21,6 +21,7 @@ import {
   Flame,
   GraduationCap,
   PlayCircle,
+  Sparkles,
   Target,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -48,7 +49,13 @@ import { getSessionProfile } from "@/lib/supabase/sessionProfile";
 import { Card } from "@/components/ui/Card";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { MyLearningCard } from "@/components/learn/CourseCards";
-import { TutorPanel } from "@/components/student/TutorPanel";
+import { TutorEntryCard } from "@/components/student/TutorEntryCard";
+import {
+  learnHrefSlug,
+  loadTutorHomeEntries,
+  reviewWithTutorHref,
+  type TutorHomeCourse,
+} from "@/lib/learn/tutorHome";
 
 export const dynamic = "force-dynamic";
 
@@ -217,6 +224,23 @@ export default async function StudentHomePage() {
     }
   }
 
+  // ── Tutor entry rail (TUTOR-1 W4.3) ──
+  // Kicked off HERE (the hero's continue lesson is known) so the settings/
+  // thread/turn reads overlap the review-snapshot + mastery waves below;
+  // awaited just before render. continueLessonId is only resolved for the
+  // hero course (snapshot fetches are capped) — other courses deep-link to
+  // their landing (tutorDeepLink handles null).
+  const tutorCourses: TutorHomeCourse[] = liveRows.map((row) => ({
+    courseId: row.course_id,
+    slug: row.slug,
+    title: row.title,
+    continueLessonId:
+      heroRow && row.course_id === heroRow.course_id
+        ? (heroSummary?.continueLessonId ?? null)
+        : null,
+  }));
+  const tutorEntriesPromise = loadTutorHomeEntries(supabase, user.id, tutorCourses);
+
   const heroSnapshot = heroRow ? snapshotByCourse.get(heroRow.course_id) : undefined;
   // null continueLessonId from the summary = course DONE (never lesson 1).
   const heroComplete = heroSummary !== null && heroSummary.continueLessonId === null;
@@ -326,6 +350,11 @@ export default async function StudentHomePage() {
 
   const hasEnrollments = learning.length > 0;
 
+  // Tutor-enabled courses only (a disabled course simply doesn't appear — no
+  // teaser); the review rows gate their tutor affordance on the same set.
+  const tutorEntries = await tutorEntriesPromise;
+  const tutorSlugs = new Set(tutorEntries.map((entry) => entry.slug));
+
   return (
     <div
       className="paper-glow mx-auto w-full max-w-6xl px-6 py-8"
@@ -339,7 +368,12 @@ export default async function StudentHomePage() {
         </h1>
       </header>
 
-      <div className="mt-8 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div
+        className={cn(
+          "mt-8 grid gap-6",
+          tutorEntries.length > 0 && "xl:grid-cols-[minmax(0,1fr)_340px]"
+        )}
+      >
         {/* ── Main column ── */}
         <div className="min-w-0 space-y-8">
           {learningError ? (
@@ -554,28 +588,48 @@ export default async function StudentHomePage() {
                   </Card>
                 ) : (
                   <Card className="mt-3 divide-y divide-stone-100 p-0">
-                    {shownReviewItems.map((item) => (
-                      <Link
-                        key={item.key}
-                        href={item.href}
-                        className="flex items-center gap-4 px-5 py-3.5 transition-colors hover:bg-stone-50"
-                      >
-                        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-rose-50 text-rose-500">
-                          <Target className="size-4" aria-hidden />
+                    {shownReviewItems.map((item) => {
+                      // "Review with the tutor" only where the course's tutor
+                      // is actually enabled (same honest-by-construction rule
+                      // as the rail — a disabled course gets no teaser link).
+                      const itemSlug = learnHrefSlug(item.href);
+                      const tutorEnabled =
+                        itemSlug !== null && tutorSlugs.has(itemSlug);
+                      return (
+                        <div
+                          key={item.key}
+                          className="flex items-center gap-4 px-5 py-3.5 transition-colors hover:bg-stone-50"
+                        >
+                          <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-rose-50 text-rose-500">
+                            <Target className="size-4" aria-hidden />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <Link
+                              href={item.href}
+                              className="block truncate text-sm font-medium text-stone-800 hover:text-learn-800"
+                            >
+                              {item.quizTitle}
+                            </Link>
+                            <p className="truncate text-xs text-stone-500">
+                              {item.lessonTitle} · {item.courseTitle}
+                            </p>
+                            {tutorEnabled ? (
+                              <Link
+                                href={reviewWithTutorHref(item.href, item.quizTitle)}
+                                data-ai-tool="home-review-with-tutor"
+                                className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-learn-700 hover:text-learn-800"
+                              >
+                                <Sparkles className="size-3" aria-hidden />
+                                Review with the tutor
+                              </Link>
+                            ) : null}
+                          </div>
+                          <span className="shrink-0 rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold tabular-nums text-rose-600 ring-1 ring-inset ring-rose-100">
+                            {item.scorePct}%
+                          </span>
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-stone-800">
-                            {item.quizTitle}
-                          </p>
-                          <p className="truncate text-xs text-stone-500">
-                            {item.lessonTitle} · {item.courseTitle}
-                          </p>
-                        </div>
-                        <span className="shrink-0 rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold tabular-nums text-rose-600 ring-1 ring-inset ring-rose-100">
-                          {item.scorePct}%
-                        </span>
-                      </Link>
-                    ))}
+                      );
+                    })}
                     {homeworkPending > 0 ? (
                       <div className="flex items-center gap-4 px-5 py-3.5">
                         <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-learn-50 text-learn-600">
@@ -597,10 +651,12 @@ export default async function StudentHomePage() {
           )}
         </div>
 
-        {/* ── Right rail: AI tutor preview ── */}
-        <aside className="min-w-0">
-          <TutorPanel className="xl:sticky xl:top-6" />
-        </aside>
+        {/* ── Right rail: your tutor (only when a tutor-enabled enrollment exists) ── */}
+        {tutorEntries.length > 0 ? (
+          <aside className="min-w-0">
+            <TutorEntryCard entries={tutorEntries} className="xl:sticky xl:top-6" />
+          </aside>
+        ) : null}
       </div>
     </div>
   );
