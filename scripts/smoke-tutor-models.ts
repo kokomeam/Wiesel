@@ -47,6 +47,9 @@ const TINY_SCHEMA = {
 async function main() {
   // 1 — the resolved registry.
   log({ smoke: "registry", resolved: TUTOR_MODELS });
+  // The Wave-3 tutor jobs (tutor_turn + practice_gen) share the Luna model — print
+  // them explicitly so a misconfig is obvious at a glance.
+  log({ smoke: "registry-tutor-jobs", tutor_turn: TUTOR_MODELS.tutor_turn, practice_gen: TUTOR_MODELS.practice_gen });
 
   if (!process.env.OPENAI_API_KEY) {
     verdict("api-key", false, { error: "OPENAI_API_KEY missing from .env.local" });
@@ -101,6 +104,52 @@ async function main() {
       model: job.model,
       effort: job.effort,
       ms: Date.now() - t0,
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    });
+  }
+
+  // 3b — trivial structured call on the TUTOR TURN model (gpt-5.6-luna) at the
+  // registry's own effort (Wave 3 — the live tutor turn + practice_gen share Luna).
+  // Mirrors the terra step; validates the Luna id + effort vocabulary together.
+  const turn = TUTOR_MODELS.tutor_turn;
+  const tt = Date.now();
+  try {
+    const result = await client.runTurn(
+      {
+        system: "You are a course tutor. Respond with ONLY the JSON object.",
+        input: [{ role: "user", content: 'One-word concept a learner practices with "2 + 2 = 4"?' }],
+        tools: [],
+        stream: false,
+        model: turn.model,
+        effort: turn.effort,
+        maxOutputTokens: 2000,
+        responseFormat: { name: "tiny_turn_concept", schema: TINY_SCHEMA },
+      },
+      () => {}
+    );
+    const ms = Date.now() - tt;
+    const parsed = (() => {
+      try {
+        return JSON.parse(result.text || "{}") as { concept?: string };
+      } catch {
+        return {};
+      }
+    })();
+    const usage = {
+      inputTokens: result.usage?.inputTokens ?? 0,
+      cachedTokens: result.usage?.cachedTokens ?? 0,
+      outputTokens: result.usage?.outputTokens ?? 0,
+    };
+    verdict(
+      "tutor-turn-model-structured-call",
+      result.finishReason !== "error" && typeof parsed.concept === "string",
+      { model: turn.model, effort: turn.effort, ms, concept: parsed.concept ?? null, usage, costUsd: computeCostUsd(usage, turn.model), responseId: result.responseId ?? null }
+    );
+  } catch (e) {
+    verdict("tutor-turn-model-structured-call", false, {
+      model: turn.model,
+      effort: turn.effort,
+      ms: Date.now() - tt,
       error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
     });
   }

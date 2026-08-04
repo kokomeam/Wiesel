@@ -59,9 +59,9 @@ function registryShape() {
     );
   }
   check(
-    "exactly the four jobs are present",
+    "exactly the five jobs are present",
     Object.keys(TUTOR_MODELS).sort().join(",") ===
-      "embedding,graph_extraction,reconciliation,tutor_turn"
+      "embedding,graph_extraction,practice_gen,reconciliation,tutor_turn"
   );
   check(
     "embedding model is text-embedding-3-small",
@@ -85,11 +85,19 @@ function registryShape() {
       TUTOR_MODELS.embedding.maxOutputTokens === 0
   );
   check(
-    "tutor_turn defaults: medium / 120s / 1 retry / 8k tokens",
+    "tutor_turn defaults: medium / 30s per-turn deadline / 1 retry / 8k tokens",
     TUTOR_MODELS.tutor_turn.effort === "medium" &&
-      TUTOR_MODELS.tutor_turn.timeoutMs === 120_000 &&
+      TUTOR_MODELS.tutor_turn.timeoutMs === 30_000 &&
       TUTOR_MODELS.tutor_turn.maxRetries === 1 &&
       TUTOR_MODELS.tutor_turn.maxOutputTokens === 8_000
+  );
+  check(
+    "practice_gen defaults: luna / medium / 30s / 1 retry / 4k tokens",
+    TUTOR_MODELS.practice_gen.model === "gpt-5.6-luna" &&
+      TUTOR_MODELS.practice_gen.effort === "medium" &&
+      TUTOR_MODELS.practice_gen.timeoutMs === 30_000 &&
+      TUTOR_MODELS.practice_gen.maxRetries === 1 &&
+      TUTOR_MODELS.practice_gen.maxOutputTokens === 4_000
   );
 }
 

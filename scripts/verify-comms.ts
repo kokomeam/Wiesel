@@ -19,6 +19,10 @@ process.env.NEXT_PUBLIC_SITE_URL = "https://example.test";
 process.env.COMMS_PROVIDER = "mock";
 
 import { createHmac } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { TUTOR_TOOL_NAMES } from "@/lib/tutor/runtime/tools";
 import {
   AnalyticsBatchSchema,
   AnalyticsEventSchema,
@@ -445,6 +449,50 @@ async function main() {
     (mapEventToColumns(clickEvent, USER).metadata as Record<string, unknown>)?.url ===
       "https://example.test/learn/x"
   );
+
+  /* ── D-6: the tutor never sends. Two guards. ────────────────────────────────
+   * (1) NEGATIVE — no tutor tool is a messaging tool: none of the five names
+   *     matches /send|message|email|broadcast/i (the tutor's ONLY hand-off to a
+   *     human is propose_escalation, a consent-gated DRAFT that sends nothing).
+   * (2) The `approveAndSend`-only-caller invariant, extended to lib/tutor/: the
+   *     ONLY file in the repo that calls `provider.send(` is lib/comms/service.ts.
+   *     Scanning lib/comms/ AND lib/tutor/ proves the tutor tree introduces no
+   *     new send call site (mirrors the CLAUDE.md grep-able invariant). */
+  console.log("\n— D-6 tutor-never-sends —");
+  const sendish = /send|message|email|broadcast/i;
+  check(
+    "no tutor tool is a messaging tool",
+    TUTOR_TOOL_NAMES.every((n) => !sendish.test(n)),
+    TUTOR_TOOL_NAMES.filter((n) => sendish.test(n)).join(",")
+  );
+
+  // Walk lib/comms/ + lib/tutor/ and grep every .ts for `provider.send(`. The
+  // ONLY legal hit is lib/comms/service.ts (approveAndSend). Any other file — in
+  // particular anything under lib/tutor/ — fails the invariant.
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walk(full));
+      else if (entry.name.endsWith(".ts")) out.push(full);
+    }
+    return out;
+  }
+  const scanned = [...walk(join(repoRoot, "lib/comms")), ...walk(join(repoRoot, "lib/tutor"))];
+  const offenders = scanned.filter((f) => {
+    if (f.endsWith(join("lib", "comms", "service.ts"))) return false; // the ONE legal caller
+    return /provider\.send\s*\(/.test(readFileSync(f, "utf8"));
+  });
+  check(
+    "provider.send( appears only in lib/comms/service.ts (incl. lib/tutor scan)",
+    offenders.length === 0,
+    offenders.map((f) => f.replace(repoRoot, "")).join(", ")
+  );
+  const tutorSend = scanned.filter(
+    (f) => f.includes(join("lib", "tutor")) && /provider\.send\s*\(/.test(readFileSync(f, "utf8"))
+  );
+  check("lib/tutor/ introduces ZERO provider.send call sites", tutorSend.length === 0, tutorSend.join(","));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

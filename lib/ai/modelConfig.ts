@@ -313,14 +313,25 @@ export const TUTOR_MODELS = {
     maxRetries: int("TUTOR_EMBEDDING_MAX_RETRIES", 2),
     maxOutputTokens: int("TUTOR_EMBEDDING_MAX_OUTPUT_TOKENS", 0),
   } satisfies TutorJobModel,
-  /** A live student tutor turn (Wave 3 — consumed later, defined now so the registry
-   *  is complete). A snappier model + a tighter 120s ceiling for interactivity. */
+  /** A live student tutor turn (Wave 3). A snappier model + a PER-TURN 30s ceiling
+   *  for interactivity (Wave 3 order §3.1 — the interactive turn must never hang the
+   *  learner; the loop's ≤3 tool rounds each run under this deadline). Env-overridable. */
   tutor_turn: {
     model: process.env.TUTOR_TURN_MODEL ?? "gpt-5.6-luna",
     effort: effort("TUTOR_TURN_EFFORT", "medium"),
-    timeoutMs: int("TUTOR_TURN_TIMEOUT_MS", 120_000),
+    timeoutMs: int("TUTOR_TURN_TIMEOUT_MS", 30_000),
     maxRetries: int("TUTOR_TURN_MAX_RETRIES", 1),
     maxOutputTokens: int("TUTOR_TURN_MAX_OUTPUT_TOKENS", 8_000),
+  } satisfies TutorJobModel,
+  /** The tutor's on-demand PRACTICE-ITEM generator (Wave 3 · the generate_practice
+   *  tool). ONE structured Luna call producing ≤3 tagged items; a tight 30s ceiling +
+   *  small output budget (practice items are compact). Env: TUTOR_PRACTICE_GEN_*. */
+  practice_gen: {
+    model: process.env.TUTOR_PRACTICE_GEN_MODEL ?? "gpt-5.6-luna",
+    effort: effort("TUTOR_PRACTICE_GEN_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_PRACTICE_GEN_TIMEOUT_MS", 30_000),
+    maxRetries: int("TUTOR_PRACTICE_GEN_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_PRACTICE_GEN_MAX_OUTPUT_TOKENS", 4_000),
   } satisfies TutorJobModel,
 } as const;
 
