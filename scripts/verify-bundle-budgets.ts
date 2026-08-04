@@ -76,11 +76,14 @@ export const BUDGETS: Readonly<Record<string, number>> = {
   "/studio": 600,
   "/learn/[slug]/[lessonId]": 250,
   "/studio/[courseId]/analytics": 250,
-  // Renegotiated 300 → 315 on 2026-08-04 (same gate/approval): the UI-1 hub
-  // overhaul + connected-publishing cards merged in at 308.1. Revisit with
-  // the same PERF-2 pass (ChatPublishCards is the first dynamic-import
-  // candidate if the hub grows again).
-  "/marketing": 315,
+  // Renegotiated 300 → 330 on 2026-08-04 (W3.0 gate, Henry-approved twice:
+  // first to 315 against a 308.1 reading, then to 330 when the run-to-run
+  // band showed itself — identical code measured 308.1/308.1/321.2 because
+  // the settle window nondeterministically counts viewport-prefetched
+  // OTHER-route chunks on this link-dense hub). 330 = band ceiling + margin.
+  // Revisit with the PERF-2 pass (ChatPublishCards is the first
+  // dynamic-import candidate if the hub grows again).
+  "/marketing": 330,
 };
 
 export const DEFAULT_BUDGET_KB = 250;
