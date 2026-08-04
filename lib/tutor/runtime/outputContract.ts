@@ -27,7 +27,6 @@
  */
 
 import { z } from "zod";
-import { TutorInferencePayloadSchema } from "@/lib/analytics/events";
 
 /* ─────────────────────────────── span markers ──────────────────────────────── */
 
@@ -87,19 +86,39 @@ export type TurnEscalationProposal = z.infer<typeof TurnEscalationProposalSchema
 /* ─────────────────────────────── turn output ───────────────────────────────── */
 
 /**
+ * The turn-local evidence item: the SHAPE of the frozen Wave-3
+ * `TutorInferencePayloadSchema`, but `nodeId` is a plain string at PARSE time —
+ * a model-mangled node id must be a droppable cleanup (the loop filters items
+ * against the course's real concept-node ids, flag `evidence_dropped`), never a
+ * whole-turn `schema_parse_failed`. Found live: a turn that emitted evidence
+ * with a non-uuid node reference lost the ENTIRE turn. The frozen event schema
+ * still gates EMISSION (service.ts → buildTutorEvidenceEvent) — only resolving
+ * uuids ever reach the analytics stream.
+ */
+export const TurnEvidenceItemSchema = z.object({
+  nodeId: z.string(),
+  direction: z.enum(["positive", "negative"]),
+  strength: z.enum(["weak", "moderate"]),
+  turnRef: z.string(),
+});
+
+/**
  * THE turn output. `rung` is the 0..4 scaffolding rung (0 = pure question, 4 =
  * full answer — see the rung table in promptLayers.ts). `citations` (≤8) back the
  * grounded spans; `evidence` (≤4) are tutor-inference mastery signals emitted this
- * turn (the frozen Wave-3 `TutorInferencePayloadSchema`). `practiceItems` (≤3) and
- * `escalationProposal` are optional — present only when the tutor generated
- * practice or proposed a hand-off.
+ * turn (shape-frozen, id-loosened — see `TurnEvidenceItemSchema`). `practiceItems`
+ * (≤3) and `escalationProposal` are optional — present only when the tutor
+ * generated practice or proposed a hand-off.
  */
 export const TurnOutputSchema = z.object({
   proseWithSpanMarkers: z.string(),
   citations: z.array(TurnCitationSchema).max(8),
   rung: z.number().int().min(0).max(4),
-  evidence: z.array(TutorInferencePayloadSchema).max(4),
-  practiceItems: z.array(TurnPracticeItemSchema).max(3).optional(),
+  evidence: z.array(TurnEvidenceItemSchema).max(4),
+  // ⚠ toStrictJsonSchema makes optionals NULLABLE on the wire — the live model
+  //   correctly emits null here, so the Zod side must accept it too (found live:
+  //   every turn failed schema_parse on exactly this field).
+  practiceItems: z.array(TurnPracticeItemSchema).max(3).nullable().optional(),
   escalationProposal: TurnEscalationProposalSchema.nullable().optional(),
 });
 export type TurnOutput = z.infer<typeof TurnOutputSchema>;

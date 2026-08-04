@@ -69,6 +69,7 @@ import {
   GROUNDED_CLOSE,
   SUPPLEMENTAL_OPEN,
   SUPPLEMENTAL_CLOSE,
+  TurnOutputSchema,
   type TurnOutput,
 } from "@/lib/tutor/runtime/outputContract";
 
@@ -619,6 +620,65 @@ async function main() {
       `trace=${JSON.stringify(res.toolTrace)}`
     );
     check("tool loop: final output validated + ok", res.ok && !!res.output, `ok=${res.ok} err=${res.error ?? ""}`);
+  }
+
+  /* ───────────── live-conformance regressions (first live smoke) ────────── */
+  console.log("\n— live-conformance regressions —");
+
+  // 1. practiceItems: null must PARSE (the strict JSON-schema converter makes
+  //    optionals nullable on the wire — the live model emits null, and the Zod
+  //    side rejecting it cost every turn of the first smoke).
+  {
+    const nullPractice = TurnOutputSchema.safeParse({
+      proseWithSpanMarkers: "ok",
+      citations: [],
+      rung: 1,
+      evidence: [],
+      practiceItems: null,
+      escalationProposal: null,
+    });
+    check("practiceItems: null parses", nullPractice.success, JSON.stringify(nullPractice.success ? "" : nullPractice.error.issues));
+  }
+
+  // 2. A non-resolving evidence nodeId is DROPPED + FLAGGED — never a
+  //    whole-turn schema_parse_failed (the live model referenced a concept it
+  //    had only seen by title before L2 carried nodeId tags).
+  {
+    const { deps } = loopDepsWithStructured({
+      rung: 2,
+      proseWithSpanMarkers: `${GROUNDED_OPEN}Equilibrium balances supply and demand.${GROUNDED_CLOSE}`,
+      citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+      evidence: [
+        { nodeId: NODE_1, direction: "positive", strength: "weak", turnRef: "turn" },
+        { nodeId: "Equilibrium", direction: "positive", strength: "weak", turnRef: "turn" },
+      ],
+    });
+    const res = await runTutorTurn(
+      { ...deps },
+      {
+        userId: USER_A,
+        courseId: COURSE,
+        publicationId: PUB,
+        version: 1,
+        lessonId: L1,
+        charterRow: CHARTER_ROW("guided_default"),
+        historyTurns: [{ role: "learner", content: "prior" }],
+        learnerMessage: "so it balances?",
+      }
+    );
+    check("mangled evidence nodeId → turn still ok", res.ok, `err=${res.error ?? ""}`);
+    check("resolving evidence item survives", res.evidence.length === 1 && res.evidence[0].nodeId === NODE_1);
+    check("evidence_dropped flagged", res.groundingFlags.includes("evidence_dropped"));
+  }
+
+  // 3. L2 exposes the citeable/evidence ids (title-only context forced the
+  //    live model to cite by title — grounding correctly dropped every one).
+  {
+    const l2 = assembleLessonContext(buildSnapshot(), L1, CONCEPT_NODES, { budgetChars: LAYER_BUDGETS.l2Chars });
+    check("L2 lesson header carries lessonId", l2.includes(`(lessonId: ${L1})`));
+    check("L2 block headers carry blockId", l2.includes(`(blockId: ${B1})`));
+    check("L2 concept lines carry nodeId", l2.includes(`(nodeId: ${NODE_1})`));
+    check("L2 carries the cite-by-id instruction", l2.includes("exact lessonId/blockId values"));
   }
 
   /* ───────────────────────────── history bounds ────────────────────────── */

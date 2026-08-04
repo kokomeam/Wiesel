@@ -59,6 +59,7 @@ import { stableStringify } from "@/lib/course/publish/hash";
 import { runGraphExtraction } from "@/lib/tutor/graph/extraction";
 import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
+import { withPooledModel, poolFor } from "@/lib/ai/subagent";
 import { acceptChangeSet, rejectChangeSet } from "@/lib/ai/changeSet";
 import { emitTutorModelCall } from "@/lib/tutor/telemetry";
 import {
@@ -252,13 +253,29 @@ async function main() {
   };
 
   const responses = buildMockResponses(fx.doc);
+
+  // W3.1 retired inline telemetry: the withPooledModel decorator around the model
+  // is THE emitter, so the suite must wrap its mock exactly like the live caller
+  // (lib/inngest/functions/tutorGraph.ts) — a bare mock emits ZERO cost rows.
+  const pooled = (mock: ReturnType<typeof createMockModelClient>, runKey: string) =>
+    withPooledModel(mock, {
+      pool: poolFor("creator"),
+      cost: {
+        supabase: admin,
+        courseId: fx.courseId,
+        emittedBy: fx.author.userId,
+        jobType: "graph_extraction",
+        runKey,
+      },
+    });
+
   const model = createMockModelClient([], { structured: responses });
   const runId = await newRun();
 
   // 2 — run the extraction with the ADMIN client. canonSimThreshold forced low so
   //     the mock's un-clusterable embeddings still exercise the merge step.
   const result = await runGraphExtraction(
-    { supabase: admin, model, loadSnapshot, config: { canonSimThreshold: -1 } },
+    { supabase: admin, model: pooled(model, runId), loadSnapshot, config: { canonSimThreshold: -1 } },
     { courseId: fx.courseId, publicationId: fx.publicationId, runId }
   );
 
@@ -384,9 +401,10 @@ async function main() {
   // RE-RUN extraction → a fresh pending set → ACCEPT via the route's sequence.
   console.log("\n# re-run → accept");
   const model2 = createMockModelClient([], { structured: responses });
+  const runId2 = await newRun();
   const rerun = await runGraphExtraction(
-    { supabase: admin, model: model2, loadSnapshot, config: { canonSimThreshold: -1 } },
-    { courseId: fx.courseId, publicationId: fx.publicationId, runId: await newRun() }
+    { supabase: admin, model: pooled(model2, runId2), loadSnapshot, config: { canonSimThreshold: -1 } },
+    { courseId: fx.courseId, publicationId: fx.publicationId, runId: runId2 }
   );
   check("re-run ok + not alreadyPending (the prior set was rejected)", rerun.ok && !rerun.alreadyPending, JSON.stringify({ ap: rerun.alreadyPending }));
   const changeSet2 = rerun.changeSetId!;
@@ -404,18 +422,20 @@ async function main() {
   console.log("\n# pending guard — a second run over a pending set does nothing");
   // Re-run to open a THIRD pending set, then re-run AGAIN → alreadyPending.
   const model3 = createMockModelClient([], { structured: responses });
+  const runId3 = await newRun();
   const openPending = await runGraphExtraction(
-    { supabase: admin, model: model3, loadSnapshot, config: { canonSimThreshold: -1 } },
-    { courseId: fx.courseId, publicationId: fx.publicationId, runId: await newRun() }
+    { supabase: admin, model: pooled(model3, runId3), loadSnapshot, config: { canonSimThreshold: -1 } },
+    { courseId: fx.courseId, publicationId: fx.publicationId, runId: runId3 }
   );
   check("a run after accept opens a NEW pending set", openPending.ok && !openPending.alreadyPending);
   const nodeCountBeforeGuard = ((await admin.from("concept_nodes").select("id").eq("course_id", fx.courseId)).data ?? []).length;
   const changeSetCountBefore = ((await admin.from("change_sets").select("id").eq("course_id", fx.courseId)).data ?? []).length;
 
   const model4 = createMockModelClient([], { structured: responses });
+  const runId4 = await newRun();
   const guarded = await runGraphExtraction(
-    { supabase: admin, model: model4, loadSnapshot, config: { canonSimThreshold: -1 } },
-    { courseId: fx.courseId, publicationId: fx.publicationId, runId: await newRun() }
+    { supabase: admin, model: pooled(model4, runId4), loadSnapshot, config: { canonSimThreshold: -1 } },
+    { courseId: fx.courseId, publicationId: fx.publicationId, runId: runId4 }
   );
   check("a second run over a pending set returns alreadyPending", guarded.alreadyPending === true);
   const nodeCountAfterGuard = ((await admin.from("concept_nodes").select("id").eq("course_id", fx.courseId)).data ?? []).length;

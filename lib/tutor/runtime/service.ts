@@ -239,7 +239,7 @@ export async function loadThreadHistory(
 ): Promise<HistoryTurn[]> {
   const { data, error } = await admin
     .from("tutor_turns")
-    .select("role, content, response_id, created_at")
+    .select("role, content, response_id, created_at, grounding")
     .eq("thread_id", threadId)
     .order("created_at", { ascending: true })
     .limit(cap);
@@ -248,6 +248,11 @@ export async function loadThreadHistory(
     role: r.role as HistoryTurn["role"],
     content: r.content,
     responseId: r.response_id,
+    // createdAt + grounding feed the SESSION-state derivation (W3.5). The textual
+    // history replay ignores them; session.ts reads createdAt (the window) and
+    // grounding.sessionMarkers (the once-per-session behavior markers).
+    createdAt: r.created_at,
+    grounding: r.grounding,
   }));
 }
 
@@ -650,12 +655,16 @@ export async function runTutorTurnForRequest(
 }
 
 /** The grounding jsonb persisted on the assistant row — the Wave-3 output
- *  contract (cited anchors + grounded/supplemental span map + flags). */
+ *  contract (cited anchors + grounded/supplemental span map + flags) PLUS the
+ *  W3.5 session markers (persisted so the NEXT turn's derived session state sees
+ *  which once-per-session behaviors already fired this session). */
 function buildGrounding(turn: TutorTurnResult): Record<string, unknown> {
   const out = turn.output;
-  return {
+  const grounding: Record<string, unknown> = {
     citations: out?.citations ?? [],
     spans: out?.spans ?? [],
     flags: turn.groundingFlags,
   };
+  if (turn.sessionMarkers.length > 0) grounding.sessionMarkers = turn.sessionMarkers;
+  return grounding;
 }

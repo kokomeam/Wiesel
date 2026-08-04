@@ -13,6 +13,13 @@ export interface HistoryTurn {
   role: "learner" | "assistant" | "instructor";
   content: string;
   responseId?: string | null;
+  /** ISO timestamp of the turn (tutor_turns.created_at). OPTIONAL here (the
+   *  textual replay doesn't need it), but the SESSION derivation (session.ts)
+   *  does — the service maps it from the row. */
+  createdAt?: string;
+  /** The assistant turn's grounding jsonb (holds `sessionMarkers`, read by the
+   *  session-state derivation). OPTIONAL; only assistant rows carry it. */
+  grounding?: unknown;
 }
 
 /** Hard turn cap regardless of budget — a marathon thread replays its tail. */

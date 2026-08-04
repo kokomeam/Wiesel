@@ -141,3 +141,35 @@ resolution.
 every schedule, but wires client emission for NONE of them — the engine is
 proven on day-one historical data (block-level attempts at 0.30 weight +
 dwell), which IS the cold-start story, tested as such.
+
+## Wave 3 — the tutor runtime (appended 2026-08-04)
+
+**Route diagram:** `POST /api/learn/tutor` → requireUser → access matrix
+(disabled / author_preview [never emits] / not_enrolled / ok) → learner
+turn persisted → history + charter + concept context loaded → the layered
+prompt (L0 static cache prefix · L1 charter · L2 lesson · L3 learner state
+· L4 replay-or-chaining) → ONE structured Luna call under the LEARNER pool
+(≤3 tool rounds over the five-tool registry) → scaffolding → grounding →
+assistant turn persisted (completion only) → evidence server-emitted →
+targeted mastery refold fired → SSE {queued}→{turn}→{done}.
+
+**Pools as-built (D-2 consumed):** the Semaphore is hardened — release
+HANDS the slot to the head waiter (no barging window), acquire(signal)
+dequeues on abort, FIFO proven under stress. poolFor("creator") IS the
+legacy modelCallSemaphore (existing call sites identical); the learner pool
+(AI_LEARNER_POOL_MAX=8) serves tutor turns. `withPooledModel` is the ONE
+cost-interception point (runTurn AND embed) — Wave 1's inline emission is
+retired; ids are retry-stable `${runKey}:${seq}` under Inngest, responseId/
+uuid on route turns. Pools remain per-Vercel-instance.
+
+**Evidence flow now LIVE:** practice answers, self-reports, hint requests,
+and per-turn tutor inferences land on `learning_events` through the frozen
+Wave-2 members with deterministic purpose-prefixed ids; each emission fires
+`tutor/mastery.refold.requested` for exactly that (learner, course). The
+sequencing-honesty gap is closed exactly as planned: Wave 2 defined, Wave 3
+emits.
+
+**P-3 status:** the chaining seam is fully built (turn.response_id stored;
+L4 collapses behind TUTOR_ENABLE_CHAINING) and remains OFF by default —
+foreground turns ship store:false. This wave was the last natural decision
+point; the checkpoint carries the note.

@@ -73,6 +73,7 @@ function makeCostStub(opts: { throwOnUpsert?: boolean } = {}) {
   const emitted: RecordedEmit[] = [];
   const supabase = {
     from(_table: string) {
+      void _table;
       return {
         upsert(rows: unknown[]) {
           if (opts.throwOnUpsert) throw new Error("boom (telemetry must swallow this)");
@@ -93,6 +94,8 @@ function makeCountingClient(): ModelClient & { turns: number; embeds: number } {
   const client: ModelClient = {
     model: "fake-model",
     async runTurn(_p: ModelTurnParams, _e: (ev: ModelStreamEvent) => void): Promise<ModelTurnResult> {
+      void _p;
+      void _e;
       state.turns += 1;
       return {
         text: "{}",
@@ -103,6 +106,7 @@ function makeCountingClient(): ModelClient & { turns: number; embeds: number } {
       };
     },
     async embed(_p: EmbedParams): Promise<EmbedResult> {
+      void _p;
       state.embeds += 1;
       return { vectors: [[1, 0, 0]], usage: { inputTokens: 7 } };
     },

@@ -69,6 +69,12 @@ import {
   type ValidatedTurn,
 } from "./grounding";
 import {
+  deriveSessionState,
+  shouldInterjectRootCause,
+  ROOT_CAUSE_INTERJECTION_MARKER,
+  type SessionTurn,
+} from "./session";
+import {
   TUTOR_TOOLS,
   TUTOR_TOOL_NAMES,
   gatherLearnerState,
@@ -147,6 +153,10 @@ export interface TutorTurnResult {
   responseId: string | null;
   /** The rung the turn resolved at (post-scaffolding), for the row + telemetry. */
   rung: number | null;
+  /** W3.5 · session markers stamped on THIS turn (e.g. 'root_cause_interjection').
+   *  Persisted into the assistant row's grounding jsonb so the NEXT turn's derived
+   *  session state sees which once-per-session behaviors already fired. */
+  sessionMarkers: string[];
   error?: string;
 }
 
@@ -157,6 +167,47 @@ const MAX_TOOL_ROUNDS = 3;
 
 /** How many chars of each history turn seed the recent-session synopsis (≤6). */
 const SYNOPSIS_CHARS = 80;
+
+/* ── W3.5 · session behaviors + assessment integrity ─────────────────────────
+ *
+ * The highest rung a `concept_review_only` charter permits while a quiz is LIVE.
+ * A rung-4 verbatim answer is never allowed during an active assessment; rung 3
+ * (a worked partial that still leaves the last step) is the ceiling, so concept
+ * scaffolding continues but the on-screen question is never handed over. */
+export const ASSESSMENT_ACTIVE_MAX_RUNG = 3;
+
+/** Default copy the loop appends when it CLAMPS a would-be full answer during an
+ *  active assessment (concept_review_only). `charter.toneNotes` tweaks the voice
+ *  via `assessmentDeferCopy(toneNotes)` — never the substance. */
+export const ASSESSMENT_DEFER_COPY =
+  "I can't hand over the answer to a live quiz question — but I'll gladly walk the concept behind it right now, and the question itself the moment you've made your attempt.";
+
+/** The tone-aware variant. A charter tone note is woven into a short lead so the
+ *  defer reads in the creator's voice; the commitment (no verbatim answer, help
+ *  with the concept) is invariant. */
+export function assessmentDeferCopy(toneNotes?: string | null): string {
+  const note = toneNotes?.trim();
+  if (!note) return ASSESSMENT_DEFER_COPY;
+  return `${ASSESSMENT_DEFER_COPY} (${note})`;
+}
+
+/** The typed refusal copy for a `block` charter while a quiz is live — the whole
+ *  turn short-circuits to this (rung 0, zero model calls, zero evidence). */
+export const ASSESSMENT_BLOCK_COPY =
+  "While this quiz is in progress I can't help with it — that's the course's rule for graded work. As soon as you've submitted, I'm here to review any concept it covered.";
+
+/** The per-turn instruction appended to the model input when a quiz is active.
+ *  Names the integrity behavior so it rides the per-turn input (NOT L0). */
+function assessmentInstruction(mode: "block" | "concept_review_only"): string {
+  return mode === "block"
+    ? "A graded quiz is ACTIVE and this course blocks assessment help: do not help with the quiz; warmly point to reviewing the concepts after the attempt."
+    : "A graded quiz is ACTIVE: scaffold the underlying CONCEPT only — never state the answer to the on-screen question verbatim, at any rung. Concept review divorced from the live question is fine.";
+}
+
+/** The per-turn instruction appended when the root-cause interjection fires. */
+function rootCauseInterjectionInstruction(title: string): string {
+  return `If it feels natural this turn, briefly offer to check "${title}" first — offer it ONCE, and drop it immediately if the learner would rather push on.`;
+}
 
 /* ─────────────────────────────── the loop ───────────────────────────────── */
 
@@ -176,6 +227,7 @@ export async function runTutorTurn(
     usage,
     responseId: null,
     rung: null,
+    sessionMarkers: [],
     error,
   });
 
@@ -232,6 +284,72 @@ export async function runTutorTurn(
       budgetChars: LAYER_BUDGETS.l3Chars,
     });
 
+    /* ── W3.5 · SESSION STATE (derived from history) + the two behavior hooks. ──
+     *
+     * Session state is derived statelessly from the thread history (session.ts).
+     * TWO behaviors ride the PER-TURN INPUT (never L0 — so the cached prefix is
+     * untouched): the root-cause interjection instruction and the assessment-
+     * integrity instruction. The `block` case short-circuits BEFORE any model
+     * call; the concept_review_only clamp is applied AFTER scaffolding. */
+    const nowIso = deps.nowIso ?? new Date().toISOString();
+    const sessionTurns: SessionTurn[] = ctx.historyTurns.map((t) => ({
+      role: t.role,
+      content: t.content,
+      createdAt: t.createdAt ?? nowIso,
+      grounding: t.grounding,
+    }));
+    const sessionState = deriveSessionState(sessionTurns, nowIso);
+
+    // (a) ASSESSMENT INTEGRITY, mode 'block': short-circuit with a typed refusal
+    //     BEFORE the model — zero model calls, zero evidence, rung 0, no citations.
+    if (ctx.quizActive && charter.assessmentHelp === "block") {
+      const spans = [{ kind: "grounded" as const, text: ASSESSMENT_BLOCK_COPY }];
+      return {
+        ok: true,
+        output: {
+          citations: [],
+          rung: 0,
+          evidence: [],
+          practiceItems: undefined,
+          escalationProposal: null,
+          prose: ASSESSMENT_BLOCK_COPY,
+          spans,
+        },
+        groundingFlags: [],
+        evidence: [],
+        practiceItems: [],
+        escalation: null,
+        toolTrace: [],
+        usage,
+        responseId: null,
+        rung: 0,
+        sessionMarkers: [],
+      };
+    }
+
+    // (b) The extra per-turn instruction lines (input-only; L0 is never touched).
+    const extraInstructions: string[] = [];
+
+    // Assessment integrity for a LIVE quiz under concept_review_only.
+    const assessmentActive = !!ctx.quizActive && charter.assessmentHelp === "concept_review_only";
+    if (assessmentActive) {
+      extraInstructions.push(assessmentInstruction("concept_review_only"));
+    }
+
+    // Root-cause interjection — fire at most ONCE per session (session.ts owns the
+    // gate); the marker is stamped into THIS turn's grounding on the way out.
+    const interject = shouldInterjectRootCause({
+      sessionState,
+      rootCauseNodeId: state.rootCauseNodeId,
+      lessonNodeIds: state.lessonNodeIds,
+    });
+    let interjectionStamped = false;
+    if (interject && state.rootCauseNodeId) {
+      const title = state.nodeTitleById?.get(state.rootCauseNodeId) ?? state.rootCauseNodeId;
+      extraInstructions.push(rootCauseInterjectionInstruction(title));
+      interjectionStamped = true;
+    }
+
     /* ── L4: textual history, OR provider-side chaining when the flag is on. ── */
     const chained = collapseToChaining(ctx.historyTurns);
     const historyText = chained
@@ -239,13 +357,18 @@ export async function runTutorTurn(
       : serializeHistory(ctx.historyTurns, LAYER_BUDGETS.l4Chars);
 
     /* ── Assemble the prompt (system + developer + input). ── */
-    const prompt = assembleTutorPrompt({
+    const basePrompt = assembleTutorPrompt({
       charterSerialized,
       lessonContext,
       learnerState,
       historyText,
       learnerMessage: ctx.learnerMessage,
     });
+    // Append the behavior instructions to the per-turn INPUT (after the message),
+    // so the stable L0/L1/L2 prefix — the cache line — is byte-unchanged.
+    const prompt = extraInstructions.length
+      ? { ...basePrompt, input: `${basePrompt.input}\n\n${extraInstructions.join("\n")}` }
+      : basePrompt;
 
     /* ── Strict tool schemas for the five tutor tools. ── */
     const tools = TUTOR_TOOL_NAMES.map((name) => {
@@ -277,7 +400,7 @@ export async function runTutorTurn(
     let parsedOutput: TurnOutput | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const noop = (_ev: ModelStreamEvent) => {};
+      const noop = (_ev: ModelStreamEvent) => void _ev;
       const result = await deps.model.runTurn(
         {
           system: prompt.system,
@@ -329,7 +452,7 @@ export async function runTutorTurn(
     // If we exhausted the tool rounds without a structured answer, ask ONCE more
     // for the final structured turn (no tools this time — force the answer).
     if (!parsedOutput) {
-      const noop = (_ev: ModelStreamEvent) => {};
+      const noop = (_ev: ModelStreamEvent) => void _ev;
       const result = await deps.model.runTurn(
         {
           system: prompt.system,
@@ -360,7 +483,7 @@ export async function runTutorTurn(
 
     // A single re-ask on parse failure (the runStructuredCall convention, inline).
     if (!parsedOutput) {
-      const noop = (_ev: ModelStreamEvent) => {};
+      const noop = (_ev: ModelStreamEvent) => void _ev;
       const result = await deps.model.runTurn(
         {
           system: prompt.system,
@@ -394,11 +517,28 @@ export async function runTutorTurn(
     void finalText;
 
     /* ── Scaffolding overrides on the RAW output (needs marker prose + rung). ── */
-    const scaffolded = applyScaffolding(parsedOutput, {
+    let scaffolded = applyScaffolding(parsedOutput, {
       style,
       isOpeningTurn: ctx.historyTurns.length === 0,
       justShowMe: detectJustShowMe(ctx.learnerMessage),
     });
+
+    /* ── W3.5 · ASSESSMENT INTEGRITY clamp (concept_review_only + live quiz). ──
+     *
+     * The rung is CLAMPED to ≤ ASSESSMENT_ACTIVE_MAX_RUNG while a quiz is live —
+     * even an explicit "just show me" (which scaffolding lifted to rung 4) is
+     * DEFERRED, never a verbatim answer. When the clamp actually reduces the rung
+     * (the turn WANTED to give the answer), the charter-tone-aware defer copy is
+     * appended so the learner hears why. Runs on the RAW marked prose (before
+     * grounding strips markers) so the appended copy rides through cleanly. */
+    if (assessmentActive && scaffolded.rung > ASSESSMENT_ACTIVE_MAX_RUNG) {
+      const deferCopy = assessmentDeferCopy(charter.toneNotes);
+      scaffolded = {
+        ...scaffolded,
+        rung: ASSESSMENT_ACTIVE_MAX_RUNG,
+        proseWithSpanMarkers: `${scaffolded.proseWithSpanMarkers} ${deferCopy}`.trim(),
+      };
+    }
 
     /* ── Grounding validation + canon suppression → the cleaned turn. ── */
     const validated = validateTurnOutput(scaffolded, index, { courseCanon: charter.courseCanon });
@@ -408,17 +548,28 @@ export async function runTutorTurn(
     // emitted the same inference doesn't double-count.
     mergeEvidence(evidence, scaffolded.evidence);
 
+    // Evidence items must reference REAL concept nodes: the contract accepts any
+    // string nodeId at parse time (a mangled id must not cost the whole turn),
+    // so the loop is where non-resolving items drop — flagged, mirroring
+    // citation_dropped. Only survivors reach the frozen event schema downstream.
+    const knownNodeIds = new Set(deps.conceptNodes.map((n) => n.id));
+    const resolvedEvidence = evidence.filter((e) => knownNodeIds.has(e.nodeId));
+    if (resolvedEvidence.length !== evidence.length) validated.flags.push("evidence_dropped");
+
     return {
       ok: validated.ok,
       output: validated.cleaned,
       groundingFlags: validated.flags,
-      evidence,
+      evidence: resolvedEvidence,
       practiceItems,
       escalation,
       toolTrace,
       usage,
       responseId: lastResponseId,
       rung: scaffolded.rung,
+      // Stamp the root-cause marker only when the interjection actually fired AND
+      // the turn completed ok — a failed turn persists nothing, so no marker.
+      sessionMarkers: interjectionStamped ? [ROOT_CAUSE_INTERJECTION_MARKER] : [],
     };
   } catch (err) {
     return empty(err instanceof Error ? err.message : String(err));

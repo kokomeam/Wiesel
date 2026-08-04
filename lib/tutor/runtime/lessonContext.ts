@@ -137,7 +137,10 @@ const BLOCK_TYPE_LABEL: Record<string, string> = {
 function blockHeader(block: PublishedLessonBlock): string {
   const label = BLOCK_TYPE_LABEL[block.type] ?? block.type;
   const title = block.title && block.title.trim() ? block.title.trim() : "(untitled)";
-  return `[${label}] ${title}`;
+  // The citeable id rides in every header: without it the model can only cite
+  // by TITLE, which the grounding validator (correctly) drops — observed live
+  // as every turn flagging `ungrounded`.
+  return `[${label}] ${title} (blockId: ${block.id})`;
 }
 
 /* ───────────────────────────── per-block mining ─────────────────────────── */
@@ -351,10 +354,13 @@ export function assembleLessonContext(
 
   /* ── Lesson header ── */
   const headerLines: string[] = [];
-  headerLines.push(`LESSON: ${lesson.title.trim()}`);
+  headerLines.push(`LESSON: ${lesson.title.trim()} (lessonId: ${lesson.id})`);
   if (lesson.objective && lesson.objective.trim()) {
     headerLines.push(`OBJECTIVE: ${lesson.objective.trim()}`);
   }
+  headerLines.push(
+    "Citations MUST use the exact lessonId/blockId values shown in parentheses — never titles."
+  );
 
   /* ── Blocks (in order) ── */
   const blockLines: string[] = [];
@@ -381,7 +387,12 @@ export function assembleLessonContext(
   for (const n of matched.slice(0, MAX_CONCEPT_LINES)) {
     const title = n.title.trim();
     const desc = n.description && n.description.trim() ? n.description.trim() : "";
-    conceptLinesRaw.push(desc ? `• ${title}: ${desc}` : `• ${title}`);
+    // The nodeId rides in the line for the same reason blockIds ride in block
+    // headers: evidence items reference concepts BY ID, and a model that has
+    // only seen titles can only fabricate ids (observed live — the whole turn
+    // failed schema parse before the contract was loosened to drop-and-flag).
+    const tag = `(nodeId: ${n.id})`;
+    conceptLinesRaw.push(desc ? `• ${title} ${tag}: ${desc}` : `• ${title} ${tag}`);
   }
   if (overLineCap) conceptLinesRaw.push(TRUNCATED);
   const clampedConcepts = clampLines(conceptLinesRaw, conceptBudget);
