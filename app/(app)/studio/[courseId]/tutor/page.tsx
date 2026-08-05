@@ -1,0 +1,105 @@
+/**
+ * /studio/[courseId]/tutor — the Creator Tutor Console (TUTOR-1 Wave 5).
+ * Server component, author-gated via ONE definer bundle RPC per tab (the
+ * analytics-page recipe). Four tabs (?tab= keeps each server-rendered +
+ * deep-linkable): Overview / Enablement & charter / Concept graph / Analytics.
+ *
+ * P5.1 owns this shell and wires all four tab components. Overview + charter load
+ * through loadTutorConsole (tutor_console_bundle); graph + analytics tabs ship as
+ * placeholders (their own components own their data — P5.2/P5.3 fill their bodies
+ * without touching this file). A null bundle (non-author / missing course) → 404.
+ */
+
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { createClient, getSessionUser } from "@/lib/supabase/server";
+import { loadTutorConsole, type TutorConsoleTab } from "@/lib/studio/tutorConsole";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { OverviewTutorTab } from "@/components/studio/tutor/OverviewTutorTab";
+import { CharterTab } from "@/components/studio/tutor/CharterTab";
+import { GraphTab } from "@/components/studio/tutor/GraphTab";
+import { AnalyticsTutorTab } from "@/components/studio/tutor/AnalyticsTutorTab";
+import { cn } from "@/lib/cn";
+
+export const dynamic = "force-dynamic";
+
+const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "charter", label: "Enablement & charter" },
+  { id: "graph", label: "Concept graph" },
+  { id: "analytics", label: "Analytics" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
+/** Overview + charter load through the bundle RPC; graph + analytics own theirs. */
+const BUNDLE_TABS: Record<TabId, TutorConsoleTab | null> = {
+  overview: "overview",
+  charter: "charter",
+  graph: null,
+  analytics: null,
+};
+
+export default async function TutorConsolePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ courseId: string }>;
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { courseId } = await params;
+  const { tab: rawTab } = await searchParams;
+  const user = await getSessionUser();
+  if (!user) redirect(`/login?redirectTo=/studio/${courseId}/tutor`);
+
+  const tab: TabId = TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
+
+  // ONE round trip: the bundle RPC authorizes internally (null → 404). Graph +
+  // analytics tabs still need the author gate, so they load the enablement-only
+  // bundle (via the charter tab shape) to 404 a non-author before rendering.
+  const bundleTab = BUNDLE_TABS[tab] ?? "charter";
+  const supabase = await createClient();
+  const bundle = await loadTutorConsole(supabase, courseId, bundleTab);
+  if (!bundle) notFound();
+
+  return (
+    <div className="mx-auto max-w-7xl space-y-6 p-6 lg:p-8">
+      <PageHeader
+        title={`${bundle.course.title} — Tutor`}
+        description="Enable, tune, and monitor the AI tutor learners use in this course."
+      />
+
+      {/* ── Tab nav (?tab= — server-rendered, deep-linkable) ── */}
+      <nav className="flex flex-wrap gap-1 border-b border-stone-200/80" aria-label="Tutor sections">
+        {TABS.map((t) => (
+          <Link
+            key={t.id}
+            href={`/studio/${courseId}/tutor${t.id === "overview" ? "" : `?tab=${t.id}`}`}
+            aria-current={tab === t.id ? "page" : undefined}
+            className={cn(
+              "-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
+              tab === t.id
+                ? "border-brand-600 text-brand-700"
+                : "border-transparent text-stone-500 hover:border-stone-300 hover:text-stone-800"
+            )}
+          >
+            {t.label}
+          </Link>
+        ))}
+      </nav>
+
+      {tab === "overview" ? (
+        <OverviewTutorTab courseId={courseId} bundle={bundle} />
+      ) : tab === "charter" ? (
+        <CharterTab
+          courseId={courseId}
+          charter={bundle.enablement.charter}
+          versions={bundle.enablement.charterVersions}
+        />
+      ) : tab === "graph" ? (
+        <GraphTab courseId={courseId} />
+      ) : (
+        <AnalyticsTutorTab courseId={courseId} />
+      )}
+    </div>
+  );
+}

@@ -76,6 +76,14 @@ export const BUDGETS: Readonly<Record<string, number>> = {
   "/studio": 600,
   "/learn/[slug]/[lessonId]": 250,
   "/studio/[courseId]/analytics": 250,
+  // TUTOR-1 Wave 5 (P5.1): the Creator Tutor Console. Server-rendered tabs
+  // (overview/charter/graph/analytics); the ONLY client code is the charter
+  // form + the enablement toggle (SegmentedControl/Toggle/StickyActionBar) —
+  // NO editor store, NO graph SVG stack (those land in P5.2, own budget).
+  // MEASURED 218.6 KB (build + verify:budgets, 2026-08-05); 250 = ~15% headroom
+  // (matches the sibling analytics route). P5.2 will renegotiate when the graph
+  // editor's SVG/drag stack lands.
+  "/studio/[courseId]/tutor": 250,
   // Renegotiated 300 → 330 on 2026-08-04 (W3.0 gate, Henry-approved twice:
   // first to 315 against a 308.1 reading, then to 330 when the run-to-run
   // band showed itself — identical code measured 308.1/308.1/321.2 because
@@ -430,6 +438,12 @@ async function main() {
     {
       key: "/studio/[courseId]/analytics",
       path: `/studio/${fixture.courseId}/analytics`,
+      role: "author",
+      top5: true,
+    },
+    {
+      key: "/studio/[courseId]/tutor",
+      path: `/studio/${fixture.courseId}/tutor`,
       role: "author",
       top5: true,
     },

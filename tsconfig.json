@@ -59,6 +59,7 @@
     "scripts/verify-portal-browser.ts",
     "scripts/verify-mastery-home-browser.ts",
     "scripts/verify-tutor-browser.ts",
+    "scripts/verify-tutor-console-browser.ts",
     "scripts/verify-bundle-budgets.ts",
     "scripts/verify-lighthouse-budgets.ts"
   ]

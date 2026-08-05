@@ -11,7 +11,7 @@ import { useEffect, useState, useTransition } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowRight, BarChart3, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, GraduationCap, Trash2 } from "lucide-react";
 import { deleteCourse } from "@/app/(app)/studio/actions";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -101,6 +101,19 @@ export function CourseCardItem({ course }: { course: CourseCard }) {
                 className="grid size-7 place-items-center rounded-lg text-stone-300 opacity-0 transition-all hover:bg-brand-50 hover:text-brand-600 focus-visible:opacity-100 group-hover:opacity-100"
               >
                 <BarChart3 className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label={`Tutor for ${title}`}
+                title="AI tutor console"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  router.push(`/studio/${course.id}/tutor`);
+                }}
+                className="grid size-7 place-items-center rounded-lg text-stone-300 opacity-0 transition-all hover:bg-brand-50 hover:text-brand-600 focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <GraduationCap className="size-3.5" />
               </button>
               <button
                 type="button"

@@ -14,6 +14,7 @@ import {
   BarChart3,
   Eye,
   Focus,
+  GraduationCap,
   Loader2,
   Minimize2,
   Redo2,
@@ -306,6 +307,22 @@ export function CourseEditorShell() {
             >
               <BarChart3 className="size-3.5 text-stone-400" />
               Analytics
+            </Link>
+          ) : null}
+          {courseId ? (
+            <Link
+              href={`/studio/${courseId}/tutor`}
+              title="AI tutor for this course"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-50"
+              {...toolAttrs({
+                tool: "open-tutor",
+                action: "OPEN_TUTOR",
+                targetType: "panel",
+                label: "Open the AI tutor console for this course",
+              })}
+            >
+              <GraduationCap className="size-3.5 text-stone-400" />
+              Tutor
             </Link>
           ) : null}
           <Button
