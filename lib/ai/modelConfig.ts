@@ -333,6 +333,18 @@ export const TUTOR_MODELS = {
     maxRetries: int("TUTOR_PRACTICE_GEN_MAX_RETRIES", 1),
     maxOutputTokens: int("TUTOR_PRACTICE_GEN_MAX_OUTPUT_TOKENS", 4_000),
   } satisfies TutorJobModel,
+  /** The bad-lesson RATIONALE writer (Wave 5 P5.3 · the nightly tutorLessonHealth
+   *  step). Terra writes ONLY the human-readable case over the ALREADY-COMPUTED
+   *  composite evidence — it never computes or ranks (that is deterministic SQL).
+   *  A short prose paragraph → a modest output budget; nightly, so a generous
+   *  deadline. Env: TUTOR_LESSON_RATIONALE_*. */
+  lesson_rationale: {
+    model: process.env.TUTOR_LESSON_RATIONALE_MODEL ?? "gpt-5.6-terra",
+    effort: effort("TUTOR_LESSON_RATIONALE_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_LESSON_RATIONALE_TIMEOUT_MS", 60_000),
+    maxRetries: int("TUTOR_LESSON_RATIONALE_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_LESSON_RATIONALE_MAX_OUTPUT_TOKENS", 2_000),
+  } satisfies TutorJobModel,
 } as const;
 
 /**
