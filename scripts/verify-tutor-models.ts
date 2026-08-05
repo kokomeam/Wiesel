@@ -59,10 +59,11 @@ function registryShape() {
     );
   }
   check(
-    "exactly the five jobs are present",
+    "exactly the six jobs are present",
     Object.keys(TUTOR_MODELS).sort().join(",") ===
-      "embedding,graph_extraction,practice_gen,reconciliation,tutor_turn"
+      "embedding,graph_extraction,lesson_rationale,practice_gen,reconciliation,tutor_turn"
   );
+  check("lesson_rationale defaults to gpt-5.6-terra", TUTOR_MODELS.lesson_rationale.model === "gpt-5.6-terra");
   check(
     "embedding model is text-embedding-3-small",
     TUTOR_MODELS.embedding.model === "text-embedding-3-small"

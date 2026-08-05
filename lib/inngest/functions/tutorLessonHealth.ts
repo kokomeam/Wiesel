@@ -8,7 +8,7 @@
  *           (private.recompute_lesson_health — weighted sum of 5 normalized
  *           inputs; the MODEL never computes or ranks), then
  *       (2) for the TOP-N flagged lessons (highest composite_score) of each
- *           course, call gpt-5.6-terra (TUTOR_MODELS.lesson_rationale) to write
+ *           course, call the TUTOR_MODELS.lesson_rationale model to write
  *           the human-readable `rationale` OVER THE ALREADY-COMPUTED evidence and
  *           write it back to rollup_lesson_health.
  *
