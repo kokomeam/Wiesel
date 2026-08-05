@@ -19,9 +19,10 @@
  */
 
 import { useState, useTransition } from "react";
-import { CheckCircle2, XCircle, Pencil } from "lucide-react";
+import { CheckCircle2, XCircle, Pencil, GitPullRequestArrow } from "lucide-react";
 import { EvidenceCard, parseEvidence } from "@/components/editor/agent/EvidenceCard";
 import { Button } from "@/components/ui/Button";
+import { IconTile } from "@/components/ui/IconTile";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import {
   acceptGraphChangeSetAction,
@@ -52,11 +53,11 @@ export function classifyStagedNode(node: Pick<ConceptNodeRow, "status" | "create
 }
 
 const CLASSIFICATION_TONE: Record<StagedClassification, string> = {
-  matched: "bg-stone-100 text-stone-600",
-  added: "bg-emerald-100 text-emerald-700",
-  removed: "bg-rose-100 text-rose-700",
-  split: "bg-violet-100 text-violet-700",
-  merged: "bg-amber-100 text-amber-700",
+  matched: "bg-stone-100 text-stone-600 ring-1 ring-inset ring-stone-200/70",
+  added: "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/70",
+  removed: "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200/70",
+  split: "bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200/70",
+  merged: "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200/70",
 };
 
 /* ------------------------------ props ------------------------------------ */
@@ -98,11 +99,16 @@ export function GraphReviewPanel({ courseId, changeSetId, nodes, evidenceByNode 
       data-ai-component="tutor-graph-review"
     >
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-stone-900">Review staged graph changes</h3>
-          <p className="text-xs text-stone-600">
-            {staged.length} concept{staged.length === 1 ? "" : "s"} proposed. Edit before you accept — Accept activates them, Reject restores everything exactly.
-          </p>
+        <div className="flex items-start gap-3">
+          <IconTile icon={GitPullRequestArrow} tone="gradient" />
+          <div>
+            <h3 className="font-display text-title font-medium tracking-tight text-stone-900">
+              Review staged graph changes
+            </h3>
+            <p className="text-xs text-stone-600">
+              {staged.length} concept{staged.length === 1 ? "" : "s"} proposed. Edit before you accept — Accept activates them, Reject restores everything exactly.
+            </p>
+          </div>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button

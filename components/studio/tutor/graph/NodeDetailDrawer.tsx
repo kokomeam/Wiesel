@@ -14,9 +14,10 @@
  */
 
 import { useState, useTransition } from "react";
-import { Pencil, ExternalLink, Archive, GitMerge, Split, X } from "lucide-react";
+import { Pencil, ExternalLink, Archive, GitMerge, Split, X, Link2, Lock, LockOpen } from "lucide-react";
 import { EvidenceCard, parseEvidence } from "@/components/editor/agent/EvidenceCard";
 import { Button } from "@/components/ui/Button";
+import { StatusChip } from "@/components/ui/StatusChip";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { useRouter } from "next/navigation";
 import {
@@ -239,17 +240,23 @@ export function NodeDetailDrawer({
             <button
               type="button"
               onClick={() => setEditingTitle(true)}
-              className="group inline-flex items-center gap-1.5 text-left text-base font-medium text-stone-900"
+              className="group inline-flex items-center gap-1.5 text-left font-display text-title font-medium tracking-tight text-stone-900"
               {...toolAttrs({ tool: "tutor-node-rename", action: "renameNode", targetType: "concept_node", label: "Rename concept" })}
             >
               {title}
               <Pencil className="size-3.5 shrink-0 text-stone-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
             </button>
           )}
-          <p className="mt-0.5 text-[11px] uppercase tracking-wide text-stone-400">
-            {node.created_by === "creator" ? "Creator-authored" : node.created_by === "reconciliation" ? "Reconciliation" : "Extracted"}
-            {node.creator_edited ? " · edited" : ""}
-          </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <StatusChip status={node.created_by === "creator" ? "success" : "neutral"}>
+              {node.created_by === "creator"
+                ? "Creator-authored"
+                : node.created_by === "reconciliation"
+                  ? "Reconciliation"
+                  : "Extracted"}
+            </StatusChip>
+            {node.creator_edited ? <StatusChip status="pending">Edited</StatusChip> : null}
+          </div>
         </div>
         <button
           type="button"
@@ -300,10 +307,11 @@ export function NodeDetailDrawer({
         )}
       </div>
 
-      {/* Cohort-floored signals. */}
+      {/* Cohort-floored signals — green→amber→rose heat by value (suppressed = muted). */}
       <div className="grid grid-cols-2 gap-2">
         <Signal
           label="Mastery"
+          tone={masteryView.show ? masterySignalTone(masteryView.value) : "muted"}
           body={
             masteryView.show ? (
               <span className="tabular-nums">{Math.round(masteryView.value * 100)}%</span>
@@ -314,6 +322,7 @@ export function NodeDetailDrawer({
         />
         <Signal
           label="Confusion"
+          tone={confusionView.show ? confusionSignalTone(confusionView.value) : "muted"}
           body={
             confusionView.show ? (
               <span className="tabular-nums">{Math.round(confusionView.value * 100)}%</span>
@@ -327,26 +336,42 @@ export function NodeDetailDrawer({
       {/* Prerequisites (outgoing edges): add / lock / remove. The DAG cycle gate
        *  lives in the RPC — a cycle-creating add surfaces the specific path here. */}
       <div data-ai-component="tutor-node-edges">
-        <span className="text-xs font-medium text-stone-500">Prerequisites (this concept requires)</span>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-600">
+          <Link2 className="size-3.5 text-brand-500" aria-hidden />
+          Prerequisites (this concept requires)
+        </span>
         {outgoingEdges.length > 0 ? (
           <ul className="mt-1.5 flex flex-col gap-1">
             {outgoingEdges.map((e) => (
-              <li key={e.id} className="flex items-center justify-between gap-2 rounded-lg border border-stone-200/80 px-2.5 py-1.5 text-sm">
+              <li key={e.id} className="flex items-center justify-between gap-2 rounded-lg border border-stone-200/80 bg-stone-50/40 px-2.5 py-1.5 text-sm">
                 <span className="min-w-0 flex-1 truncate text-stone-800">{e.targetTitle}</span>
                 <button
                   type="button"
                   onClick={() => toggleLock(e)}
                   disabled={pending}
-                  className="shrink-0 text-[11px] text-stone-500 hover:text-stone-800"
+                  className={
+                    "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset transition-colors " +
+                    (e.creatorLocked
+                      ? "bg-amber-50 text-amber-700 ring-amber-200/70 hover:bg-amber-100"
+                      : "text-stone-500 ring-stone-200/70 hover:text-stone-800")
+                  }
                   {...toolAttrs({ tool: "tutor-edge-lock", action: "lockEdge", targetType: "concept_edge", label: e.creatorLocked ? "Unlock edge" : "Lock edge" })}
                 >
-                  {e.creatorLocked ? "🔒 locked" : "unlocked"}
+                  {e.creatorLocked ? (
+                    <>
+                      <Lock className="size-3" aria-hidden /> locked
+                    </>
+                  ) : (
+                    <>
+                      <LockOpen className="size-3" aria-hidden /> unlocked
+                    </>
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={() => removeEdge(e.id)}
                   disabled={pending}
-                  className="shrink-0 text-[11px] text-rose-600 hover:text-rose-800"
+                  className="shrink-0 text-[11px] font-medium text-rose-600 hover:text-rose-800"
                   {...toolAttrs({ tool: "tutor-edge-remove", action: "removeEdge", targetType: "concept_edge", label: "Remove prerequisite" })}
                 >
                   Remove
@@ -438,11 +463,42 @@ export function NodeDetailDrawer({
 
 /* ------------------------------ sub-parts -------------------------------- */
 
-function Signal({ label, body }: { label: string; body: React.ReactNode }) {
+type SignalTone = "good" | "warn" | "bad" | "muted";
+
+/** Mastery heat: high = good/emerald, mid = amber, low = rose. */
+function masterySignalTone(v: number): SignalTone {
+  if (v >= 0.7) return "good";
+  if (v >= 0.4) return "warn";
+  return "bad";
+}
+/** Confusion heat: high confusion = bad/rose, mid = amber, low = good. */
+function confusionSignalTone(v: number): SignalTone {
+  if (v >= 0.4) return "bad";
+  if (v >= 0.25) return "warn";
+  return "good";
+}
+
+const SIGNAL_TONE: Record<SignalTone, { box: string; value: string }> = {
+  good: { box: "border-emerald-200/70 bg-emerald-50/60", value: "text-emerald-700" },
+  warn: { box: "border-amber-200/70 bg-amber-50/60", value: "text-amber-700" },
+  bad: { box: "border-rose-200/70 bg-rose-50/60", value: "text-rose-700" },
+  muted: { box: "border-stone-200/70 bg-stone-50/60", value: "text-stone-800" },
+};
+
+function Signal({
+  label,
+  body,
+  tone = "muted",
+}: {
+  label: string;
+  body: React.ReactNode;
+  tone?: SignalTone;
+}) {
+  const t = SIGNAL_TONE[tone];
   return (
-    <div className="rounded-lg border border-stone-200/70 bg-stone-50/60 px-2.5 py-2">
-      <p className="text-[11px] uppercase tracking-wide text-stone-400">{label}</p>
-      <p className="mt-0.5 text-sm font-medium text-stone-800">{body}</p>
+    <div className={`rounded-lg border px-2.5 py-2 ${t.box}`}>
+      <p className="text-[11px] uppercase tracking-wide text-stone-500">{label}</p>
+      <p className={`mt-0.5 text-sm font-semibold ${t.value}`}>{body}</p>
     </div>
   );
 }

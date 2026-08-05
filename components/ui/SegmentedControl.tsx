@@ -13,11 +13,18 @@ export interface SegmentedOption<T extends string> {
 /**
  * A radiogroup rendered as equal segments in a pill track. Roving tabindex +
  * arrow-key selection; the selected segment lifts on the card shadow.
+ *
+ * `tone` controls how the SELECTED segment reads (the track is unchanged):
+ *   - "neutral" (default) — white lift + stone-900 ink (the original look;
+ *     byte-identical markup, so the UI-1 golden snapshots stay green).
+ *   - "brand" — a warm tint: brand-50 fill, brand-100 ring, brand-800 ink, so
+ *     the active option is unmistakably chosen without the flat grey feel.
  */
 export function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
+  tone = "neutral",
   "aria-label": ariaLabel,
   className,
   "data-testid": testId,
@@ -25,6 +32,7 @@ export function SegmentedControl<T extends string>({
   options: SegmentedOption<T>[];
   value: T;
   onChange: (next: T) => void;
+  tone?: "neutral" | "brand";
   "aria-label": string;
   className?: string;
   "data-testid"?: string;
@@ -77,7 +85,11 @@ export function SegmentedControl<T extends string>({
               o.badge ? "flex-none" : "min-w-0 flex-1",
               // stone-600 (not 500) — the stone-100 track needs the darker
               // step for AA contrast (stone-500 is 4.38:1 there).
-              selected ? "bg-white text-stone-900 shadow-card" : "text-stone-600 hover:text-stone-900"
+              selected
+                ? tone === "brand"
+                  ? "bg-brand-50 text-brand-800 shadow-card ring-1 ring-inset ring-brand-100"
+                  : "bg-white text-stone-900 shadow-card"
+                : "text-stone-600 hover:text-stone-900"
             )}
           >
             <span className={o.badge ? "shrink-0" : "truncate"}>{o.label}</span>

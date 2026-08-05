@@ -14,9 +14,10 @@
  */
 
 import { useState, useTransition } from "react";
-import { Waypoints } from "lucide-react";
+import { Waypoints, GraduationCap } from "lucide-react";
 import { Toggle } from "@/components/ui/Toggle";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { IconTile } from "@/components/ui/IconTile";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import {
   setTutorEnabledAction,
@@ -78,11 +79,16 @@ export function EnablementCard({
   return (
     <div className="rounded-card border border-stone-200/80 bg-white shadow-card">
       <div className="flex items-start justify-between gap-4 border-b border-stone-200/70 px-card-pad py-4">
-        <div>
-          <h3 className="text-sm font-semibold text-stone-900">AI tutor</h3>
-          <p className="mt-0.5 text-xs text-stone-500">
-            Give learners a course-grounded tutor in the lesson player.
-          </p>
+        <div className="flex items-start gap-3">
+          <IconTile icon={GraduationCap} tone={enabled ? "gradient" : "brand"} />
+          <div>
+            <h3 className="font-display text-title font-medium tracking-tight text-stone-900">
+              AI tutor
+            </h3>
+            <p className="mt-0.5 text-xs text-stone-600">
+              Give learners a course-grounded tutor in the lesson player.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2.5">
           <StatusChip status={enabled ? "success" : "neutral"}>

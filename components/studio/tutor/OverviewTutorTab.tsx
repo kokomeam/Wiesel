@@ -1,6 +1,8 @@
-import { Users, MessagesSquare, DollarSign, LifeBuoy } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { Users, MessagesSquare, Repeat, DollarSign, LifeBuoy, Wallet } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { IconTile } from "@/components/ui/IconTile";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { EnablementCard } from "./EnablementCard";
 import type { TutorConsoleBundle } from "@/lib/studio/tutorConsole";
@@ -76,7 +78,7 @@ export function OverviewTutorTab({
               label="Sessions"
               value={INT.format(usage.sessions)}
             />
-            <UsageStat icon={MessagesSquare} label="Turns" value={INT.format(usage.turns)} />
+            <UsageStat icon={Repeat} label="Turns" value={INT.format(usage.turns)} />
           </div>
         ) : (
           <div className="p-card-pad">
@@ -96,7 +98,8 @@ export function OverviewTutorTab({
           subtitle="Model cost for this course's tutor, by job type"
           action={
             cost.byJobType.length > 0 ? (
-              <span className="text-sm font-semibold text-stone-900">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-800 ring-1 ring-inset ring-amber-100">
+                <Wallet className="size-3.5" aria-hidden />
                 {USD.format(cost.totalUsd)}
               </span>
             ) : undefined
@@ -109,16 +112,19 @@ export function OverviewTutorTab({
                 key={row.jobType}
                 className="flex items-center justify-between gap-4 px-card-pad py-3"
               >
-                <div>
-                  <p className="text-sm font-medium text-stone-800">
-                    {JOB_TYPE_LABEL[row.jobType] ?? row.jobType}
-                  </p>
-                  <p className="mt-0.5 text-xs text-stone-500">
-                    {INT.format(row.calls)} call{row.calls === 1 ? "" : "s"} ·{" "}
-                    {INT.format(row.inputTokens)} in / {INT.format(row.outputTokens)} out
-                  </p>
+                <div className="flex items-center gap-3">
+                  <IconTile icon={DollarSign} size="sm" tone="neutral" />
+                  <div>
+                    <p className="text-sm font-medium text-stone-800">
+                      {JOB_TYPE_LABEL[row.jobType] ?? row.jobType}
+                    </p>
+                    <p className="mt-0.5 text-xs text-stone-600">
+                      {INT.format(row.calls)} call{row.calls === 1 ? "" : "s"} ·{" "}
+                      {INT.format(row.inputTokens)} in / {INT.format(row.outputTokens)} out
+                    </p>
+                  </div>
                 </div>
-                <span className="text-sm font-medium text-stone-700">
+                <span className="text-sm font-semibold tabular-nums text-stone-800">
                   {row.costUsd === null ? "—" : USD.format(row.costUsd)}
                 </span>
               </div>
@@ -143,18 +149,16 @@ function UsageStat({
   label,
   value,
 }: {
-  icon: typeof Users;
+  icon: LucideIcon;
   label: string;
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-stone-200/70 bg-stone-50/40 p-4">
-      <span className="grid size-9 place-items-center rounded-xl bg-brand-50 text-brand-600">
-        <Icon className="size-4.5" aria-hidden />
-      </span>
-      <div>
-        <p className="text-sm font-medium text-stone-500">{label}</p>
-        <p className="text-2xl font-semibold text-stone-900">{value}</p>
+    <div className="flex items-center gap-3 rounded-panel border border-stone-200/70 bg-gradient-to-b from-white to-brand-50/30 p-4">
+      <IconTile icon={Icon} tone="brand" />
+      <div className="min-w-0">
+        <p className="font-mono text-meta uppercase tracking-eyebrow text-stone-500">{label}</p>
+        <p className="font-display text-section font-medium tabular-nums text-stone-900">{value}</p>
       </div>
     </div>
   );

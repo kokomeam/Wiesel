@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { AlertTriangle, BarChart3, PencilLine, Users } from "lucide-react";
+import { AlertTriangle, BarChart3, GraduationCap, PencilLine, Users } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { CoverArt } from "@/components/learn/CoverArt";
@@ -90,6 +90,14 @@ export function CourseHealthCard({ course }: { course: CourseHealth }) {
           >
             <PencilLine className="size-3.5" aria-hidden />
             Edit
+          </Link>
+          <Link
+            href={`/studio/${course.id}/tutor`}
+            data-ai-tool="course-open-tutor"
+            className={`${ACTION_LINK} text-stone-600 hover:bg-stone-900/[0.06] hover:text-stone-900`}
+          >
+            <GraduationCap className="size-3.5" aria-hidden />
+            Tutor
           </Link>
           <Link
             href={`/studio/${course.id}/analytics`}

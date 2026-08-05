@@ -15,12 +15,23 @@
  */
 
 import { useMemo, useState, useTransition } from "react";
+import type { LucideIcon } from "lucide-react";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { FieldGroup } from "@/components/ui/FieldGroup";
 import { StickyActionBar } from "@/components/ui/StickyActionBar";
-import { Card, CardHeader } from "@/components/ui/Card";
+import { IconTile } from "@/components/ui/IconTile";
+import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
-import { FileText } from "lucide-react";
+import {
+  FileText,
+  Compass,
+  BookMarked,
+  Radius,
+  ShieldCheck,
+  LifeBuoy,
+  MessageSquareQuote,
+  History,
+} from "lucide-react";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { saveCharterAction } from "@/app/(app)/studio/[courseId]/tutor/actions";
 import type {
@@ -91,6 +102,36 @@ function describeSnapshot(snapshot: Record<string, unknown>): string {
   return parts.join(" · ") || "Charter updated";
 }
 
+/**
+ * One charter knob as a warm row: a brand icon tile, the mono eyebrow label +
+ * help (via FieldGroup), and the control. The icon + serif-adjacent hierarchy
+ * is what lifts the tab out of the flat mono-grey "worksheet" feel.
+ */
+function CharterField({
+  icon: Icon,
+  label,
+  help,
+  htmlFor,
+  error,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  help: React.ReactNode;
+  htmlFor?: string;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start gap-3.5">
+      <IconTile icon={Icon} size="sm" tone="brand" className="mt-0.5" />
+      <FieldGroup className="flex-1" label={label} help={help} htmlFor={htmlFor} error={error}>
+        {children}
+      </FieldGroup>
+    </div>
+  );
+}
+
 export function CharterTab({
   courseId,
   charter,
@@ -139,130 +180,174 @@ export function CharterTab({
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader
-          title="Tutor charter"
-          subtitle="How the tutor behaves in this course. Changes apply to the next learner turn."
-        />
-        <div className="space-y-6 p-card-pad" data-ai-component="tutor-charter-form">
-          <FieldGroup label="Guidance style" help="How directly the tutor gives answers.">
-            <div
-              {...toolAttrs({
-                tool: "charter-guidance",
-                action: "SET_GUIDANCE_STYLE",
-                targetType: "segmented-control",
-                label: "Set the tutor guidance style",
-              })}
+        <div className="flex items-start gap-3 border-b border-stone-200/70 px-card-pad py-4">
+          <IconTile icon={ShieldCheck} tone="gradient" />
+          <div>
+            <h2 className="font-display text-section font-light tracking-tight text-stone-900">
+              Tutor charter
+            </h2>
+            <p className="mt-0.5 text-xs text-stone-600">
+              How the tutor behaves in this course. Changes apply to the next learner turn.
+            </p>
+          </div>
+        </div>
+        <div className="divide-y divide-stone-200/60" data-ai-component="tutor-charter-form">
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={Compass}
+              label="Guidance style"
+              help="How directly the tutor gives answers."
             >
-              <SegmentedControl<GuidanceStyle>
-                aria-label="Guidance style"
-                value={form.guidanceStyle}
-                onChange={(v) => set("guidanceStyle", v)}
-                options={GUIDANCE_OPTIONS}
-              />
-            </div>
-          </FieldGroup>
+              <div
+                {...toolAttrs({
+                  tool: "charter-guidance",
+                  action: "SET_GUIDANCE_STYLE",
+                  targetType: "segmented-control",
+                  label: "Set the tutor guidance style",
+                })}
+              >
+                <SegmentedControl<GuidanceStyle>
+                  aria-label="Guidance style"
+                  tone="brand"
+                  value={form.guidanceStyle}
+                  onChange={(v) => set("guidanceStyle", v)}
+                  options={GUIDANCE_OPTIONS}
+                />
+              </div>
+            </CharterField>
+          </div>
 
-          <FieldGroup label="Course canon" help="Whether the tutor may draw on general knowledge.">
-            <div
-              {...toolAttrs({
-                tool: "charter-canon",
-                action: "SET_COURSE_CANON",
-                targetType: "segmented-control",
-                label: "Set the course canon",
-              })}
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={BookMarked}
+              label="Course canon"
+              help="Whether the tutor may draw on general knowledge."
             >
-              <SegmentedControl<CourseCanon>
-                aria-label="Course canon"
-                value={form.courseCanon}
-                onChange={(v) => set("courseCanon", v)}
-                options={CANON_OPTIONS}
-              />
-            </div>
-          </FieldGroup>
+              <div
+                {...toolAttrs({
+                  tool: "charter-canon",
+                  action: "SET_COURSE_CANON",
+                  targetType: "segmented-control",
+                  label: "Set the course canon",
+                })}
+              >
+                <SegmentedControl<CourseCanon>
+                  aria-label="Course canon"
+                  tone="brand"
+                  value={form.courseCanon}
+                  onChange={(v) => set("courseCanon", v)}
+                  options={CANON_OPTIONS}
+                />
+              </div>
+            </CharterField>
+          </div>
 
-          <FieldGroup label="Scope" help="How far beyond the course the tutor may range.">
-            <div
-              {...toolAttrs({
-                tool: "charter-scope",
-                action: "SET_SCOPE",
-                targetType: "segmented-control",
-                label: "Set the tutor scope",
-              })}
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={Radius}
+              label="Scope"
+              help="How far beyond the course the tutor may range."
             >
-              <SegmentedControl<TutorScope>
-                aria-label="Scope"
-                value={form.scope}
-                onChange={(v) => set("scope", v)}
-                options={SCOPE_OPTIONS}
-              />
-            </div>
-          </FieldGroup>
+              <div
+                {...toolAttrs({
+                  tool: "charter-scope",
+                  action: "SET_SCOPE",
+                  targetType: "segmented-control",
+                  label: "Set the tutor scope",
+                })}
+              >
+                <SegmentedControl<TutorScope>
+                  aria-label="Scope"
+                  tone="brand"
+                  value={form.scope}
+                  onChange={(v) => set("scope", v)}
+                  options={SCOPE_OPTIONS}
+                />
+              </div>
+            </CharterField>
+          </div>
 
-          <FieldGroup label="Assessment help" help="What the tutor does during graded work.">
-            <div
-              {...toolAttrs({
-                tool: "charter-assessment",
-                action: "SET_ASSESSMENT_HELP",
-                targetType: "segmented-control",
-                label: "Set the assessment-help policy",
-              })}
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={ShieldCheck}
+              label="Assessment help"
+              help="What the tutor does during graded work."
             >
-              <SegmentedControl<AssessmentHelpMode>
-                aria-label="Assessment help"
-                value={form.assessmentHelp}
-                onChange={(v) => set("assessmentHelp", v)}
-                options={ASSESSMENT_OPTIONS}
-              />
-            </div>
-          </FieldGroup>
+              <div
+                {...toolAttrs({
+                  tool: "charter-assessment",
+                  action: "SET_ASSESSMENT_HELP",
+                  targetType: "segmented-control",
+                  label: "Set the assessment-help policy",
+                })}
+              >
+                <SegmentedControl<AssessmentHelpMode>
+                  aria-label="Assessment help"
+                  tone="brand"
+                  value={form.assessmentHelp}
+                  onChange={(v) => set("assessmentHelp", v)}
+                  options={ASSESSMENT_OPTIONS}
+                />
+              </div>
+            </CharterField>
+          </div>
 
-          <FieldGroup
-            label="Escalation sensitivity"
-            help="How readily the tutor offers a human hand-off."
-          >
-            <div
-              {...toolAttrs({
-                tool: "charter-escalation",
-                action: "SET_ESCALATION_SENSITIVITY",
-                targetType: "segmented-control",
-                label: "Set the escalation sensitivity",
-              })}
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={LifeBuoy}
+              label="Escalation sensitivity"
+              help="How readily the tutor offers a human hand-off."
             >
-              <SegmentedControl<EscalationSensitivity>
-                aria-label="Escalation sensitivity"
-                value={form.escalationSensitivity}
-                onChange={(v) => set("escalationSensitivity", v)}
-                options={ESCALATION_OPTIONS}
-              />
-            </div>
-          </FieldGroup>
+              <div
+                {...toolAttrs({
+                  tool: "charter-escalation",
+                  action: "SET_ESCALATION_SENSITIVITY",
+                  targetType: "segmented-control",
+                  label: "Set the escalation sensitivity",
+                })}
+              >
+                <SegmentedControl<EscalationSensitivity>
+                  aria-label="Escalation sensitivity"
+                  tone="brand"
+                  value={form.escalationSensitivity}
+                  onChange={(v) => set("escalationSensitivity", v)}
+                  options={ESCALATION_OPTIONS}
+                />
+              </div>
+            </CharterField>
+          </div>
 
-          <FieldGroup
-            label="Tone notes"
-            htmlFor="tutor-tone-notes"
-            help={`Optional voice guidance for the tutor. ${toneLen}/500`}
-            error={toneError}
-          >
-            <textarea
-              id="tutor-tone-notes"
-              rows={3}
-              value={form.toneNotes ?? ""}
-              onChange={(e) => set("toneNotes", e.target.value)}
-              placeholder="e.g. Warm and encouraging; use concrete examples from the lessons."
-              className="w-full rounded-control border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 shadow-sm placeholder:text-stone-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-              {...toolAttrs({
-                tool: "charter-tone",
-                action: "SET_TONE_NOTES",
-                targetType: "textarea",
-                label: "Set the tutor tone notes",
-              })}
-            />
-          </FieldGroup>
+          <div className="px-card-pad py-5">
+            <CharterField
+              icon={MessageSquareQuote}
+              label="Tone notes"
+              htmlFor="tutor-tone-notes"
+              help={`Optional voice guidance for the tutor. ${toneLen}/500`}
+              error={toneError}
+            >
+              <textarea
+                id="tutor-tone-notes"
+                rows={3}
+                value={form.toneNotes ?? ""}
+                onChange={(e) => set("toneNotes", e.target.value)}
+                placeholder="e.g. Warm and encouraging; use concrete examples from the lessons."
+                className="w-full rounded-control border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 shadow-sm placeholder:text-stone-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                {...toolAttrs({
+                  tool: "charter-tone",
+                  action: "SET_TONE_NOTES",
+                  targetType: "textarea",
+                  label: "Set the tutor tone notes",
+                })}
+              />
+            </CharterField>
+          </div>
 
           {error ? (
-            <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">
-              {error}
-            </p>
+            <div className="px-card-pad py-4">
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">
+                {error}
+              </p>
+            </div>
           ) : null}
         </div>
 
@@ -297,16 +382,28 @@ export function CharterTab({
 
       {/* ── Version history ── */}
       <Card>
-        <CardHeader title="History" subtitle="Every charter change, most recent first" />
+        <div className="flex items-start gap-3 border-b border-stone-200/70 px-card-pad py-4">
+          <IconTile icon={History} size="sm" tone="neutral" />
+          <div>
+            <h2 className="font-display text-title font-medium tracking-tight text-stone-900">
+              History
+            </h2>
+            <p className="mt-0.5 text-xs text-stone-600">Every charter change, most recent first</p>
+          </div>
+        </div>
         {versions.length > 0 ? (
           <ul className="divide-y divide-stone-200/70">
             {versions.map((v) => (
-              <li key={v.id} className="flex items-start justify-between gap-4 px-card-pad py-3">
-                <div>
+              <li key={v.id} className="flex items-start gap-3 px-card-pad py-3.5">
+                <span
+                  className="mt-1.5 size-2 shrink-0 rounded-full bg-brand-400 ring-2 ring-brand-100"
+                  aria-hidden
+                />
+                <div className="min-w-0">
                   <p className="text-sm font-medium text-stone-800">
                     {describeSnapshot(v.snapshot)}
                   </p>
-                  <p className="mt-0.5 text-xs text-stone-500">
+                  <p className="mt-0.5 text-xs text-stone-600">
                     {v.actorEmail ?? "Unknown"} · {dateFmt.format(new Date(v.createdAt))}
                   </p>
                 </div>

@@ -12,6 +12,7 @@
 
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { GraduationCap, PencilLine } from "lucide-react";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { loadTutorConsole, type TutorConsoleTab } from "@/lib/studio/tutorConsole";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -64,8 +65,28 @@ export default async function TutorConsolePage({
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 lg:p-8">
       <PageHeader
-        title={`${bundle.course.title} — Tutor`}
-        description="Enable, tune, and monitor the AI tutor learners use in this course."
+        eyebrow="Tutor console"
+        title="AI tutor"
+        description={`Enable, tune, and monitor the course-grounded tutor learners use in ${
+          bundle.course.title || "this course"
+        }.`}
+        actions={
+          <>
+            <span className="hidden items-center gap-2 rounded-full border border-stone-200 bg-white px-3.5 py-2 text-sm text-stone-600 sm:inline-flex">
+              <GraduationCap className="size-4 text-brand-500" aria-hidden />
+              <span className="max-w-[16rem] truncate font-medium text-stone-800">
+                {bundle.course.title || "Untitled course"}
+              </span>
+            </span>
+            <Link
+              href={`/studio?course=${courseId}`}
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-stone-200 bg-white px-4 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50"
+            >
+              <PencilLine className="size-4 text-stone-400" aria-hidden />
+              Edit course
+            </Link>
+          </>
+        }
       />
 
       {/* ── Tab nav (?tab= — server-rendered, deep-linkable) ── */}
@@ -79,7 +100,7 @@ export default async function TutorConsolePage({
               "-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
               tab === t.id
                 ? "border-brand-600 text-brand-700"
-                : "border-transparent text-stone-600 hover:border-stone-300 hover:text-stone-800"
+                : "border-transparent text-stone-600 hover:border-stone-300 hover:text-stone-900"
             )}
           >
             {t.label}

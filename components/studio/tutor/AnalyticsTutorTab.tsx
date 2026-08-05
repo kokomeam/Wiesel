@@ -21,6 +21,7 @@
  */
 
 import Link from "next/link";
+import type { LucideIcon } from "lucide-react";
 import { AlertTriangle, LineChart, ListChecks, Layers, MessageCircleWarning } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getCachedSnapshot } from "@/lib/learn/publicationCache";
@@ -32,10 +33,12 @@ import {
   type LessonHealthRow,
   type MostMissedRow,
 } from "@/lib/analytics/lessonHealth";
-import { Card, CardHeader } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
+import { IconTile } from "@/components/ui/IconTile";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { Table, Td } from "@/components/studio/Table";
 import { BarChart } from "@/components/charts/BarChart";
+import { cn } from "@/lib/cn";
 
 /* ────────────────────────────── snapshot outline ────────────────────────────
  * A minimal walk of the immutable snapshot → lesson titles + module→lessons order
@@ -55,6 +58,51 @@ function num(v: number | null): number {
 }
 function pct(v: number | null): string {
   return `${Math.round(num(v) * 100)}%`;
+}
+
+/* ── color-coded DATA helpers (warm identity + at-a-glance severity) ──────────
+ * The tokens: a HIGH error rate is bad → rose; medium → amber; low → stone.
+ * High mastery is GOOD → emerald; medium → amber; low → rose. Every threshold is
+ * deterministic (no randomness). Text colors are all AA on white. */
+
+/** Text tone for an error/miss rate (0..1): worse = warmer/rose. */
+function errorTone(v: number): string {
+  if (v >= 0.5) return "text-rose-700";
+  if (v >= 0.3) return "text-amber-700";
+  return "text-stone-600";
+}
+
+/** Text tone for a mastery share (0..1): higher = emerald, lower = rose. */
+function masteryTone(v: number): string {
+  if (v >= 0.7) return "text-emerald-700";
+  if (v >= 0.4) return "text-amber-700";
+  return "text-rose-700";
+}
+
+/** A serif section header row for an analytics card — icon tile · Fraunces title
+ *  · muted subtitle. Replaces the flat CardHeader so the tab reads editorial. */
+function SerifCardHeader({
+  icon: Icon,
+  tone = "brand",
+  title,
+  subtitle,
+}: {
+  icon: LucideIcon;
+  tone?: "brand" | "neutral" | "gradient";
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 border-b border-stone-200/70 px-card-pad py-4">
+      <IconTile icon={Icon} tone={tone} />
+      <div>
+        <h2 className="font-display text-title font-medium tracking-tight text-stone-900">
+          {title}
+        </h2>
+        <p className="mt-0.5 text-xs text-stone-600">{subtitle}</p>
+      </div>
+    </div>
+  );
 }
 
 export async function AnalyticsTutorTab({ courseId }: { courseId: string }) {
@@ -165,14 +213,10 @@ function LessonsNeedingAttention({
 
   return (
     <Card>
-      <CardHeader
-        as="h2"
-        title={
-          <span className="inline-flex items-center gap-2">
-            <AlertTriangle className="size-4 text-amber-500" aria-hidden />
-            Lessons needing attention
-          </span>
-        }
+      <SerifCardHeader
+        icon={AlertTriangle}
+        tone="brand"
+        title="Lessons needing attention"
         subtitle="Ranked by a composite health score. Higher means more learners are struggling."
       />
       <div className="p-card-pad">
@@ -185,10 +229,18 @@ function LessonsNeedingAttention({
             {flagged.map((r) => {
               const signals = rankSignals(r);
               const worst = r.lessonId ? worstQById.get(r.lessonId) : undefined;
+              const score = Math.round(num(r.compositeScore) * 100);
+              // Higher composite = more struggle = warmer badge.
+              const badgeTone =
+                score >= 50
+                  ? "bg-rose-100 text-rose-800 ring-rose-200/70"
+                  : score >= 25
+                    ? "bg-amber-100 text-amber-800 ring-amber-200/70"
+                    : "bg-stone-100 text-stone-700 ring-stone-200/70";
               return (
                 <li
                   key={r.lessonId}
-                  className="rounded-xl border border-stone-200/80 bg-stone-50/40 p-4"
+                  className="rounded-panel border border-stone-200/80 bg-gradient-to-b from-white to-stone-50/60 p-4"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold text-stone-900">
@@ -199,8 +251,13 @@ function LessonsNeedingAttention({
                         {lessonTitle.get(r.lessonId) ?? "Untitled lesson"}
                       </Link>
                     </h3>
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
-                      Health {Math.round(num(r.compositeScore) * 100)}
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums ring-1 ring-inset",
+                        badgeTone
+                      )}
+                    >
+                      Health {score}
                     </span>
                   </div>
 
@@ -221,7 +278,14 @@ function LessonsNeedingAttention({
                       .map((s) => (
                         <span
                           key={s.key}
-                          className="rounded-md bg-white px-2 py-0.5 text-[11px] font-medium text-stone-500 ring-1 ring-stone-200/80"
+                          className={cn(
+                            "rounded-md bg-white px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset",
+                            s.value >= 0.5
+                              ? "text-rose-700 ring-rose-200/80"
+                              : s.value >= 0.3
+                                ? "text-amber-700 ring-amber-200/80"
+                                : "text-stone-600 ring-stone-200/80"
+                          )}
                         >
                           {s.label}: {pct(s.value)}
                         </span>
@@ -283,14 +347,10 @@ function MostMissedQuestions({
 }) {
   return (
     <Card>
-      <CardHeader
-        as="h2"
-        title={
-          <span className="inline-flex items-center gap-2">
-            <ListChecks className="size-4 text-brand-500" aria-hidden />
-            Most-missed questions
-          </span>
-        }
+      <SerifCardHeader
+        icon={ListChecks}
+        tone="brand"
+        title="Most-missed questions"
         subtitle="Cohort-floored to five or more learners. Questions below that floor are never shown."
       />
       {rows.length === 0 ? (
@@ -306,39 +366,61 @@ function MostMissedQuestions({
           head={["Question", "Lesson", "1st-attempt error", "2nd attempt", "Learners", "Top distractors", ""]}
           estimateRows={Math.min(rows.length, 10)}
         >
-          {rows.map((q) => (
-            <tr key={`${q.blockId}:${q.questionId}`} className="border-t border-stone-100">
-              <Td className="font-medium text-stone-800">{q.questionId}</Td>
-              <Td>{q.lessonId ? lessonTitle.get(q.lessonId) ?? "—" : "—"}</Td>
-              <Td className="tabular-nums">{pct(q.firstAttemptErrorRate)}</Td>
-              <Td className="tabular-nums text-stone-500">
-                {q.secondAttemptErrorRate === null ? "—" : pct(q.secondAttemptErrorRate)}
-              </Td>
-              <Td className="tabular-nums">{q.distinctLearnerCount}</Td>
-              <Td>
-                <span className="flex flex-wrap gap-1">
-                  {q.perOption.slice(0, 3).map((o, i) => (
+          {rows.map((q) => {
+            const err = num(q.firstAttemptErrorRate);
+            return (
+              <tr
+                key={`${q.blockId}:${q.questionId}`}
+                className="border-t border-stone-100 transition-colors hover:bg-stone-50/60"
+              >
+                <Td className="font-mono text-xs font-medium text-stone-800">{q.questionId}</Td>
+                <Td className="text-stone-700">{q.lessonId ? lessonTitle.get(q.lessonId) ?? "—" : "—"}</Td>
+                <Td>
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 font-semibold tabular-nums",
+                      errorTone(err)
+                    )}
+                  >
                     <span
-                      key={`${o.option ?? "blank"}-${i}`}
-                      className="rounded bg-stone-100 px-1.5 py-0.5 text-[11px] text-stone-600"
-                    >
-                      {o.option ?? "(blank)"}: {o.count}
-                    </span>
-                  ))}
-                  {q.perOption.length === 0 && <span className="text-stone-400">—</span>}
-                </span>
-              </Td>
-              <Td>
-                <Link
-                  href={editorBlockHref(courseId, q.deepLink.lessonId ?? q.lessonId ?? "", q.deepLink.blockId)}
-                  title="Open the teaching material in the editor"
-                  className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-brand-700 hover:bg-stone-100 hover:underline"
-                >
-                  Teach
-                </Link>
-              </Td>
-            </tr>
-          ))}
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        err >= 0.5 ? "bg-rose-500" : err >= 0.3 ? "bg-amber-500" : "bg-stone-300"
+                      )}
+                      aria-hidden
+                    />
+                    {pct(q.firstAttemptErrorRate)}
+                  </span>
+                </Td>
+                <Td className="tabular-nums text-stone-500">
+                  {q.secondAttemptErrorRate === null ? "—" : pct(q.secondAttemptErrorRate)}
+                </Td>
+                <Td className="tabular-nums text-stone-700">{q.distinctLearnerCount}</Td>
+                <Td>
+                  <span className="flex flex-wrap gap-1">
+                    {q.perOption.slice(0, 3).map((o, i) => (
+                      <span
+                        key={`${o.option ?? "blank"}-${i}`}
+                        className="rounded bg-rose-50 px-1.5 py-0.5 text-[11px] font-medium text-rose-700 ring-1 ring-inset ring-rose-100"
+                      >
+                        {o.option ?? "(blank)"}: {o.count}
+                      </span>
+                    ))}
+                    {q.perOption.length === 0 && <span className="text-stone-400">—</span>}
+                  </span>
+                </Td>
+                <Td>
+                  <Link
+                    href={editorBlockHref(courseId, q.deepLink.lessonId ?? q.lessonId ?? "", q.deepLink.blockId)}
+                    title="Open the teaching material in the editor"
+                    className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200 transition-colors hover:bg-brand-50"
+                  >
+                    Teach
+                  </Link>
+                </Td>
+              </tr>
+            );
+          })}
         </Table>
       )}
     </Card>
@@ -359,14 +441,10 @@ function ConfusionHeatmap({
 }) {
   return (
     <Card>
-      <CardHeader
-        as="h2"
-        title={
-          <span className="inline-flex items-center gap-2">
-            <MessageCircleWarning className="size-4 text-rose-500" aria-hidden />
-            Confusion heatmap
-          </span>
-        }
+      <SerifCardHeader
+        icon={MessageCircleWarning}
+        tone="brand"
+        title="Confusion heatmap"
         subtitle="Learner-reported confusion per lesson. Neutral means no signal (or below the five-learner floor)."
       />
       <div className="space-y-4 p-card-pad">
@@ -443,14 +521,10 @@ function MasteryFunnel({
 
   return (
     <Card>
-      <CardHeader
-        as="h2"
-        title={
-          <span className="inline-flex items-center gap-2">
-            <Layers className="size-4 text-emerald-600" aria-hidden />
-            Mastery by module
-          </span>
-        }
+      <SerifCardHeader
+        icon={Layers}
+        tone="brand"
+        title="Mastery by module"
         subtitle="Share of learners at or above the mastery threshold, averaged over each module's concepts (five-learner floor)."
       />
       <div className="p-card-pad">
@@ -469,8 +543,8 @@ function MasteryFunnel({
             <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
               {modules.map((m) => (
                 <li key={m.moduleId} className="flex items-center justify-between gap-2 text-sm">
-                  <span className="truncate text-stone-600">{m.title}</span>
-                  <span className="tabular-nums font-medium text-stone-800">
+                  <span className="truncate text-stone-700">{m.title}</span>
+                  <span className={cn("tabular-nums font-semibold", masteryTone(m.mastered))}>
                     {Math.round(m.mastered * 100)}% mastered
                   </span>
                 </li>

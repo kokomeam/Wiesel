@@ -16,6 +16,7 @@
 import { useState, useTransition } from "react";
 import { BookOpen, ExternalLink, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { IconTile } from "@/components/ui/IconTile";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import { requestPrimerLessonAction } from "@/app/(app)/studio/[courseId]/tutor/graphActions";
@@ -42,11 +43,16 @@ export function AssumedPriorsPanel({ courseId, assumedPriors }: AssumedPriorsPan
   }
   return (
     <section aria-label="Assumed prerequisites" className="space-y-3">
-      <div>
-        <h3 className="text-sm font-semibold text-stone-900">Assumed prerequisites</h3>
-        <p className="text-xs text-stone-500">
-          Concepts the course relies on but never teaches. Draft a primer so learners who lack the background can catch up.
-        </p>
+      <div className="flex items-start gap-3">
+        <IconTile icon={BookOpen} tone="brand" />
+        <div>
+          <h3 className="font-display text-title font-medium tracking-tight text-stone-900">
+            Assumed prerequisites
+          </h3>
+          <p className="text-xs text-stone-600">
+            Concepts the course relies on but never teaches. Draft a primer so learners who lack the background can catch up.
+          </p>
+        </div>
       </div>
       <ul className="space-y-2.5">
         {active.map((prior) => (
