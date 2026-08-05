@@ -195,3 +195,33 @@ Trust boundaries unchanged from Wave 3: the route's access gate + the
 service-role-only assistant writes + the frozen event schema at emission.
 The client adds NO privileged path — its reads are the learner's own RLS
 rows, its writes go through the same four route actions.
+
+## Wave 5 — the creator console (appended 2026-08-05)
+
+`/studio/[courseId]/tutor` — a four-tab creator console (the analytics-console
+pattern: server-rendered `?tab=`, one author-gated definer bundle-RPC per tab,
+`notFound()` for non-authors). Own route budget (230 KB / 250; the learn route
+is untouched).
+
+```
+/studio/[courseId]/tutor?tab=
+  ├─ overview   tutor_console_bundle  — enablement · usage (cohort-floored ≥5) · cost by job_type
+  ├─ charter    tutor_console_bundle  — enable toggle (gated on an accepted graph) + 6-field charter via applyCharterChange + version history
+  ├─ graph      tutor_graph_console   — pure-SVG editor (own store/viewport/layout; ZERO editor-store imports)
+  │                                     versioned node/edge edits · tutor_upsert_concept_edge cycle gate ·
+  │                                     tutor_merge_concept_nodes (folds service-role-only learner_mastery, §1.4) ·
+  │                                     cohort-floored overlays · staged change-set review (accept/reject)
+  └─ analytics  most_missed_questions · lesson_health — A1.3 most-missed (SQL-derived, no learner rows) ·
+                                     deterministic rollup_lesson_health composite (Terra writes only the rationale,
+                                     nightly Inngest) · confusion heatmap · mastery funnel
+```
+
+**The privacy invariant (D-4), enforced not asserted:** every creator-facing
+number comes from a cohort-floored (`>= 5` distinct learners) author-gated
+SECURITY DEFINER RPC (`revoke public,anon` + `grant authenticated`); below floor
+→ a `suppressed` state that discloses nothing, not even the count. The raw
+learner tables (`learner_mastery`, `quiz_attempt_detail`, `tutor_turns`,
+`mastery_review_queue`) keep ZERO author policies — authors read only through the
+floored definer RPCs. The graph editor is fenced off the ~590 KB editor bundle
+(no `lib/course/store`/`patches`/`SlideStage` imports) so the console route
+carries its own weight.

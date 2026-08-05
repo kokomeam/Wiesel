@@ -79,7 +79,7 @@ export default async function TutorConsolePage({
               "-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
               tab === t.id
                 ? "border-brand-600 text-brand-700"
-                : "border-transparent text-stone-500 hover:border-stone-300 hover:text-stone-800"
+                : "border-transparent text-stone-600 hover:border-stone-300 hover:text-stone-800"
             )}
           >
             {t.label}

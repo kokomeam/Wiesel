@@ -18,11 +18,15 @@ import { Pencil, ExternalLink, Archive, GitMerge, Split, X } from "lucide-react"
 import { EvidenceCard, parseEvidence } from "@/components/editor/agent/EvidenceCard";
 import { Button } from "@/components/ui/Button";
 import { toolAttrs } from "@/lib/course/aiAttributes";
+import { useRouter } from "next/navigation";
 import {
   renameNodeAction,
   editNodeDescriptionAction,
   retireNodeAction,
   splitNodeAction,
+  addEdgeAction,
+  removeEdgeAction,
+  lockEdgeAction,
 } from "@/app/(app)/studio/[courseId]/tutor/graphActions";
 import { buildTeachingDeepLink } from "./GraphCanvas";
 import type { ConceptNodeRow, MasteryOverlay, ConfusionOverlay } from "@/lib/studio/graphConsole";
@@ -35,8 +39,10 @@ export interface NodeDetailDrawerProps {
   mastery: MasteryOverlay | undefined;
   confusion: ConfusionOverlay | undefined;
   evidence: unknown;
-  /** other active node titles+ids for the merge target picker. */
+  /** other active node titles+ids for the merge / add-prerequisite target picker. */
   mergeTargets: Array<{ id: string; title: string }>;
+  /** THIS node's outgoing prerequisite edges (source === node), for the edge editor. */
+  outgoingEdges: Array<{ id: string; targetNodeId: string; targetTitle: string; kind: "prerequisite" | "part_of" | "related"; creatorLocked: boolean; version: number }>;
   onClose: () => void;
   /** the drawer requests a merge (opens the confirm with THIS node as absorbed);
    *  the parent owns mergeNodesAction (it needs the survivor rule). */
@@ -68,9 +74,11 @@ export function NodeDetailDrawer({
   confusion,
   evidence,
   mergeTargets,
+  outgoingEdges,
   onClose,
   onMerge,
 }: NodeDetailDrawerProps) {
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -153,6 +161,49 @@ export function NodeDetailDrawer({
         onClose();
       } else if ("conflict" in res) {
         setNotice(res.message);
+      } else {
+        setNotice(res.error);
+      }
+    });
+  };
+
+  /* ── prerequisite edges (add / lock / remove) ── */
+  const [edgeTarget, setEdgeTarget] = useState("");
+  // Nodes not already a prerequisite of THIS node (and not itself).
+  const edgeCandidates = mergeTargets.filter(
+    (t) => !outgoingEdges.some((e) => e.targetNodeId === t.id)
+  );
+  const edgeErr = (r: { message?: string; error?: string }) => r.message ?? r.error ?? "Edit failed.";
+  const addEdge = () => {
+    if (!edgeTarget) return;
+    startTransition(async () => {
+      const res = await addEdgeAction(courseId, node.id, edgeTarget, "prerequisite");
+      if (res.ok) {
+        setEdgeTarget("");
+        setNotice("Prerequisite added.");
+        router.refresh();
+      } else {
+        setNotice(edgeErr(res)); // cycle → the specific "…would create a cycle" path message
+      }
+    });
+  };
+  const toggleLock = (e: NodeDetailDrawerProps["outgoingEdges"][number]) => {
+    startTransition(async () => {
+      const res = await lockEdgeAction(courseId, e.id, node.id, e.targetNodeId, e.kind, !e.creatorLocked, e.version);
+      if (res.ok) {
+        setNotice(e.creatorLocked ? "Edge unlocked." : "Edge locked.");
+        router.refresh();
+      } else {
+        setNotice(edgeErr(res));
+      }
+    });
+  };
+  const removeEdge = (edgeId: string) => {
+    startTransition(async () => {
+      const res = await removeEdgeAction(courseId, edgeId);
+      if (res.ok) {
+        setNotice("Prerequisite removed.");
+        router.refresh();
       } else {
         setNotice(res.error);
       }
@@ -271,6 +322,65 @@ export function NodeDetailDrawer({
             )
           }
         />
+      </div>
+
+      {/* Prerequisites (outgoing edges): add / lock / remove. The DAG cycle gate
+       *  lives in the RPC — a cycle-creating add surfaces the specific path here. */}
+      <div data-ai-component="tutor-node-edges">
+        <span className="text-xs font-medium text-stone-500">Prerequisites (this concept requires)</span>
+        {outgoingEdges.length > 0 ? (
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {outgoingEdges.map((e) => (
+              <li key={e.id} className="flex items-center justify-between gap-2 rounded-lg border border-stone-200/80 px-2.5 py-1.5 text-sm">
+                <span className="min-w-0 flex-1 truncate text-stone-800">{e.targetTitle}</span>
+                <button
+                  type="button"
+                  onClick={() => toggleLock(e)}
+                  disabled={pending}
+                  className="shrink-0 text-[11px] text-stone-500 hover:text-stone-800"
+                  {...toolAttrs({ tool: "tutor-edge-lock", action: "lockEdge", targetType: "concept_edge", label: e.creatorLocked ? "Unlock edge" : "Lock edge" })}
+                >
+                  {e.creatorLocked ? "🔒 locked" : "unlocked"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeEdge(e.id)}
+                  disabled={pending}
+                  className="shrink-0 text-[11px] text-rose-600 hover:text-rose-800"
+                  {...toolAttrs({ tool: "tutor-edge-remove", action: "removeEdge", targetType: "concept_edge", label: "Remove prerequisite" })}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-stone-500">No prerequisites yet.</p>
+        )}
+        {edgeCandidates.length > 0 ? (
+          <div className="mt-2 flex items-center gap-2">
+            <select
+              value={edgeTarget}
+              onChange={(ev) => setEdgeTarget(ev.target.value)}
+              aria-label="Add a prerequisite concept"
+              className="min-w-0 flex-1 rounded-lg border border-stone-300 px-2 py-1 text-sm focus:border-brand-500 focus:outline-none"
+            >
+              <option value="">Add a prerequisite…</option>
+              {edgeCandidates.map((c) => (
+                <option key={c.id} value={c.id}>{c.title}</option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={addEdge}
+              disabled={pending || !edgeTarget}
+              {...toolAttrs({ tool: "tutor-edge-add", action: "addEdge", targetType: "concept_edge", label: "Add prerequisite" })}
+            >
+              Add
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {/* Evidence (hidden when parseEvidence → null). */}

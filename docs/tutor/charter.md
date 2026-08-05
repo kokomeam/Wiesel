@@ -23,3 +23,30 @@ reflects the change (AC-T5.2, schema half; the Wave-5 UI consumes this).
 `resolveCharter(null)` yields all defaults, so a course with no settings
 row still has a well-defined charter — but the tutor itself stays DISABLED
 until `enabled = true`.
+
+## The creator console (Wave 5 — the UI half of AC-T5.2)
+
+The charter's creator UI is the **Enablement & charter** tab of the Creator
+Tutor Console (`/studio/[courseId]/tutor?tab=charter`). It is pure UI over the
+Wave-3 backend — no new charter mutation path:
+
+- **Enablement** is a `role="switch"` toggle writing `tutor_course_settings.enabled`
+  via a server action. Turning it ON is **gated on an accepted concept graph**
+  (`active concept_nodes` exist AND no pending `concept_graph` change-set): with
+  none, the toggle routes into the extraction flow (build → review → accept →
+  enable) rather than failing. Turning it OFF removes the learner sidebar for
+  every learner (the `resolveTutorAccess` gate reads `enabled`), returns the
+  typed-disabled response on the tutor route, and skips scheduled tutor jobs.
+- **The six charter fields** are edited with `SegmentedControl`s (guidance_style,
+  course_canon, scope, assessment_help, escalation_sensitivity) + a `tone_notes`
+  textarea (≤500), saved through `applyCharterChange` — so every save writes a
+  full `tutor_charter_versions` snapshot (actor + timestamp) and moves the
+  pointer, and the next assembled prompt reflects it. The server re-validates the
+  enum values (never trusts the client).
+- **Version history** renders the `tutor_charter_versions` rows (who changed it,
+  when) — the author-readable audit of the charter over time.
+
+All console reads ride author-gated, cohort-floored (`>= 5`) SECURITY DEFINER
+RPCs (`tutor_console_bundle`); no creator number ever comes from a raw learner
+table. See `analytics.md` for the analytics privacy contract and `architecture.md`
+for the console's place in the system.

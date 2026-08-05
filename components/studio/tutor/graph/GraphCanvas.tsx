@@ -509,6 +509,22 @@ export function GraphWorkspace({ courseId, nodes, edges, mastery, confusion, evi
     [activeNodes, selectedNode]
   );
 
+  // THIS node's outgoing prerequisite edges (source === selected), titled for the edge editor.
+  const outgoingEdges = useMemo(() => {
+    if (!selectedNode) return [];
+    const titleById = new Map(activeNodes.map((n) => [n.id, n.title]));
+    return edges
+      .filter((e) => e.source_node_id === selectedNode.id)
+      .map((e) => ({
+        id: e.id,
+        targetNodeId: e.target_node_id,
+        targetTitle: titleById.get(e.target_node_id) ?? "(unknown)",
+        kind: e.kind,
+        creatorLocked: e.creator_locked,
+        version: e.version,
+      }));
+  }, [selectedNode, edges, activeNodes]);
+
   const doMerge = useCallback(
     (survivorNodeId: string, absorbedNodeId: string) => {
       startMerge(async () => {
@@ -584,11 +600,12 @@ export function GraphWorkspace({ courseId, nodes, edges, mastery, confusion, evi
             confusion={selectedConfusion}
             evidence={evidenceByNode[selectedNode.id]}
             mergeTargets={mergeTargets}
+            outgoingEdges={outgoingEdges}
             onClose={clearSelection}
             onMerge={doMerge}
           />
         ) : (
-          <aside className="hidden rounded-2xl border border-dashed border-stone-200 p-6 text-center text-sm text-stone-400 xl:block">
+          <aside className="hidden rounded-2xl border border-dashed border-stone-200 p-6 text-center text-sm text-stone-600 xl:block">
             {mergePending ? "Merging…" : "Select a concept to see its details, mastery, and evidence."}
           </aside>
         )}

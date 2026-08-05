@@ -72,7 +72,7 @@ function ToggleRow({
         <span id={`${id}-label`} className="block text-[13px] font-medium text-stone-800">
           {label}
         </span>
-        <span className="block text-[11px] text-stone-400">{hint}</span>
+        <span className="block text-[11px] text-stone-500">{hint}</span>
       </div>
     </div>
   );
