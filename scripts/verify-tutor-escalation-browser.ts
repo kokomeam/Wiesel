@@ -29,6 +29,7 @@
 import { readFileSync } from "node:fs";
 import dns from "node:dns";
 import { chromium, type Page, type Route } from "playwright";
+import { AxeBuilder } from "@axe-core/playwright";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import { seedTutorFixture } from "./seed-fixture-tutor";
@@ -49,6 +50,25 @@ function check(name: string, cond: boolean, detail = "") {
     fail++;
     console.log(`  ✗ ${name} ${detail}`);
   }
+}
+
+/** Track the axe serious/critical counts per label for the summary report. */
+const axeCounts: Record<string, number> = {};
+
+/** axe scan of the current page (optionally scoped via an include selector) — zero
+ *  serious/critical. Lets any entrance animation settle first. */
+async function axeScan(page: Page, label: string, includeSelector?: string): Promise<void> {
+  await page.waitForTimeout(500);
+  let builder = new AxeBuilder({ page });
+  if (includeSelector) builder = builder.include(includeSelector);
+  const results = await builder.analyze();
+  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  axeCounts[label] = serious.length;
+  check(
+    `axe: zero serious/critical on ${label}`,
+    serious.length === 0,
+    JSON.stringify(serious.map((v) => `${v.id}(${v.nodes.length})`))
+  );
 }
 
 const retryingFetch: typeof fetch = async (input, init) => {
@@ -266,6 +286,27 @@ async function main() {
     check("the card shows the proposed answer (shared too)", cardText.includes(PROPOSED));
     check("Send + Cancel affordances present", (await page.locator('[data-ai-tool="tutor-escalation-send"]').count()) > 0 && (await page.locator('[data-ai-tool="tutor-escalation-cancel"]').count()) > 0);
 
+    /* ─────── W6.6 A11Y — axe zero serious/critical on the consent card ──────── */
+    console.log("\n[W6.6 a11y] axe + keyboard operability on the learner consent card");
+    // Full-page scan (the learner sidebar / tutor panel hosting the consent card).
+    await axeScan(page, "consent card (learner sidebar, escalationsUi on)");
+
+    // Keyboard operability: the Send + Cancel controls are focusable + Enter/Space
+    // operable. We assert both are reachable by focusing each and confirming it
+    // becomes the active element (a keyboard user can drive the card).
+    const sendBtn = page.locator('[data-ai-tool="tutor-escalation-send"]').first();
+    const cancelBtn = page.locator('[data-ai-tool="tutor-escalation-cancel"]').first();
+    await sendBtn.focus();
+    const sendFocused = await sendBtn.evaluate((el) => el === document.activeElement);
+    check("the Send control is keyboard-focusable (reachable)", sendFocused);
+    await cancelBtn.focus();
+    const cancelFocused = await cancelBtn.evaluate((el) => el === document.activeElement);
+    check("the Cancel control is keyboard-focusable (reachable)", cancelFocused);
+    // The question textarea is focusable + editable via the keyboard too.
+    await questionField.first().focus();
+    const qFocused = await questionField.first().evaluate((el) => el === document.activeElement);
+    check("the question textarea is keyboard-focusable", qFocused);
+
     /* ─────── W6C.1 (2) — edit + Send → the consented row carries the edit ───── */
     console.log("\n[W6C.1] the learner's edit is what the consented row carries");
     const EDITED_Q = "Edited: what force actually pushes price toward equilibrium?";
@@ -350,6 +391,7 @@ async function main() {
     console.log("\n# cleaned up course (throwaway users remain — clean in Supabase → Auth)");
   }
 
+  console.log(`\n# axe serious/critical per surface: ${JSON.stringify(axeCounts)}`);
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

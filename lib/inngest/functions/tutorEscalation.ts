@@ -35,10 +35,11 @@ import { withPooledModel, poolFor } from "@/lib/ai/subagent";
 import { synthesizeAndCluster } from "@/lib/tutor/escalation/synthesis";
 
 /** Build the pooled model client for a synthesis run. cost.jobType is
- *  'escalation_dossier' (the Terra call is NOT DB-checked → its runTurn cost row is
- *  skipped by the decorator; the question embed emits under 'embedding'). emittedBy
+ *  'escalation_dossier' — a DB-checked job type since Wave 6.6 (migration
+ *  20260806160000), so the dossier Terra runTurn cost row EMITS under
+ *  'escalation_dossier' and the question embed emits under 'embedding'. emittedBy
  *  = the course author (the acting principal — never a learner). runKey =
- *  candidateId so an Inngest retry re-emits the embed cost as a no-op. */
+ *  candidateId so an Inngest retry re-emits both cost rows as no-ops. */
 async function pooledModelForCandidate(
   admin: ReturnType<typeof createAdminClient>,
   courseId: string,

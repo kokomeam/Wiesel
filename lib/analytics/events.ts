@@ -155,14 +155,18 @@ const commsBounce = z.object({
 });
 const commsComplaint = z.object({ ...commsEventBase, eventType: z.literal("comms_email_complaint") });
 
-/** TUTOR-1 Wave 1.1: the four AI-tutor model-call job kinds — mirrored by the
- *  DB CHECK (job_type in (…), migration 20260803100000). The Zod enum derives
- *  from this const so the two can't drift. */
+/** TUTOR-1 Wave 1.1: the AI-tutor model-call job kinds — mirrored by the DB CHECK
+ *  (job_type in (…)). The Zod enum derives from this const so the two can't drift.
+ *  Wave 6.6 (20260806160000) widened the CHECK to add the two remaining Terra jobs
+ *  — `lesson_rationale` (P5.3 lesson-health rationale) + `escalation_dossier`
+ *  (P6.2 on-consent escalation synthesis) — so their runTurn cost rows can land. */
 export const TUTOR_JOB_TYPES = [
   "graph_extraction",
   "reconciliation",
   "embedding",
   "tutor_turn",
+  "lesson_rationale",
+  "escalation_dossier",
 ] as const;
 export type TutorJobType = (typeof TUTOR_JOB_TYPES)[number];
 

@@ -225,3 +225,41 @@ learner tables (`learner_mastery`, `quiz_attempt_detail`, `tutor_turns`,
 floored definer RPCs. The graph editor is fenced off the ~590 KB editor bundle
 (no `lib/course/store`/`patches`/`SlideStage` imports) so the console route
 carries its own weight.
+
+## Wave 6 — the escalation loop (appended 2026-08-06, project close)
+
+The loop that closes the tutor. When the tutor can't answer, a **consented**
+escalation flows into creator scope and back into the course:
+
+```
+learner turn ──trigger (sensitivity-driven)──► consent card (editable question)
+   └─ Send ─► tutor_escalation_candidates: consent_pending → consented
+             └─ tutor/escalation.consented (Inngest) ─►
+                synthesizeAndCluster: Terra dossier (no identity) + embed +
+                  join/create escalation_cluster (cosine ≥ 0.83, stable id)
+                  ├─ escalation_dossier   (identity-BEARING, RLS zero policies)
+                  └─ escalation_cluster   (identity-FREE, author-readable, COUNT)
+   creator console ── Escalations tab (tutor_escalation_queue, author-gated) ──
+     ├─ Approve/edit ─► apply_escalation_reply: 1 instructor tutor_turn / member,
+     │                   exactly-once per (cluster,user) via a ledger
+     ├─ Dismiss(reason)
+     └─ Promote ─► Terra drafts an FAQ block ─► createChangeSet (EXISTING rail)
+                   └─ Accept ─► resolved_in_content (DERIVED from change_set) ─►
+                      node drawer: "clarified after N asked" ─► publish ─► reconcile
+   creator digest ── lib/notify (NEW seam, never lib/comms's send) ──
+     daily, cohort-floored, aggregate-only, DIGEST_DRY_RUN default ON,
+     provider_mode persisted per row (never silently 'sent')
+```
+
+**The privacy boundary is structural.** Consent is the only path into creator
+scope, and it exposes only identity-free aggregates: the dossier that carries
+`user_id` has zero RLS policies (definer/service-role only); the cluster and the
+queue have no `user_id` at all. A creator sees a count and a representative
+question, never a roster. The no-auto-send boundary is equally structural: the
+tutor runtime imports no send path, and the digest is a separate seam. Everything
+else reuses existing rails — the change-set Accept/Reject, the `tutor_turns`
+thread, the `withPooledModel` cost point, the Inngest cron pattern — so Wave 6
+added surfaces, not systems.
+
+TUTOR-1 is complete. See `TUTOR-1-completion-report.md` for the consolidated
+Waves 1–6 acceptance ledger, the final privacy proof, and the cost economics.

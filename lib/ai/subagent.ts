@@ -191,7 +191,7 @@ export interface PooledCostContext {
   /** The acting principal stamped as the row's user_id (extraction/reconcile pass the
    *  course author id). */
   emittedBy: string;
-  jobType: TutorJobType | "practice_gen" | "escalation_dossier";
+  jobType: TutorJobType | "practice_gen";
   /** The attribution learner (a tutor turn); null for author-run jobs. */
   learnerUserId?: string | null;
   /** When set, cost ids are `${runKey}:${seq}` (seq = a per-decorator monotonic
@@ -254,13 +254,13 @@ export function withPooledModel(
   ): Promise<void> {
     if (!cost) return;
     const jobType = jobTypeOverride ?? cost.jobType;
-    // `practice_gen` and `escalation_dossier` are NOT DB-checked job types (the
-    // learning_events.job_type CHECK is closed to the four telemetered kinds); skip
-    // their runTurn cost row rather than send one the ingest CHECK would reject. The
-    // embed calls these decorators make ALWAYS emit under 'embedding' (a valid kind),
-    // so an escalation-synthesis run still lands a tutor_model_call cost row.
-    // graph/embedding/reconcile/tutor emit as before.
-    if (jobType === "practice_gen" || jobType === "escalation_dossier") return;
+    // Wave 6.6: `lesson_rationale` + `escalation_dossier` are now DB-checked job
+    // types (migration 20260806160000 widened learning_events.job_type), so their
+    // runTurn cost rows EMIT — closing the two deferred cost-tracking deviations.
+    // `practice_gen` stays skipped: it is a SEPARATE luna precedent, never a DB
+    // job_type, so a row under it would still fail the ingest CHECK. (Embeds always
+    // emit under 'embedding' regardless of the run's jobType.)
+    if (jobType === "practice_gen") return;
     try {
       await emitTutorModelCall(cost.supabase, {
         courseId: cost.courseId,

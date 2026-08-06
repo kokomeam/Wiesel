@@ -102,6 +102,7 @@
     "verify:tutor:browser": "tsx scripts/verify-tutor-browser.ts",
     "seed:tutor-demo": "tsx scripts/seed-tutor-demo.ts",
     "seed:tutor-console-demo": "tsx scripts/seed-tutor-console-demo.ts",
+    "seed:tutor-escalation-demo": "tsx scripts/seed-tutor-escalation-demo.ts",
     "smoke:tutor": "tsx scripts/smoke-tutor-models.ts"
   },
   "dependencies": {

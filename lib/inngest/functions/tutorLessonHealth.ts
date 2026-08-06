@@ -29,7 +29,7 @@
 import { inngest } from "../client";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { createOpenAIModelClient } from "@/lib/ai/providers/openai";
-import { withSemaphore, runStructuredCall, poolFor } from "@/lib/ai/subagent";
+import { withPooledModel, runStructuredCall, poolFor } from "@/lib/ai/subagent";
 import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import {
   buildLessonRationalePrompt,
@@ -100,14 +100,31 @@ export const tutorLessonHealthNightly = inngest.createFunction(
     // missing key: the composite already ranks + renders without prose.
     let rationaleWritten = 0;
     if (isAdminConfigured() && process.env.OPENAI_API_KEY) {
-      const model = withSemaphore(createOpenAIModelClient(), poolFor("creator"));
+      const baseModel = createOpenAIModelClient();
       for (let i = 0; i < courses.length; i++) {
         const { courseId } = courses[i];
         const written = await step.run(`rationale-${i}`, async () => {
           const admin = createAdminClient();
           const evidence = await loadTopFlaggedEvidence(admin, courseId, TOP_N_FLAGGED);
+          // Cost telemetry: each lesson_rationale runTurn emits a tutor_model_call
+          // cost row under 'lesson_rationale' (a DB-checked job type since Wave 6.6).
+          // emittedBy = the course author (the acting principal for a nightly job).
+          const courseRow = await admin.from("courses").select("author_id").eq("id", courseId).maybeSingle();
+          const emittedBy = courseRow.data?.author_id ?? courseId;
           let count = 0;
           for (const ev of evidence) {
+            // runKey = (publicationId:lessonId) so an Inngest step retry re-emits the
+            // cost row as an idempotent no-op instead of double-counting.
+            const model = withPooledModel(baseModel, {
+              pool: poolFor("creator"),
+              cost: {
+                supabase: admin,
+                courseId,
+                emittedBy,
+                jobType: "lesson_rationale",
+                runKey: `${ev.publicationId}:${ev.lessonId}`,
+              },
+            });
             const call = await runStructuredCall(model, {
               system:
                 "You write ONE short, plain-English case (2–3 sentences) explaining WHY a lesson " +

@@ -147,12 +147,14 @@ async function main() {
       !TutorModelCallEventSchema.safeParse({ ...event, jobType: "bogus" }).success
   );
   check(
-    "TUTOR_JOB_TYPES has the four kinds",
-    TUTOR_JOB_TYPES.length === 4 &&
+    "TUTOR_JOB_TYPES has the six kinds (4 original + Wave 6.6's two Terra jobs)",
+    TUTOR_JOB_TYPES.length === 6 &&
       TUTOR_JOB_TYPES.includes("graph_extraction") &&
       TUTOR_JOB_TYPES.includes("reconciliation") &&
       TUTOR_JOB_TYPES.includes("embedding") &&
-      TUTOR_JOB_TYPES.includes("tutor_turn")
+      TUTOR_JOB_TYPES.includes("tutor_turn") &&
+      TUTOR_JOB_TYPES.includes("lesson_rationale") &&
+      TUTOR_JOB_TYPES.includes("escalation_dossier")
   );
   check(
     "CLIENT batch schema REJECTS a tutor_model_call event",
@@ -259,8 +261,31 @@ async function main() {
       /latency_ms is not null/.test(sql)
   );
   check(
-    "job_type CHECK matches TUTOR_JOB_TYPES",
-    sql.includes(`job_type in (${TUTOR_JOB_TYPES.map((j) => `'${j}'`).join(",")})`)
+    "the ORIGINAL migration still encodes the four base job types",
+    sql.includes("job_type in ('graph_extraction','reconciliation','embedding','tutor_turn')")
+  );
+
+  /* ── 7. Wave 6.6 migration drift guard (20260806160000) — the widened CHECK ── */
+  console.log("\n— migration drift guard (20260806160000 — widened job_type CHECK) —");
+  const widenSql = readFileSync(
+    new URL("../supabase/migrations/20260806160000_tutor_cost_jobtypes.sql", import.meta.url),
+    "utf8"
+  );
+  check(
+    "the widened migration drops + re-adds learning_events_job_type_check",
+    /drop constraint learning_events_job_type_check/.test(widenSql) &&
+      /add constraint learning_events_job_type_check/.test(widenSql)
+  );
+  check(
+    "the widened job_type CHECK matches TUTOR_JOB_TYPES verbatim (all six kinds)",
+    // The list is line-wrapped in the migration; normalize whitespace before matching.
+    widenSql
+      .replace(/\s+/g, " ")
+      .includes(`job_type in (${TUTOR_JOB_TYPES.map((j) => `'${j}'`).join(",")})`)
+  );
+  check(
+    "the two new Terra job kinds are present in the widened CHECK",
+    /'lesson_rationale'/.test(widenSql) && /'escalation_dossier'/.test(widenSql)
   );
 
   console.log(`\n${pass} passed, ${fail} failed`);

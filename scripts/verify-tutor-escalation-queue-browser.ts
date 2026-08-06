@@ -26,6 +26,7 @@
 import { readFileSync } from "node:fs";
 import dns from "node:dns";
 import { chromium, type Page } from "playwright";
+import { AxeBuilder } from "@axe-core/playwright";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import { seedTutorFixture } from "./seed-fixture-tutor";
@@ -44,6 +45,25 @@ function check(name: string, cond: boolean, detail = "") {
     fail++;
     console.log(`  ✗ ${name} ${detail}`);
   }
+}
+
+/** Track the axe serious/critical counts per label for the summary report. */
+const axeCounts: Record<string, number> = {};
+
+/** axe scan of the current page (optionally scoped via an include selector) — zero
+ *  serious/critical. Lets any entrance animation settle first. */
+async function axeScan(page: Page, label: string, includeSelector?: string): Promise<void> {
+  await page.waitForTimeout(500);
+  let builder = new AxeBuilder({ page });
+  if (includeSelector) builder = builder.include(includeSelector);
+  const results = await builder.analyze();
+  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  axeCounts[label] = serious.length;
+  check(
+    `axe: zero serious/critical on ${label}`,
+    serious.length === 0,
+    JSON.stringify(serious.map((v) => `${v.id}(${v.nodes.length})`))
+  );
 }
 
 const retryingFetch: typeof fetch = async (input, init) => {
@@ -216,6 +236,23 @@ async function main() {
     const leaks = learners.filter((l) => pageText.includes(l.email) || pageText.includes(l.userId));
     check("NO learner email / user_id appears anywhere on the page", leaks.length === 0, `leaked=${leaks.map((l) => l.email).join(",")}`);
 
+    /* ── W6.6 A11Y — axe zero serious/critical on the queue panel ── */
+    console.log("\n[W6.6 a11y] axe + keyboard operability on the console Escalations queue");
+    // Scope the scan to the escalation queue panel (the console Escalations tab).
+    await axeScan(page, "escalations queue panel (console Escalations tab)", '[data-ai-component="escalation-queue"]');
+
+    // Keyboard operability: the answer textarea + Approve + Dismiss are focusable
+    // (a keyboard user can write a reply and either approve or dismiss).
+    const answerFieldA11y = page.locator('[data-ai-tool="escalation-answer"]').first();
+    const approveBtn = page.locator('[data-ai-tool="escalation-approve"]').first();
+    const dismissBtn = page.locator('[data-ai-tool="escalation-dismiss"]').first();
+    await answerFieldA11y.focus();
+    check("the reply textarea is keyboard-focusable", await answerFieldA11y.evaluate((el) => el === document.activeElement));
+    await approveBtn.focus();
+    check("the Approve control is keyboard-focusable (reachable)", await approveBtn.evaluate((el) => el === document.activeElement));
+    await dismissBtn.focus();
+    check("the Dismiss control is keyboard-focusable (reachable)", await dismissBtn.evaluate((el) => el === document.activeElement));
+
     /* ── W6Q.1 (2) — Approve delivers to every member ── */
     console.log("\n[W6Q.1] Approve & send delivers one instructor turn per member");
     const answerField = page.locator('[data-ai-tool="escalation-answer"]');
@@ -246,6 +283,7 @@ async function main() {
     console.log("\n# cleaned up course (throwaway users remain — clean in Supabase → Auth)");
   }
 
+  console.log(`\n# axe serious/critical per surface: ${JSON.stringify(axeCounts)}`);
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

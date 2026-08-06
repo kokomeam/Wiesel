@@ -181,7 +181,7 @@ export function ClusterCard({
       <div className="space-y-4 px-card-pad py-4">
         {/* the representative question */}
         <div>
-          <p className="text-meta font-medium uppercase tracking-eyebrow text-stone-400">What learners asked</p>
+          <p className="text-meta font-medium uppercase tracking-eyebrow text-stone-500">What learners asked</p>
           <p className="mt-1 text-sm leading-relaxed text-stone-800">
             {cluster.representativeQuestion ?? "A recurring question on this concept."}
           </p>
@@ -203,7 +203,7 @@ export function ClusterCard({
           <div>
             <label
               htmlFor={`escalation-answer-${cluster.id}`}
-              className="text-meta font-medium uppercase tracking-eyebrow text-stone-400"
+              className="text-meta font-medium uppercase tracking-eyebrow text-stone-500"
             >
               Your reply to these learners
             </label>
