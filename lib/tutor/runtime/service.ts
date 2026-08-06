@@ -44,8 +44,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 
 import type { Database } from "@/lib/database.types";
-import type { ModelClient } from "@/lib/ai/modelClient";
-import { captureActiveResponseId, clearActiveStream } from "@/lib/tutor/runtime/streamState";
+import type { ModelClient, ModelStreamEvent } from "@/lib/ai/modelClient";
+import {
+  captureActiveResponseId,
+  clearActiveStream,
+  setActiveStream,
+} from "@/lib/tutor/runtime/streamState";
 import {
   buildTutorEvidenceEvent,
   mapEventToColumns,
@@ -516,6 +520,14 @@ export interface RunTutorTurnForRequestDeps {
   nowIso?: string;
   /** Optional snapshot loader override (int tests inject a fixture). */
   loadSnapshot?: (publicationId: string) => Promise<{ snapshot: import("@/lib/course/publish/schemas").PublicationSnapshot }>;
+  /** A2 Wave 2 — the streaming resume-buffer id for THIS turn. When provided, the
+   *  thread's active_stream_id is set BEFORE the model dispatch (so a refresh right
+   *  after send can find the in-flight stream); the try/finally already clears it. */
+  streamId?: string | null;
+  /** A2 Wave 2 — the route's per-event hook. EVERY normalized stream event of the
+   *  main call is forwarded here (a hook throw is swallowed — it never kills the
+   *  turn). The route feeds these to the prose extractor + the wire tee. */
+  onModelEvent?: (ev: ModelStreamEvent) => void;
 }
 
 export interface RunTutorTurnForRequestArgs {
@@ -577,6 +589,15 @@ export async function runTutorTurnForRequest(
     courseId: args.envelope.courseId,
   });
 
+  // (1a) A2 Wave 2 — record the in-flight stream id BEFORE the model dispatch, so a
+  //      client that refreshes right after send can read active_stream_id and rejoin.
+  //      Best-effort (never throws); the try/finally below clears BOTH columns on
+  //      every exit path. Only set when the route provided a streamId (a non-stream
+  //      caller leaves the column untouched).
+  if (deps.streamId) {
+    await setActiveStream(deps.admin, { threadId, streamId: deps.streamId });
+  }
+
   // (2) persist the learner turn FIRST (the message is real whatever the model does).
   const learnerTurnId = await persistLearnerTurn(deps.admin, {
     threadId,
@@ -614,6 +635,14 @@ export async function runTutorTurnForRequest(
   // completion, error, AND abort (A2-11). The onModelEvent hook captures the
   // provider response id the instant `started` lands, BEFORE any output token
   // (A2-3), fire-and-forget through the best-effort writer.
+  //
+  // ORDERING (A2-11 hazard): the capture write and the finally's clear write both
+  // target the SAME columns. On a turn that fails INSTANTLY after `started` (a
+  // throwing/aborting model), the fire-and-forget capture could otherwise land
+  // AFTER the clear and re-set active_response_id. So we retain the in-flight
+  // capture promise and AWAIT it in the finally BEFORE clearing — making the clear
+  // the guaranteed-last write, so both columns end NULL on every exit path.
+  let captureInFlight: Promise<void> = Promise.resolve();
   try {
     const turn = await runTutorTurn(
       {
@@ -628,8 +657,19 @@ export async function runTutorTurnForRequest(
         onModelEvent: (ev) => {
           // Capture the provider response id the moment it opens (before any output
           // token). A null id (provider didn't surface one) has nothing to persist.
+          // Retain the promise so the finally can order the clear AFTER it.
           if (ev.type === "started" && ev.responseId) {
-            void captureActiveResponseId(deps.admin, { threadId, responseId: ev.responseId });
+            captureInFlight = captureActiveResponseId(deps.admin, { threadId, responseId: ev.responseId });
+          }
+          // A2 Wave 2 — forward EVERY event to the route's hook (prose extractor +
+          // wire tee). A hook throw is swallowed: an external observer must never
+          // kill the turn.
+          if (deps.onModelEvent) {
+            try {
+              deps.onModelEvent(ev);
+            } catch {
+              /* external hook is best-effort */
+            }
           }
         },
       },
@@ -674,8 +714,12 @@ export async function runTutorTurnForRequest(
       evidenceEmitted: evidence.emitted,
     };
   } finally {
-    // Clear the in-flight state on EVERY exit path (best-effort; never throws).
-    void clearActiveStream(deps.admin, { threadId });
+    // Order the clear AFTER any in-flight capture so the clear is the LAST write to
+    // these columns (A2-11): a turn that fails instantly after `started` must not
+    // have its capture land after the clear. captureInFlight is a best-effort writer
+    // that never rejects, but guard anyway. Then clear on EVERY exit path.
+    await captureInFlight.catch(() => {});
+    await clearActiveStream(deps.admin, { threadId });
   }
 }
 

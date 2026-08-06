@@ -313,13 +313,17 @@ export const TUTOR_MODELS = {
     maxRetries: int("TUTOR_EMBEDDING_MAX_RETRIES", 2),
     maxOutputTokens: int("TUTOR_EMBEDDING_MAX_OUTPUT_TOKENS", 0),
   } satisfies TutorJobModel,
-  /** A live student tutor turn (Wave 3). A snappier model + a PER-TURN 30s ceiling
-   *  for interactivity (Wave 3 order §3.1 — the interactive turn must never hang the
-   *  learner; the loop's ≤3 tool rounds each run under this deadline). Env-overridable. */
+  /** A live student tutor turn (Wave 3; A2 Wave 2 raised the ceiling). A snappier
+   *  model + a PER-MODEL-CALL 90s ceiling — the directive's `stepMs`
+   *  (streamConfig.ts): a STREAMED turn emits tokens the whole time, so the old 30s
+   *  bound cut off long-but-live answers; the chunk watchdog (20s) now catches a
+   *  genuinely stalled stream instead. The loop's ≤3 tool rounds each run under this
+   *  deadline, and the whole turn is bounded by TUTOR_STREAM_TIMEOUTS.totalMs.
+   *  Env-overridable via TUTOR_TURN_TIMEOUT_MS. */
   tutor_turn: {
     model: process.env.TUTOR_TURN_MODEL ?? "gpt-5.6-luna",
     effort: effort("TUTOR_TURN_EFFORT", "medium"),
-    timeoutMs: int("TUTOR_TURN_TIMEOUT_MS", 30_000),
+    timeoutMs: int("TUTOR_TURN_TIMEOUT_MS", 90_000),
     maxRetries: int("TUTOR_TURN_MAX_RETRIES", 1),
     maxOutputTokens: int("TUTOR_TURN_MAX_OUTPUT_TOKENS", 8_000),
   } satisfies TutorJobModel,

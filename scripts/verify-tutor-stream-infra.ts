@@ -13,6 +13,8 @@
  * Run: `npx tsx scripts/verify-tutor-stream-infra.ts`
  */
 
+import { readFileSync } from "node:fs";
+
 import { z } from "zod";
 
 import {
@@ -96,16 +98,21 @@ async function protocolSuite(): Promise<void> {
       usage: { inputTokens: 10, outputTokens: 20, cachedTokens: null },
     },
     { type: "turn_aborted", reason: "client_disconnect", tokensEmitted: 3 },
+    {
+      type: "approval_required",
+      toolName: "some_irreversible_tool",
+      message: "This action needs your approval before the tutor can continue",
+    },
   ];
 
-  // Every one of the 10 variants parses at least one valid example.
+  // Every one of the 11 variants parses at least one valid example.
   const seenTypes = new Set<string>();
   for (const ev of valid) {
     const res = TutorWireEventSchema.safeParse(ev);
     check(`valid ${ev.type} parses`, res.success);
     if (res.success) seenTypes.add(ev.type);
   }
-  check("all 10 variant tags covered by valid examples", seenTypes.size === 10);
+  check("all 11 variant tags covered by valid examples", seenTypes.size === 11);
 
   // Malformed → REJECT (≥6 cases).
   const rejects: Array<[string, unknown]> = [
@@ -134,6 +141,8 @@ async function protocolSuite(): Promise<void> {
       },
     ],
     ["turn_aborted missing tokensEmitted", { type: "turn_aborted", reason: "x" }],
+    ["approval_required missing toolName", { type: "approval_required", message: "hi" }],
+    ["approval_required missing message", { type: "approval_required", toolName: "t" }],
   ];
   for (const [label, bad] of rejects) {
     check(`reject: ${label}`, !TutorWireEventSchema.safeParse(bad).success);
@@ -145,6 +154,14 @@ async function protocolSuite(): Promise<void> {
   check("encodeWireEvent framing exact", framed === `data: ${JSON.stringify({ type: "done" })}\n\n`);
   check("encodeWireEvent ends with a blank line", framed.endsWith("\n\n"));
   check("encodeWireEvent starts with 'data: '", framed.startsWith("data: "));
+
+  // §7 copy lint on the DEFAULT approval message the route emits — sentence case
+  // (no snake_case token), no terminal punctuation, and the toolName is NOT named in
+  // the message text (it rides the structured field).
+  const approvalMsg = "This action needs your approval before the tutor can continue";
+  check("approval message has no snake_case token", !/[a-z]+_[a-z]+/.test(approvalMsg));
+  check("approval message has no terminal period", !/[.!?]$/.test(approvalMsg));
+  check("approval message names no tool (no '_tool'/'tool_' token)", !/\btool\b/i.test(approvalMsg) || !/_/.test(approvalMsg));
 }
 
 /* ───────── 2. A2-5: the persisted analytics union gained NOTHING ─────────── */
@@ -452,6 +469,49 @@ async function streamStateSuite(): Promise<void> {
   }
 }
 
+/* ── 7. A2-12 — the transcript is APPEND-ONLY: no .update on tutor_turns ─────── */
+
+function appendOnlyGuardSuite(): void {
+  section("7. A2-12 — service.ts never .update()s tutor_turns (append-only transcript)");
+
+  const src = readFileSync(new URL("../lib/tutor/runtime/service.ts", import.meta.url), "utf8");
+
+  // Every tutor_turns write must be an .insert (the assistant/learner rows are
+  // append-only). A `.update(` chained off `.from("tutor_turns")` would be a
+  // mutation of a settled turn — forbidden. We assert no `tutor_turns` reference is
+  // followed (within a small window) by `.update(`.
+  const turnsIdx: number[] = [];
+  const needle = '"tutor_turns"';
+  let at = src.indexOf(needle);
+  while (at !== -1) {
+    turnsIdx.push(at);
+    at = src.indexOf(needle, at + 1);
+  }
+  check("service.ts references tutor_turns at least once (sanity)", turnsIdx.length > 0);
+
+  // Within 200 chars AFTER each tutor_turns reference there must be NO `.update(`.
+  let sawUpdate = false;
+  for (const i of turnsIdx) {
+    const window = src.slice(i, i + 200);
+    if (/\.update\s*\(/.test(window)) sawUpdate = true;
+  }
+  check("no `.update(` follows a tutor_turns reference (append-only)", !sawUpdate);
+
+  // No MUTATION verb other than insert may follow a tutor_turns reference — an
+  // .update / .delete / .upsert would break append-only. (Type references like
+  // `Tables["tutor_turns"]["Insert"]` carry no verb and are fine.)
+  let sawForbiddenVerb = false;
+  for (const i of turnsIdx) {
+    const window = src.slice(i, i + 200);
+    if (/\.(update|delete|upsert)\s*\(/.test(window)) sawForbiddenVerb = true;
+  }
+  check("no forbidden mutation verb (update/delete/upsert) follows a tutor_turns reference", !sawForbiddenVerb);
+
+  // At least ONE tutor_turns reference is an .insert (the append write path exists).
+  const anyInsert = turnsIdx.some((i) => /\.insert\s*\(/.test(src.slice(i, i + 200)));
+  check("at least one tutor_turns reference is an .insert (the append write path)", anyInsert);
+}
+
 /* ─────────────────────────────── runner ─────────────────────────────────── */
 
 async function main(): Promise<void> {
@@ -461,6 +521,7 @@ async function main(): Promise<void> {
   await upstashBufferSuite();
   factorySuite();
   await streamStateSuite();
+  appendOnlyGuardSuite();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

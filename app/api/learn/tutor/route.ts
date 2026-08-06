@@ -1,19 +1,24 @@
 /**
- * POST /api/learn/tutor — the learner-facing AI-tutor endpoint (TUTOR-1 Wave 3,
- * W3.4). ONE route, four actions dispatched on `body.action`:
+ * /api/learn/tutor — the learner-facing AI-tutor endpoint.
  *
- *   • 'turn'            → an interactive tutor turn, streamed as SSE (mirrors the
- *                          content-agent route's writer). ONE structured call this
- *                          wave — NO fake token deltas.
+ * POST — one route, five actions dispatched on `body.action`:
+ *   • 'turn'            → an interactive tutor turn, STREAMED as SSE. A2 Wave 2:
+ *                          real token deltas now flow (turn_started → model_started
+ *                          → first_token → text_delta* → turn_completed|turn_aborted),
+ *                          every frame TEE'd to the resume buffer, and the turn runs
+ *                          to completion SERVER-SIDE even if the learner disconnects.
  *   • 'practice_answer' → record a graded practice answer (plain JSON).
  *   • 'self_report'     → record a self-reported understanding (plain JSON).
  *   • 'hint_request'    → record a hint request (plain JSON).
+ *   • 'escalate_consent'→ the learner confirms/declines a tutor-raised escalation.
  *
- * The three discrete signals + the turn ALL pass the ONE access gate
- * (resolveTutorAccess): 'ok' | 'not_enrolled' | 'author_preview' | 'disabled'.
- * An author preview NEVER emits evidence + NEVER persists a transcript — it gets
- * a friendly message on the turn path and a no-op on the signal paths. The pooled
- * learner model + deterministic evidence ids live in lib/tutor/runtime/service.ts.
+ * GET — resume a mid-turn stream: replay the buffered frames for the (user, course)
+ *   thread's active stream, then follow its live tail until finalized (A2 §2).
+ *
+ * The signals + the turn ALL pass the ONE access gate (resolveTutorAccess):
+ * 'ok' | 'not_enrolled' | 'author_preview' | 'disabled'. An author preview NEVER
+ * emits evidence + NEVER persists a transcript. The pooled learner model +
+ * deterministic evidence ids live in lib/tutor/runtime/service.ts.
  *
  * Node.js runtime (the OpenAI SDK + admin client need it) + force-dynamic (never
  * cache a stream). The OpenAI key + the service-role key are server-only.
@@ -21,12 +26,15 @@
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// maxDuration covers TUTOR_STREAM_TIMEOUTS.totalMs (240s) + connection overhead —
+// valid on Hobby (Fluid compute) and Pro. A streamed turn runs to completion
+// server-side; the learner may disconnect without cancelling it.
+export const maxDuration = 300;
 
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
 import { withPooledModel, poolFor } from "@/lib/ai/subagent";
-import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import {
   resolveTutorAccess,
   loadTutorContext,
@@ -38,31 +46,26 @@ import {
   type TutorAccessKind,
 } from "@/lib/tutor/runtime/service";
 import { sendTutorEscalationConsented } from "@/lib/inngest/escalationEvents";
+import type { ModelStreamEvent } from "@/lib/ai/modelClient";
+import {
+  TutorWireEventSchema,
+  encodeWireEvent,
+  type TutorWireEvent,
+} from "@/lib/tutor/runtime/sseProtocol";
+import { streamBufferFromEnv } from "@/lib/tutor/runtime/streamBuffer";
+import { readActiveStream } from "@/lib/tutor/runtime/streamState";
+import { createProseExtractor } from "@/lib/tutor/runtime/proseExtractor";
+import { followStream } from "@/lib/tutor/runtime/streamResume";
+import { TUTOR_STREAM_TIMEOUTS } from "@/lib/tutor/runtime/streamConfig";
 
 /* ─────────────────────────────── SSE helpers ────────────────────────────── */
 
-type TutorSSEEvent =
-  | { type: "queued"; position: number }
-  | {
-      type: "turn";
-      payload: {
-        prose: string;
-        spans: unknown;
-        citations: unknown;
-        rung: number | null;
-        practiceItems: unknown;
-        escalationProposal: unknown;
-        /** W6 · the consent-pending candidate id (present when the tutor raised an
-         *  escalation this turn), so the consent card targets the right row. */
-        escalationCandidateId: string | null;
-        flags: string[];
-      };
-    }
-  | { type: "error"; message: string }
-  | { type: "done" };
-
-function encodeSSE(event: TutorSSEEvent): string {
-  return `data: ${JSON.stringify(event)}\n\n`;
+/** Frame + encode ONE wire event. The route emits ONLY through this (the old
+ *  inline `TutorSSEEvent` union is gone — every frame is a `TutorWireEvent`). The
+ *  legacy four frames (queued/turn/error/done) are byte-compatible with the pre-A2
+ *  wire, so the current client keeps working (it ignores unknown types). */
+function encodeSSE(event: TutorWireEvent): string {
+  return encodeWireEvent(event);
 }
 
 function sseResponse(stream: ReadableStream<Uint8Array>): Response {
@@ -77,8 +80,8 @@ function sseResponse(stream: ReadableStream<Uint8Array>): Response {
 }
 
 /** A one-event stream (used for the early typed-error / friendly-message paths on
- *  the turn action so the client's SSE reader still gets a clean turn+done). */
-function singleEventStream(event: TutorSSEEvent): ReadableStream<Uint8Array> {
+ *  the turn action so the client's SSE reader still gets a clean error+done). */
+function singleEventStream(event: TutorWireEvent): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   return new ReadableStream({
     start(controller) {
@@ -130,7 +133,14 @@ const ACCESS_MESSAGE: Record<Exclude<TutorAccessKind, "ok">, string> = {
   disabled: "The tutor isn't available for this course yet.",
 };
 
-/* ─────────────────────────────── the route ──────────────────────────────── */
+/** The default learner-visible copy when an irreversible-tier tool halts the turn
+ *  (A2 · §7 copy standard: generic, sentence case, no terminal punctuation, no tool
+ *  name in the text — the toolName rides the structured field). Dormant today (no
+ *  tutor tool is irreversible), but wired + tested. */
+const APPROVAL_REQUIRED_MESSAGE =
+  "This action needs your approval before the tutor can continue";
+
+/* ─────────────────────────────── the POST route ─────────────────────────── */
 
 export async function POST(req: Request): Promise<Response> {
   await createClient(); // establishes the cookie-scoped session (learner-scoped reads)
@@ -286,13 +296,11 @@ export async function POST(req: Request): Promise<Response> {
     return errorJson("missing_message", "message is required for a turn.", 400);
   }
 
-  // A non-'ok' access returns a typed JSON early-return streamed as SSE so the
-  // client's turn reader still settles. author_preview + not_enrolled + disabled
-  // all emit NOTHING (no model call, no persistence, no evidence).
+  // A non-'ok' access returns a typed error streamed as SSE so the client's turn
+  // reader still settles. author_preview + not_enrolled + disabled all emit NOTHING
+  // (no model call, no persistence, no evidence).
   if (access.kind !== "ok") {
-    return sseResponse(
-      singleEventStream({ type: "error", message: ACCESS_MESSAGE[access.kind] })
-    );
+    return sseResponse(singleEventStream({ type: "error", message: ACCESS_MESSAGE[access.kind] }));
   }
 
   if (!isOpenAIConfigured()) {
@@ -304,26 +312,98 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  // Belt-and-braces whole-turn deadline: compose the request abort with a hard
-  // ceiling (the model's own timeout + 15s slack) so a wedged stream can't hang
-  // the connection open. Aborting frees the pool slot in the decorator; nothing
-  // assistant-side persists on an abort.
-  const deadline = AbortSignal.timeout(TUTOR_MODELS.tutor_turn.timeoutMs + 15_000);
-  const composed = AbortSignal.any([req.signal, deadline]);
+  // ── ABORT COMPOSITION (A2 §2 invariant — read this carefully) ──────────────
+  // The whole-turn deadline is the ONLY thing that aborts the turn. `req.signal`
+  // is DELIBERATELY NOT in the composition: a learner disconnect must NOT stop the
+  // turn — it runs to completion server-side (persistence + the resume-buffer tee
+  // finish), so a client that refreshes can rejoin the finished stream. The chunk
+  // watchdog (below) is the second abort source, folded in via one AbortController.
+  const deadline = AbortSignal.timeout(TUTOR_STREAM_TIMEOUTS.totalMs);
+  const watchdog = new AbortController();
+  const composed = AbortSignal.any([deadline, watchdog.signal]);
 
   const context = await loadTutorContext(admin, courseId);
   const enc = new TextEncoder();
 
+  // The resume buffer (null when Upstash is unconfigured — streaming still works,
+  // only mid-turn RESUME is unavailable). Resolved once per request.
+  const buffer = streamBufferFromEnv();
+
+  // The stream id for this turn — the resume handle a reconnecting client rejoins.
+  const streamId = crypto.randomUUID();
+
+  const dispatchAt = Date.now();
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      const emit = (event: TutorSSEEvent) => {
-        if (closed) return;
-        try {
-          controller.enqueue(enc.encode(encodeSSE(event)));
-        } catch {
-          closed = true;
+      let textDeltaCount = 0;
+
+      // ── the chunk watchdog ──────────────────────────────────────────────────
+      // A provider can open a stream then stall. We arm a timer per model event; if
+      // no event arrives for chunkMs while the model call is in flight, we abort the
+      // turn with a distinguishable reason so the wire settles turn_aborted
+      // {reason:"stalled"}. Disarmed when the turn settles.
+      let watchTimer: ReturnType<typeof setTimeout> | null = null;
+      let stalled = false;
+      const disarmWatchdog = () => {
+        if (watchTimer) {
+          clearTimeout(watchTimer);
+          watchTimer = null;
         }
+      };
+      const armWatchdog = () => {
+        disarmWatchdog();
+        watchTimer = setTimeout(() => {
+          stalled = true;
+          watchdog.abort();
+        }, TUTOR_STREAM_TIMEOUTS.chunkMs);
+      };
+
+      // ── emit: HTTP leg + buffer tee ─────────────────────────────────────────
+      // Every frame goes to the (still-open) HTTP controller AND the resume buffer.
+      // The HTTP enqueue no-ops after the client closed (the tee keeps receiving —
+      // the turn runs to completion regardless). Buffer failures are logged, never
+      // thrown (Redis down must not kill a turn).
+      const emit = (event: TutorWireEvent) => {
+        const framed = encodeSSE(event);
+        if (!closed) {
+          try {
+            controller.enqueue(enc.encode(framed));
+          } catch {
+            closed = true; // the HTTP leg closed; keep teeing to the buffer
+          }
+        }
+        if (buffer) {
+          void buffer.append(streamId, framed).catch((err) => {
+            console.log(JSON.stringify({ tag: "tutor_stream_buffer", op: "append", error: String(err) }));
+          });
+        }
+      };
+
+      // ── the prose extractor: raw structured-JSON deltas → display prose ──────
+      const extractor = createProseExtractor();
+      let firstTokenEmitted = false;
+
+      const onModelEvent = (ev: ModelStreamEvent) => {
+        // Re-arm the stall watchdog on EVERY event (the stream is alive).
+        armWatchdog();
+        if (ev.type === "started") {
+          emit({ type: "model_started", responseId: ev.responseId });
+          return;
+        }
+        if (ev.type === "text_delta") {
+          const display = extractor.push(ev.delta);
+          if (display.length === 0) return;
+          if (!firstTokenEmitted) {
+            firstTokenEmitted = true;
+            emit({ type: "first_token", ttftMs: Math.max(0, Date.now() - dispatchAt) });
+          }
+          emit({ type: "text_delta", delta: display });
+          textDeltaCount += 1;
+        }
+        // tool_call / error events are not surfaced as their own wire frames here —
+        // the settled turn (or a turn_aborted) carries the outcome.
       };
 
       // The pooled learner model — a `queued` event fires when a call WAITS on the
@@ -340,9 +420,13 @@ export async function POST(req: Request): Promise<Response> {
         },
       });
 
+      // (1) Open the turn on the wire immediately (the resume handle rides here).
+      emit({ type: "turn_started", streamId, ts: new Date().toISOString() });
+      armWatchdog();
+
       try {
         const result = await runTutorTurnForRequest(
-          { learnerClient, admin, model, signal: composed },
+          { learnerClient, admin, model, signal: composed, streamId, onModelEvent },
           {
             userId: user.id,
             envelope: { ...envelope, version },
@@ -355,16 +439,38 @@ export async function POST(req: Request): Promise<Response> {
             context,
           }
         );
+        disarmWatchdog();
+        extractor.done();
 
-        if (!result.turn || !result.turn.ok || !result.turn.output) {
+        // (5) An irreversible-tier tool halted the loop → approval_required INSTEAD
+        //     of a turn frame (the other agent's `approvalRequired` field). Dormant
+        //     today (no tutor tool is irreversible), but wired + tested.
+        if (result.turn?.approvalRequired) {
           emit({
-            type: "error",
-            message: result.turn?.error ?? "The tutor couldn't complete that turn. Please try again.",
+            type: "approval_required",
+            toolName: result.turn.approvalRequired.toolName,
+            message: APPROVAL_REQUIRED_MESSAGE,
           });
+        } else if (!result.turn || !result.turn.ok || !result.turn.output) {
+          // (4) A failed/aborted turn. If the watchdog stalled it OR the turn was
+          //     aborted, settle turn_aborted with the count of deltas we emitted;
+          //     otherwise a plain error frame (unchanged payload).
+          const errText =
+            result.turn?.error ?? "The tutor couldn't complete that turn. Please try again.";
+          const aborted = stalled || isAbortError(errText);
+          emit({ type: "error", message: aborted ? abortMessage(stalled) : errText });
+          if (aborted) {
+            emit({
+              type: "turn_aborted",
+              reason: stalled ? "stalled" : "aborted",
+              tokensEmitted: textDeltaCount,
+            });
+          }
         } else {
+          // (3) The settled turn — the validated grounded spans/citations. The FULL
+          //     `turn` frame is unchanged (the client renders it authoritatively over
+          //     the streamed deltas), followed by turn_completed lifecycle + done.
           const out = result.turn.output;
-          // ONE structured call this wave — the whole turn is emitted as a single
-          // `turn` event (NO fake token deltas; streaming deltas land in a later wave).
           emit({
             type: "turn",
             payload: {
@@ -378,18 +484,39 @@ export async function POST(req: Request): Promise<Response> {
               flags: result.turn.groundingFlags,
             },
           });
+          emit({
+            type: "turn_completed",
+            finishReason: "stop",
+            durationMs: Math.max(0, Date.now() - dispatchAt),
+            usage: {
+              // The loop surfaces aggregate usage; the wire carries it when present.
+              inputTokens: result.turn.usage?.inputTokens ?? null,
+              outputTokens: result.turn.usage?.outputTokens ?? null,
+              cachedTokens: result.turn.usage?.cachedTokens ?? null,
+            },
+          });
         }
       } catch (err) {
-        // An abort (client disconnect or the deadline) closes the stream; the
-        // decorator already freed the pool slot and nothing assistant-side wrote.
-        const aborted = err instanceof Error && err.name === "AbortError";
-        emit({
-          type: "error",
-          message: aborted ? "The turn was cancelled." : err instanceof Error ? err.message : "Tutor turn failed",
-        });
+        // runTutorTurnForRequest never throws on a model failure (it settles
+        // turn.ok=false), so reaching here is a genuinely thrown error (or the
+        // deadline abort). Treat an abort as turn_aborted; else a plain error.
+        disarmWatchdog();
+        extractor.done();
+        const aborted = stalled || (err instanceof Error && err.name === "AbortError");
+        emit({ type: "error", message: aborted ? abortMessage(stalled) : errText(err) });
+        if (aborted) {
+          emit({ type: "turn_aborted", reason: stalled ? "stalled" : "aborted", tokensEmitted: textDeltaCount });
+        }
       } finally {
+        disarmWatchdog();
         emit({ type: "done" });
         closed = true;
+        // Finalize the resume buffer — no more frames will arrive for this stream.
+        if (buffer) {
+          void buffer.finalize(streamId).catch((err) => {
+            console.log(JSON.stringify({ tag: "tutor_stream_buffer", op: "finalize", error: String(err) }));
+          });
+        }
         try {
           controller.close();
         } catch {
@@ -398,10 +525,158 @@ export async function POST(req: Request): Promise<Response> {
       }
     },
     cancel() {
-      // The client disconnected — the composed signal's req.signal fires, the
-      // pooled call rejects, the pool slot frees. Nothing else to do.
+      // A2 §2 INVARIANT: the client disconnected. This must NOT abort the turn — we
+      // ONLY mark the HTTP leg closed so `emit` stops enqueueing to a dead
+      // controller. The turn keeps running server-side (persistence + the buffer tee
+      // complete), so a refresh can rejoin the finished stream via GET. Do NOT call
+      // watchdog.abort() or otherwise cancel the turn here.
     },
   });
 
   return sseResponse(stream);
 }
+
+/* ─────────────────────────────── the GET route (resume) ─────────────────── */
+
+/**
+ * Resume a mid-turn stream. Same auth as POST (requireUser → resolveTutorAccess ok).
+ * Reads the (user, course) thread's active stream id; replays the buffered frames
+ * from `?from` (default 0) VERBATIM (they are already SSE-encoded), then follows the
+ * live tail until finalized or the total deadline. 204 when there is nothing to
+ * resume (no active stream, or no resume buffer configured).
+ */
+export async function GET(req: Request): Promise<Response> {
+  await createClient();
+  const user = await getSessionUser();
+  if (!user) return errorJson("unauthorized", "Sign in to use the tutor.", 401);
+
+  const url = new URL(req.url);
+  const courseId = url.searchParams.get("courseId");
+  if (!courseId) return errorJson("missing_course", "courseId is required.", 400);
+  const from = Math.max(0, Number.parseInt(url.searchParams.get("from") ?? "0", 10) || 0);
+
+  const admin = createAdminClient();
+  const access = await resolveTutorAccess(admin, { userId: user.id, courseId });
+  if (access.kind !== "ok") return errorJson("forbidden", "You can't resume this stream.", 403);
+
+  // No resume buffer configured ⇒ nothing to replay (dev degrade). 204 = the client
+  // falls back to a fresh connection.
+  const buffer = streamBufferFromEnv();
+  if (!buffer) return new Response(null, { status: 204 });
+
+  const active = await readActiveStream(admin, { userId: user.id, courseId });
+  if (!active || !active.streamId) return new Response(null, { status: 204 });
+  const streamId = active.streamId;
+
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false;
+      const onFrame = (frame: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(enc.encode(frame));
+        } catch {
+          closed = true;
+        }
+      };
+      try {
+        // followStream replays from `from`, then polls the live tail until finalized
+        // or the total deadline. Frames are forwarded VERBATIM — they are already the
+        // encoded SSE bytes the POST leg wrote, so replay is gap/dup-free by
+        // construction (the buffer's nextIndex drives the cursor).
+        await followStream(buffer, streamId, {
+          from,
+          pollMs: 400,
+          deadlineMs: TUTOR_STREAM_TIMEOUTS.totalMs,
+          onFrame,
+        });
+      } catch (err) {
+        console.log(JSON.stringify({ tag: "tutor_stream_resume", error: String(err) }));
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    },
+    cancel() {
+      // The resuming client left — nothing to clean up (the ORIGINAL turn owns the
+      // buffer + persistence; this GET is a read-only follower).
+    },
+  });
+
+  return sseResponse(stream);
+}
+
+/* ─────────────────────────────── small helpers ──────────────────────────── */
+
+/** Whether an error string names an abort (the loop stringifies the AbortError). */
+function isAbortError(text: string): boolean {
+  return /abort/i.test(text);
+}
+
+/** The learner-visible abort copy (§7: sentence case, no terminal punctuation). */
+function abortMessage(stalled: boolean): string {
+  return stalled
+    ? "The tutor went quiet and the turn was stopped — please try again"
+    : "The turn was cancelled";
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : "Tutor turn failed";
+}
+
+/* ─────────────────────────────── wire-wiring helper (test seam) ──────────── */
+
+/**
+ * The per-event wiring used by the POST stream, extracted as a PURE helper so the
+ * int suite drives the REAL wiring (prose extractor → wire frames) without a live
+ * ReadableStream/HTTP leg. Given an event and a small mutable state bag, it appends
+ * the wire frames that event produces (model_started / first_token / text_delta) to
+ * `out`. `dispatchAt` seeds first_token's ttft. Mirrors `onModelEvent` above; kept
+ * in sync by review (both feed the same extractor + emit the same variants).
+ */
+export interface TutorWireWiringState {
+  extractor: ReturnType<typeof createProseExtractor>;
+  dispatchAt: number;
+  firstTokenEmitted: boolean;
+  textDeltaCount: number;
+  now: () => number;
+}
+
+export function makeTutorWireWiringState(now: () => number = Date.now): TutorWireWiringState {
+  return {
+    extractor: createProseExtractor(),
+    dispatchAt: now(),
+    firstTokenEmitted: false,
+    textDeltaCount: 0,
+    now,
+  };
+}
+
+export function wireModelEvent(
+  state: TutorWireWiringState,
+  ev: ModelStreamEvent,
+  out: TutorWireEvent[]
+): void {
+  if (ev.type === "started") {
+    out.push({ type: "model_started", responseId: ev.responseId });
+    return;
+  }
+  if (ev.type === "text_delta") {
+    const display = state.extractor.push(ev.delta);
+    if (display.length === 0) return;
+    if (!state.firstTokenEmitted) {
+      state.firstTokenEmitted = true;
+      out.push({ type: "first_token", ttftMs: Math.max(0, state.now() - state.dispatchAt) });
+    }
+    out.push({ type: "text_delta", delta: display });
+    state.textDeltaCount += 1;
+  }
+}
+
+// Ensure the wire union import is referenced even if the wiring helper is tree-shaken
+// in a build without the int suite (the schema is used by the route emission above).
+void TutorWireEventSchema;

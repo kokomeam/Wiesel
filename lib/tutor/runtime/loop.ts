@@ -83,6 +83,7 @@ import {
   type TutorToolCtx,
   type TutorToolDeps,
 } from "./tools";
+import { tierOf } from "./toolTiers";
 import { evaluateEscalationTrigger } from "./escalationTriggers";
 import type { TurnEscalationProposal } from "./outputContract";
 import type { TutorInferencePayload } from "@/lib/analytics/events";
@@ -165,6 +166,14 @@ export interface TutorTurnResult {
    *  Persisted into the assistant row's grounding jsonb so the NEXT turn's derived
    *  session state sees which once-per-session behaviors already fired. */
   sessionMarkers: string[];
+  /** A2 · the fail-closed approval gate: when the model requests an IRREVERSIBLE
+   *  (or unclassified/unknown) tool, the loop HALTS BEFORE executing it and settles
+   *  a completed-but-gated turn with this field set to the offending tool name.
+   *  The turn is `ok:false` + `output:null` (nothing FAILED — nothing RAN either),
+   *  so service.ts step (6) `if (!turn.ok || !turn.output)` skips ALL assistant
+   *  persistence + evidence emission. The ROUTE maps this to an approval_required
+   *  wire frame. Absent/null on every non-gated turn. */
+  approvalRequired?: { toolName: string } | null;
   error?: string;
 }
 
@@ -473,6 +482,31 @@ export async function runTutorTurn(
 
       // Execute each requested tool locally; feed compact JSON results back.
       for (const call of result.toolCalls) {
+        // A2 · THE FAIL-CLOSED APPROVAL GATE (runs BEFORE any execution AND before
+        // the unknown-tool ToolError path). An IRREVERSIBLE tier — which includes
+        // any name with no explicit tier row (tierOf fails closed to "irreversible",
+        // so an unknown tool is by definition gated) — HALTS the whole turn: nothing
+        // executes, no function_call/function_call_output is fed back (so the model
+        // is never re-asked), and we settle a completed-but-gated result. ok:false +
+        // output:null (nothing FAILED and nothing RAN) means service.ts step (6)
+        // `if (!turn.ok || !turn.output)` persists NO assistant row and emits NO
+        // evidence. The ROUTE turns approvalRequired into an approval_required frame.
+        if (tierOf(call.name) === "irreversible") {
+          return {
+            ok: false,
+            output: null,
+            groundingFlags: [],
+            evidence: [],
+            practiceItems: [],
+            escalation: null,
+            toolTrace,
+            usage,
+            responseId: lastResponseId,
+            rung: null,
+            sessionMarkers: [],
+            approvalRequired: { toolName: call.name },
+          };
+        }
         conversation.push({ type: "function_call", callId: call.callId, name: call.name, arguments: call.arguments });
         const { summary, data } = await runTool(call.name, call.arguments, toolDeps);
         toolTrace.push({ tool: call.name, summary });

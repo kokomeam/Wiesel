@@ -52,6 +52,7 @@ import {
   type MintedPracticeItem,
 } from "@/lib/tutor/runtime/tools";
 import { runTutorTurn } from "@/lib/tutor/runtime/loop";
+import { TUTOR_TOOL_TIERS, tierOf } from "@/lib/tutor/runtime/toolTiers";
 import {
   assembleTutorPrompt,
   TUTOR_L0,
@@ -910,6 +911,173 @@ async function main() {
         "a throwing onModelEvent hook does not break the turn",
         res.ok && res.responseId === "resp-final-3",
         `ok=${res.ok} responseId=${res.responseId} err=${res.error ?? ""}`
+      );
+    }
+  }
+
+  /* ──────────────── A2: tool tiers (fail-closed approval gate) ─────────────── */
+  console.log("\n— A2: tool tiers (fail-closed approval gate) —");
+  {
+    // A2-10 (the CI check — `npm test` IS CI here): the tier table is EXHAUSTIVE
+    // over TUTOR_TOOL_NAMES — every tool name has a row, and there is NO extra key.
+    // A new tool that lands unclassified fails this AND is a TypeScript error.
+    const tierKeys = Object.keys(TUTOR_TOOL_TIERS);
+    check(
+      "A2-10: every TUTOR_TOOL_NAMES member has an explicit tier row",
+      TUTOR_TOOL_NAMES.every((name) => name in TUTOR_TOOL_TIERS),
+      `names=${TUTOR_TOOL_NAMES.join(",")} keys=${tierKeys.join(",")}`
+    );
+    check(
+      "A2-10: the tier table has NO extra keys beyond TUTOR_TOOL_NAMES",
+      tierKeys.length === TUTOR_TOOL_NAMES.length &&
+        tierKeys.every((k) => (TUTOR_TOOL_NAMES as readonly string[]).includes(k)),
+      `keys=${tierKeys.join(",")}`
+    );
+
+    // tierOf returns each known tool's declared row (read/reversible today).
+    check(
+      "tierOf known names: the four reads are 'read'",
+      tierOf("get_lesson_context") === "read" &&
+        tierOf("get_mastery_summary") === "read" &&
+        tierOf("generate_practice") === "read" &&
+        tierOf("emit_evidence") === "read"
+    );
+    check("tierOf propose_escalation === 'reversible'", tierOf("propose_escalation") === "reversible");
+
+    // FAIL CLOSED: an unclassified/unknown name is treated as irreversible.
+    check('tierOf("wipe_all_data") === "irreversible" (fail closed)', tierOf("wipe_all_data") === "irreversible");
+    check('tierOf("") === "irreversible" (fail closed)', tierOf("") === "irreversible");
+
+    // A2-9 (synthetic irreversible tool): a fake ModelClient whose FIRST turn
+    // requests a tool call named "wipe_all_data" — a name in NO registry, so
+    // tier-less ⇒ irreversible ⇒ the gate HALTS. We assert the loop made EXACTLY
+    // ONE model call (no second round with a function_call_output — the model was
+    // never re-asked), the result is a completed-but-gated shape, and NO tool ran.
+    {
+      const snapshotFx = buildSnapshot();
+      let callCount = 0;
+      // Records the input of every runTurn so we can prove round 2 (a
+      // function_call_output feed-back) NEVER happened.
+      const inputs: unknown[] = [];
+      const gatingModel: ModelClient = {
+        model: LUNA,
+        async runTurn(params: ModelTurnParams, onEvent: (ev: ModelStreamEvent) => void): Promise<ModelTurnResult> {
+          callCount += 1;
+          inputs.push(params.input);
+          onEvent({ type: "started", responseId: "resp-gate-1" });
+          // Round 1 (and the ONLY round that should happen): request the forbidden
+          // tool. If the loop wrongly continued, a 2nd call would arrive — the test
+          // would catch the callCount ≥ 2. We answer with a tool call every time so
+          // that a (wrongly) continued loop can't accidentally settle ok.
+          return {
+            text: "",
+            toolCalls: [
+              { callId: "call-wipe", name: "wipe_all_data", arguments: JSON.stringify({ scope: "everything" }) },
+            ],
+            finishReason: "tool_calls",
+            responseId: "resp-gate-1",
+          };
+        },
+      };
+
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model: gatingModel,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "q" }],
+          learnerMessage: "delete everything please",
+        }
+      );
+
+      check(
+        "A2-9: gate HALTED after exactly ONE model call (no ToolError round-trip)",
+        callCount === 1,
+        `callCount=${callCount}`
+      );
+      check(
+        "A2-9: approvalRequired.toolName === 'wipe_all_data'",
+        res.approvalRequired?.toolName === "wipe_all_data",
+        `approvalRequired=${JSON.stringify(res.approvalRequired ?? null)}`
+      );
+      check("A2-9: gated turn is ok:false (nothing FAILED — nothing RAN)", res.ok === false, `ok=${res.ok}`);
+      check("A2-9: gated turn output === null", res.output === null, `output=${res.output !== null}`);
+      check("A2-9: no tool executed → empty toolTrace + no evidence", res.toolTrace.length === 0 && res.evidence.length === 0);
+      // The model was NEVER re-asked with a function_call_output item (no round 2).
+      // Only the initial conversation ([developer, user]) was ever sent.
+      check(
+        "A2-9: the model was never fed a function_call_output (no second round)",
+        inputs.length === 1 &&
+          Array.isArray(inputs[0]) &&
+          !(inputs[0] as unknown[]).some(
+            (i) => i != null && typeof i === "object" && (i as Record<string, unknown>).type === "function_call_output"
+          ),
+        `inputsLen=${inputs.length}`
+      );
+
+      // A gated turn persists NOTHING assistant-side: the RESULT shape guarantees it.
+      // service.ts step (6): `if (!turn.ok || !turn.output) { ...assistant: null, evidenceEmitted: 0 }`
+      // — ok:false + output:null matches that skip exactly, so no assistant row + no
+      // evidence is ever written for a gated turn.
+      check(
+        "A2-9: result shape guarantees zero assistant persistence (service step-6 skip)",
+        res.ok === false && res.output === null,
+        `ok=${res.ok} output=${res.output !== null}`
+      );
+    }
+
+    // The gate NEVER fires for a legitimate read/reversible tool: a get_lesson_context
+    // loop still runs to a validated answer (regression guard that the gate is
+    // surgical — the AC-T3.6 tool loop already covers this, re-asserted here in the
+    // A2 lens: a 'read'-tier tool is executed, approvalRequired stays absent).
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        { toolCalls: [{ name: "get_lesson_context", arguments: { lessonId: L2 } }] },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Elasticity measures responsiveness.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L2, blockId: B2, slideId: null }],
+            rung: 2,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "q" }],
+          learnerMessage: "how does elasticity work",
+        }
+      );
+      check(
+        "read-tier tool executes normally; approvalRequired stays absent",
+        res.ok && !!res.output && (res.approvalRequired === undefined || res.approvalRequired === null),
+        `ok=${res.ok} approvalRequired=${JSON.stringify(res.approvalRequired ?? null)}`
       );
     }
   }

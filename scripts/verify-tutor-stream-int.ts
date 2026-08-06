@@ -74,6 +74,16 @@ import {
   GROUNDED_CLOSE,
   type TurnOutput,
 } from "@/lib/tutor/runtime/outputContract";
+import {
+  makeTutorWireWiringState,
+  wireModelEvent,
+} from "@/app/api/learn/tutor/route";
+import {
+  encodeWireEvent,
+  type TutorWireEvent,
+} from "@/lib/tutor/runtime/sseProtocol";
+import { createInMemoryStreamBuffer } from "@/lib/tutor/runtime/streamBuffer";
+import { followStream } from "@/lib/tutor/runtime/streamResume";
 
 let pass = 0,
   fail = 0;
@@ -231,6 +241,64 @@ function instantModel(opts: { startedId: string; finalText: string }): ModelClie
       return { text: opts.finalText, toolCalls: [], finishReason: "stop", responseId: opts.startedId };
     },
   };
+}
+
+/**
+ * A STREAMING fake model: emits `started`, then `text_delta` chunks (the caller's
+ * slices of a valid TurnOutput JSON) with a real `gapMs` delay between each, then
+ * returns the reassembled full text. Mirrors a real provider streaming the
+ * structured JSON token-by-token so the prose extractor + wire wiring exercise the
+ * true code path. `onDelta` fires (with a wall-clock ms stamp) as each chunk is
+ * emitted so the test can measure first-delta timing vs settle. */
+function streamingModel(opts: {
+  startedId: string;
+  chunks: string[];
+  gapMs: number;
+}): ModelClient {
+  return {
+    model: LUNA,
+    async runTurn(
+      _params: ModelTurnParams,
+      onEvent: (ev: ModelStreamEvent) => void
+    ): Promise<ModelTurnResult> {
+      onEvent({ type: "started", responseId: opts.startedId });
+      for (const chunk of opts.chunks) {
+        await new Promise((r) => setTimeout(r, opts.gapMs));
+        onEvent({ type: "text_delta", delta: chunk });
+      }
+      return {
+        text: opts.chunks.join(""),
+        toolCalls: [],
+        finishReason: "stop",
+        responseId: opts.startedId,
+        usage: { inputTokens: 100, outputTokens: 50, cachedTokens: 10, reasoningTokens: 0 },
+      };
+    },
+  };
+}
+
+/** A model that THROWS a NON-abort error (a genuine model failure). The loop catches
+ *  it and settles ok:false (never throws into the route). Proves A2-11 clears the
+ *  in-flight state on the error path too. */
+function throwingModel(opts: { startedId: string }): ModelClient {
+  return {
+    model: LUNA,
+    async runTurn(
+      _params: ModelTurnParams,
+      onEvent: (ev: ModelStreamEvent) => void
+    ): Promise<ModelTurnResult> {
+      onEvent({ type: "started", responseId: opts.startedId });
+      throw new Error("simulated model transport failure");
+    },
+  };
+}
+
+/** Slice a string into `n` roughly-even chunks (≥1). */
+function sliceIntoChunks(s: string, n: number): string[] {
+  const size = Math.max(1, Math.ceil(s.length / n));
+  const out: string[] = [];
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
 }
 
 /** Read the two in-flight columns for a thread. */
@@ -423,6 +491,298 @@ async function main() {
     // wrote none, the normal turn wrote one).
     const assistantTotal = await countAssistantRows(admin, threadId);
     check("exactly ONE assistant row on the thread (chain intact across the abort)", assistantTotal === 1, String(assistantTotal));
+
+    /* ═══════════════ A2-6 — streamed deltas arrive BEFORE settle ═══════════════ */
+    console.log("\n# A2-6 — a streaming model emits 5 text_delta chunks; the first display delta lands well before settle");
+
+    // A valid TurnOutput whose FIRST field is the prose (with grounded markers so the
+    // extractor strips them). Sliced into 5 chunks streamed with 30ms gaps.
+    const streamOut: TurnOutput = {
+      proseWithSpanMarkers: `${GROUNDED_OPEN}Streaming works when tokens arrive incrementally.${GROUNDED_CLOSE}`,
+      citations: [{ lessonId, blockId: doc.modules[0].lessons[0].blocks[0].id, slideId: null }],
+      rung: 2,
+      evidence: [],
+      practiceItems: undefined,
+      escalationProposal: null,
+    };
+    const streamJson = JSON.stringify(streamOut);
+    const GAP = 30;
+    const chunks = sliceIntoChunks(streamJson, 5);
+    check("fixture sliced into 5 streamed chunks", chunks.length === 5, String(chunks.length));
+
+    const streamModel = streamingModel({ startedId: "resp-stream-6", chunks, gapMs: GAP });
+
+    // Drive the REAL wiring: an onModelEvent that runs wireModelEvent (prose extractor
+    // → wire frames), timestamping the first text_delta frame. This is the exact
+    // per-event pipeline the route uses.
+    const wireState = makeTutorWireWiringState(Date.now);
+    const wireFrames: TutorWireEvent[] = [];
+    let firstDeltaAt: number | null = null;
+    const dispatchAt6 = Date.now();
+    const streamResult = await runTutorTurnForRequest(
+      {
+        learnerClient: learner.client,
+        admin,
+        model: streamModel,
+        loadSnapshot,
+        streamId: "sid-a2-6",
+        onModelEvent: (ev) => {
+          const before = wireFrames.length;
+          wireModelEvent(wireState, ev, wireFrames);
+          // The first text_delta frame produced marks the first display token.
+          if (firstDeltaAt === null) {
+            for (let i = before; i < wireFrames.length; i++) {
+              if (wireFrames[i].type === "text_delta") {
+                firstDeltaAt = Date.now();
+                break;
+              }
+            }
+          }
+        },
+      },
+      { userId: learner.userId, envelope, learnerMessage: "Stream me a reply." }
+    );
+    const settledAt6 = Date.now();
+
+    check("the streamed turn completed ok", streamResult.turn?.ok === true, JSON.stringify({ error: streamResult.turn?.error }));
+    check("a model_started wire frame was produced", wireFrames.some((f) => f.type === "model_started"));
+    check("at least one text_delta wire frame was produced", wireFrames.some((f) => f.type === "text_delta"));
+    check("a first_token wire frame was produced exactly once", wireFrames.filter((f) => f.type === "first_token").length === 1);
+    // The reassembled display prose (concat of text_delta frames) is the marker-stripped prose.
+    const displayProse = wireFrames.filter((f) => f.type === "text_delta").map((f) => (f as { delta: string }).delta).join("");
+    check(
+      "concatenated deltas == the marker-stripped prose",
+      displayProse === "Streaming works when tokens arrive incrementally.",
+      JSON.stringify(displayProse)
+    );
+    // The first display delta preceded settle by AT LEAST the artificial gap span
+    // (5 chunks × 30ms of gaps means settle is ≥ ~120ms after dispatch; the first
+    // delta lands after only the first gap(s), so first-delta << settle).
+    check(
+      "first display delta landed measurably before settle (≥ one gap of margin)",
+      firstDeltaAt !== null && settledAt6 - firstDeltaAt >= GAP,
+      `firstDeltaAt=${firstDeltaAt} settledAt=${settledAt6} margin=${firstDeltaAt !== null ? settledAt6 - firstDeltaAt : "n/a"}`
+    );
+    check("first delta arrived after dispatch (sanity)", firstDeltaAt !== null && firstDeltaAt >= dispatchAt6);
+
+    /* ═══════════════ A2-7 — the buffer tee is gap/dup-free ══════════════════════ */
+    console.log("\n# A2-7 — teeing every wire frame to an in-memory buffer; a mid-stream client-kill snapshot then a read-from-0 equals the full sequence exactly");
+
+    const buffer = createInMemoryStreamBuffer();
+    const teeStreamId = "sid-a2-7";
+    // The full ordered sequence of ENCODED frames we emitted (the source of truth).
+    const emittedEncoded: string[] = [];
+    let clientKillSnapshot: string[] | null = null;
+
+    const teeState = makeTutorWireWiringState(Date.now);
+    const wireFramesTee: TutorWireEvent[] = [];
+    const teeModel = streamingModel({ startedId: "resp-stream-7", chunks, gapMs: GAP });
+
+    // Mirror the route's emit: turn_started first, then per-event frames, then the
+    // settled turn frames + done. We tee EVERY frame to the buffer as it is emitted.
+    const emit = async (ev: TutorWireEvent) => {
+      const framed = encodeWireEvent(ev);
+      emittedEncoded.push(framed);
+      await buffer.append(teeStreamId, framed);
+      // Simulate a client disconnect midway: snapshot the buffer after the first delta.
+      if (clientKillSnapshot === null && ev.type === "text_delta") {
+        const snap = await buffer.read(teeStreamId, 0);
+        clientKillSnapshot = snap.frames.slice();
+      }
+    };
+
+    await emit({ type: "turn_started", streamId: teeStreamId, ts: new Date().toISOString() });
+    const teeResult = await runTutorTurnForRequest(
+      {
+        learnerClient: learner.client,
+        admin,
+        model: teeModel,
+        loadSnapshot,
+        streamId: teeStreamId,
+        onModelEvent: (ev) => {
+          const before = wireFramesTee.length;
+          wireModelEvent(teeState, ev, wireFramesTee);
+          for (let i = before; i < wireFramesTee.length; i++) void emit(wireFramesTee[i]);
+        },
+      },
+      { userId: learner.userId, envelope, learnerMessage: "Tee this reply." }
+    );
+    // Settle frames (the turn + turn_completed + done), teed too.
+    if (teeResult.turn?.ok && teeResult.turn.output) {
+      const out = teeResult.turn.output;
+      await emit({
+        type: "turn",
+        payload: {
+          prose: out.prose,
+          spans: out.spans,
+          citations: out.citations,
+          rung: teeResult.turn.rung,
+          practiceItems: out.practiceItems ?? [],
+          escalationProposal: out.escalationProposal ?? null,
+          escalationCandidateId: teeResult.turn.escalation?.candidateId ?? null,
+          flags: teeResult.turn.groundingFlags,
+        },
+      });
+      await emit({
+        type: "turn_completed",
+        finishReason: "stop",
+        durationMs: 1,
+        usage: {
+          inputTokens: teeResult.turn.usage?.inputTokens ?? null,
+          outputTokens: teeResult.turn.usage?.outputTokens ?? null,
+          cachedTokens: teeResult.turn.usage?.cachedTokens ?? null,
+        },
+      });
+    }
+    await emit({ type: "done" });
+    await buffer.finalize(teeStreamId);
+
+    check("the teed turn completed ok", teeResult.turn?.ok === true, JSON.stringify({ error: teeResult.turn?.error }));
+    const killSnap: string[] = clientKillSnapshot ?? [];
+    check("a mid-stream client-kill snapshot was captured", killSnap.length > 0);
+    check(
+      "the client-kill snapshot is a strict PREFIX of the full sequence (no gap/dup up to the kill)",
+      killSnap.length > 0 && killSnap.every((f, i) => f === emittedEncoded[i])
+    );
+
+    // Read the buffer from 0 after settle: it must EXACTLY equal the full emitted
+    // sequence, in order, and report finalized:true.
+    const finalRead = await buffer.read(teeStreamId, 0);
+    check(
+      "buffer read-from-0 equals the full emitted frame sequence EXACTLY (no gap/dup)",
+      finalRead.frames.length === emittedEncoded.length &&
+        finalRead.frames.every((f, i) => f === emittedEncoded[i]),
+      `buffer=${finalRead.frames.length} emitted=${emittedEncoded.length}`
+    );
+    check("buffer reports finalized:true after finalize", finalRead.finalized === true);
+
+    /* ══════════ GET-resume — followStream replay + tail against the buffer ═══════ */
+    console.log("\n# GET-resume — followStream replays from `from` then follows the live tail to finalization (the resume LOGIC, unit-proven)");
+
+    // Replay from index 0 of the just-finalized buffer: every frame arrives once, in
+    // order, and the loop returns 'finalized' immediately (no tail poll needed).
+    const replayed: string[] = [];
+    const outcomeAll = await followStream(buffer, teeStreamId, {
+      from: 0,
+      pollMs: 5,
+      deadlineMs: 5_000,
+      onFrame: (f) => {
+        replayed.push(f);
+      },
+    });
+    check("followStream returns 'finalized' on a finalized buffer", outcomeAll === "finalized");
+    check(
+      "followStream replays the full sequence VERBATIM from 0",
+      replayed.length === emittedEncoded.length && replayed.every((f, i) => f === emittedEncoded[i])
+    );
+
+    // Replay from a mid-index (resume after the client dropped): only the tail arrives.
+    const fromIdx = Math.max(1, Math.floor(emittedEncoded.length / 2));
+    const tailOnly: string[] = [];
+    const outcomeTail = await followStream(buffer, teeStreamId, {
+      from: fromIdx,
+      pollMs: 5,
+      deadlineMs: 5_000,
+      onFrame: (f) => {
+        tailOnly.push(f);
+      },
+    });
+    check("followStream from a mid-index returns 'finalized'", outcomeTail === "finalized");
+    check(
+      "followStream from a mid-index replays ONLY the tail (no earlier frames, no dup)",
+      tailOnly.length === emittedEncoded.length - fromIdx &&
+        tailOnly.every((f, i) => f === emittedEncoded[fromIdx + i])
+    );
+
+    // A live-tail follow: a buffer that is NOT yet finalized delivers late-appended
+    // frames on a subsequent poll, then finalizes.
+    const liveBuf = createInMemoryStreamBuffer();
+    const liveSid = "sid-live-tail";
+    await liveBuf.append(liveSid, "data: A\n\n");
+    const liveFrames: string[] = [];
+    // Append a second frame + finalize AFTER the first poll has run.
+    setTimeout(() => {
+      void (async () => {
+        await liveBuf.append(liveSid, "data: B\n\n");
+        await liveBuf.finalize(liveSid);
+      })();
+    }, 20);
+    const liveOutcome = await followStream(liveBuf, liveSid, {
+      from: 0,
+      pollMs: 10,
+      deadlineMs: 2_000,
+      onFrame: (f) => {
+        liveFrames.push(f);
+      },
+    });
+    check("live-tail follow returns 'finalized' after the late frame lands", liveOutcome === "finalized");
+    check("live-tail follow delivered both frames in order (A then B)", liveFrames.join("") === "data: A\n\ndata: B\n\n");
+
+    /* ═══════ A2-11(b) — a MODEL ERROR clears the in-flight state ════════════════ */
+    console.log("\n# A2-11(b) — a thrown (non-abort) model error settles ok:false and clears active_stream_id + active_response_id");
+    // Count assistant rows BEFORE the error turn — the two streaming turns above each
+    // persisted one (A2-6, A2-7) on top of AC-A2.happy's; A2-12's claim is that the
+    // ERROR turn adds NONE (append-only: only a completed ok turn writes an assistant
+    // row), so the count must be UNCHANGED across it.
+    const assistantBeforeErr = await countAssistantRows(admin, threadId);
+    const errModel = throwingModel({ startedId: "resp-err-11b" });
+    const errResult = await runTutorTurnForRequest(
+      { learnerClient: learner.client, admin, model: errModel, loadSnapshot, streamId: "sid-11b" },
+      { userId: learner.userId, envelope, learnerMessage: "This one throws." }
+    );
+    check(
+      "the error turn settles NOT-ok with no assistant row",
+      errResult.turn !== null && errResult.turn.ok === false && errResult.persistedTurnIds.assistant === null,
+      JSON.stringify({ ok: errResult.turn?.ok, error: errResult.turn?.error })
+    );
+    const stateAfterErr = await readThreadState(admin, threadId);
+    check(
+      "after a model error: active_response_id AND active_stream_id are NULL (finally cleared)",
+      stateAfterErr.active_response_id === null && stateAfterErr.active_stream_id === null,
+      JSON.stringify(stateAfterErr)
+    );
+    const assistantAfterErr = await countAssistantRows(admin, threadId);
+    check(
+      "A2-12 — the error turn persisted NO assistant row (count unchanged across it)",
+      assistantAfterErr === assistantBeforeErr,
+      `before=${assistantBeforeErr} after=${assistantAfterErr}`
+    );
+
+    /* ═══════ A2-11 — setActiveStream landed the stream id before dispatch ════════ */
+    // The blocking-abort turn above ran WITHOUT a streamId; the streaming turns pass
+    // one. Confirm the streamId path set the column while a fresh blocking turn is in
+    // flight (parallels the response-id capture proof but for active_stream_id).
+    console.log("\n# A2-11 — active_stream_id is set BEFORE the model dispatch (visible mid-flight)");
+    let rejectGate2!: (reason: unknown) => void;
+    const gate2 = new Promise<void>((_res, rej) => {
+      rejectGate2 = rej;
+    });
+    // Consume the gate's rejection defensively so a timing race never surfaces an
+    // unhandled AbortError (the model's own `await gate` also consumes it; this is a
+    // belt-and-braces second consumer that swallows).
+    gate2.catch(() => {});
+    const blockModel2 = blockingModel({ startedId: "resp-sid-set", gate: gate2, finalText: turnJson });
+    const sidToSet = "sid-set-before-dispatch";
+    const blockPromise2 = runTutorTurnForRequest(
+      { learnerClient: learner.client, admin, model: blockModel2, loadSnapshot, streamId: sidToSet },
+      { userId: learner.userId, envelope, learnerMessage: "Block so we can see active_stream_id set." }
+    );
+    let sidCaptured: string | null = null;
+    for (let i = 0; i < 100; i++) {
+      const st = await readThreadState(admin, threadId);
+      if (st.active_stream_id === sidToSet) {
+        sidCaptured = st.active_stream_id;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    check("active_stream_id was set to the provided streamId BEFORE dispatch completed", sidCaptured === sidToSet, `captured=${sidCaptured}`);
+    const abortErr2 = new Error("The operation was aborted");
+    abortErr2.name = "AbortError";
+    rejectGate2(abortErr2);
+    await blockPromise2;
+    const stateAfterSid = await readThreadState(admin, threadId);
+    check("A2-11(c) — after the abort, active_stream_id is cleared to NULL", stateAfterSid.active_stream_id === null && stateAfterSid.active_response_id === null, JSON.stringify(stateAfterSid));
   } finally {
     await cleanup();
     console.log("\n# cleaned up course + tutor rows (throwaway users remain — clean in Supabase → Auth)");

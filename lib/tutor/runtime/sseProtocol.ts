@@ -75,11 +75,13 @@ export const TutorWireUsageSchema = z.object({
 });
 
 /**
- * THE tutor SSE wire protocol — a discriminated union on `type` with exactly ten
- * variants. Four legacy variants (queued/turn/error/done) mirror the current
- * route; six are the A2 streaming lifecycle (turn_started → model_started →
- * first_token → text_delta* → turn_completed | turn_aborted). Everything but
- * `turn`/`queued`/`error`/`done` is a TRANSPORT frame (see header note (a)).
+ * THE tutor SSE wire protocol — a discriminated union on `type` with exactly
+ * eleven variants. Four legacy variants (queued/turn/error/done) mirror the
+ * current route; six are the A2 streaming lifecycle (turn_started → model_started
+ * → first_token → text_delta* → turn_completed | turn_aborted); one
+ * (approval_required) settles a turn an irreversible-tier tool halted (Wave 2 —
+ * dormant today, no tutor tool is irreversible, but wired + tested). Everything
+ * but `turn`/`queued`/`error`/`done` is a TRANSPORT frame (see header note (a)).
  */
 export const TutorWireEventSchema = z.discriminatedUnion("type", [
   /* ── legacy variants (mirror route.ts TutorSSEEvent) ── */
@@ -122,6 +124,17 @@ export const TutorWireEventSchema = z.discriminatedUnion("type", [
     type: z.literal("turn_aborted"),
     reason: z.string(),
     tokensEmitted: z.number(),
+  }),
+
+  /* ── A2 approval halt (dormant — no tutor tool is irreversible today) ── */
+  z.object({
+    type: z.literal("approval_required"),
+    /** The irreversible-tier tool that halted the loop — the structured field the
+     *  client keys the approval UI off (never named in `message`). */
+    toolName: z.string(),
+    /** The learner-visible message. §7 copy: generic, sentence case, no terminal
+     *  punctuation, and NO tool name in the text (toolName rides the field above). */
+    message: z.string(),
   }),
 ]);
 export type TutorWireEvent = z.infer<typeof TutorWireEventSchema>;

@@ -97,9 +97,11 @@ function registryShape() {
       TUTOR_MODELS.embedding.maxOutputTokens === 0
   );
   check(
-    "tutor_turn defaults: medium / 30s per-turn deadline / 1 retry / 8k tokens",
+    // A2 Wave 2: per-call deadline 30s → 90s (the directive's stepMs — the model
+    // call is the streaming "step"; the route owns total 240s + chunk-stall 20s).
+    "tutor_turn defaults: medium / 90s per-turn deadline (A2 stepMs) / 1 retry / 8k tokens",
     TUTOR_MODELS.tutor_turn.effort === "medium" &&
-      TUTOR_MODELS.tutor_turn.timeoutMs === 30_000 &&
+      TUTOR_MODELS.tutor_turn.timeoutMs === 90_000 &&
       TUTOR_MODELS.tutor_turn.maxRetries === 1 &&
       TUTOR_MODELS.tutor_turn.maxOutputTokens === 8_000
   );
