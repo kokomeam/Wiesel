@@ -34,6 +34,12 @@ delete process.env.TUTOR_ENABLE_CHAINING;
 
 import { z } from "zod";
 import { createMockModelClient, type MockTurn } from "@/lib/ai/providers/mock";
+import type {
+  ModelClient,
+  ModelStreamEvent,
+  ModelTurnParams,
+  ModelTurnResult,
+} from "@/lib/ai/modelClient";
 import { toStrictJsonSchema } from "@/lib/ai/schema";
 import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import type { PublicationSnapshot, PublishedLessonBlock } from "@/lib/course/publish/schemas";
@@ -770,6 +776,142 @@ async function main() {
 
     const unclosed = parseSpans(`${GROUNDED_OPEN}A never closed`);
     check("unclosed marker → span_parse_error", unclosed.parseError);
+  }
+
+  /* ──────────────────── A2: early chain-id capture ─────────────────────── */
+  console.log("\n— A2: early chain-id capture —");
+  {
+    const snapshotFx = buildSnapshot();
+    // A valid, grounded structured turn (so the loop settles ok) — the fake model's
+    // final text. A resolving citation into the snapshot makes grounding clean.
+    const validTurnText = turnOutputJson({
+      proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+      citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+      rung: 2,
+    });
+
+    /** A fake ModelClient whose runTurn synchronously emits ONE `started` event
+     *  (with `startedId`) FIRST, then either returns a structured turn (whose final
+     *  responseId is `finalId`) or THROWS `throwErr` after the emit. */
+    function fakeModel(opts: {
+      startedId: string | null;
+      finalId?: string | null;
+      throwErr?: Error;
+    }): ModelClient {
+      return {
+        model: LUNA,
+        async runTurn(
+          _params: ModelTurnParams,
+          onEvent: (ev: ModelStreamEvent) => void
+        ): Promise<ModelTurnResult> {
+          // `started` FIRST — before any output token — exactly like a real provider.
+          onEvent({ type: "started", responseId: opts.startedId });
+          if (opts.throwErr) throw opts.throwErr;
+          // A little streamed text, then the structured final (mirrors the real path).
+          onEvent({ type: "text_delta", delta: "…" });
+          return {
+            text: validTurnText,
+            toolCalls: [],
+            finishReason: "stop",
+            ...(opts.finalId !== undefined ? { responseId: opts.finalId } : {}),
+          };
+        },
+      };
+    }
+
+    function loopDepsFor(model: ModelClient, onModelEvent?: (ev: ModelStreamEvent) => void) {
+      return {
+        learnerClient: emptyLearnerClient(),
+        serviceClient: capturingServiceClient().client,
+        model,
+        loadSnapshot: async () => ({ snapshot: snapshotFx }),
+        conceptNodes: CONCEPT_NODES,
+        conceptEdges: CONCEPT_EDGES,
+        ...(onModelEvent ? { onModelEvent } : {}),
+      };
+    }
+
+    const ctxBase = {
+      userId: USER_A,
+      courseId: COURSE,
+      publicationId: PUB,
+      version: 1,
+      lessonId: L1,
+      charterRow: CHARTER_ROW("guided_default"),
+      historyTurns: [{ role: "learner" as const, content: "prior" }],
+      learnerMessage: "why does a wash stay transparent?",
+    };
+
+    // (a) onModelEvent receives the `started` event FIRST; when the final omits a
+    //     responseId, the turn's responseId is the started id (resp-early-1).
+    {
+      const seen: ModelStreamEvent[] = [];
+      const model = fakeModel({ startedId: "resp-early-1" }); // finalId omitted
+      const res = await runTutorTurn(loopDepsFor(model, (ev) => seen.push(ev)), ctxBase);
+      check(
+        "onModelEvent received the `started` event FIRST",
+        seen.length > 0 && seen[0].type === "started" && (seen[0] as { responseId: string | null }).responseId === "resp-early-1",
+        `first=${JSON.stringify(seen[0])}`
+      );
+      check(
+        "final omits responseId → turn responseId is the started id",
+        res.ok && res.responseId === "resp-early-1",
+        `ok=${res.ok} responseId=${res.responseId} err=${res.error ?? ""}`
+      );
+    }
+
+    // (b) When the final result CARRIES a responseId, it WINS over the started id.
+    {
+      const model = fakeModel({ startedId: "resp-early-2", finalId: "resp-final-2" });
+      const res = await runTutorTurn(loopDepsFor(model), ctxBase);
+      check(
+        "final responseId WINS over the started id",
+        res.ok && res.responseId === "resp-final-2",
+        `ok=${res.ok} responseId=${res.responseId}`
+      );
+    }
+
+    // (c) A fake that emits `started` then THROWS AbortError: the loop's NEVER-THROWS
+    //     contract catches it → ok:false — and the hoisted lastResponseId means the
+    //     turn still surfaces the id it captured before the throw (resp-early-1).
+    {
+      const abortErr = new Error("The operation was aborted");
+      abortErr.name = "AbortError";
+      const seen: ModelStreamEvent[] = [];
+      const model = fakeModel({ startedId: "resp-early-1", throwErr: abortErr });
+      const res = await runTutorTurn(loopDepsFor(model, (ev) => seen.push(ev)), ctxBase);
+      check(
+        "throw-after-started: turn settles NOT-ok (loop never throws)",
+        res.ok === false && res.output === null,
+        `ok=${res.ok} output=${res.output !== null}`
+      );
+      check(
+        "throw-after-started: responseId is the pre-throw captured id (resp-early-1)",
+        res.responseId === "resp-early-1",
+        `responseId=${res.responseId}`
+      );
+      check(
+        "throw-after-started: onModelEvent still saw the `started` event",
+        seen.some((ev) => ev.type === "started"),
+        `events=${seen.map((e) => e.type).join(",")}`
+      );
+    }
+
+    // (d) A hook that THROWS does not break the turn (best-effort observability).
+    {
+      const model = fakeModel({ startedId: "resp-early-3", finalId: "resp-final-3" });
+      const res = await runTutorTurn(
+        loopDepsFor(model, () => {
+          throw new Error("hook boom");
+        }),
+        ctxBase
+      );
+      check(
+        "a throwing onModelEvent hook does not break the turn",
+        res.ok && res.responseId === "resp-final-3",
+        `ok=${res.ok} responseId=${res.responseId} err=${res.error ?? ""}`
+      );
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

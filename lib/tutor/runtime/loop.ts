@@ -112,6 +112,11 @@ export interface RunTutorTurnDeps {
   nowIso?: string;
   /** Abort seam — threaded into every model call (cancel a stalled turn). */
   signal?: AbortSignal;
+  /** Wave A2: observability hook — receives every normalized stream event of the
+   *  MAIN structured call (started/text_delta/...); the service uses it for early
+   *  chain-id capture; Wave 2 forwards deltas to the wire. Best-effort — a hook
+   *  throw is swallowed and never kills the turn. */
+  onModelEvent?: (ev: ModelStreamEvent) => void;
 }
 
 export interface RunTutorTurnCtx {
@@ -219,6 +224,10 @@ export async function runTutorTurn(
   ctx: RunTutorTurnCtx
 ): Promise<TutorTurnResult> {
   const usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
+  // Hoisted so the outer catch can return whatever response id the turn HAD captured
+  // (A2-3): the `started` event of the main call sets it BEFORE any output token, so
+  // an aborted/thrown turn still surfaces the id it got — the chain stays coherent.
+  let lastResponseId: string | null = null;
   const empty = (error: string): TutorTurnResult => ({
     ok: false,
     output: null,
@@ -228,7 +237,7 @@ export async function runTutorTurn(
     escalation: null,
     toolTrace: [],
     usage,
-    responseId: null,
+    responseId: lastResponseId,
     rung: null,
     sessionMarkers: [],
     error,
@@ -408,19 +417,36 @@ export async function runTutorTurn(
     const evidence: TutorInferencePayload[] = [];
     const practiceItems: MintedPracticeItem[] = [];
     let escalation: TutorTurnResult["escalation"] = null;
-    let lastResponseId: string | null = chained?.previousResponseId ?? null;
+    // Seed with the chaining anchor (if any); the main call's `started` event / final
+    // result overwrite it. Assigns to the hoisted binding so the catch can read it.
+    lastResponseId = chained?.previousResponseId ?? null;
     let finalText = "";
     let parsedOutput: TurnOutput | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const noop = (_ev: ModelStreamEvent) => void _ev;
+      // The MAIN call STREAMS (Wave A2): the `started` event carries the provider
+      // response id BEFORE the first output token, so early chain-id capture can
+      // persist it even if the turn later aborts. The handler (a) stamps
+      // lastResponseId the instant `started` lands (the post-result assignment still
+      // wins when a final result carries one), and (b) forwards EVERY event to
+      // deps.onModelEvent (a hook throw is swallowed — it must never kill the turn).
+      const onEvent = (ev: ModelStreamEvent) => {
+        if (ev.type === "started" && ev.responseId) lastResponseId = ev.responseId;
+        if (deps.onModelEvent) {
+          try {
+            deps.onModelEvent(ev);
+          } catch {
+            /* observability hook is best-effort */
+          }
+        }
+      };
       const result = await deps.model.runTurn(
         {
           system: prompt.system,
           input: conversation,
           tools,
           responseFormat,
-          stream: false,
+          stream: true,
           signal: deps.signal,
           model: job.model,
           effort: job.effort,
@@ -429,7 +455,7 @@ export async function runTutorTurn(
           maxOutputTokens: job.maxOutputTokens,
           ...(chained ? { previousResponseId: chained.previousResponseId } : {}),
         },
-        noop
+        onEvent
       );
       addUsage(usage, result.usage);
       lastResponseId = result.responseId ?? lastResponseId;
@@ -465,6 +491,7 @@ export async function runTutorTurn(
     // If we exhausted the tool rounds without a structured answer, ask ONCE more
     // for the final structured turn (no tools this time — force the answer).
     if (!parsedOutput) {
+      // Rare repair path — stays NON-STREAMING (Wave 2 revisits).
       const noop = (_ev: ModelStreamEvent) => void _ev;
       const result = await deps.model.runTurn(
         {
@@ -496,6 +523,7 @@ export async function runTutorTurn(
 
     // A single re-ask on parse failure (the runStructuredCall convention, inline).
     if (!parsedOutput) {
+      // Rare repair path — stays NON-STREAMING (Wave 2 revisits).
       const noop = (_ev: ModelStreamEvent) => void _ev;
       const result = await deps.model.runTurn(
         {

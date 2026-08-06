@@ -454,7 +454,12 @@ export function createOpenAIModelClient(): ModelClient {
         );
         let streamedText = "";
         for await (const event of stream) {
-          if (event.type === "response.output_text.delta") {
+          if (event.type === "response.created") {
+            // The provider opened the response — carries its id BEFORE any output
+            // token (ResponseCreatedEvent.response: Response, whose `.id` is the
+            // response id). Forward it so early chain-id capture can persist it.
+            onEvent({ type: "started", responseId: event.response?.id ?? null });
+          } else if (event.type === "response.output_text.delta") {
             streamedText += event.delta ?? "";
             onEvent({ type: "text_delta", delta: event.delta ?? "" });
           } else if (

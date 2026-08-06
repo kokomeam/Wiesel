@@ -45,8 +45,14 @@ export interface ModelToolCall {
  *  `transport` = a connection failure that isn't specifically a timeout. */
 export type ModelErrorKind = "transport_timeout" | "model_error" | "transport";
 
-/** Normalized streaming events emitted by a provider during one turn. */
+/** Normalized streaming events emitted by a provider during one turn.
+ *  `started` is emitted ONCE when the provider opens the response — before any
+ *  output token; it carries the provider response id when available (null when
+ *  the provider didn't surface one). Wave A2 captures it for early chain-id
+ *  persistence (tutor_threads.active_response_id) so an aborted turn still leaves
+ *  the id it got. */
 export type ModelStreamEvent =
+  | { type: "started"; responseId: string | null }
   | { type: "text_delta"; delta: string }
   | { type: "tool_call"; call: ModelToolCall }
   | { type: "error"; message: string; kind?: ModelErrorKind };

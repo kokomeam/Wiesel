@@ -156,6 +156,11 @@ export function createMockModelClient(
       // via previousResponseId (accepted here without error, like a real provider).
       const responseId = `mock-resp-${calls.length - 1}`;
 
+      // Emit `started` as the FIRST event of EVERY turn (before any output token) —
+      // deterministic id, mirroring a real provider's response.created. Wave A2's
+      // early chain-id capture reads it.
+      onEvent({ type: "started", responseId });
+
       // Route a CONFIGURED structured response by responseFormat name WITHOUT consuming
       // the sequential script — keeps a concurrent structured call (parallel aux) from
       // racing the slide loop's turn index. Unconfigured formats fall through to the script.

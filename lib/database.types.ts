@@ -4430,6 +4430,8 @@ export type Database = {
       }
       tutor_threads: {
         Row: {
+          active_response_id: string | null
+          active_stream_id: string | null
           course_id: string
           created_at: string
           id: string
@@ -4437,6 +4439,8 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          active_response_id?: string | null
+          active_stream_id?: string | null
           course_id: string
           created_at?: string
           id?: string
@@ -4444,6 +4448,8 @@ export type Database = {
           user_id: string
         }
         Update: {
+          active_response_id?: string | null
+          active_stream_id?: string | null
           course_id?: string
           created_at?: string
           id?: string

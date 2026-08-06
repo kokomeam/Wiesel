@@ -33,6 +33,11 @@
  *    can never write a learning_events row (the trust boundary of Wave 2).
  *  • DETERMINISTIC IDS: every evidence clientEventId is derived (tutorEvidenceId)
  *    so a retry upserts as a no-op.
+ *  • IN-FLIGHT STATE DISCIPLINE (A2-3/A2-11): the main call's `started` event
+ *    captures the provider response id onto tutor_threads.active_response_id BEFORE
+ *    the first output token (best-effort, never throws); a try/finally around the
+ *    turn + persistence ALWAYS clears active_stream_id + active_response_id, so
+ *    completion, error, AND abort all leave the thread's in-flight state null.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -40,6 +45,7 @@ import { createHash } from "node:crypto";
 
 import type { Database } from "@/lib/database.types";
 import type { ModelClient } from "@/lib/ai/modelClient";
+import { captureActiveResponseId, clearActiveStream } from "@/lib/tutor/runtime/streamState";
 import {
   buildTutorEvidenceEvent,
   mapEventToColumns,
@@ -603,57 +609,74 @@ export async function runTutorTurnForRequest(
     learnerMessage: args.learnerMessage,
     sessionFlags: args.sessionFlags,
   };
-  const turn = await runTutorTurn(
-    {
-      learnerClient: deps.learnerClient,
-      serviceClient: deps.admin,
-      model: deps.model,
-      loadSnapshot: deps.loadSnapshot,
-      conceptNodes: context.conceptNodes,
-      conceptEdges: context.conceptEdges,
-      nowIso: deps.nowIso,
-      signal: deps.signal,
-    },
-    ctx
-  );
+  // The turn + all post-turn persistence run inside a try/finally so the thread's
+  // in-flight state (active_stream_id + active_response_id) is ALWAYS cleared —
+  // completion, error, AND abort (A2-11). The onModelEvent hook captures the
+  // provider response id the instant `started` lands, BEFORE any output token
+  // (A2-3), fire-and-forget through the best-effort writer.
+  try {
+    const turn = await runTutorTurn(
+      {
+        learnerClient: deps.learnerClient,
+        serviceClient: deps.admin,
+        model: deps.model,
+        loadSnapshot: deps.loadSnapshot,
+        conceptNodes: context.conceptNodes,
+        conceptEdges: context.conceptEdges,
+        nowIso: deps.nowIso,
+        signal: deps.signal,
+        onModelEvent: (ev) => {
+          // Capture the provider response id the moment it opens (before any output
+          // token). A null id (provider didn't surface one) has nothing to persist.
+          if (ev.type === "started" && ev.responseId) {
+            void captureActiveResponseId(deps.admin, { threadId, responseId: ev.responseId });
+          }
+        },
+      },
+      ctx
+    );
 
-  // (6) ONLY a completed, ok turn persists an assistant row + emits evidence. An
-  //     abort/error settles turn.ok=false → nothing assistant-side is written.
-  if (!turn.ok || !turn.output) {
+    // (6) ONLY a completed, ok turn persists an assistant row + emits evidence. An
+    //     abort/error settles turn.ok=false → nothing assistant-side is written.
+    if (!turn.ok || !turn.output) {
+      return {
+        access: access.kind,
+        turn,
+        threadId,
+        persistedTurnIds: { learner: learnerTurnId, assistant: null },
+        evidenceEmitted: 0,
+      };
+    }
+
+    const assistantTurnId = await persistAssistantTurn(deps.admin, {
+      threadId,
+      userId: args.userId,
+      envelope: args.envelope,
+      content: turn.output.prose,
+      grounding: buildGrounding(turn),
+      rung: turn.rung,
+      responseId: turn.responseId,
+    });
+
+    const evidence = await emitTutorEvidence(deps.admin, {
+      access,
+      userId: args.userId,
+      envelope: args.envelope,
+      turnId: assistantTurnId,
+      inferences: turn.evidence,
+    });
+
     return {
       access: access.kind,
       turn,
       threadId,
-      persistedTurnIds: { learner: learnerTurnId, assistant: null },
-      evidenceEmitted: 0,
+      persistedTurnIds: { learner: learnerTurnId, assistant: assistantTurnId },
+      evidenceEmitted: evidence.emitted,
     };
+  } finally {
+    // Clear the in-flight state on EVERY exit path (best-effort; never throws).
+    void clearActiveStream(deps.admin, { threadId });
   }
-
-  const assistantTurnId = await persistAssistantTurn(deps.admin, {
-    threadId,
-    userId: args.userId,
-    envelope: args.envelope,
-    content: turn.output.prose,
-    grounding: buildGrounding(turn),
-    rung: turn.rung,
-    responseId: turn.responseId,
-  });
-
-  const evidence = await emitTutorEvidence(deps.admin, {
-    access,
-    userId: args.userId,
-    envelope: args.envelope,
-    turnId: assistantTurnId,
-    inferences: turn.evidence,
-  });
-
-  return {
-    access: access.kind,
-    turn,
-    threadId,
-    persistedTurnIds: { learner: learnerTurnId, assistant: assistantTurnId },
-    evidenceEmitted: evidence.emitted,
-  };
 }
 
 /** The grounding jsonb persisted on the assistant row — the Wave-3 output
