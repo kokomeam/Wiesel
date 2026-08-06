@@ -421,6 +421,7 @@ function TurnBubble({
   const rung = payload?.rung ?? turn.grounding?.rung ?? null;
   const practiceItems = payload?.practiceItems ?? null;
   const escalation = payload?.escalationProposal ?? null;
+  const escalationCandidateId = payload?.escalationCandidateId ?? null;
 
   if (isLearner) {
     return (
@@ -471,7 +472,16 @@ function TurnBubble({
           ))
         : null}
 
-      {escalationsUi && escalation ? <TutorEscalationCard proposal={escalation} /> : null}
+      {escalationsUi && escalation ? (
+        <TutorEscalationCard
+          proposal={escalation}
+          candidateId={escalationCandidateId}
+          courseId={courseId}
+          publicationId={publicationId}
+          version={version}
+          lessonId={ambient.lessonId}
+        />
+      ) : null}
     </div>
   );
 }

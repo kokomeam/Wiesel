@@ -17,6 +17,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { resolveLivePublicationMeta } from "@/lib/learn/publicationCache";
 import { resolveTutorAccess } from "@/lib/tutor/runtime/service";
+import { escalationsUiEnabled } from "@/lib/tutor/flags";
 import { TutorFrame } from "@/components/learn/tutor/TutorFrame";
 import { TutorMount } from "@/components/learn/tutor/TutorMount";
 
@@ -65,7 +66,7 @@ export default async function LearnCourseLayout({
           publicationId={meta.id}
           version={meta.version}
           slug={slug}
-          escalationsUi={process.env.TUTOR_ESCALATIONS_UI === "true"}
+          escalationsUi={escalationsUiEnabled()}
         />
       ) : null}
     </TutorFrame>

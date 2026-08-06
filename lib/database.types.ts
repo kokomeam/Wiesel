@@ -4186,6 +4186,7 @@ export type Database = {
       tutor_escalation_candidates: {
         Row: {
           anchors: Json
+          consented_at: string | null
           course_id: string
           created_at: string
           id: string
@@ -4199,6 +4200,7 @@ export type Database = {
         }
         Insert: {
           anchors?: Json
+          consented_at?: string | null
           course_id: string
           created_at?: string
           id?: string
@@ -4212,6 +4214,7 @@ export type Database = {
         }
         Update: {
           anchors?: Json
+          consented_at?: string | null
           course_id?: string
           created_at?: string
           id?: string

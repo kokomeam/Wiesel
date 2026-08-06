@@ -37,6 +37,7 @@ import {
   type TurnEnvelope,
   type TutorAccessKind,
 } from "@/lib/tutor/runtime/service";
+import { sendTutorEscalationConsented } from "@/lib/inngest/escalationEvents";
 
 /* ─────────────────────────────── SSE helpers ────────────────────────────── */
 
@@ -51,6 +52,9 @@ type TutorSSEEvent =
         rung: number | null;
         practiceItems: unknown;
         escalationProposal: unknown;
+        /** W6 · the consent-pending candidate id (present when the tutor raised an
+         *  escalation this turn), so the consent card targets the right row. */
+        escalationCandidateId: string | null;
         flags: string[];
       };
     }
@@ -88,7 +92,7 @@ function singleEventStream(event: TutorSSEEvent): ReadableStream<Uint8Array> {
 /* ─────────────────────────────── request body ───────────────────────────── */
 
 interface TutorRequestBody {
-  action?: "turn" | "practice_answer" | "self_report" | "hint_request";
+  action?: "turn" | "practice_answer" | "self_report" | "hint_request" | "escalate_consent";
   courseId?: string;
   publicationId?: string;
   version?: number;
@@ -107,6 +111,10 @@ interface TutorRequestBody {
   hintRung?: number;
   stableKey?: string;
   key?: string;
+  // escalate_consent (W6 · P6.1)
+  candidateId?: string;
+  finalQuestion?: string;
+  consentAction?: "send" | "cancel";
 }
 
 /** A typed JSON error the client renders inline. */
@@ -217,6 +225,62 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: true, access: access.kind, emitted: res.emitted });
   }
 
+  /* ── the escalation-consent transition (W6 · P6.1, plain JSON) ──
+   *
+   * The learner confirms (send) or declines (cancel) a tutor-raised escalation.
+   * The write goes through the LEARNER client — the learner-own UPDATE RLS + the
+   * relaxed status-only trigger (migration 20260806100000) permit the
+   * consent_pending → consented transition to ALSO edit learner_question (the
+   * exact payload the learner confirms). An author preview / not-enrolled caller
+   * no-ops (no consent write, no event). The CONSENT INVARIANT holds: this never
+   * opens the table to the creator — the consent transition itself is what P6.2's
+   * synthesis reads to move the escalation into creator scope. */
+  if (action === "escalate_consent") {
+    if (access.kind !== "ok") {
+      return Response.json({ ok: true, access: access.kind, consented: false });
+    }
+    if (!body.candidateId) return errorJson("missing_candidate", "candidateId is required.", 400);
+    const consentAction = body.consentAction ?? "send";
+
+    if (consentAction === "cancel") {
+      const { error } = await learnerClient
+        .from("tutor_escalation_candidates")
+        .update({ status: "withdrawn" })
+        .eq("id", body.candidateId)
+        .eq("user_id", user.id)
+        .eq("status", "consent_pending");
+      if (error) return errorJson("consent_failed", error.message, 400);
+      return Response.json({ ok: true, access: access.kind, consented: false, withdrawn: true });
+    }
+
+    // send: flip to consented + carry the final (possibly edited) question. The
+    // learner-own RLS scopes the row; the relaxed trigger permits the question
+    // edit ON THIS transition only.
+    const finalQuestion = body.finalQuestion?.trim();
+    if (!finalQuestion) return errorJson("missing_question", "finalQuestion is required to send.", 400);
+    const { data, error } = await learnerClient
+      .from("tutor_escalation_candidates")
+      .update({
+        status: "consented",
+        learner_question: finalQuestion,
+        consented_at: new Date().toISOString(),
+      })
+      .eq("id", body.candidateId)
+      .eq("user_id", user.id)
+      .eq("status", "consent_pending")
+      .select("id, course_id")
+      .maybeSingle();
+    if (error) return errorJson("consent_failed", error.message, 400);
+    if (!data) {
+      // Row not found / already resolved (a terminal state) — nothing consented.
+      return Response.json({ ok: true, access: access.kind, consented: false, alreadyResolved: true });
+    }
+    // Fire the FROZEN on-consent event for P6.2 (best-effort; the nightly reconcile
+    // synthesizes any consented candidate whose dossier is missing).
+    await sendTutorEscalationConsented({ candidateId: data.id, courseId: data.course_id });
+    return Response.json({ ok: true, access: access.kind, consented: true });
+  }
+
   /* ── the interactive turn (SSE) ── */
   if (!body.message || !body.message.trim()) {
     return errorJson("missing_message", "message is required for a turn.", 400);
@@ -310,6 +374,7 @@ export async function POST(req: Request): Promise<Response> {
               rung: result.turn.rung,
               practiceItems: out.practiceItems ?? [],
               escalationProposal: out.escalationProposal ?? null,
+              escalationCandidateId: result.turn.escalation?.candidateId ?? null,
               flags: result.turn.groundingFlags,
             },
           });

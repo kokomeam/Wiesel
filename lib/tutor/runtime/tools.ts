@@ -77,6 +77,14 @@ export interface TutorToolCtx {
   publicationId: string;
   version: number;
   lessonId?: string;
+  /** W6 (P6.1): the rung trail of THIS session (oldest → newest assistant rungs,
+   *  plus this turn's rung), stamped onto a proposed escalation candidate so the
+   *  instructor sees how the scaffolding climbed. The loop fills it; empty if the
+   *  loop didn't provide it (back-compat / a stray tool call). */
+  rungTrail?: number[];
+  /** W6 (P6.1): the anchors cited THIS turn (the resolved citations), stamped onto
+   *  a proposed escalation candidate as the evidence trail. Empty if absent. */
+  anchors?: unknown[];
 }
 
 /**
@@ -404,11 +412,56 @@ const ProposeEscalationParams = z.object({
     .describe("Your best proposed answer, surfaced to the instructor (never auto-sent to the learner)."),
 });
 
+/** The shape the loop's DETERMINISTIC trigger passes to insert a candidate (same
+ *  write as the tool, minus the model round-trip). */
+export interface EscalationDraft {
+  learnerQuestion: string;
+  nodeIds: string[];
+  proposedAnswer: string;
+}
+
 /**
- * The ONE write in the tutor surface: draft a consent-pending escalation
- * candidate (the service role writes it — a learner has no insert policy). The
- * candidate is invisible to the creator until the learner consents (strict
- * regime, migration 20260804100000). Returns {consentRequired:true, candidateId}.
+ * Insert ONE consent-pending escalation candidate via the service role (a learner
+ * has no insert policy). SHARED by the propose_escalation tool AND the loop's
+ * deterministic trigger, so both write the SAME shape — the candidate carries the
+ * session's `rung_trail` (W6) and the turn's cited `anchors` (W6), read from
+ * `ctx`, instead of empty arrays. Returns the new candidate id, or null on error.
+ * NEVER throws (a write failure degrades to a null candidateId).
+ */
+export async function insertEscalationCandidate(
+  deps: TutorToolDeps,
+  draft: EscalationDraft
+): Promise<{ candidateId: string | null; error?: string }> {
+  const insert: Database["public"]["Tables"]["tutor_escalation_candidates"]["Insert"] = {
+    user_id: deps.ctx.userId,
+    course_id: deps.ctx.courseId,
+    node_ids: draft.nodeIds,
+    // W6 (P6.1): the anchors cited this turn + the session's rung trail ride the
+    // candidate now (were hard-coded empty). Both come from the loop via ctx; a
+    // stray call without them degrades to [] (the DB default shape).
+    anchors: (deps.ctx.anchors ?? []) as Database["public"]["Tables"]["tutor_escalation_candidates"]["Insert"]["anchors"],
+    learner_question: draft.learnerQuestion,
+    tutor_proposed_answer: draft.proposedAnswer,
+    rung_trail: (deps.ctx.rungTrail ?? []) as Database["public"]["Tables"]["tutor_escalation_candidates"]["Insert"]["rung_trail"],
+    // status defaults to 'consent_pending' in the DB — never set here.
+  };
+  const { data, error } = await deps.serviceClient
+    .from("tutor_escalation_candidates")
+    .insert(insert)
+    .select("id")
+    .single();
+  if (error || !data) {
+    return { candidateId: null, error: error?.message ?? "insert_failed" };
+  }
+  return { candidateId: data.id };
+}
+
+/**
+ * The ONE model-facing write in the tutor surface: draft a consent-pending
+ * escalation candidate (the service role writes it — a learner has no insert
+ * policy). The candidate is invisible to the creator until the learner consents
+ * (strict regime, migration 20260804100000; consent moves it into creator scope
+ * via P6.2). Returns {consentRequired:true, candidateId}.
  */
 const proposeEscalation: TutorTool<z.infer<typeof ProposeEscalationParams>> = {
   name: "propose_escalation",
@@ -416,30 +469,20 @@ const proposeEscalation: TutorTool<z.infer<typeof ProposeEscalationParams>> = {
     "When the course can't answer or the learner is stuck beyond your scaffolds: draft an escalation (their question, the concepts, your proposed answer) for THEIR consent to share with the instructor. Nothing reaches the instructor without that consent — say so when proposing.",
   params: ProposeEscalationParams,
   async execute(args, deps) {
-    const insert: Database["public"]["Tables"]["tutor_escalation_candidates"]["Insert"] = {
-      user_id: deps.ctx.userId,
-      course_id: deps.ctx.courseId,
-      node_ids: args.nodeIds,
-      anchors: [],
-      learner_question: args.learnerQuestion,
-      tutor_proposed_answer: args.proposedAnswer,
-      rung_trail: [],
-      // status defaults to 'consent_pending' in the DB — never set here.
-    };
-    const { data, error } = await deps.serviceClient
-      .from("tutor_escalation_candidates")
-      .insert(insert)
-      .select("id")
-      .single();
-    if (error || !data) {
+    const res = await insertEscalationCandidate(deps, {
+      learnerQuestion: args.learnerQuestion,
+      nodeIds: args.nodeIds,
+      proposedAnswer: args.proposedAnswer,
+    });
+    if (!res.candidateId) {
       return {
-        summary: `Failed to draft escalation (${error?.message ?? "unknown"}).`,
-        data: { consentRequired: true, candidateId: null, error: error?.message ?? "insert_failed" },
+        summary: `Failed to draft escalation (${res.error ?? "unknown"}).`,
+        data: { consentRequired: true, candidateId: null, error: res.error ?? "insert_failed" },
       };
     }
     return {
       summary: "Drafted an escalation candidate — pending the learner's consent to share with the instructor.",
-      data: { consentRequired: true, candidateId: data.id },
+      data: { consentRequired: true, candidateId: res.candidateId },
     };
   },
 };

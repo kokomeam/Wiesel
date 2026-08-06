@@ -5,6 +5,7 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { IconTile } from "@/components/ui/IconTile";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
 import { EnablementCard } from "./EnablementCard";
+import { escalationsUiEnabled } from "@/lib/tutor/flags";
 import type { TutorConsoleBundle } from "@/lib/studio/tutorConsole";
 
 /**
@@ -12,7 +13,8 @@ import type { TutorConsoleBundle } from "@/lib/studio/tutorConsole";
  *   • the enablement status card (client Toggle → the enable/extraction actions),
  *   • cohort-floored usage (30d) — a SUPPRESSED empty state below the ≥5 floor,
  *   • tutor spend by job type from REAL telemetry (honest empty state when none),
- *   • an escalation badge ONLY when TUTOR_ESCALATIONS_UI==='true' (else absent).
+ *   • an escalation badge when escalationsUiEnabled() (Wave 6: default ON;
+ *     TUTOR_ESCALATIONS_UI=false hides it).
  *
  * Every number here is already floored/aggregated by the definer RPC — this
  * component never touches a raw learner table and never recomputes a floor.
@@ -45,7 +47,7 @@ export function OverviewTutorTab({
   const usage = overview?.usage ?? null;
   const suppressed = overview?.usageSuppressed ?? true;
   const cost = overview?.cost ?? { byJobType: [], totalUsd: 0 };
-  const showEscalations = process.env.TUTOR_ESCALATIONS_UI === "true";
+  const showEscalations = escalationsUiEnabled();
 
   return (
     <div className="space-y-6">

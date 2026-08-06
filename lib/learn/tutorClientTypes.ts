@@ -74,6 +74,10 @@ export interface TutorTurnPayload {
   rung: number | null;
   practiceItems: TutorPracticeItem[] | null;
   escalationProposal: TutorEscalationProposal | null;
+  /** W6 · the consent-pending candidate id (present when the tutor raised an
+   *  escalation this turn), so the consent card can POST escalate_consent against
+   *  the right row. Null when no escalation was raised. */
+  escalationCandidateId: string | null;
   flags: string[];
 }
 

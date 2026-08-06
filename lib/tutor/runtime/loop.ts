@@ -78,10 +78,13 @@ import {
   TUTOR_TOOLS,
   TUTOR_TOOL_NAMES,
   gatherLearnerState,
+  insertEscalationCandidate,
   type MintedPracticeItem,
   type TutorToolCtx,
   type TutorToolDeps,
 } from "./tools";
+import { evaluateEscalationTrigger } from "./escalationTriggers";
+import type { TurnEscalationProposal } from "./outputContract";
 import type { TutorInferencePayload } from "@/lib/analytics/events";
 import type { z } from "zod";
 
@@ -256,6 +259,14 @@ export async function runTutorTurn(
         })
       : "LESSON: (none)";
 
+    /* ── W6 · escalation trail: the session's rung history + accumulated cited
+     *    anchors, read from the thread tail. These ride the tool ctx so a
+     *    propose_escalation candidate carries the rung_trail + anchors (was []).
+     *    The deterministic trigger later augments them with THIS turn's rung +
+     *    resolved citations before it writes. ── */
+    const sessionRungTrail = rungTrailFromHistory(ctx.historyTurns);
+    const historyAnchors = anchorsFromHistory(ctx.historyTurns);
+
     /* ── Tool deps (shared by the loop's tool executions). ── */
     const toolCtx: TutorToolCtx = {
       userId: ctx.userId,
@@ -263,6 +274,8 @@ export async function runTutorTurn(
       publicationId: ctx.publicationId,
       version: ctx.version,
       lessonId,
+      rungTrail: sessionRungTrail,
+      anchors: historyAnchors,
     };
     const toolDeps: TutorToolDeps = {
       learnerClient: deps.learnerClient,
@@ -556,9 +569,57 @@ export async function runTutorTurn(
     const resolvedEvidence = evidence.filter((e) => knownNodeIds.has(e.nodeId));
     if (resolvedEvidence.length !== evidence.length) validated.flags.push("evidence_dropped");
 
+    /* ── W6 (P6.1) · DETERMINISTIC escalation trigger. ────────────────────────
+     *
+     * `escalationSensitivity` must actually drive escalation: after grounding, the
+     * deterministic gate decides whether the runtime should OFFER a hand-off the
+     * model didn't (explicit human-request · ungrounded turn · ≥ N failed
+     * scaffolds this session, N from sensitivity). When it fires AND the model
+     * didn't already propose (escalation still null), the runtime mints the
+     * proposal, writes a consent-pending candidate (rung_trail + this turn's
+     * resolved anchors stamped), and surfaces the proposal on the cleaned output
+     * so the consent card renders. The model's own proposal always wins if present. */
+    let cleaned = validated.cleaned;
+    if (!escalation) {
+      const trigger = evaluateEscalationTrigger({
+        groundingFlags: validated.flags,
+        history: ctx.historyTurns,
+        learnerMessage: ctx.learnerMessage,
+        escalationSensitivity: charter.escalationSensitivity,
+      });
+      if (trigger.shouldPropose) {
+        // The proposal payload the card renders: the learner's verbatim question,
+        // the concept(s) they're stuck on (this lesson's nodes), and the tutor's
+        // best answer this turn (the cleaned prose).
+        const proposal: TurnEscalationProposal =
+          cleaned.escalationProposal ?? {
+            learnerQuestion: ctx.learnerMessage,
+            nodeIds: state.lessonNodeIds,
+            proposedAnswer: cleaned.prose,
+          };
+        // Write the candidate through the SHARED insert (rung_trail = the full
+        // session trail incl. this turn; anchors = this turn's resolved citations).
+        const insertDeps: TutorToolDeps = {
+          ...toolDeps,
+          ctx: {
+            ...toolCtx,
+            rungTrail: [...sessionRungTrail, scaffolded.rung],
+            anchors: cleaned.citations,
+          },
+        };
+        const res = await insertEscalationCandidate(insertDeps, {
+          learnerQuestion: proposal.learnerQuestion,
+          nodeIds: proposal.nodeIds,
+          proposedAnswer: proposal.proposedAnswer,
+        });
+        escalation = { candidateId: res.candidateId, consentRequired: true };
+        cleaned = { ...cleaned, escalationProposal: proposal };
+      }
+    }
+
     return {
       ok: validated.ok,
-      output: validated.cleaned,
+      output: cleaned,
       groundingFlags: validated.flags,
       evidence: resolvedEvidence,
       practiceItems,
@@ -652,6 +713,40 @@ function mergeEvidence(into: TutorInferencePayload[], extra: TutorInferencePaylo
     seen.add(key(e));
     into.push(e);
   }
+}
+
+/** W6 · The session's rung trail: each assistant turn's grounding.rung, oldest →
+ *  newest. Read tolerantly from the history grounding jsonb (an absent/malformed
+ *  rung is skipped). The deterministic trigger appends this turn's rung before it
+ *  stamps the candidate. */
+function rungTrailFromHistory(turns: HistoryTurn[]): number[] {
+  const trail: number[] = [];
+  for (const t of turns) {
+    if (t.role !== "assistant") continue;
+    const g = t.grounding;
+    if (g && typeof g === "object") {
+      const rung = (g as Record<string, unknown>).rung;
+      if (typeof rung === "number") trail.push(rung);
+    }
+  }
+  return trail;
+}
+
+/** W6 · The anchors cited across the session: the flattened citations from each
+ *  assistant turn's grounding jsonb (tolerant — a missing/malformed citations
+ *  array is skipped). The deterministic trigger overrides this with THIS turn's
+ *  resolved citations when it writes; the tool path uses the accumulated set. */
+function anchorsFromHistory(turns: HistoryTurn[]): unknown[] {
+  const anchors: unknown[] = [];
+  for (const t of turns) {
+    if (t.role !== "assistant") continue;
+    const g = t.grounding;
+    if (g && typeof g === "object") {
+      const citations = (g as Record<string, unknown>).citations;
+      if (Array.isArray(citations)) anchors.push(...citations);
+    }
+  }
+  return anchors;
 }
 
 /** The recent-session synopsis for L3: each of the last ≤6 turns' first ~80 chars. */
