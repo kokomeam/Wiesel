@@ -225,8 +225,8 @@ function wiringChecks() {
       helper.includes("createAdminClient")
   );
   check(
-    "helper filters to enabled === true (disabled courses never appear)",
-    helper.includes('.eq("enabled", true)')
+    "helper excludes only explicitly-disabled courses (ON BY DEFAULT)",
+    helper.includes("enabled === false") && !helper.includes('.eq("enabled", true)')
   );
 
   const pkg = readFileSync(join(root, "package.json"), "utf8");

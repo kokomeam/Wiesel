@@ -16,8 +16,14 @@ env-overridable; none is required in dev.
 | `DIGEST_DRY_RUN` | **on** (`!== "false"`) | The creator digest renders + persists `creator_digest` rows but sends NO mail (`provider_mode='dry_run'`). | Off **only** after inspecting real digest output and confirming `RESEND_API_KEY` + `RESEND_FROM` are set on a verified domain. This is the operator's call, never the wave's. |
 
 Per-course settings (on `tutor_course_settings`, edited in the console): `enabled`
-(the master switch — the sidebar mounts only when true), the six charter knobs,
-`digest_opt_out`, `digest_cadence` (`daily`/`off`).
+(an opt-OUT switch — the tutor is **ON by default**: a course with no settings row,
+or a row whose `enabled !== false`, has a live tutor; only an explicit
+`enabled = false` disables it), the six charter knobs, `digest_opt_out`,
+`digest_cadence` (`daily`/`off`). Enabling the tutor does **not** require a concept
+graph — the tutor answers lesson-grounded from the published snapshot with or
+without one. The concept graph is a quality enhancement (mastery-aware guidance),
+still auto-extracted on publish and buildable from the console, but it never gates
+the tutor's presence or the enable toggle.
 
 Model + budget env: `TUTOR_<JOB>_MODEL`/`_EFFORT`/`_TIMEOUT_MS`/`_MAX_RETRIES`/
 `_MAX_OUTPUT_TOKENS` per job; `TUTOR_CANON_SIM_THRESHOLD` (0.85),

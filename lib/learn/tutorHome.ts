@@ -127,24 +127,27 @@ function narrowRole(role: string): TutorHomeLastTurn["role"] {
 /**
  * Load the tutor entries for /home's right rail.
  *
- * DISABLED-COURSE FILTER — why the admin client, and why it's safe here:
- * tutor_course_settings is AUTHOR-ONLY under RLS (it's creator config), so the
- * learner's user-scoped client reads zero rows and cannot distinguish
- * "disabled" from "no row". Rendering every enrolled course and letting the
- * deep link land on the gated layout (disabled → no sidebar) would violate
- * "a course whose tutor is disabled simply doesn't appear — no teaser".
- * So we follow the house rule "access checks BEFORE admin reads": the
- * enrolled-course list passed in (my_learning(), enrollment-scoped under RLS)
- * IS the access check — enrollment IS the access check here — and only AFTER
- * that list is established do we read tutor_course_settings via
- * createAdminClient, narrowed to exactly those course ids, filtering to
- * enabled === true. The admin read exposes nothing learner-visible beyond a
- * boolean the gated /learn layout already embodies.
+ * DISABLED-COURSE FILTER — ON BY DEFAULT, why the admin client, and why it's
+ * safe here: the tutor is ENABLED unless the creator explicitly turned it OFF
+ * (a `tutor_course_settings` row with enabled=false; a MISSING row ⇒ on). So we
+ * exclude ONLY the explicitly-disabled courses — every other enrolled course
+ * gets a tutor entry. tutor_course_settings is AUTHOR-ONLY under RLS (it's
+ * creator config), so the learner's user-scoped client reads zero rows and
+ * cannot distinguish "disabled" from "no row". We therefore follow the house
+ * rule "access checks BEFORE admin reads": the enrolled-course list passed in
+ * (my_learning(), enrollment-scoped under RLS) IS the access check —
+ * enrollment IS the access check here — and only AFTER that list is
+ * established do we read tutor_course_settings via createAdminClient, narrowed
+ * to exactly those course ids, to find the explicitly-disabled subset. The
+ * admin read exposes nothing learner-visible beyond a boolean the gated /learn
+ * layout already embodies.
  *
- * Fail-closed: if the admin client is unconfigured or the settings read
- * errors (fresh environment, pre-migration DB), we return [] — no tutor rail,
- * never a teaser. A threads/turns read error degrades to lastTurn null (the
- * course still appears with "ask your first question").
+ * Fail-OPEN to default-on: if the admin client is unconfigured or the settings
+ * read errors (fresh environment, pre-migration DB), we DON'T hide every
+ * course — we treat all enrolled courses as enabled (the disabled set is
+ * empty), matching the on-by-default contract. A threads/turns read error
+ * degrades to lastTurn null (the course still appears with "ask your first
+ * question").
  */
 export async function loadTutorHomeEntries(
   supabase: DB,
@@ -153,8 +156,9 @@ export async function loadTutorHomeEntries(
 ): Promise<TutorHomeEntry[]> {
   if (courses.length === 0) return [];
 
-  // 1. Enabled set — admin read AFTER the enrollment-scoped list (see above).
-  let enabledIds: Set<string>;
+  // 1. Disabled set — admin read AFTER the enrollment-scoped list (see above).
+  //    ON BY DEFAULT: exclude only courses with an explicit enabled=false row.
+  let disabledIds: Set<string>;
   try {
     const admin = createAdminClient();
     const settingsRes = await admin
@@ -163,16 +167,22 @@ export async function loadTutorHomeEntries(
       .in(
         "course_id",
         courses.map((c) => c.courseId)
-      )
-      .eq("enabled", true);
-    if (settingsRes.error) return [];
-    enabledIds = new Set((settingsRes.data ?? []).map((row) => row.course_id));
+      );
+    // Fail OPEN to default-on: a read error hides no course (empty disabled set).
+    if (settingsRes.error) disabledIds = new Set();
+    else
+      disabledIds = new Set(
+        (settingsRes.data ?? [])
+          .filter((row) => row.enabled === false)
+          .map((row) => row.course_id)
+      );
   } catch {
-    // Admin client unconfigured (fresh env) → fail closed: no rail, no teaser.
-    return [];
+    // Admin client unconfigured (fresh env) → fail OPEN to default-on: treat
+    // every enrolled course as enabled (no course hidden).
+    disabledIds = new Set();
   }
 
-  const enabled = courses.filter((c) => enabledIds.has(c.courseId));
+  const enabled = courses.filter((c) => !disabledIds.has(c.courseId));
   if (enabled.length === 0) return [];
 
   // 2. Own threads (RLS learner-own + enrollment-gated; the eq is belt and

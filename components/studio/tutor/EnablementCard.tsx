@@ -3,14 +3,15 @@
 /**
  * Tutor enablement card (TUTOR-1 Wave 5, P5.1).
  *
- * The Toggle drives setTutorEnabledAction. ENABLING is gated on an accepted
- * concept graph: if the action returns { needsGraph:true }, the card swaps to a
- * "Build the concept graph first" CTA that fires requestGraphExtractionAction.
- * DISABLING is always allowed. When the course has no live publication the
- * enable copy is honest (extraction needs a published version).
+ * The tutor is ON BY DEFAULT — the Toggle is an opt-OUT switch driving
+ * setTutorEnabledAction, and enabling is NEVER gated on a concept graph. Below the
+ * toggle, an HONEST status line frames the concept graph as an optional QUALITY
+ * enhancement (mastery-aware guidance), never a prerequisite: when no graph exists
+ * it's an info note with an "Extract concept graph" enhancement action (via
+ * requestGraphExtractionAction), not a blocking amber gate.
  *
  * Client component (the Toggle + the two actions), but it holds NO learner data —
- * only the boolean enabled state + the derived gate signals from the bundle.
+ * only the boolean enabled state + the derived graph-status signals from the bundle.
  */
 
 import { useState, useTransition } from "react";
@@ -36,7 +37,6 @@ export function EnablementCard({
   pendingGraphChangeSetId: string | null;
 }) {
   const [enabled, setEnabled] = useState(initialEnabled);
-  const [needsGraph, setNeedsGraph] = useState(false);
   const [extractionRequested, setExtractionRequested] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -47,9 +47,6 @@ export function EnablementCard({
       const result = await setTutorEnabledAction(courseId, next);
       if (result.ok) {
         setEnabled(result.enabled);
-        setNeedsGraph(false);
-      } else if ("needsGraph" in result) {
-        setNeedsGraph(true);
       } else {
         setError(result.error);
       }
@@ -68,13 +65,15 @@ export function EnablementCard({
     });
   };
 
-  // The graph is either being reviewed (pending change-set) or not yet built.
+  // Graph status is a QUALITY signal, never a gate: pending review · concepts in
+  // the graph · no graph yet (the tutor still answers from the lessons).
+  const hasGraph = nodeCount > 0 && pendingGraphChangeSetId === null;
   const graphStatus =
     pendingGraphChangeSetId !== null
-      ? "A concept-graph review is waiting in the Concept graph tab. Accept it to enable the tutor."
-      : nodeCount > 0
-        ? `${nodeCount} concept${nodeCount === 1 ? "" : "s"} in the accepted graph.`
-        : "No concept graph yet.";
+      ? "A concept-graph review is waiting in the Concept graph tab."
+      : hasGraph
+        ? `${nodeCount} concept${nodeCount === 1 ? "" : "s"} in the graph — the tutor uses these for mastery-aware guidance.`
+        : null;
 
   return (
     <div className="rounded-card border border-stone-200/80 bg-white shadow-card">
@@ -86,7 +85,8 @@ export function EnablementCard({
               AI tutor
             </h3>
             <p className="mt-0.5 text-xs text-stone-600">
-              Give learners a course-grounded tutor in the lesson player.
+              Learners get a course-grounded tutor in the lesson player. It&apos;s on by
+              default — turn it off here if you&apos;d rather not offer it.
             </p>
           </div>
         </div>
@@ -113,18 +113,18 @@ export function EnablementCard({
       </div>
 
       <div className="px-card-pad py-4 text-sm text-stone-600">
-        <p>{graphStatus}</p>
-
-        {needsGraph ? (
-          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
-            <p className="text-sm font-medium text-amber-900">Build the concept graph first</p>
-            <p className="mt-1 text-xs leading-relaxed text-amber-800">
-              The tutor grounds every answer in your course&apos;s concept graph. Extract it from
-              the live version, review the staged result in the Concept graph tab, then enable the
-              tutor.
+        {graphStatus ? (
+          <p>{graphStatus}</p>
+        ) : (
+          <div className="rounded-xl border border-stone-200/80 bg-stone-50/60 p-4">
+            <p className="text-sm font-medium text-stone-800">Add mastery-aware guidance</p>
+            <p className="mt-1 text-xs leading-relaxed text-stone-600">
+              Your tutor already answers from this course&apos;s lessons. Build the concept graph
+              to add mastery-aware guidance — it scaffolds answers around what each learner has
+              and hasn&apos;t mastered. Optional; the tutor works without it.
             </p>
             {extractionRequested ? (
-              <p className="mt-3 text-xs font-medium text-amber-900">
+              <p className="mt-3 text-xs font-medium text-stone-700">
                 Extraction requested — check the Concept graph tab shortly for the staged review.
               </p>
             ) : (
@@ -145,7 +145,7 @@ export function EnablementCard({
               </button>
             )}
           </div>
-        ) : null}
+        )}
 
         {error ? (
           <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">

@@ -5,8 +5,10 @@
  *   - The bundle Zod schema: a valid overview bundle parses; a valid charter
  *     bundle (overview null) parses; a SUPPRESSED usage bundle (usage null +
  *     usageSuppressed true) parses; an out-of-vocab charter enum is rejected.
- *   - The enable-gate logic (hasAcceptedGraph): active nodes AND no pending
- *     change-set → true; no nodes → false; pending change-set → false.
+ *   - The graph-STATUS signal (hasAcceptedGraph — "does mastery scaffolding
+ *     exist?", NOT an enable gate: the tutor is on by default and answers without
+ *     a graph): active nodes AND no pending change-set → true; no nodes → false;
+ *     pending change-set → false.
  *   - Charter enum re-validation (the server-action path): TutorCharterSchema
  *     .partial() accepts a subset, rejects an out-of-vocab value, caps tone ≤500.
  *   - Migration drift guards (regex over 20260805100000): the `>= 5` cohort floor
@@ -150,21 +152,23 @@ const MIGRATION = readFileSync(
   "utf8"
 );
 
-console.log("\n# enable-gate logic (hasAcceptedGraph — AC-T5.1 data half)");
+console.log(
+  "\n# graph-STATUS signal (hasAcceptedGraph — mastery scaffolding exists?, NOT an enable gate)"
+);
 check(
-  "active nodes AND no pending change-set → accepted",
+  "active nodes AND no pending change-set → accepted graph (scaffolding exists)",
   hasAcceptedGraph({ activeNodeCount: 7, pendingGraphChangeSetId: null }) === true
 );
 check(
-  "no active nodes → NOT accepted (needs extraction)",
+  "no active nodes → NO accepted graph (tutor still answers from lessons — enabling is NOT blocked)",
   hasAcceptedGraph({ activeNodeCount: 0, pendingGraphChangeSetId: null }) === false
 );
 check(
-  "a pending graph change-set → NOT accepted (review in flight)",
+  "a pending graph change-set → NO accepted graph yet (review in flight)",
   hasAcceptedGraph({ activeNodeCount: 7, pendingGraphChangeSetId: "cs-1" }) === false
 );
 check(
-  "both missing → NOT accepted",
+  "both missing → NO accepted graph",
   hasAcceptedGraph({ activeNodeCount: 0, pendingGraphChangeSetId: "cs-1" }) === false
 );
 

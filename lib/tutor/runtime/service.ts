@@ -70,7 +70,8 @@ export function emitsEvidence(access: TutorAccess): boolean {
 
 /**
  * The ONE access gate. Order (fail-safe):
- *  1. settings row absent OR enabled=false → 'disabled' (no row → DISABLED).
+ *  1. settings row with enabled=false ⇒ 'disabled'; NO row ⇒ default ON, fall
+ *     through (the tutor is ON BY DEFAULT — only an explicit opt-out disables).
  *  2. the caller is the course author → 'author_preview' (preview; NO evidence).
  *  3. an active/completed enrollment → 'ok'.
  *  4. otherwise → 'not_enrolled'.
@@ -85,13 +86,14 @@ export async function resolveTutorAccess(
 ): Promise<TutorAccess> {
   const { userId, courseId } = args;
 
-  // (1) settings gate — no row OR enabled=false ⇒ disabled.
+  // (1) settings gate — ON BY DEFAULT: only an explicit enabled=false disables;
+  //     a missing row ⇒ on (fall through to author/enrollment).
   const { data: settings } = await admin
     .from("tutor_course_settings")
     .select("enabled")
     .eq("course_id", courseId)
     .maybeSingle();
-  if (!settings || settings.enabled !== true) return { kind: "disabled" };
+  if (settings && settings.enabled === false) return { kind: "disabled" };
 
   // (2) author preview — the creator can always test their course (no evidence).
   const { data: course } = await admin

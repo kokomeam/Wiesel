@@ -16,8 +16,10 @@
  *     • resolveTutorAccess = 'not_enrolled' for the stranger.
  *     • 'author_preview' for the author — attempting a turn AND a
  *       recordPracticeAnswer through the gate emits ZERO evidence rows.
- *     • 'disabled' with NO tutor_course_settings row.
- *     • admin-insert settings enabled=true → the enrolled learner's mock turn
+ *     • ON BY DEFAULT: NO tutor_course_settings row → the enrolled learner is
+ *       'ok' (a missing row means the tutor is on); an explicit enabled=false
+ *       row → 'disabled'.
+ *     • re-enable (settings enabled=true) → the enrolled learner's mock turn
  *       (a scripted tutor_turn_output with 2 tutor_inference items) → learner +
  *       assistant turns persisted (grounding/rung present), tutor_inference rows
  *       == 2, and the thread is REUSED on turn 2.
@@ -293,15 +295,26 @@ async function main() {
     /* ═══════════════════════ AC-W3R.1 — the access gate ══════════════════════ */
     console.log("\n# AC-W3R.1 — access gate (disabled / not_enrolled / author_preview) + a real turn");
 
-    // (a) DISABLED — no tutor_course_settings row yet.
-    const disabledAccess = await resolveTutorAccess(admin, { userId: learner.userId, courseId });
-    check("no settings row → access 'disabled'", disabledAccess.kind === "disabled", disabledAccess.kind);
+    // (a) ON BY DEFAULT — no tutor_course_settings row yet ⇒ the enrolled learner
+    //     is NOT disabled; the missing row means the tutor is on (falls through to
+    //     enrollment → 'ok'). Only an explicit enabled=false disables.
+    const defaultOnAccess = await resolveTutorAccess(admin, { userId: learner.userId, courseId });
+    check("no settings row → access 'ok' (ON BY DEFAULT)", defaultOnAccess.kind === "ok", defaultOnAccess.kind);
 
-    // Enable the tutor for the course (admin insert — the charter/config surface).
-    const settingsInsert = await admin
+    // An explicit enabled=false row DISABLES the enrolled learner.
+    const disableInsert = await admin
       .from("tutor_course_settings")
-      .insert({ course_id: courseId, enabled: true } as never);
-    check("admin enables the tutor (settings.enabled=true)", !settingsInsert.error, String(settingsInsert.error?.message));
+      .insert({ course_id: courseId, enabled: false } as never);
+    check("admin can explicitly disable the tutor (settings.enabled=false)", !disableInsert.error, String(disableInsert.error?.message));
+    const disabledAccess = await resolveTutorAccess(admin, { userId: learner.userId, courseId });
+    check("explicit enabled=false row → access 'disabled'", disabledAccess.kind === "disabled", disabledAccess.kind);
+
+    // Re-enable for the rest of the flow (update the row to enabled=true).
+    const settingsUpdate = await admin
+      .from("tutor_course_settings")
+      .update({ enabled: true } as never)
+      .eq("course_id", courseId);
+    check("admin re-enables the tutor (settings.enabled=true)", !settingsUpdate.error, String(settingsUpdate.error?.message));
 
     // (b) NOT_ENROLLED — the stranger.
     const strangerAccess = await resolveTutorAccess(admin, { userId: stranger.userId, courseId });

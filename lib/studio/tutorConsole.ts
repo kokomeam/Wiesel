@@ -108,13 +108,15 @@ const BundleSchema = z.object({
 });
 export type TutorConsoleBundle = z.infer<typeof BundleSchema>;
 
-/* ─────────────────────────────── gate logic ─────────────────────────────── */
+/* ─────────────────────────────── graph status ───────────────────────────── */
 
 /**
- * The enable gate (AC-T5.1 data half), pure: a course can turn its tutor ON only
- * once it has an ACCEPTED concept graph — active concept nodes exist AND no
- * concept_graph change-set is still pending review. Mirrors the SQL the RPC uses
- * (`node_count > 0 and pending is null`) so the DB and the enable action agree.
+ * A pure STATUS signal — "does mastery scaffolding exist?" — NOT an enable gate.
+ * True once a course has an ACCEPTED concept graph: active concept nodes exist AND
+ * no concept_graph change-set is still pending review. Enabling the tutor NEVER
+ * depends on this (the tutor is on by default and answers lesson-grounded without
+ * a graph); the console reads it only to describe the optional quality enhancement.
+ * Mirrors the SQL the RPC uses (`node_count > 0 and pending is null`).
  */
 export function hasAcceptedGraph(args: {
   activeNodeCount: number;

@@ -19,8 +19,11 @@
  *      writes a tutor_charter_versions row (actor=author) + moves the settings
  *      pointer; the bundle's enablement.charter reflects the change AND
  *      charterVersions lists it with the actor's email.
- *   5. Enable gate (AC-T5.1 data half): hasAcceptedGraph is false with no concept
- *      nodes; true after inserting active nodes (no pending change-set).
+ *   5. Enablement is DEFAULT-ON and NOT graph-gated: enabling via
+ *      setTutorEnabledAction SUCCEEDS with no concept graph (the tutor answers
+ *      lesson-grounded without one). hasAcceptedGraph is a STATUS signal — false
+ *      with no concept nodes, true after inserting active nodes (no pending
+ *      change-set) — and does NOT block enabling.
  *   6. An unknown tab RAISES.
  *
  * Run (AFTER the migration): `npx tsx scripts/verify-tutor-console-int.ts`
@@ -219,9 +222,9 @@ async function main() {
         authOverview.overview !== null
     );
     check(
-      "a fresh course is DISABLED with the default charter",
+      "a fresh course is ON BY DEFAULT with the default charter (no settings row ⇒ enabled)",
       !!authOverview &&
-        authOverview.enablement.enabled === false &&
+        authOverview.enablement.enabled === true &&
         authOverview.enablement.charter.guidanceStyle === "guided_default"
     );
 
@@ -295,14 +298,33 @@ async function main() {
     );
     check("the current version pointer moved", afterCharter?.enablement.currentVersionId === versionId);
 
-    /* ── 5. enable gate (AC-T5.1 data half) ── */
-    console.log("\n# 5. enable gate — hasAcceptedGraph flips once nodes exist");
+    /* ── 5. enablement is default-ON and NOT graph-gated ── */
+    console.log("\n# 5. enablement is default-on — enabling with NO graph succeeds");
     check(
-      "with no concept nodes: hasAcceptedGraph is false (enable would need extraction)",
+      "with no concept nodes: hasAcceptedGraph is false (STATUS only — enabling is NOT blocked)",
       afterCharter?.enablement.hasAcceptedGraph === false &&
         afterCharter?.enablement.nodeCount === 0
     );
 
+    // The un-gated enable write (mirrors setTutorEnabledAction after its author
+    // gate): upsert enabled=true with NO concept graph present. This must SUCCEED —
+    // enabling never depends on an accepted graph anymore.
+    const enableNoGraph = await author.client
+      .from("tutor_course_settings")
+      .upsert({ course_id: courseId, enabled: true }, { onConflict: "course_id" });
+    check(
+      "enabling the tutor with NO concept graph SUCCEEDS (default-on, un-gated)",
+      !enableNoGraph.error,
+      String(enableNoGraph.error?.message)
+    );
+    const enabledNoGraph = await loadTutorConsole(author.client, courseId, "overview");
+    check(
+      "the bundle reflects enabled=true even though hasAcceptedGraph is still false",
+      enabledNoGraph?.enablement.enabled === true &&
+        enabledNoGraph?.enablement.hasAcceptedGraph === false
+    );
+
+    console.log("\n# 5b. hasAcceptedGraph is a STATUS signal — flips true once nodes exist");
     const nodeInsert = await author.client.from("concept_nodes").insert([
       { course_id: courseId, title: "Concept A", status: "active" },
       { course_id: courseId, title: "Concept B", status: "active" },

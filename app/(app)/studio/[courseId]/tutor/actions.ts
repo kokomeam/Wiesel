@@ -3,11 +3,12 @@
 /**
  * Creator Tutor Console server actions (TUTOR-1 Wave 5, P5.1).
  *
- *   setTutorEnabledAction        — flip tutor_course_settings.enabled. ENABLING
- *                                  is GATED on an accepted concept graph (active
- *                                  nodes AND no pending graph change-set); with
- *                                  none, it returns { needsGraph:true } (the UI
- *                                  routes to extraction). Disabling is always ok.
+ *   setTutorEnabledAction        — flip tutor_course_settings.enabled. The tutor
+ *                                  is ON BY DEFAULT (no row ⇒ enabled), so this is
+ *                                  an opt-OUT switch: enabling and disabling both
+ *                                  just upsert the row — NEITHER is gated on a
+ *                                  concept graph. The graph is a quality
+ *                                  enhancement, not a prerequisite.
  *   requestGraphExtractionAction — fire the Wave-1 tutor/graph.extraction.requested
  *                                  event for the course's LIVE publication.
  *   saveCharterAction            — apply a charter patch via applyCharterChange,
@@ -16,14 +17,13 @@
  * Every action author-gates: it loads the course under the USER-scoped client
  * and checks author_id === the caller (RLS is the backstop, but the explicit
  * gate keeps a non-author from ever reaching a write path). The result types are
- * discriminated so the client can branch (needsGraph, error) without throwing.
+ * discriminated so the client can branch (error) without throwing.
  */
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { resolveLivePublicationMeta } from "@/lib/learn/publicationCache";
-import { hasAcceptedGraph } from "@/lib/studio/tutorConsole";
 import {
   applyCharterChange,
   TutorCharterSchema,
@@ -32,7 +32,6 @@ import {
 
 export type SetEnabledResult =
   | { ok: true; enabled: boolean }
-  | { ok: false; needsGraph: true }
   | { ok: false; error: string };
 
 export type RequestExtractionResult =
@@ -64,11 +63,12 @@ async function requireAuthor(
 /**
  * Enable / disable the tutor for a course.
  *
- * ENABLING is GATED (AC-T5.1): a course can only turn the tutor on once it has an
- * ACCEPTED concept graph — active concept_nodes AND no pending concept_graph
- * change-set awaiting review. Without one, the write is refused and
- * { needsGraph:true } is returned so the UI can route to the extraction flow.
- * DISABLING is always allowed (no gate).
+ * The tutor is ON BY DEFAULT: a course with no tutor_course_settings row (or a row
+ * whose enabled !== false) has a live tutor. This action is therefore an opt-OUT
+ * switch — enabling and disabling both simply upsert the row, and NEITHER is gated
+ * on a concept graph. The tutor answers lesson-grounded from the published snapshot
+ * with or without a graph; the graph is a quality enhancement (mastery scaffolding),
+ * not a prerequisite for the tutor to appear or answer.
  */
 export async function setTutorEnabledAction(
   courseId: string,
@@ -77,32 +77,6 @@ export async function setTutorEnabledAction(
   const gate = await requireAuthor(courseId);
   if ("forbidden" in gate) return { ok: false, error: "Not the course author." };
   const supabase = await createClient();
-
-  if (enabled) {
-    // Active nodes exist?
-    const nodes = await supabase
-      .from("concept_nodes")
-      .select("id", { count: "exact", head: true })
-      .eq("course_id", courseId)
-      .eq("status", "active");
-    if (nodes.error) return { ok: false, error: nodes.error.message };
-
-    // A pending concept_graph change-set means a review is still in flight.
-    const pending = await supabase
-      .from("change_set_items")
-      .select("change_set_id, change_sets!inner(status, course_id)")
-      .eq("node_type", "concept_graph")
-      .eq("change_sets.course_id", courseId)
-      .eq("change_sets.status", "pending")
-      .limit(1);
-    if (pending.error) return { ok: false, error: pending.error.message };
-
-    const accepted = hasAcceptedGraph({
-      activeNodeCount: nodes.count ?? 0,
-      pendingGraphChangeSetId: (pending.data ?? []).length > 0 ? "pending" : null,
-    });
-    if (!accepted) return { ok: false, needsGraph: true };
-  }
 
   // Upsert the settings row (course_id is the PK — a course may have no row yet).
   const { error } = await supabase
@@ -119,7 +93,8 @@ export async function setTutorEnabledAction(
  * the live publication (extraction runs against a published version), mints a
  * runId, and fires the best-effort Wave-1 event (a lost send is reconciled by
  * the publish hook / a later run). The durable function stages a change-set the
- * graph tab reviews; enable stays blocked until it is accepted.
+ * graph tab reviews. Extraction is a QUALITY enhancement — it adds mastery-aware
+ * guidance; the tutor is already enabled/answering without it.
  */
 export async function requestGraphExtractionAction(
   courseId: string

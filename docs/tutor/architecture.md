@@ -206,7 +206,7 @@ is untouched).
 ```
 /studio/[courseId]/tutor?tab=
   ├─ overview   tutor_console_bundle  — enablement · usage (cohort-floored ≥5) · cost by job_type
-  ├─ charter    tutor_console_bundle  — enable toggle (gated on an accepted graph) + 6-field charter via applyCharterChange + version history
+  ├─ charter    tutor_console_bundle  — enable toggle (opt-OUT: on by default, NOT graph-gated) + 6-field charter via applyCharterChange + version history
   ├─ graph      tutor_graph_console   — pure-SVG editor (own store/viewport/layout; ZERO editor-store imports)
   │                                     versioned node/edge edits · tutor_upsert_concept_edge cycle gate ·
   │                                     tutor_merge_concept_nodes (folds service-role-only learner_mastery, §1.4) ·
