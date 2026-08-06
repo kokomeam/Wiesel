@@ -1419,6 +1419,35 @@ export type Database = {
           },
         ]
       }
+      escalation_reply_delivery: {
+        Row: {
+          cluster_id: string
+          delivered_at: string
+          turn_id: string | null
+          user_id: string
+        }
+        Insert: {
+          cluster_id: string
+          delivered_at?: string
+          turn_id?: string | null
+          user_id: string
+        }
+        Update: {
+          cluster_id?: string
+          delivered_at?: string
+          turn_id?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "escalation_reply_delivery_cluster_id_fkey"
+            columns: ["cluster_id"]
+            isOneToOne: false
+            referencedRelation: "escalation_cluster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       follow_up_rule: {
         Row: {
           campaign_id: string

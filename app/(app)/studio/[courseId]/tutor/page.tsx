@@ -20,24 +20,36 @@ import { OverviewTutorTab } from "@/components/studio/tutor/OverviewTutorTab";
 import { CharterTab } from "@/components/studio/tutor/CharterTab";
 import { GraphTab } from "@/components/studio/tutor/GraphTab";
 import { AnalyticsTutorTab } from "@/components/studio/tutor/AnalyticsTutorTab";
+import { EscalationQueueTab } from "@/components/studio/tutor/EscalationQueueTab";
+import { escalationsUiEnabled } from "@/lib/tutor/flags";
 import { cn } from "@/lib/cn";
 
 export const dynamic = "force-dynamic";
 
-const TABS = [
+/** All possible tab ids. `escalations` is FLAG-GATED — it only appears in the nav
+ *  (and only routes) when escalationsUiEnabled() (the OverviewTab badge-gating
+ *  match); with the flag off the tab is absent everywhere and its ?tab= falls back
+ *  to overview. */
+type TabId = "overview" | "charter" | "graph" | "analytics" | "escalations";
+
+const ALL_TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "charter", label: "Enablement & charter" },
   { id: "graph", label: "Concept graph" },
   { id: "analytics", label: "Analytics" },
-] as const;
-type TabId = (typeof TABS)[number]["id"];
+  // Escalations is appended LAST, and only when the flag is on (see visibleTabs).
+  { id: "escalations", label: "Escalations" },
+];
 
-/** Overview + charter load through the bundle RPC; graph + analytics own theirs. */
+/** Overview + charter load through the bundle RPC; graph + analytics + escalations
+ *  own their own author-gated RPCs (BUNDLE_TABS[x] = null → the charter bundle
+ *  loads just to author-gate the render). */
 const BUNDLE_TABS: Record<TabId, TutorConsoleTab | null> = {
   overview: "overview",
   charter: "charter",
   graph: null,
   analytics: null,
+  escalations: null,
 };
 
 export default async function TutorConsolePage({
@@ -52,7 +64,15 @@ export default async function TutorConsolePage({
   const user = await getSessionUser();
   if (!user) redirect(`/login?redirectTo=/studio/${courseId}/tutor`);
 
-  const tab: TabId = TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
+  // The visible tab set — escalations is appended only when the flag is on.
+  const escalationsOn = escalationsUiEnabled();
+  const visibleTabs = escalationsOn
+    ? ALL_TABS
+    : ALL_TABS.filter((t) => t.id !== "escalations");
+
+  const tab: TabId = visibleTabs.some((t) => t.id === rawTab)
+    ? (rawTab as TabId)
+    : "overview";
 
   // ONE round trip: the bundle RPC authorizes internally (null → 404). Graph +
   // analytics tabs still need the author gate, so they load the enablement-only
@@ -91,7 +111,7 @@ export default async function TutorConsolePage({
 
       {/* ── Tab nav (?tab= — server-rendered, deep-linkable) ── */}
       <nav className="flex flex-wrap gap-1 border-b border-stone-200/80" aria-label="Tutor sections">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <Link
             key={t.id}
             href={`/studio/${courseId}/tutor${t.id === "overview" ? "" : `?tab=${t.id}`}`}
@@ -118,8 +138,10 @@ export default async function TutorConsolePage({
         />
       ) : tab === "graph" ? (
         <GraphTab courseId={courseId} />
-      ) : (
+      ) : tab === "analytics" ? (
         <AnalyticsTutorTab courseId={courseId} />
+      ) : (
+        <EscalationQueueTab courseId={courseId} />
       )}
     </div>
   );
