@@ -10,6 +10,10 @@ import { publishFire, publishSweep } from "@/lib/inngest/functions/publish";
 import { tutorGraphExtract, tutorGraphReconcile } from "@/lib/inngest/functions/tutorGraph";
 import { tutorMasteryRefold, tutorMasteryNightly } from "@/lib/inngest/functions/tutorMastery";
 import { tutorLessonHealthNightly } from "@/lib/inngest/functions/tutorLessonHealth";
+import {
+  tutorEscalationSynthesize,
+  tutorEscalationReconcileNightly,
+} from "@/lib/inngest/functions/tutorEscalation";
 
 export const runtime = "nodejs";
 
@@ -23,5 +27,7 @@ export const { GET, POST, PUT } = serve({
     tutorMasteryRefold,
     tutorMasteryNightly,
     tutorLessonHealthNightly,
+    tutorEscalationSynthesize,
+    tutorEscalationReconcileNightly,
   ],
 });

@@ -59,11 +59,22 @@ function registryShape() {
     );
   }
   check(
-    "exactly the six jobs are present",
+    "exactly the seven jobs are present",
     Object.keys(TUTOR_MODELS).sort().join(",") ===
-      "embedding,graph_extraction,lesson_rationale,practice_gen,reconciliation,tutor_turn"
+      "embedding,escalation_dossier,graph_extraction,lesson_rationale,practice_gen,reconciliation,tutor_turn"
   );
   check("lesson_rationale defaults to gpt-5.6-terra", TUTOR_MODELS.lesson_rationale.model === "gpt-5.6-terra");
+  check(
+    "escalation_dossier defaults to gpt-5.6-terra",
+    TUTOR_MODELS.escalation_dossier.model === "gpt-5.6-terra"
+  );
+  check(
+    "escalation_dossier defaults: medium / 60s / 1 retry / 2k tokens",
+    TUTOR_MODELS.escalation_dossier.effort === "medium" &&
+      TUTOR_MODELS.escalation_dossier.timeoutMs === 60_000 &&
+      TUTOR_MODELS.escalation_dossier.maxRetries === 1 &&
+      TUTOR_MODELS.escalation_dossier.maxOutputTokens === 2_000
+  );
   check(
     "embedding model is text-embedding-3-small",
     TUTOR_MODELS.embedding.model === "text-embedding-3-small"

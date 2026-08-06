@@ -345,6 +345,19 @@ export const TUTOR_MODELS = {
     maxRetries: int("TUTOR_LESSON_RATIONALE_MAX_RETRIES", 1),
     maxOutputTokens: int("TUTOR_LESSON_RATIONALE_MAX_OUTPUT_TOKENS", 2_000),
   } satisfies TutorJobModel,
+  /** The ESCALATION-DOSSIER synthesizer (Wave 6 P6.2 · the on-consent synthesis
+   *  job). Terra writes ONE plain-English dossier {summary, confidenceNotes} over a
+   *  single consented, ANONYMIZED learner question + its concept-node context — no
+   *  learner identity ever reaches the model. A compact structured fill → a modest
+   *  output budget; runs off the interactive path (event/nightly), so a generous
+   *  ~60s deadline. Env: TUTOR_ESCALATION_DOSSIER_*. */
+  escalation_dossier: {
+    model: process.env.TUTOR_ESCALATION_DOSSIER_MODEL ?? "gpt-5.6-terra",
+    effort: effort("TUTOR_ESCALATION_DOSSIER_EFFORT", "medium"),
+    timeoutMs: int("TUTOR_ESCALATION_DOSSIER_TIMEOUT_MS", 60_000),
+    maxRetries: int("TUTOR_ESCALATION_DOSSIER_MAX_RETRIES", 1),
+    maxOutputTokens: int("TUTOR_ESCALATION_DOSSIER_MAX_OUTPUT_TOKENS", 2_000),
+  } satisfies TutorJobModel,
 } as const;
 
 /**

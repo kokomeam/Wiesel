@@ -1312,6 +1312,113 @@ export type Database = {
           },
         ]
       }
+      escalation_cluster: {
+        Row: {
+          change_set_id: string | null
+          course_id: string
+          created_at: string
+          dismiss_reason: string | null
+          id: string
+          member_count: number
+          node_id: string
+          representative_answer: string | null
+          representative_question: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          change_set_id?: string | null
+          course_id: string
+          created_at?: string
+          dismiss_reason?: string | null
+          id?: string
+          member_count?: number
+          node_id: string
+          representative_answer?: string | null
+          representative_question?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          change_set_id?: string | null
+          course_id?: string
+          created_at?: string
+          dismiss_reason?: string | null
+          id?: string
+          member_count?: number
+          node_id?: string
+          representative_answer?: string | null
+          representative_question?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "escalation_cluster_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      escalation_dossier: {
+        Row: {
+          candidate_id: string
+          cluster_id: string | null
+          course_id: string
+          created_at: string
+          dossier: Json | null
+          learner_question: string | null
+          node_ids: Json
+          question_embedding: Json | null
+          rung_trail: Json
+          tutor_proposed_answer: string | null
+          user_id: string
+        }
+        Insert: {
+          candidate_id: string
+          cluster_id?: string | null
+          course_id: string
+          created_at?: string
+          dossier?: Json | null
+          learner_question?: string | null
+          node_ids?: Json
+          question_embedding?: Json | null
+          rung_trail?: Json
+          tutor_proposed_answer?: string | null
+          user_id: string
+        }
+        Update: {
+          candidate_id?: string
+          cluster_id?: string | null
+          course_id?: string
+          created_at?: string
+          dossier?: Json | null
+          learner_question?: string | null
+          node_ids?: Json
+          question_embedding?: Json | null
+          rung_trail?: Json
+          tutor_proposed_answer?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "escalation_dossier_candidate_id_fkey"
+            columns: ["candidate_id"]
+            isOneToOne: true
+            referencedRelation: "tutor_escalation_candidates"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "escalation_dossier_cluster_id_fkey"
+            columns: ["cluster_id"]
+            isOneToOne: false
+            referencedRelation: "escalation_cluster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       follow_up_rule: {
         Row: {
           campaign_id: string

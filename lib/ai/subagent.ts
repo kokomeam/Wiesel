@@ -191,7 +191,7 @@ export interface PooledCostContext {
   /** The acting principal stamped as the row's user_id (extraction/reconcile pass the
    *  course author id). */
   emittedBy: string;
-  jobType: TutorJobType | "practice_gen";
+  jobType: TutorJobType | "practice_gen" | "escalation_dossier";
   /** The attribution learner (a tutor turn); null for author-run jobs. */
   learnerUserId?: string | null;
   /** When set, cost ids are `${runKey}:${seq}` (seq = a per-decorator monotonic
@@ -254,9 +254,13 @@ export function withPooledModel(
   ): Promise<void> {
     if (!cost) return;
     const jobType = jobTypeOverride ?? cost.jobType;
-    // `practice_gen` isn't (yet) a DB-checked job type; skip its emit rather than
-    // send a row the ingest CHECK would reject. graph/embedding/reconcile/tutor emit.
-    if (jobType === "practice_gen") return;
+    // `practice_gen` and `escalation_dossier` are NOT DB-checked job types (the
+    // learning_events.job_type CHECK is closed to the four telemetered kinds); skip
+    // their runTurn cost row rather than send one the ingest CHECK would reject. The
+    // embed calls these decorators make ALWAYS emit under 'embedding' (a valid kind),
+    // so an escalation-synthesis run still lands a tutor_model_call cost row.
+    // graph/embedding/reconcile/tutor emit as before.
+    if (jobType === "practice_gen" || jobType === "escalation_dossier") return;
     try {
       await emitTutorModelCall(cost.supabase, {
         courseId: cost.courseId,
