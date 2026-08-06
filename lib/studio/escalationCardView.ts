@@ -58,6 +58,8 @@ export const ALLOWED_CLUSTER_KEYS = [
   "memberCount",
   "status",
   "changeSetId",
+  // P6.4: DERIVED resolution flag (change-set accepted). Identity-free — a boolean.
+  "resolved",
 ] as const;
 
 /** Identity field names that must NEVER appear on a queue row (the roster-privacy

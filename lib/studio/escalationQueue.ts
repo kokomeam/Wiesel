@@ -44,6 +44,9 @@ const EscalationClusterSchema = z.object({
   memberCount: z.number().int(),
   status: z.enum(["open", "replied", "dismissed", "resolved_in_content"]),
   changeSetId: z.string().nullable(),
+  /** DERIVED (P6.4): the cluster's promotion change-set has been ACCEPTED. A pre-P6.4
+   *  RPC omits it → defaults false. The rail owns the truth; this is a read of it. */
+  resolved: z.boolean().default(false),
 });
 export type EscalationCluster = z.infer<typeof EscalationClusterSchema>;
 

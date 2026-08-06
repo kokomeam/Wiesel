@@ -14,7 +14,7 @@
  */
 
 import { useState, useTransition } from "react";
-import { Pencil, ExternalLink, Archive, GitMerge, Split, X, Link2, Lock, LockOpen } from "lucide-react";
+import { Pencil, ExternalLink, Archive, GitMerge, Split, X, Link2, Lock, LockOpen, LifeBuoy } from "lucide-react";
 import { EvidenceCard, parseEvidence } from "@/components/editor/agent/EvidenceCard";
 import { Button } from "@/components/ui/Button";
 import { StatusChip } from "@/components/ui/StatusChip";
@@ -30,7 +30,7 @@ import {
   lockEdgeAction,
 } from "@/app/(app)/studio/[courseId]/tutor/graphActions";
 import { buildTeachingDeepLink } from "./GraphCanvas";
-import type { ConceptNodeRow, MasteryOverlay, ConfusionOverlay } from "@/lib/studio/graphConsole";
+import type { ConceptNodeRow, MasteryOverlay, ConfusionOverlay, NodeClarification } from "@/lib/studio/graphConsole";
 
 /* ----------------------------- props ------------------------------------- */
 
@@ -40,6 +40,9 @@ export interface NodeDetailDrawerProps {
   mastery: MasteryOverlay | undefined;
   confusion: ConfusionOverlay | undefined;
   evidence: unknown;
+  /** Landed clarifications on THIS node (P6.4) — accepted escalation promotions.
+   *  Empty when nothing has been clarified in content yet. */
+  clarifications?: NodeClarification[];
   /** other active node titles+ids for the merge / add-prerequisite target picker. */
   mergeTargets: Array<{ id: string; title: string }>;
   /** THIS node's outgoing prerequisite edges (source === node), for the edge editor. */
@@ -66,6 +69,20 @@ export function overlayDisplay(
 
 const SUPPRESSED_COPY = "Not enough learners yet";
 
+/* ----------------------------- clarifications ----------------------------- */
+
+/** The "clarified after N learners asked" line for a node's landed clarifications
+ *  (P6.4). PURE + exported for the verify script. Returns null when nothing has been
+ *  clarified in content yet. `total` is the max member count across the node's
+ *  accepted promotions (the "N learners asked" the clarification answers). */
+export function clarifiedLine(
+  clarifications: NodeClarification[] | undefined
+): { count: number; total: number } | null {
+  if (!clarifications || clarifications.length === 0) return null;
+  const total = clarifications.reduce((m, c) => Math.max(m, Math.max(0, Math.trunc(c.memberCount))), 0);
+  return { count: clarifications.length, total };
+}
+
 /* ------------------------------ drawer ----------------------------------- */
 
 export function NodeDetailDrawer({
@@ -74,6 +91,7 @@ export function NodeDetailDrawer({
   mastery,
   confusion,
   evidence,
+  clarifications,
   mergeTargets,
   outgoingEdges,
   onClose,
@@ -107,6 +125,7 @@ export function NodeDetailDrawer({
 
   const parsedEvidence = parseEvidence(evidence);
   const anchors = (node.anchors ?? []) as Anchor[];
+  const clarified = clarifiedLine(clarifications);
 
   const masteryView = overlayDisplay(
     mastery ? { suppressed: mastery.suppressed, value: mastery.avg_decayed_p } : undefined
@@ -410,6 +429,19 @@ export function NodeDetailDrawer({
 
       {/* Evidence (hidden when parseEvidence → null). */}
       {parsedEvidence ? <EvidenceCard evidence={parsedEvidence} compact /> : null}
+
+      {/* Clarified-in-content (P6.4): a landed clarification from an accepted
+       *  escalation promotion. Identity-free — a COUNT, never a roster. */}
+      {clarified ? (
+        <p
+          data-ai-component="tutor-node-clarified"
+          className="flex items-center gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/60 px-3 py-2 text-xs font-medium text-emerald-800"
+        >
+          <LifeBuoy className="size-3.5 shrink-0" aria-hidden />
+          Clarified after {clarified.total} learner{clarified.total === 1 ? "" : "s"} asked — a
+          clarification is now in the lesson.
+        </p>
+      ) : null}
 
       {/* Teaching-slide deep links (R-13 block-level fallback). */}
       {anchors.length > 0 ? (

@@ -23,12 +23,13 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { LifeBuoy, MessageSquareQuote, Users, CheckCircle2, MapPin } from "lucide-react";
+import { LifeBuoy, MessageSquareQuote, Users, CheckCircle2, MapPin, Sparkles, FileEdit } from "lucide-react";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { toolAttrs } from "@/lib/course/aiAttributes";
 import {
   approveAndDeliverAction,
   dismissClusterAction,
+  promoteClusterAction,
 } from "@/app/(app)/studio/[courseId]/tutor/escalationActions";
 import type { EscalationCluster } from "@/lib/studio/escalationQueue";
 import {
@@ -49,6 +50,7 @@ export function ClusterCard({
   const [error, setError] = useState<string | null>(null);
   const [delivered, setDelivered] = useState<{ count: number } | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [promoted, setPromoted] = useState<{ changeSetId: string; lessonId: string } | null>(null);
   const [pending, startTransition] = useTransition();
 
   const status = CLUSTER_STATUS_CHIP[cluster.status];
@@ -79,11 +81,59 @@ export function ClusterCard({
     });
   };
 
+  const onPromote = () => {
+    setError(null);
+    startTransition(async () => {
+      const res = await promoteClusterAction(courseId, cluster.id, answer);
+      if (res.ok) {
+        setPromoted({ changeSetId: res.changeSetId, lessonId: res.lessonId });
+      } else {
+        setError(res.error);
+      }
+    });
+  };
+
+  // Already clarified in content (a promotion whose change-set the creator accepted).
+  // DERIVED from the rail — the card shows the landed state rather than the affordances.
+  if (cluster.resolved) {
+    return (
+      <li className="rounded-card border border-emerald-200/80 bg-emerald-50/50 px-card-pad py-4">
+        <p className="flex items-center gap-2 text-sm font-medium text-emerald-800">
+          <Sparkles className="size-4" aria-hidden />
+          Clarified in content — you added an answer to the lesson for the {askedLabel(cluster.memberCount)}.
+        </p>
+      </li>
+    );
+  }
+
   // Terminal states — the card collapses to a calm confirmation after an action.
   if (dismissed) {
     return (
       <li className="rounded-card border border-stone-200/80 bg-stone-50/60 px-card-pad py-4">
         <p className="text-sm text-stone-500">Dismissed — this cluster no longer appears in the queue.</p>
+      </li>
+    );
+  }
+  if (promoted) {
+    return (
+      <li className="rounded-card border border-brand-200/80 bg-brand-50/50 px-card-pad py-4">
+        <p className="flex items-center gap-2 text-sm font-medium text-brand-800">
+          <FileEdit className="size-4" aria-hidden />
+          Clarification drafted — review it in the course editor.
+        </p>
+        <Link
+          href={`/studio?course=${courseId}&lesson=${promoted.lessonId}`}
+          className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-800 hover:underline"
+          {...toolAttrs({
+            tool: "escalation-promote-link",
+            action: "OPEN_PROMOTED_CHANGE_SET",
+            targetType: "link",
+            label: "Open the drafted clarification in the editor",
+          })}
+        >
+          <MapPin className="size-3" aria-hidden />
+          Open the lesson to Accept or Reject the drafted FAQ
+        </Link>
       </li>
     );
   }
@@ -198,6 +248,22 @@ export function ClusterCard({
               })}
             >
               Dismiss
+            </button>
+            <button
+              type="button"
+              onClick={onPromote}
+              disabled={pending}
+              className="inline-flex items-center gap-1.5 rounded-full border border-brand-200 bg-brand-50/60 px-4 py-1.5 text-sm font-medium text-brand-800 hover:bg-brand-50 disabled:opacity-50"
+              title="Draft a clarification into the lesson (you Accept or Reject it in the editor)"
+              {...toolAttrs({
+                tool: "escalation-promote",
+                action: "PROMOTE_ESCALATION_CLUSTER",
+                targetType: "button",
+                label: "Draft a lesson clarification from this escalation",
+              })}
+            >
+              <Sparkles className="size-3.5" aria-hidden />
+              {pending ? "Drafting…" : "Clarify in lesson"}
             </button>
             <button
               type="button"

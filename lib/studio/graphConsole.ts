@@ -104,6 +104,15 @@ const ConfusionOverlaySchema = z.object({
 });
 export type ConfusionOverlay = z.infer<typeof ConfusionOverlaySchema>;
 
+/** One landed clarification on a node (P6.4): a promoted escalation cluster whose
+ *  change-set the creator ACCEPTED. Identity-free — the memberCount is an aggregate
+ *  ("clarified after N learners asked"), never a roster. */
+const NodeClarificationSchema = z.object({
+  clusterId: z.string(),
+  memberCount: z.number().int(),
+});
+export type NodeClarification = z.infer<typeof NodeClarificationSchema>;
+
 /** The whole bundle -- one author-gated round trip. */
 const GraphConsoleBundleSchema = z.object({
   nodes: z.array(ConceptNodeRowSchema),
@@ -117,6 +126,10 @@ const GraphConsoleBundleSchema = z.object({
   pendingChangeSetId: z.string().nullable(),
   /** node_id -> the evidence jsonb stamped on that node's change-set item. */
   evidenceByNode: z.record(z.string(), z.unknown()),
+  /** node_id -> the landed clarifications on that node (P6.4). A node with no
+   *  accepted promotion is simply absent. Defaulted so a pre-P6.4 payload (or an
+   *  RPC that hasn't shipped the column) parses to an empty map. */
+  clarifications: z.record(z.string(), z.array(NodeClarificationSchema)).default({}),
 });
 
 /** FROZEN for the UI agent. */

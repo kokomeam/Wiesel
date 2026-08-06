@@ -109,6 +109,7 @@ function noIdentityTests() {
     memberCount: 14,
     status: "open",
     changeSetId: null,
+    resolved: false,
   };
 
   const keys = Object.keys(row);

@@ -40,7 +40,7 @@ import {
 import { OverlayToggles } from "./OverlayToggles";
 import { NodeDetailDrawer } from "./NodeDetailDrawer";
 import { mergeNodesAction } from "@/app/(app)/studio/[courseId]/tutor/graphActions";
-import type { ConceptNodeRow, ConceptEdgeRow, MasteryOverlay, ConfusionOverlay } from "@/lib/studio/graphConsole";
+import type { ConceptNodeRow, ConceptEdgeRow, MasteryOverlay, ConfusionOverlay, NodeClarification } from "@/lib/studio/graphConsole";
 
 /* ------------------------------ geometry --------------------------------- */
 
@@ -453,6 +453,8 @@ export interface GraphWorkspaceProps {
   mastery: MasteryOverlay[];
   confusion: ConfusionOverlay[];
   evidenceByNode: Record<string, unknown>;
+  /** node_id → landed clarifications (P6.4). Absent node → no clarifications. */
+  clarifications: Record<string, NodeClarification[]>;
 }
 
 /**
@@ -463,7 +465,7 @@ export interface GraphWorkspaceProps {
  * imports NOTHING from lib/course/store, lib/course/patches, lib/editor/uiStore,
  * lib/editor/dragStore, or SlideStage.
  */
-export function GraphWorkspace({ courseId, nodes, edges, mastery, confusion, evidenceByNode }: GraphWorkspaceProps) {
+export function GraphWorkspace({ courseId, nodes, edges, mastery, confusion, evidenceByNode, clarifications }: GraphWorkspaceProps) {
   const [showMastery, setShowMastery] = useState(true);
   const [showConfusion, setShowConfusion] = useState(true);
   const [mergePending, startMerge] = useTransition();
@@ -599,6 +601,7 @@ export function GraphWorkspace({ courseId, nodes, edges, mastery, confusion, evi
             mastery={masteryById.get(selectedNode.id)}
             confusion={selectedConfusion}
             evidence={evidenceByNode[selectedNode.id]}
+            clarifications={clarifications[selectedNode.id] ?? []}
             mergeTargets={mergeTargets}
             outgoingEdges={outgoingEdges}
             onClose={clearSelection}

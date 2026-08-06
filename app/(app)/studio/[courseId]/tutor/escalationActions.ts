@@ -19,13 +19,12 @@
  * is service-role-only (it reads the identity-bearing escalation_dossier + writes
  * instructor turns), so the author reaches it exclusively through this gated action.
  *
- * ⚠ SEAM FOR P6.4 (content-patch promotion): `promoteClusterAction` is NOT defined
- * here — P6.4 owns the promote action + the card's Promote button (it edits THIS
- * file and EscalationQueueTab/ClusterCard). Add it below dismissClusterAction: it
- * will build BlockChange[] from the dossier + the creator's answer, file a
- * change-set via createChangeSet with the dossier summary as evidence, and record
- * escalation_cluster.change_set_id + status `resolved_in_content` on accept. Leave
- * this action set untouched otherwise.
+ *   promoteClusterAction    — P6.4: draft a lecture/FAQ clarification into the
+ *                             implicated lesson via the EXISTING change-set rail
+ *                             (createChangeSet with the dossier summary as evidence).
+ *                             Records escalation_cluster.change_set_id; RESOLUTION is
+ *                             DERIVED (the queue/graph RPCs read change_sets.status) —
+ *                             there is NO hook into acceptChangeSet.
  */
 
 import { revalidatePath } from "next/cache";
@@ -34,6 +33,11 @@ import { z } from "zod";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { rpcJson } from "@/lib/supabase/rpcJson";
+import { createOpenAIModelClient } from "@/lib/ai/providers/openai";
+import { createMockModelClient } from "@/lib/ai/providers/mock";
+import { withPooledModel, poolFor } from "@/lib/ai/subagent";
+import { promoteClusterToPatch } from "@/lib/tutor/escalation/promotion";
+import { PROMOTION_RESPONSE_NAME } from "@/lib/tutor/escalation/promotionDraft";
 
 /** Approve → deliver result: the per-member delivery tally (no roster). */
 export type ApproveReplyResult =
@@ -42,6 +46,11 @@ export type ApproveReplyResult =
 
 /** A simple ok/error result (dismiss). */
 export type DismissResult = { ok: true } | { ok: false; error: string };
+
+/** Promote → the staged change-set (the studio's Accept/Reject rail picks it up). */
+export type PromoteResult =
+  | { ok: true; changeSetId: string; lessonId: string; reused: boolean }
+  | { ok: false; error: string };
 
 /** The apply_escalation_reply RPC payload (jsonb → validated; nothing to splice). */
 const ReplyResultSchema = z.object({
@@ -173,10 +182,99 @@ export async function dismissClusterAction(
   return { ok: true };
 }
 
-/* ────────────────────────────── P6.4 SEAM ──────────────────────────────────
- * promoteClusterAction(courseId, clusterId, finalAnswer) is added HERE by P6.4.
- * It drafts a lecture/FAQ block (buildLectureBlock → ADD_BLOCK) from the dossier +
- * the creator's answer, files it through createChangeSet with the dossier summary
- * as evidence (the existing Accept/Reject rail), and stamps
- * escalation_cluster.change_set_id + status `resolved_in_content` on accept. The
- * ClusterCard's Promote button (P6.4) calls it. Do NOT stub it here — P6.4 owns it. */
+/**
+ * Promote a cluster to a content clarification (TUTOR-1 Wave 6, P6.4 — the loop
+ * closes here). Drafts a FAQ/clarification lecture block (Terra, from the dossier +
+ * the creator's approved answer) and files it through the EXISTING change-set rail —
+ * the SAME pending BlockFrame chrome + EvidenceCard + Accept/Reject the maintenance
+ * agent uses. There is NO new approval system.
+ *
+ * AUTHOR-GATE first (belt before the admin write path — the studio rail already RLS-
+ * gates Accept/Reject, but the promotion reads the identity-bearing escalation_dossier
+ * service-role, so the author must reach it only through this gated action). The
+ * cluster must belong to the course. Only AFTER the gate do we touch the admin client
+ * + a pooled Terra model (cost-emitted under 'escalation_dossier', no learner identity
+ * in the prompt).
+ *
+ * RESOLUTION IS DERIVED, not stamped here: this action records
+ * escalation_cluster.change_set_id and stops. A cluster becomes `resolved_in_content`
+ * only when the creator ACCEPTS the staged change-set through the ordinary rail — the
+ * queue / graph-console RPCs compute `resolved` from change_sets.status. There is NO
+ * acceptChangeSet hook.
+ *
+ * The optional `finalAnswer` lets the creator promote WITH the answer they just typed
+ * (the ClusterCard passes the textarea contents); omitted → the cluster's
+ * representative answer grounds the draft.
+ */
+export async function promoteClusterAction(
+  courseId: string,
+  clusterId: string,
+  finalAnswer?: string
+): Promise<PromoteResult> {
+  const gate = await requireAuthor(courseId);
+  if ("forbidden" in gate) return { ok: false, error: "Not the course author." };
+
+  if (!(await clusterBelongsToCourse(courseId, clusterId))) {
+    return { ok: false, error: "That escalation cluster isn't part of this course." };
+  }
+
+  if (!isAdminConfigured()) {
+    return {
+      ok: false,
+      error: "Promotion isn't available — the server is missing its privileged key.",
+    };
+  }
+
+  try {
+    const admin = createAdminClient();
+    // A pooled Terra client (cost-emitted). With no OPENAI_API_KEY the promotion
+    // degrades to a deterministic FAQ block built from the creator's answer, so a
+    // key-less deployment still promotes (the draft is just not model-polished) —
+    // we hand it a mock client in that case so the structured call resolves.
+    const base = process.env.OPENAI_API_KEY
+      ? createOpenAIModelClient()
+      : createMockModelClient([], {
+          structured: {
+            [PROMOTION_RESPONSE_NAME]: {
+              title: "FAQ",
+              paragraphs: [{ kind: "paragraph", text: finalAnswer?.trim() || "A clarification your learners asked for." }],
+            },
+          },
+        });
+    const model = withPooledModel(base, {
+      pool: poolFor("creator"),
+      cost: { supabase: admin, courseId, emittedBy: gate.userId, jobType: "escalation_dossier" },
+    });
+
+    const res = await promoteClusterToPatch(admin, model, { courseId, clusterId, finalAnswer });
+    if (!res.ok) return { ok: false, error: promoteReasonMessage(res.reason) };
+
+    revalidatePath(`/studio/${courseId}/tutor`);
+    return { ok: true, changeSetId: res.changeSetId, lessonId: res.lessonId, reused: res.reused };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to promote the escalation.",
+    };
+  }
+}
+
+/** Map a promotion's typed reason to creator-facing copy. */
+function promoteReasonMessage(reason: string): string {
+  switch (reason) {
+    case "no_implicated_lesson":
+    case "lesson_not_in_draft":
+      return "We couldn't find the lesson this concept is taught in — reply to the learners instead, or add the concept to a lesson first.";
+    case "cluster_not_found":
+      return "That escalation cluster isn't part of this course.";
+    case "course_not_found":
+    case "course_author_unresolved":
+      return "We couldn't load this course to add the clarification.";
+    case "empty_change_set":
+      return "Nothing changed — the clarification couldn't be drafted.";
+    default:
+      return reason.startsWith("reconcile_failed")
+        ? "We couldn't save the clarification to the lesson. Try again."
+        : "We couldn't promote this escalation to a content change.";
+  }
+}

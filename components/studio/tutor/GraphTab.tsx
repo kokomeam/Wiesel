@@ -59,6 +59,7 @@ export async function GraphTab({ courseId }: { courseId: string }) {
           mastery={bundle.mastery}
           confusion={bundle.confusion}
           evidenceByNode={bundle.evidenceByNode}
+          clarifications={bundle.clarifications}
         />
       ) : (
         <EmptyState
