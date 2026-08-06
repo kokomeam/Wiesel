@@ -129,6 +129,8 @@ const CHARTER_ROW: Database["public"]["Tables"]["tutor_course_settings"]["Row"] 
   course_id: COURSE,
   created_at: "2026-08-04T00:00:00Z",
   current_charter_version_id: null,
+  digest_cadence: "daily",
+  digest_opt_out: false,
   enabled: true,
   escalation_sensitivity: "default",
   guidance_style: "guided_default",

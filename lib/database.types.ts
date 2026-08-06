@@ -1021,6 +1021,56 @@ export type Database = {
         }
         Relationships: []
       }
+      creator_digest: {
+        Row: {
+          author_id: string
+          content: Json
+          course_id: string
+          created_at: string
+          digest_date: string
+          error: string | null
+          id: string
+          idempotency_key: string
+          provider_mode: string
+          sent_at: string | null
+          status: string
+        }
+        Insert: {
+          author_id: string
+          content: Json
+          course_id: string
+          created_at?: string
+          digest_date: string
+          error?: string | null
+          id?: string
+          idempotency_key: string
+          provider_mode: string
+          sent_at?: string | null
+          status?: string
+        }
+        Update: {
+          author_id?: string
+          content?: Json
+          course_id?: string
+          created_at?: string
+          digest_date?: string
+          error?: string | null
+          id?: string
+          idempotency_key?: string
+          provider_mode?: string
+          sent_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "creator_digest_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       deck_import_pages: {
         Row: {
           created_at: string
@@ -4267,6 +4317,8 @@ export type Database = {
           course_id: string
           created_at: string
           current_charter_version_id: string | null
+          digest_cadence: string
+          digest_opt_out: boolean
           enabled: boolean
           escalation_sensitivity: string
           guidance_style: string
@@ -4281,6 +4333,8 @@ export type Database = {
           course_id: string
           created_at?: string
           current_charter_version_id?: string | null
+          digest_cadence?: string
+          digest_opt_out?: boolean
           enabled?: boolean
           escalation_sensitivity?: string
           guidance_style?: string
@@ -4295,6 +4349,8 @@ export type Database = {
           course_id?: string
           created_at?: string
           current_charter_version_id?: string | null
+          digest_cadence?: string
+          digest_opt_out?: boolean
           enabled?: boolean
           escalation_sensitivity?: string
           guidance_style?: string

@@ -14,6 +14,7 @@ import {
   tutorEscalationSynthesize,
   tutorEscalationReconcileNightly,
 } from "@/lib/inngest/functions/tutorEscalation";
+import { creatorDigestNightly } from "@/lib/inngest/functions/creatorDigestNightly";
 
 export const runtime = "nodejs";
 
@@ -29,5 +30,6 @@ export const { GET, POST, PUT } = serve({
     tutorLessonHealthNightly,
     tutorEscalationSynthesize,
     tutorEscalationReconcileNightly,
+    creatorDigestNightly,
   ],
 });

@@ -494,6 +494,54 @@ async function main() {
   );
   check("lib/tutor/ introduces ZERO provider.send call sites", tutorSend.length === 0, tutorSend.join(","));
 
+  /* ── W6E.2 digest negatives (P6.5). The creator digest is a SEPARATE seam
+   *    (lib/notify/creatorDigest.ts) that mails course authors. Two guards keep
+   *    the no-auto-send invariant intact as it grows a second sanctioned seam:
+   *    (a) lib/comms/*.ts contains EXACTLY ONE `.send(` call site (service.ts) —
+   *        the digest did not sneak a learner send into the comms tree; and
+   *    (b) the tutor RUNTIME (lib/tutor/**) + the learner tutor ROUTE
+   *        (app/api/learn/tutor/**) import NO send path — neither lib/comms's
+   *        send (service.ts) nor lib/notify's send (creatorDigest.ts). A tutor
+   *        turn can therefore never reach a provider.send. */
+  console.log("\n— W6E.2 creator-digest negatives —");
+
+  // (a) EXACTLY ONE `.send(` call site across lib/comms/*.ts, in service.ts.
+  const commsFiles = walk(join(repoRoot, "lib/comms"));
+  const commsSendSites = commsFiles.filter((f) => /\.send\s*\(/.test(readFileSync(f, "utf8")));
+  check(
+    "lib/comms/*.ts has EXACTLY ONE `.send(` call site",
+    commsSendSites.length === 1,
+    commsSendSites.map((f) => f.replace(repoRoot, "")).join(", ")
+  );
+  check(
+    "the ONE lib/comms `.send(` site is service.ts",
+    commsSendSites.length === 1 && commsSendSites[0].endsWith(join("lib", "comms", "service.ts")),
+    commsSendSites.map((f) => f.replace(repoRoot, "")).join(", ")
+  );
+
+  // (b) tutor runtime + tutor route import NO send path. We scan every .ts under
+  // lib/tutor/ and app/api/learn/tutor/ for an import of the comms send seam
+  // (lib/comms/service) OR the digest send seam (lib/notify/creatorDigest).
+  function walkSafe(dir: string): string[] {
+    try {
+      return walk(dir);
+    } catch {
+      return [];
+    }
+  }
+  const tutorRuntimeFiles = [
+    ...walkSafe(join(repoRoot, "lib/tutor")),
+    ...walkSafe(join(repoRoot, "app/api/learn/tutor")),
+  ];
+  const importsSendSeam =
+    /from\s+["'](?:@\/lib\/comms\/service|\.{1,2}\/[^"']*comms\/service|@\/lib\/notify\/creatorDigest|\.{1,2}\/[^"']*notify\/creatorDigest)["']/;
+  const sendImporters = tutorRuntimeFiles.filter((f) => importsSendSeam.test(readFileSync(f, "utf8")));
+  check(
+    "lib/tutor/** + app/api/learn/tutor/** import NO send path (comms/service nor notify/creatorDigest)",
+    sendImporters.length === 0,
+    sendImporters.map((f) => f.replace(repoRoot, "")).join(", ")
+  );
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

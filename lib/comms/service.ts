@@ -1,8 +1,11 @@
 /**
- * THE learner-comms send seam (Milestone 6). `approveAndSend` is the ONLY
- * function in the repository that calls `CommsProvider.send()` — grep-able
- * invariant; the maintenance agent and the cron drain never import it, so no
- * auto-send path can exist.
+ * THE learner-bound mail send seam (Milestone 6). `approveAndSend` is the ONLY
+ * function in the repository that calls a LEARNER `CommsProvider.send()` —
+ * grep-able invariant; the maintenance agent and the cron drain never import
+ * it, so no learner auto-send path can exist. (The ONE other sanctioned
+ * provider.send caller is the creator-addressed digest seam,
+ * lib/notify/creatorDigest.ts, which mails course AUTHORS — never learners —
+ * and never imports THIS file's send path. verify:comms asserts both.)
  *
  * Enforcement lives HERE, not in the UI:
  *   1. status gate (draft | approved | failed-retry),
