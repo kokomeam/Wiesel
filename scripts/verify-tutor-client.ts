@@ -11,27 +11,26 @@
  *   A3 (Wave 1) — markdown-lite goldens over the SHARED ui/Markdown parser
  *                 (A3-1), the rung-chrome removal source assertions (A3-2),
  *                 citation dedup (A3-3), and the escape-hatch gate (A3-5).
+ *   A3 (Wave 3) — the attempt-gated escape hatch (A3-4: hasAttemptedFor +
+ *                 the session-attempts store slice, partialize-excluded), the
+ *                 invitation render rule (A3-9/A3-11 client legs:
+ *                 shouldRenderInvitation matrix + TutorBody source asserts),
+ *                 the initiation-only-on-acceptance send shape, the invitation
+ *                 payload mirror parity, and history grounding.invitation
+ *                 coercion.
  *
  * Run: `npx tsx scripts/verify-tutor-client.ts`
  */
 
+// Give the persisted store a real (in-memory) storage so its writes don't log
+// "storage currently unavailable" noise under Node AND so the persist API
+// (`useTutorStore.persist` — the A3-4 partialize assertion reads it) actually
+// attaches. MUST be the FIRST import: esbuild/tsx hoists imports, so an inline
+// assignment "before" the store import never ran first (see the stub module).
+import "./tutor-client-localstorage-stub";
+
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
-// Give the persisted store a real (in-memory) storage so its writes don't log
-// "storage currently unavailable" noise under Node. Set BEFORE importing the
-// store so the persist middleware picks it up.
-const memStore = new Map<string, string>();
-(globalThis as { localStorage?: Storage }).localStorage = {
-  getItem: (k: string) => memStore.get(k) ?? null,
-  setItem: (k: string, v: string) => void memStore.set(k, v),
-  removeItem: (k: string) => void memStore.delete(k),
-  clear: () => memStore.clear(),
-  key: (i: number) => [...memStore.keys()][i] ?? null,
-  get length() {
-    return memStore.size;
-  },
-} as Storage;
 
 import {
   useTutorStore,
@@ -43,14 +42,18 @@ import { createEngagementTracker, type EngagementSignal } from "@/lib/learn/enga
 import {
   dedupeCitations,
   gradePracticeAnswer,
+  hasAttemptedFor,
   selfReportStableKey,
   shouldOfferEscapeHatch,
+  shouldRenderInvitation,
   ttftRating,
   type TutorCitation,
+  type TutorInvitation,
   type TutorPracticeItem,
   type TutorSSEEvent,
   type TutorTurnPayload,
 } from "@/lib/learn/tutorClientTypes";
+import { coerceGrounding } from "@/lib/learn/tutorHistory";
 import { parseMarkdownBlocks } from "@/components/ui/Markdown";
 import { createPhaseFloor, PHASE_FLOOR_MS } from "@/lib/learn/phaseFloor";
 import {
@@ -93,6 +96,7 @@ function resetStore() {
     citationRequest: null,
     seed: null,
     suggestionDot: false,
+    sessionAttempts: {},
   });
 }
 
@@ -165,6 +169,81 @@ async function main() {
     check("dot on", s().suggestionDot === true);
     s().setSuggestionDot(false);
     check("dot off", s().suggestionDot === false);
+  }
+
+  /* ────────────── A3-4 · SESSION ATTEMPTS (store slice, non-persisted) ───── */
+  console.log("\n— A3-4 · sessionAttempts slice + partialize exclusion —");
+  {
+    resetStore();
+    const s = () => useTutorStore.getState();
+
+    check("no attempts initially", s().sessionAttempts["alice"] === undefined);
+
+    // First attempt with a node: count 1, node recorded.
+    s().recordSessionAttempt("alice", "n1");
+    check(
+      "first attempt records node + count",
+      s().sessionAttempts["alice"]?.count === 1 &&
+        s().sessionAttempts["alice"]?.nodeIds.join(",") === "n1"
+    );
+
+    // Repeat on the SAME node: count bumps, nodeIds stay deduped.
+    s().recordSessionAttempt("alice", "n1");
+    check(
+      "repeat attempt on same node dedupes nodeIds, bumps count",
+      s().sessionAttempts["alice"]?.count === 2 &&
+        s().sessionAttempts["alice"]?.nodeIds.join(",") === "n1"
+    );
+
+    // A second node appends.
+    s().recordSessionAttempt("alice", "n2");
+    check(
+      "second node appends",
+      s().sessionAttempts["alice"]?.nodeIds.join(",") === "n1,n2" &&
+        s().sessionAttempts["alice"]?.count === 3
+    );
+
+    // A null node bumps count only.
+    s().recordSessionAttempt("alice", null);
+    check(
+      "null node bumps count only (no node recorded)",
+      s().sessionAttempts["alice"]?.count === 4 &&
+        s().sessionAttempts["alice"]?.nodeIds.join(",") === "n1,n2"
+    );
+
+    // Per-user isolation.
+    s().recordSessionAttempt("bob", "n9");
+    check(
+      "bob's attempts isolated from alice's",
+      s().sessionAttempts["bob"]?.count === 1 &&
+        s().sessionAttempts["bob"]?.nodeIds.join(",") === "n9" &&
+        s().sessionAttempts["alice"]?.count === 4
+    );
+
+    // THE PERSISTENCE INVARIANT: sessionAttempts is EXCLUDED from the persisted
+    // slice (the partialize allowlist carries byUser ONLY) — a refresh clears
+    // attempts, the conservative direction, deliberate.
+    const partialize = useTutorStore.persist.getOptions().partialize;
+    check("store has a partialize allowlist", typeof partialize === "function");
+    const persisted = partialize
+      ? (partialize(useTutorStore.getState()) as Record<string, unknown>)
+      : {};
+    check("persisted slice carries byUser", "byUser" in persisted);
+    check(
+      "sessionAttempts NOT in the persisted slice",
+      ("sessionAttempts" in persisted) === false
+    );
+    check(
+      "ambient/citation/seed still not persisted either",
+      !("ambient" in persisted) && !("citationRequest" in persisted) && !("seed" in persisted)
+    );
+    // Belt: the partialize SOURCE stays a byUser-only allowlist (drift guard —
+    // adding sessionAttempts there would persist attempts across refreshes).
+    const storeSrc = readSource("lib/learn/tutorStore.ts");
+    check(
+      "partialize source is the byUser-only allowlist",
+      storeSrc.includes("partialize: (s) => ({ byUser: s.byUser })")
+    );
   }
 
   /* ───────────────────────────── ENGAGEMENT ───────────────────────────── */
@@ -377,8 +456,9 @@ async function main() {
     );
 
     // The SSE `turn` payload field list must appear in BOTH the route source and
-    // the client mirror (the client renders exactly these fields).
-    for (const field of ["prose", "spans", "citations", "rung", "practiceItems", "escalationProposal", "flags"]) {
+    // the client mirror (the client renders exactly these fields). `invitation`
+    // is the A3 Wave-3 member (frozen contract — E's server half carries it).
+    for (const field of ["prose", "spans", "citations", "rung", "practiceItems", "escalationProposal", "invitation", "flags"]) {
       check(
         `SSE payload field '${field}' in both route + client mirror`,
         route.includes(field) && clientTypes.includes(field)
@@ -694,6 +774,7 @@ async function main() {
       practiceItems: [],
       escalationProposal: null,
       escalationCandidateId: null,
+      invitation: null,
       flags: [],
     });
 
@@ -907,8 +988,12 @@ async function main() {
     const body = readSource("components/learn/tutor/TutorBody.tsx");
     check("TutorBody has NO RungBadge symbol", body.includes("RungBadge") === false);
     check('TutorBody has NO learner-facing "Rung " literal', body.includes("Rung ") === false);
-    // The rung stays EXTRACTED (the escape-hatch gate consumes it at render time).
-    check("TutorBody still extracts rung for the hatch gate", body.includes("shouldOfferEscapeHatch(rung)"));
+    // The rung stays EXTRACTED (the escape-hatch gate consumes it at render
+    // time — two-arg since A3 Wave 3: rung + the session-attempt gate).
+    check(
+      "TutorBody still extracts rung for the hatch gate (attempt-gated form)",
+      body.includes("shouldOfferEscapeHatch(rung, hasAttempted)")
+    );
   }
 
   /* ──────────────── A3-3 · citation dedup (client leg) ───────────────────── */
@@ -949,15 +1034,212 @@ async function main() {
     );
   }
 
-  /* ─────────────── A3-5 · escape-hatch gate (rung < 4, null hidden) ───────── */
-  console.log("\n— A3-5 · shouldOfferEscapeHatch —");
+  /* ────── A3-5 · escape-hatch rung gate (rung < 4, null hidden, attempted) ── */
+  console.log("\n— A3-5 · shouldOfferEscapeHatch (rung leg, attempted=true) —");
   {
-    check("rung 0 → hatch offered", shouldOfferEscapeHatch(0) === true);
-    check("rung 1 → hatch offered", shouldOfferEscapeHatch(1) === true);
-    check("rung 2 → hatch offered", shouldOfferEscapeHatch(2) === true);
-    check("rung 3 → hatch offered", shouldOfferEscapeHatch(3) === true);
-    check("rung 4 (full answer given) → NO hatch", shouldOfferEscapeHatch(4) === false);
-    check("null rung (legacy/unknown) → NO hatch", shouldOfferEscapeHatch(null) === false);
+    check("rung 0 + attempted → hatch offered", shouldOfferEscapeHatch(0, true) === true);
+    check("rung 1 + attempted → hatch offered", shouldOfferEscapeHatch(1, true) === true);
+    check("rung 2 + attempted → hatch offered", shouldOfferEscapeHatch(2, true) === true);
+    check("rung 3 + attempted → hatch offered", shouldOfferEscapeHatch(3, true) === true);
+    check("rung 4 (full answer given) → NO hatch", shouldOfferEscapeHatch(4, true) === false);
+    check("null rung (legacy/unknown) → NO hatch", shouldOfferEscapeHatch(null, true) === false);
+  }
+
+  /* ───────── A3-4 · attempt gate (hasAttemptedFor + hatch composition) ────── */
+  console.log("\n— A3-4 · hasAttemptedFor matrix + shouldOfferEscapeHatch composition —");
+  {
+    // No attempts at all (undefined slice) → false, whatever the turn names.
+    check("no attempts, null turn nodes → false", hasAttemptedFor(undefined, null) === false);
+    check("no attempts, named turn nodes → false", hasAttemptedFor(undefined, ["n1"]) === false);
+    check(
+      "zeroed slice (fresh object) → false",
+      hasAttemptedFor({ nodeIds: [], count: 0 }, null) === false
+    );
+
+    // count>0 with NULL turn nodes → true (any session attempt qualifies).
+    check(
+      "count>0 with null turn nodes → true",
+      hasAttemptedFor({ nodeIds: [], count: 1 }, null) === true
+    );
+    check(
+      "node-attributed attempt with null turn nodes → true",
+      hasAttemptedFor({ nodeIds: ["nX"], count: 1 }, null) === true
+    );
+
+    // Turn names practice nodes + an attempt on ONE OF THEM → true.
+    check(
+      "turn nodes present + attempt on one → true",
+      hasAttemptedFor({ nodeIds: ["n1", "n3"], count: 2 }, ["n2", "n3"]) === true
+    );
+
+    // Attempts ONLY on OTHER nodes → false (even though count > 0).
+    check(
+      "attempt only on OTHER nodes → false (count irrelevant)",
+      hasAttemptedFor({ nodeIds: ["nZ"], count: 5 }, ["n1", "n2"]) === false
+    );
+    check(
+      "count-only attempts vs named turn nodes → false",
+      hasAttemptedFor({ nodeIds: [], count: 3 }, ["n1"]) === false
+    );
+
+    // An EMPTY turnNodeIds array names nothing → the count gate applies.
+    check(
+      "empty turn-node array falls back to the count gate",
+      hasAttemptedFor({ nodeIds: [], count: 1 }, []) === true &&
+        hasAttemptedFor({ nodeIds: [], count: 0 }, []) === false
+    );
+
+    // Composition with the rung leg.
+    check("rung 2 + attempted → hatch", shouldOfferEscapeHatch(2, true) === true);
+    check("rung 2 + NOT attempted → NO hatch", shouldOfferEscapeHatch(2, false) === false);
+    check("rung 4 + attempted → NO hatch (full answer wins)", shouldOfferEscapeHatch(4, true) === false);
+    check("null rung + attempted → NO hatch", shouldOfferEscapeHatch(null, true) === false);
+    check("rung 0 + NOT attempted → NO hatch", shouldOfferEscapeHatch(0, false) === false);
+  }
+
+  /* ───── A3-9 / A3-11 · invitation render rule (client legs) + sources ────── */
+  console.log("\n— A3-9/A3-11 · shouldRenderInvitation matrix + TutorBody source asserts —");
+  {
+    const inv: TutorInvitation = {
+      toolName: "generate_practice",
+      nodeId: "n1",
+      label: "Check my understanding",
+    };
+    const base = {
+      isFinalTurn: true,
+      status: "idle",
+      hasPracticeItems: false,
+      invitation: inv,
+    };
+
+    check("final + idle + no items + invitation → renders", shouldRenderInvitation(base) === true);
+    check(
+      "non-final turn → never renders (A3-11 discard)",
+      shouldRenderInvitation({ ...base, isFinalTurn: false }) === false
+    );
+    for (const status of ["sent", "thinking", "composing", "queued", "error", "approval"]) {
+      check(
+        `status '${status}' (send in flight / terminal) → never renders`,
+        shouldRenderInvitation({ ...base, status }) === false
+      );
+    }
+    check(
+      "turn carrying practiceItems → never renders (A3-9 belt)",
+      shouldRenderInvitation({ ...base, hasPracticeItems: true }) === false
+    );
+    check(
+      "null invitation → never renders",
+      shouldRenderInvitation({ ...base, invitation: null }) === false
+    );
+
+    // TutorBody consumes THE helper — and never re-derives the rule inline.
+    const body = readSource("components/learn/tutor/TutorBody.tsx");
+    check("TutorBody calls shouldRenderInvitation(", body.includes("shouldRenderInvitation("));
+    check(
+      "TutorBody renders the tutor-invitation pill",
+      body.includes('data-ai-tool="tutor-invitation"')
+    );
+    check(
+      "TutorBody does NOT inline the final/idle re-derivation",
+      /invitation\s*!==\s*null\s*&&\s*isFinalTurn/.test(body) === false &&
+        /isFinalTurn\s*&&\s*(statusKind|status\.kind)\s*===/.test(body) === false
+    );
+    // The press sends the LABEL verbatim + the deterministic initiation payload.
+    check(
+      "invitation press sends the label verbatim",
+      body.includes("onSend(invitation.label,")
+    );
+    check(
+      'invitation press carries kind: "invitation_accepted"',
+      body.includes('kind: "invitation_accepted"')
+    );
+    // Practice engagement records session attempts (both grade + discuss legs).
+    const attemptCalls = body.split("recordSessionAttempt(userId, item.nodeId)").length - 1;
+    check(
+      "PracticeCard records a session attempt on grade() AND discuss (2 call sites)",
+      attemptCalls === 2,
+      `got ${attemptCalls}`
+    );
+  }
+
+  /* ────────── A3 Wave 3 · initiation rides ONLY acceptance sends ──────────── */
+  console.log("\n— initiation send-shape (useTutorStream source asserts) —");
+  {
+    const hook = readSource("lib/learn/useTutorStream.ts");
+    // The provenance shape is declared once, client-side, zod-free.
+    check(
+      "hook declares TutorSendInitiation",
+      hook.includes("export interface TutorSendInitiation")
+    );
+    check(
+      'initiation kind is the frozen "invitation_accepted" literal',
+      hook.includes('kind: "invitation_accepted"')
+    );
+    // The POST body carries initiation CONDITIONALLY — the field is spread in
+    // only when present, so every non-acceptance send omits it entirely.
+    check(
+      "POST body spreads initiation conditionally (omitted when absent)",
+      hook.includes("...(initiation ? { initiation } : {})")
+    );
+    check(
+      "no unconditional initiation body member",
+      /quizActive:\s*ambient\.quizActive,\s*\n\s*initiation,/.test(hook) === false
+    );
+    // send()/retry() thread it through runSend (a retried accept stays an accept).
+    check(
+      "send threads the optional initiation into runSend",
+      hook.includes("void runSend(message, ambient, initiation)")
+    );
+    check(
+      "retry re-fires the last initiation faithfully",
+      hook.includes("void runSend(last.message, last.ambient, last.initiation)")
+    );
+    // The settled payload's invitation lands on the turn's grounding mirror.
+    check(
+      "assistantTurnFromPayload mirrors payload.invitation onto grounding",
+      hook.includes("invitation: payload.invitation ?? null")
+    );
+  }
+
+  /* ────────── A3 Wave 3 · history grounding.invitation coercion ───────────── */
+  console.log("\n— tutorHistory · grounding.invitation tolerant coercion —");
+  {
+    const valid = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      rung: 2,
+      invitation: { toolName: "generate_practice", nodeId: "n1", label: "Try one?" },
+    });
+    check(
+      "well-formed invitation survives coercion",
+      valid?.invitation?.toolName === "generate_practice" &&
+        valid?.invitation?.nodeId === "n1" &&
+        valid?.invitation?.label === "Try one?"
+    );
+
+    const missing = coerceGrounding({ citations: [], spans: [], flags: [], rung: 1 });
+    check("absent invitation coerces to null (grounding still usable)", missing !== null && missing.invitation === null);
+
+    const malformed = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      invitation: { toolName: "x", nodeId: 42, label: "y" },
+    });
+    check("malformed invitation (non-string nodeId) degrades to null", malformed?.invitation === null);
+
+    const labelless = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      invitation: { toolName: "x", nodeId: "n" },
+    });
+    check("label-missing invitation degrades to null", labelless?.invitation === null);
+
+    const junk = coerceGrounding({ invitation: "press me" });
+    check("string invitation degrades to null", junk?.invitation === null);
+    check("non-object grounding stays null", coerceGrounding("nope") === null);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -36,6 +36,23 @@
  *       row for the node; a double-call with the same ids keeps the row count
  *       stable; an author-gated call writes ZERO rows.
  *
+ *   A3 Wave 3 (invocation policy, mock-model end-to-end on a FRESH learner):
+ *     (a) a scripted generate_practice call on a QUESTION turn → the tool is
+ *         NOT executed (no tutor_practice_gen model call), the turn settles
+ *         with ONE invitation + zero practiceItems, tutor_tool_downgraded is
+ *         logged, and the assistant grounding stamps the offered invitation;
+ *     (b) a second turn CLAIMING acceptance of that invitation → the tool
+ *         EXECUTES, items land in the payload, invitation null, and the
+ *         learner row's grounding stamps the acceptance;
+ *     (c) "Quiz me on this lesson" (the chip) → SERVER-derived
+ *         practice_request: direct execution, no invitation;
+ *     (d) two consecutively-IGNORED invitations → the third question turn with
+ *         a practice attach settles with NO invitation (the two-ignore
+ *         cooldown, counted including the offer the current message resolves);
+ *     (e) an acceptance claim NOT matching the prior invitation (stale — the
+ *         prior assistant turn carries none) → treated as question: the
+ *         Class-A call is downgraded, never executed.
+ *
  * Run (AFTER the migrations): `npx tsx scripts/verify-tutor-route-int.ts`
  */
 
@@ -560,6 +577,197 @@ async function main() {
     check("an author-gated recordPracticeAnswer writes ZERO practice rows",
       authorPractice2.emitted === false && authorPracticeRows === 0,
       JSON.stringify({ emitted: authorPractice2.emitted, rows: authorPracticeRows }));
+
+    /* ═══════ A3 Wave 3 — invocation policy: the three paths end-to-end ═══════ */
+    console.log("\n# A3 Wave 3 — invocation policy (downgrade / acceptance / practice_request / cooldown / stale claim)");
+
+    // A FRESH learner isolates the invitation lifecycle from the turns above.
+    const learner2 = await provisionUser(url, anon, "learner2");
+    const enrolled2 = await learner2.client
+      .from("enrollments")
+      .insert({ course_id: courseId, user_id: learner2.userId })
+      .select("*")
+      .single();
+    check("second learner self-enrolls", !enrolled2.error, String(enrolled2.error?.message));
+
+    /** A grounded, resolving turn output; `practiceItems` optionally attached
+     *  (the model "imposing" practice — the exact §4-banned behavior on (a)/(d)). */
+    const groundedOutput = (practiceItems?: unknown[]) =>
+      JSON.stringify({
+        proseWithSpanMarkers: "⟦g⟧A wash stays transparent when the binder holds little pigment.⟦/g⟧",
+        citations: [citation],
+        rung: 2,
+        evidence: [],
+        ...(practiceItems ? { practiceItems } : {}),
+      });
+    const practiceGenJson = JSON.stringify({
+      items: [{ nodeId, kind: "mc", prompt: "Where does the pigment sit?", choices: ["a", "b", "c", "d"], correctChoiceIndex: 0, explanation: "In the wash." }],
+    });
+    const echoedItem = {
+      nodeId,
+      practiceItemRef: "echo-ref-1",
+      kind: "mc",
+      prompt: "Where does the pigment sit?",
+      choices: ["a", "b", "c", "d"],
+      correctChoiceIndex: 0,
+      acceptedAnswers: null,
+      explanation: "In the wash.",
+      itemBankRef: null,
+    };
+
+    // (a) QUESTION turn + a scripted generate_practice call → NOT executed;
+    //     downgraded to ONE invitation; the assistant grounding stamps it. The
+    //     structured map DOES carry tutor_practice_gen, so a wrongly-executed
+    //     tool would SUCCEED — non-execution is proven by the call's absence.
+    const modelA3a = createMockModelClient(
+      [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [nodeId] } }] },
+        { text: groundedOutput() },
+      ],
+      { structured: { tutor_practice_gen: practiceGenJson } }
+    );
+    const logsA3: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { logsA3.push(a.map(String).join(" ")); };
+    let turnA3a!: Awaited<ReturnType<typeof runTutorTurnForRequest>>;
+    try {
+      turnA3a = await runTutorTurnForRequest(
+        { learnerClient: learner2.client, admin, model: withPooledModel(modelA3a, { pool: poolFor("learner") }), loadSnapshot },
+        { userId: learner2.userId, envelope, learnerMessage: "Why does the wash stay transparent?" }
+      );
+    } finally {
+      console.log = origLog;
+    }
+    check("(a) question turn settles ok", turnA3a.turn?.ok === true, JSON.stringify({ ok: turnA3a.turn?.ok, err: turnA3a.turn?.error }));
+    check("(a) generate_practice NOT executed (no tutor_practice_gen model call)",
+      modelA3a.getCalls().every((c) => c.responseFormat?.name !== "tutor_practice_gen"),
+      modelA3a.getCalls().map((c) => c.responseFormat?.name ?? "-").join(","));
+    check("(a) the turn surfaces ONE invitation {generate_practice, node, label}",
+      turnA3a.turn?.invitation?.toolName === "generate_practice" &&
+        turnA3a.turn?.invitation?.nodeId === nodeId &&
+        turnA3a.turn?.invitation?.label === "Try a practice problem",
+      JSON.stringify(turnA3a.turn?.invitation ?? null));
+    check("(a) zero practiceItems in the settled output + side channel",
+      (turnA3a.turn?.output?.practiceItems?.length ?? 0) === 0 && (turnA3a.turn?.practiceItems.length ?? 0) === 0);
+    check("(a) tutor_tool_downgraded logged",
+      logsA3.some((l) => l.includes('"tag":"tutor_tool_downgraded"') && l.includes(nodeId)),
+      logsA3.filter((l) => l.includes("tutor_tool_downgraded")).join(" | "));
+    const rowA3Asst = await admin.from("tutor_turns").select("grounding").eq("id", turnA3a.persistedTurnIds.assistant!).single();
+    const invStamp = (rowA3Asst.data?.grounding as Record<string, unknown> | null)?.invitation as Record<string, unknown> | undefined;
+    check("(a) assistant grounding stamps the offered invitation (the offered-marker)",
+      invStamp?.toolName === "generate_practice" && invStamp?.nodeId === nodeId,
+      JSON.stringify(invStamp ?? null));
+    const rowA3Lrn = await admin.from("tutor_turns").select("grounding").eq("id", turnA3a.persistedTurnIds.learner!).single();
+    check("(a) learner grounding carries NO initiation (question rows stay lean)",
+      !(rowA3Lrn.data?.grounding as Record<string, unknown> | null)?.initiation);
+
+    // (b) The learner PRESSES the invitation: a claim matching the stored offer
+    //     → the tool EXECUTES, items render, invitation null.
+    const modelA3b = createMockModelClient(
+      [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [nodeId] } }] },
+        { text: groundedOutput([echoedItem]) },
+      ],
+      { structured: { tutor_practice_gen: practiceGenJson } }
+    );
+    const turnA3b = await runTutorTurnForRequest(
+      { learnerClient: learner2.client, admin, model: withPooledModel(modelA3b, { pool: poolFor("learner") }), loadSnapshot },
+      {
+        userId: learner2.userId,
+        envelope,
+        learnerMessage: "Yes — try a practice problem.",
+        initiation: { kind: "invitation_accepted", toolName: "generate_practice", nodeId },
+      }
+    );
+    check("(b) acceptance turn ok", turnA3b.turn?.ok === true, JSON.stringify({ ok: turnA3b.turn?.ok, err: turnA3b.turn?.error }));
+    check("(b) generate_practice EXECUTED (tutor_practice_gen model call made)",
+      modelA3b.getCalls().some((c) => c.responseFormat?.name === "tutor_practice_gen"));
+    check("(b) items in the settled payload + minted side channel",
+      (turnA3b.turn?.output?.practiceItems?.length ?? 0) === 1 && (turnA3b.turn?.practiceItems.length ?? 0) === 1,
+      JSON.stringify({ out: turnA3b.turn?.output?.practiceItems?.length, minted: turnA3b.turn?.practiceItems.length }));
+    check("(b) invitation null on the delivery turn", (turnA3b.turn?.invitation ?? null) === null);
+    const rowB3Lrn = await admin.from("tutor_turns").select("grounding").eq("id", turnA3b.persistedTurnIds.learner!).single();
+    const initB3 = (rowB3Lrn.data?.grounding as Record<string, unknown> | null)?.initiation as Record<string, unknown> | undefined;
+    check("(b) learner grounding stamps the acceptance initiation",
+      initB3?.kind === "invitation_accepted" && initB3?.nodeId === nodeId,
+      JSON.stringify(initB3 ?? null));
+
+    // (c) "Quiz me on this lesson" (the suggestion chip) → SERVER-derived
+    //     practice_request: direct execution, no invitation.
+    const modelA3c = createMockModelClient(
+      [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [nodeId] } }] },
+        { text: groundedOutput([echoedItem]) },
+      ],
+      { structured: { tutor_practice_gen: practiceGenJson } }
+    );
+    const turnA3c = await runTutorTurnForRequest(
+      { learnerClient: learner2.client, admin, model: withPooledModel(modelA3c, { pool: poolFor("learner") }), loadSnapshot },
+      { userId: learner2.userId, envelope, learnerMessage: "Quiz me on this lesson" }
+    );
+    check("(c) practice_request turn ok + tool EXECUTED",
+      turnA3c.turn?.ok === true && modelA3c.getCalls().some((c) => c.responseFormat?.name === "tutor_practice_gen"),
+      JSON.stringify({ ok: turnA3c.turn?.ok, err: turnA3c.turn?.error }));
+    check("(c) items render, invitation null",
+      (turnA3c.turn?.output?.practiceItems?.length ?? 0) === 1 && (turnA3c.turn?.invitation ?? null) === null);
+    const rowC3Lrn = await admin.from("tutor_turns").select("grounding").eq("id", turnA3c.persistedTurnIds.learner!).single();
+    check("(c) learner grounding stamps practice_request",
+      ((rowC3Lrn.data?.grounding as Record<string, unknown> | null)?.initiation as Record<string, unknown> | undefined)?.kind === "practice_request");
+
+    // (d) COOLDOWN: two consecutively-ignored invitations → the third question
+    //     turn with a practice attach settles with NO invitation. Each turn's
+    //     model attaches practiceItems in the OUTPUT (no tool call); each strip
+    //     offers an invitation until the second brush-off activates the cooldown
+    //     (the count includes the pending offer the current message resolves).
+    const questionAttachTurn = async (msg: string) => {
+      const model = createMockModelClient([], {
+        structured: { tutor_turn_output: groundedOutput([echoedItem]) },
+      });
+      return runTutorTurnForRequest(
+        { learnerClient: learner2.client, admin, model: withPooledModel(model, { pool: poolFor("learner") }), loadSnapshot },
+        { userId: learner2.userId, envelope, learnerMessage: msg }
+      );
+    };
+    const d1 = await questionAttachTurn("What about layering?");
+    check("(d1) first question attach → stripped + invitation OFFERED",
+      (d1.turn?.output?.practiceItems?.length ?? 0) === 0 && d1.turn?.invitation != null,
+      JSON.stringify(d1.turn?.invitation ?? null));
+    const d2 = await questionAttachTurn("And glazing?");
+    check("(d2) second question attach (first offer ignored) → invitation OFFERED again",
+      (d2.turn?.output?.practiceItems?.length ?? 0) === 0 && d2.turn?.invitation != null,
+      JSON.stringify(d2.turn?.invitation ?? null));
+    const d3 = await questionAttachTurn("And drybrush?");
+    check("(d3) third question attach after TWO ignored offers → NO invitation (cooldown)",
+      (d3.turn?.output?.practiceItems?.length ?? 0) === 0 && (d3.turn?.invitation ?? null) === null,
+      JSON.stringify(d3.turn?.invitation ?? null));
+
+    // (e) A stale acceptance claim — the prior assistant turn (d3's) carries NO
+    //     invitation — is treated as QUESTION: the Class-A call is downgraded,
+    //     never executed, and the learner row stays lean.
+    const modelA3e = createMockModelClient(
+      [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [nodeId] } }] },
+        { text: groundedOutput() },
+      ],
+      { structured: { tutor_practice_gen: practiceGenJson } }
+    );
+    const turnA3e = await runTutorTurnForRequest(
+      { learnerClient: learner2.client, admin, model: withPooledModel(modelA3e, { pool: poolFor("learner") }), loadSnapshot },
+      {
+        userId: learner2.userId,
+        envelope,
+        learnerMessage: "Accepting that old invitation now.",
+        initiation: { kind: "invitation_accepted", toolName: "generate_practice", nodeId },
+      }
+    );
+    check("(e) stale acceptance claim → treated as question (tool NOT executed)",
+      modelA3e.getCalls().every((c) => c.responseFormat?.name !== "tutor_practice_gen"),
+      modelA3e.getCalls().map((c) => c.responseFormat?.name ?? "-").join(","));
+    check("(e) turn still settles ok (downgraded, never blocked)",
+      turnA3e.turn?.ok === true, JSON.stringify({ ok: turnA3e.turn?.ok, err: turnA3e.turn?.error }));
+    const rowE3Lrn = await admin.from("tutor_turns").select("grounding").eq("id", turnA3e.persistedTurnIds.learner!).single();
+    check("(e) learner grounding lean (the invalid claim resolved to question)",
+      !(rowE3Lrn.data?.grounding as Record<string, unknown> | null)?.initiation);
   } finally {
     await cleanup();
     console.log("\n# cleaned up course + tutor rows (throwaway users remain — clean in Supabase → Auth)");

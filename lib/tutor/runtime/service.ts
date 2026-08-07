@@ -21,9 +21,9 @@
  *     refold).
  *   • loadTutorContext    — the course's concept nodes/edges + charter row +
  *     settings, loaded once per request.
- *   • runTutorTurnForRequest — the orchestration: access → thread → persist
- *     learner turn → history → context → runTutorTurn → on ok: persist assistant
- *     turn + emit evidence → result.
+ *   • runTutorTurnForRequest — the orchestration: access → thread → history →
+ *     resolve initiation (A3 Wave 3) → persist learner turn → context →
+ *     runTutorTurn → on ok: persist assistant turn + emit evidence → result.
  *
  * ── INVARIANTS ───────────────────────────────────────────────────────────────
  *  • DEPS-INJECTED: the model client + clock are seams (int tests pass the mock).
@@ -60,6 +60,13 @@ import { sendTutorMasteryRefoldRequested } from "@/lib/inngest/tutorMasteryEvent
 import type { EdgeLike } from "@/lib/tutor/mastery/queries";
 import type { LessonConceptNode } from "./lessonContext";
 import type { HistoryTurn } from "./history";
+import type { SessionTurn } from "./session";
+import {
+  deriveInvitationState,
+  resolveInitiation,
+  type InvitationAcceptanceClaim,
+  type TurnInitiation,
+} from "./invocationPolicy";
 import { runTutorTurn, type RunTutorTurnCtx, type TutorTurnResult } from "./loop";
 
 type DB = SupabaseClient<Database>;
@@ -184,6 +191,12 @@ export async function persistLearnerTurn(
     userId: string;
     envelope: TurnEnvelope;
     content: string;
+    /** A3 Wave 3 — THIS turn's SERVER-RESOLVED initiation. Stamped into the row's
+     *  grounding jsonb ONLY when non-question (question rows stay lean); the
+     *  derived invitation state reads it (an acceptance resolves the prior offer;
+     *  an explicit practice request resets the ignore run). The row is IMMUTABLE
+     *  (BEFORE UPDATE trigger), so the stamp MUST land at insert time. */
+    initiation?: TurnInitiation;
   }
 ): Promise<string> {
   const row: TurnInsert = {
@@ -197,6 +210,9 @@ export async function persistLearnerTurn(
     lesson_id: args.envelope.lessonId ?? null,
     block_id: args.envelope.blockId ?? null,
     slide_id: args.envelope.slideId ?? null,
+    ...(args.initiation && args.initiation.kind !== "question"
+      ? { grounding: { initiation: args.initiation } as TurnInsert["grounding"] }
+      : {}),
   };
   const { data, error } = await admin.from("tutor_turns").insert(row).select("id").single();
   if (error || !data) throw new Error(`persistLearnerTurn: ${error?.message ?? "no id"}`);
@@ -550,6 +566,10 @@ export interface RunTutorTurnForRequestArgs {
   learnerMessage: string;
   quizActive?: boolean;
   sessionFlags?: Record<string, unknown>;
+  /** A3 Wave 3 — the OPTIONAL acceptance claim from the wire. ONLY acceptance
+   *  claims ride the wire (question vs practice_request is SERVER-derived); an
+   *  invalid/unmatched claim fails TOWARD question inside resolveInitiation. */
+  initiation?: InvitationAcceptanceClaim | null;
   /** Optional pre-resolved access + context (the route resolves both up-front for
    *  the early-return typed errors; passing them avoids a re-read). */
   access?: TutorAccess;
@@ -566,8 +586,9 @@ export interface RunTutorTurnForRequestResult {
 
 /**
  * The full request orchestration for one interactive turn:
- *   access → thread → persist learner turn → history → context → runTutorTurn →
- *   on ok: persist assistant turn + emit evidence → result.
+ *   access → thread → history → derive invitation state + resolve initiation
+ *   (A3 Wave 3) → persist learner turn → context → runTutorTurn → on ok:
+ *   persist assistant turn + emit evidence → result.
  *
  * A non-'ok' access short-circuits with the kind and no writes (the route already
  * returns the typed JSON; this guards the service being called directly). An
@@ -612,24 +633,43 @@ export async function runTutorTurnForRequest(
     await setActiveStream(deps.admin, { threadId, streamId: deps.streamId });
   }
 
-  // (2) persist the learner turn FIRST (the message is real whatever the model does).
+  // (2) history — the thread tail BEFORE this turn's learner row. A3 Wave 3 moved
+  //     this load AHEAD of the learner-row insert: tutor_turns rows are IMMUTABLE
+  //     (BEFORE UPDATE trigger), so the resolved initiation must be stamped on the
+  //     learner row AT INSERT — which needs the prior invitation (derived from
+  //     history) first. Loading first also means the new row can never echo into
+  //     the replay (supersedes the A3/D-6 drop-by-id dance — there is no just-
+  //     written row to drop). The learner turn still persists BEFORE the model
+  //     dispatch (the message is real whatever the model does).
+  const historyTurns = await loadThreadHistory(deps.admin, threadId);
+
+  // (2a) A3 Wave 3 — invocation policy: derive the invitation state over the
+  //      session window, then resolve THIS turn's initiation. ONLY acceptance
+  //      claims ride the wire; an invalid/unmatched/stale claim fails TOWARD
+  //      question (never toward execution).
+  const nowIso = deps.nowIso ?? new Date().toISOString();
+  const sessionTurns: SessionTurn[] = historyTurns.map((t) => ({
+    role: t.role,
+    content: t.content,
+    createdAt: t.createdAt ?? nowIso,
+    grounding: t.grounding,
+  }));
+  const invitationState = deriveInvitationState(sessionTurns, nowIso);
+  const initiation = resolveInitiation({
+    claimed: args.initiation ?? null,
+    message: args.learnerMessage,
+    priorInvitation: invitationState.priorInvitation,
+  });
+
+  // (3) persist the learner turn (initiation stamped only when non-question —
+  //     question rows stay lean).
   const learnerTurnId = await persistLearnerTurn(deps.admin, {
     threadId,
     userId: args.userId,
     envelope: args.envelope,
     content: args.learnerMessage,
+    initiation,
   });
-
-  // (3) history (the tail BEFORE this turn's learner row — replay it, then drop
-  //     the row we just wrote BY ID so it isn't echoed as history; a positional
-  //     last-row drop only as a fallback if the id is somehow absent from the
-  //     page — A3/D-6: the blind slice(0,-1) dropped a legitimate old row).
-  const allHistory = await loadThreadHistory(deps.admin, threadId);
-  const justWrittenIdx = allHistory.findIndex((t) => t.id === learnerTurnId);
-  const historyTurns =
-    justWrittenIdx >= 0
-      ? allHistory.filter((_, i) => i !== justWrittenIdx)
-      : allHistory.slice(0, -1);
 
   // (4) context (concept graph + charter) — passed in by the route, else loaded.
   const context =
@@ -649,6 +689,10 @@ export async function runTutorTurnForRequest(
     historyTurns,
     learnerMessage: args.learnerMessage,
     sessionFlags: args.sessionFlags,
+    // A3 Wave 3 — the resolved initiation + derived invitation state (the loop's
+    // intercept, cooldown, and per-turn instructions key off these).
+    initiation,
+    invitationState,
   };
   // The turn + all post-turn persistence run inside a try/finally so the thread's
   // in-flight state (active_stream_id + active_response_id) is ALWAYS cleared —
@@ -746,7 +790,9 @@ export async function runTutorTurnForRequest(
 /** The grounding jsonb persisted on the assistant row — the Wave-3 output
  *  contract (cited anchors + grounded/supplemental span map + flags) PLUS the
  *  W3.5 session markers (persisted so the NEXT turn's derived session state sees
- *  which once-per-session behaviors already fired this session). */
+ *  which once-per-session behaviors already fired this session) PLUS the A3
+ *  Wave-3 offered invitation (the offered-marker driving cooldown derivation +
+ *  history rendering). */
 function buildGrounding(turn: TutorTurnResult): Record<string, unknown> {
   const out = turn.output;
   const grounding: Record<string, unknown> = {
@@ -755,5 +801,6 @@ function buildGrounding(turn: TutorTurnResult): Record<string, unknown> {
     flags: turn.groundingFlags,
   };
   if (turn.sessionMarkers.length > 0) grounding.sessionMarkers = turn.sessionMarkers;
+  if (turn.invitation) grounding.invitation = turn.invitation;
   return grounding;
 }

@@ -61,6 +61,20 @@ export interface TutorEscalationProposal {
 }
 
 /**
+ * A3 Wave 3 — a tutor-offered INVITATION to run a Class-A tool (offer-first
+ * invocation policy). The learner accepts by pressing the invitation button:
+ * the client sends the `label` VERBATIM as the message text (the learner
+ * bubble shows what they pressed) plus a deterministic `initiation`
+ * provenance payload — never inferred from typed text. History rows carry
+ * the same shape in the assistant grounding jsonb (`grounding.invitation`).
+ */
+export interface TutorInvitation {
+  toolName: string;
+  nodeId: string;
+  label: string;
+}
+
+/**
  * The `turn` SSE event's `payload`. `prose` is the cleaned reply (span markers
  * stripped); `spans`/`citations` are the classified/anchored maps; `rung` is the
  * 0..4 scaffolding rung (null when absent); `practiceItems`/`escalationProposal`
@@ -78,6 +92,11 @@ export interface TutorTurnPayload {
    *  escalation this turn), so the consent card can POST escalate_consent against
    *  the right row. Null when no escalation was raised. */
   escalationCandidateId: string | null;
+  /** A3 Wave 3 · the tutor's pending invitation — non-null when this turn OFFERS
+   *  a Class-A tool run the learner may accept. Renders ONLY per
+   *  `shouldRenderInvitation` (final turn, idle, no practiceItems — the server
+   *  already forces null alongside practiceItems, A3-9). */
+  invitation: TutorInvitation | null;
   flags: string[];
 }
 
@@ -173,11 +192,59 @@ export function dedupeCitations(citations: TutorCitation[]): TutorCitation[] {
 
 /**
  * A3 D-4 — should a tutor turn offer the "Just show me" de-scaffold hatch?
- * Rung 4 = the full answer was already given → no hatch; null/unknown (legacy
- * rows without a rung) → no hatch (hidden, the safe default).
+ * Two gates compose (A3-5 + A3-4):
+ *  - RUNG: rung 4 = the full answer was already given → no hatch; null/unknown
+ *    (legacy rows without a rung) → no hatch (hidden, the safe default).
+ *  - ATTEMPT: the learner must have made at least one attempt THIS SESSION
+ *    before de-scaffolding is offered (`hasAttempted` — derive it with
+ *    `hasAttemptedFor` over the tutor store's session-attempts slice).
  */
-export function shouldOfferEscapeHatch(rung: number | null): boolean {
-  return rung !== null && rung < 4;
+export function shouldOfferEscapeHatch(
+  rung: number | null,
+  hasAttempted: boolean,
+): boolean {
+  return rung !== null && rung < 4 && hasAttempted;
+}
+
+/**
+ * A3-4 — has the learner attempted enough this session to earn the hatch?
+ * `attempts` is the tutor store's per-user SESSION slice (undefined = none; the
+ * slice is never persisted, so a refresh clears attempts — the conservative
+ * direction, deliberate). When the turn NAMES practice nodeIds, an attempt on
+ * ONE OF THEM is required; otherwise any session attempt (count > 0) qualifies.
+ * An empty `turnNodeIds` array names nothing → the count gate applies.
+ */
+export function hasAttemptedFor(
+  attempts: { nodeIds: string[]; count: number } | undefined,
+  turnNodeIds: string[] | null,
+): boolean {
+  if (!attempts) return false;
+  if (turnNodeIds !== null && turnNodeIds.length > 0) {
+    return turnNodeIds.some((id) => attempts.nodeIds.includes(id));
+  }
+  return attempts.count > 0;
+}
+
+/**
+ * A3-9 / A3-11 (client legs) — THE render rule for an invitation button.
+ * An invitation renders ONLY on the FINAL transcript turn, only while status
+ * is idle (no send in flight, nothing streaming), never on a turn that
+ * carries practiceItems (the A3-9 belt — the server already forces
+ * `invitation` null there), and only when the turn actually carries one.
+ * TutorBody consumes THIS helper — never re-derive the condition inline.
+ */
+export function shouldRenderInvitation(args: {
+  isFinalTurn: boolean;
+  status: string;
+  hasPracticeItems: boolean;
+  invitation: TutorInvitation | null;
+}): boolean {
+  return (
+    args.invitation !== null &&
+    args.isFinalTurn &&
+    args.status === "idle" &&
+    args.hasPracticeItems === false
+  );
 }
 
 /**

@@ -85,6 +85,16 @@ export interface TutorSendAmbient {
   quizActive: boolean;
 }
 
+/** A3 Wave 3 · the OPTIONAL provenance payload a send carries when — and ONLY
+ *  when — the learner pressed an invitation button (deterministic; never
+ *  inferred from typed text). All other sends omit the field entirely.
+ *  Mirrors the route's `initiation` turn-body member. */
+export interface TutorSendInitiation {
+  kind: "invitation_accepted";
+  toolName: string;
+  nodeId: string;
+}
+
 export interface UseTutorStreamOptions {
   userId: string;
   courseId: string;
@@ -100,7 +110,13 @@ export interface UseTutorStreamResult {
    *  displayable (before "composing" applies, or after the turn settles/errors). */
   streamingText: string | null;
   historyLoaded: boolean;
-  send: (message: string, ambient: TutorSendAmbient) => void;
+  /** Send a learner message. `initiation` is present ONLY on an
+   *  invitation-accept press (A3 Wave 3) — every other send omits it. */
+  send: (
+    message: string,
+    ambient: TutorSendAmbient,
+    initiation?: TutorSendInitiation,
+  ) => void;
   retry: () => void;
   abort: () => void;
 }
@@ -161,6 +177,10 @@ function assistantTurnFromPayload(payload: TutorTurnPayload): TutorChatTurn {
       spans: payload.spans,
       flags: payload.flags,
       rung: payload.rung,
+      // A3 Wave 3 — mirror the settled invitation onto the grounding shape so
+      // live and history assistant turns render identically (`?? null` tolerates
+      // a pre-A3 payload that doesn't carry the field yet).
+      invitation: payload.invitation ?? null,
     },
     payload,
   };
@@ -275,10 +295,13 @@ export function useTutorStream(
 
   // The in-flight send/resume abort controller (one stream at a time).
   const controllerRef = useRef<AbortController | null>(null);
-  // The last learner send (message + ambient) so retry() can re-fire it.
-  const lastSendRef = useRef<{ message: string; ambient: TutorSendAmbient } | null>(
-    null
-  );
+  // The last learner send (message + ambient + any initiation) so retry() can
+  // re-fire it faithfully (a retried invitation-accept stays an accept).
+  const lastSendRef = useRef<{
+    message: string;
+    ambient: TutorSendAmbient;
+    initiation?: TutorSendInitiation;
+  } | null>(null);
   // The display-phase floor for the CURRENT stream (reset per send/resume).
   const floorRef = useRef<PhaseFloor<FlooredPhase> | null>(null);
   // The accumulated in-flight answer text (buffer). `composing` gates its DISPLAY.
@@ -497,7 +520,11 @@ export function useTutorStream(
 
   /* ── the core send: optimistic learner turn → POST → consume the stream ── */
   const runSend = useCallback(
-    async (message: string, ambient: TutorSendAmbient): Promise<void> => {
+    async (
+      message: string,
+      ambient: TutorSendAmbient,
+      initiation?: TutorSendInitiation,
+    ): Promise<void> => {
       const trimmed = message.trim();
       if (!trimmed) return;
 
@@ -509,7 +536,7 @@ export function useTutorStream(
       }
       const controller = new AbortController();
       controllerRef.current = controller;
-      lastSendRef.current = { message: trimmed, ambient };
+      lastSendRef.current = { message: trimmed, ambient, initiation };
 
       // Optimistic learner turn — it STAYS on error (retry re-sends).
       const learnerTurn: TutorChatTurn = {
@@ -546,6 +573,9 @@ export function useTutorStream(
             slideId: ambient.slideId,
             message: trimmed,
             quizActive: ambient.quizActive,
+            // A3 Wave 3 — the field rides ONLY on an invitation-accept press;
+            // every other send omits it entirely (deterministic provenance).
+            ...(initiation ? { initiation } : {}),
           }),
           signal: controller.signal,
         });
@@ -570,8 +600,8 @@ export function useTutorStream(
   );
 
   const send = useCallback(
-    (message: string, ambient: TutorSendAmbient) => {
-      void runSend(message, ambient);
+    (message: string, ambient: TutorSendAmbient, initiation?: TutorSendInitiation) => {
+      void runSend(message, ambient, initiation);
     },
     [runSend]
   );
@@ -590,7 +620,7 @@ export function useTutorStream(
       }
       return prev;
     });
-    void runSend(last.message, last.ambient);
+    void runSend(last.message, last.ambient, last.initiation);
   }, [runSend]);
 
   /** Cancel the in-flight send/resume and return to idle. No auto-reconnect. */

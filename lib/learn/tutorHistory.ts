@@ -19,7 +19,11 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { TutorCitation, TutorSpan } from "@/lib/learn/tutorClientTypes";
+import type {
+  TutorCitation,
+  TutorInvitation,
+  TutorSpan,
+} from "@/lib/learn/tutorClientTypes";
 
 /** A thenable Postgrest result — untyped `data` (coerced tolerantly at the
  *  call site) + Postgrest's `{ message }` error. */
@@ -48,13 +52,31 @@ export interface TutorHistoryTurn {
     spans: TutorSpan[];
     flags: string[];
     rung: number | null;
+    invitation: TutorInvitation | null;
   } | null;
 }
 
+/** A3 Wave 3 · tolerantly coerce a `grounding.invitation` jsonb value — every
+ *  field must be a string or the whole invitation degrades to null (a
+ *  malformed invitation must never render a broken button). */
+function coerceInvitation(raw: unknown): TutorInvitation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const inv = raw as Record<string, unknown>;
+  if (
+    typeof inv.toolName !== "string" ||
+    typeof inv.nodeId !== "string" ||
+    typeof inv.label !== "string"
+  ) {
+    return null;
+  }
+  return { toolName: inv.toolName, nodeId: inv.nodeId, label: inv.label };
+}
+
 /** Tolerantly coerce a `grounding` jsonb blob to the client shape. Any missing or
- *  malformed field degrades — citations/spans/flags default to `[]`, rung to null.
- *  Returns null when there's nothing usable. */
-function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
+ *  malformed field degrades — citations/spans/flags default to `[]`, rung and
+ *  invitation to null. Returns null when there's nothing usable.
+ *  Exported for the pure suite (scripts/verify-tutor-client.ts). */
+export function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
   if (!raw || typeof raw !== "object") return null;
   const g = raw as Record<string, unknown>;
   const citations = Array.isArray(g.citations)
@@ -65,7 +87,8 @@ function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
     ? (g.flags as unknown[]).filter((f): f is string => typeof f === "string")
     : [];
   const rung = typeof g.rung === "number" ? g.rung : null;
-  return { citations, spans, flags, rung };
+  const invitation = coerceInvitation(g.invitation);
+  return { citations, spans, flags, rung, invitation };
 }
 
 /**

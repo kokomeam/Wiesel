@@ -4,12 +4,15 @@
  * TUTOR-1 Wave 4 — the tutor panel BODY (the heavy, next/dynamic-imported
  * surface). Owns the whole conversation UI: the SSE-backed transcript, grounded/
  * supplemental span rendering (markdown-lite via the shared ui/Markdown), citation
- * chips, the rung-gated "Just show me" escape hatch (A3 — the rung itself stays
- * internal, never rendered), formative practice cards + self-report, suggestion
- * chips, the composer, the escalation card (dormant behind the flag), and the
- * docked width-drag divider. The streaming/history/vitals plumbing lives in the
- * sibling `useTutorStream` hook — this component is presentation + local
- * interaction.
+ * chips, the rung+attempt-gated "Just show me" escape hatch (A3-4/A3-5 — the rung
+ * itself stays internal, never rendered; attempts ride the store's session
+ * slice), the A3 Wave-3 invitation pill (rendered per the ONE pure
+ * `shouldRenderInvitation` rule — final turn, idle, no practiceItems; pressing it
+ * sends the label verbatim + a deterministic `initiation` provenance payload),
+ * formative practice cards + self-report, suggestion chips, the composer, the
+ * escalation card (dormant behind the flag), and the docked width-drag divider.
+ * The streaming/history/vitals plumbing lives in the sibling `useTutorStream`
+ * hook — this component is presentation + local interaction.
  *
  * House rules honoured here: warm paper/stone design system; NO framer-motion
  * (reduced motion via a hydration-safe media query); no Date.now()/Math.random()
@@ -26,13 +29,21 @@ import { useTutorStore, type TutorAmbient } from "@/lib/learn/tutorStore";
 import {
   dedupeCitations,
   gradePracticeAnswer,
+  hasAttemptedFor,
   selfReportStableKey,
   shouldOfferEscapeHatch,
+  shouldRenderInvitation,
   type TutorCitation,
+  type TutorInvitation,
   type TutorPracticeItem,
   type TutorSpan,
 } from "@/lib/learn/tutorClientTypes";
-import { useTutorStream, type TutorChatTurn } from "@/lib/learn/useTutorStream";
+import {
+  useTutorStream,
+  type TutorChatTurn,
+  type TutorSendInitiation,
+  type TutorStreamStatus,
+} from "@/lib/learn/useTutorStream";
 import { Markdown } from "@/components/ui/Markdown";
 import { TutorEscalationCard } from "./TutorEscalationCard";
 import { TutorStatusIndicator } from "./TutorStatusIndicator";
@@ -128,10 +139,10 @@ export function TutorBody({
     status.kind === "queued";
 
   const doSend = useCallback(
-    (message: string) => {
+    (message: string, initiation?: TutorSendInitiation) => {
       const text = message.trim();
       if (!text || busy) return;
-      send(text, sendAmbient);
+      send(text, sendAmbient, initiation);
     },
     [send, sendAmbient, busy]
   );
@@ -290,7 +301,7 @@ export function TutorBody({
         ) : turns.length === 0 ? (
           <EmptyState />
         ) : (
-          turns.map((turn) => (
+          turns.map((turn, i) => (
             <TurnBubble
               key={turn.id}
               turn={turn}
@@ -302,6 +313,13 @@ export function TutorBody({
               courseId={courseId}
               publicationId={publicationId}
               version={version}
+              userId={userId}
+              // A3-11: the FINAL transcript turn — and only while nothing is
+              // streaming below it (a live streamed bubble makes this turn
+              // visually non-final).
+              isFinalTurn={i === turns.length - 1 && streamingText === null}
+              statusKind={status.kind}
+              busy={busy}
               onSend={doSend}
             />
           ))
@@ -477,6 +495,10 @@ function TurnBubble({
   courseId,
   publicationId,
   version,
+  userId,
+  isFinalTurn,
+  statusKind,
+  busy,
   onSend,
 }: {
   turn: TutorChatTurn;
@@ -488,8 +510,16 @@ function TurnBubble({
   courseId: string;
   publicationId: string;
   version: number;
-  onSend: (message: string) => void;
+  userId: string;
+  isFinalTurn: boolean;
+  statusKind: TutorStreamStatus["kind"];
+  busy: boolean;
+  onSend: (message: string, initiation?: TutorSendInitiation) => void;
 }) {
+  // A3-4: the learner's session attempts (transient store slice — hooks run
+  // unconditionally, before the learner-turn early return below).
+  const attempts = useTutorStore((s) => s.sessionAttempts[userId]);
+
   const isLearner = turn.role === "learner";
   const payload = turn.payload ?? null;
   const spans = payload?.spans ?? turn.grounding?.spans ?? null;
@@ -498,6 +528,25 @@ function TurnBubble({
   const practiceItems = payload?.practiceItems ?? null;
   const escalation = payload?.escalationProposal ?? null;
   const escalationCandidateId = payload?.escalationCandidateId ?? null;
+  // A3 Wave 3: live turns carry the invitation on the payload; history turns
+  // carry it in the assistant grounding jsonb (`?? null` tolerates pre-A3 rows).
+  const invitation = payload?.invitation ?? turn.grounding?.invitation ?? null;
+
+  // A3-4: when this turn names practice nodes, the attempt must land on one of
+  // THEM; a turn without practice items accepts any session attempt.
+  const turnNodeIds =
+    practiceItems && practiceItems.length > 0
+      ? practiceItems.map((item) => item.nodeId)
+      : null;
+  const hasAttempted = hasAttemptedFor(attempts, turnNodeIds);
+
+  // A3-9/A3-11: THE render rule lives in the pure helper — never inline it.
+  const showInvitation = shouldRenderInvitation({
+    isFinalTurn,
+    status: statusKind,
+    hasPracticeItems: practiceItems !== null && practiceItems.length > 0,
+    invitation,
+  });
 
   if (isLearner) {
     return (
@@ -525,10 +574,10 @@ function TurnBubble({
             requestCitation={requestCitation}
           />
         ) : null}
-        {/* De-scaffold escape hatch — offered ONLY below rung 4 (A3 D-4): a
-            rung-4 turn already gave the full answer, and null/legacy rungs stay
-            hidden (fail toward no hatch). */}
-        {shouldOfferEscapeHatch(rung) ? (
+        {/* De-scaffold escape hatch — offered ONLY below rung 4 (A3-5: a rung-4
+            turn already gave the full answer; null/legacy rungs stay hidden)
+            AND only once the learner has attempted this session (A3-4). */}
+        {shouldOfferEscapeHatch(rung, hasAttempted) ? (
           <button
             type="button"
             data-ai-tool="tutor-just-show-me"
@@ -540,6 +589,23 @@ function TurnBubble({
         ) : null}
       </div>
 
+      {/* A3 Wave 3 — the invitation pill. Pressing it sends the LABEL verbatim
+          (the learner bubble shows what they pressed) plus the deterministic
+          initiation provenance payload. */}
+      {showInvitation && invitation ? (
+        <InvitationButton
+          invitation={invitation}
+          disabled={busy}
+          onAccept={() =>
+            onSend(invitation.label, {
+              kind: "invitation_accepted",
+              toolName: invitation.toolName,
+              nodeId: invitation.nodeId,
+            })
+          }
+        />
+      ) : null}
+
       {practiceItems && practiceItems.length > 0
         ? practiceItems.map((item) => (
             <PracticeCard
@@ -549,6 +615,7 @@ function TurnBubble({
               publicationId={publicationId}
               version={version}
               ambient={ambient}
+              userId={userId}
               onSend={onSend}
             />
           ))
@@ -597,6 +664,32 @@ function TutorProse({ spans, content }: { spans: TutorSpan[] | null; content: st
         )
       )}
     </div>
+  );
+}
+
+/** A3 Wave 3 — the invitation pill: ONE clearly-labelled button (house pill
+ *  style — brand-tinted like the suggestion chips but visually primary among
+ *  them; single and calm, not a card). Rendered only per the pure
+ *  `shouldRenderInvitation` rule; disabled while a send is in flight. */
+function InvitationButton({
+  invitation,
+  disabled,
+  onAccept,
+}: {
+  invitation: TutorInvitation;
+  disabled: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-ai-tool="tutor-invitation"
+      disabled={disabled}
+      onClick={onAccept}
+      className="inline-flex items-center gap-1.5 rounded-full border border-brand-300 bg-brand-50 px-3.5 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:border-brand-400 hover:bg-brand-100 disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+    >
+      {invitation.label}
+    </button>
   );
 }
 
@@ -661,6 +754,7 @@ function PracticeCard({
   publicationId,
   version,
   ambient,
+  userId,
   onSend,
 }: {
   item: TutorPracticeItem;
@@ -668,8 +762,12 @@ function PracticeCard({
   publicationId: string;
   version: number;
   ambient: TutorAmbient;
+  userId: string;
   onSend: (message: string) => void;
 }) {
+  // A3-4: every practice engagement (graded OR discussed) records a session
+  // attempt — the escape-hatch gate reads this transient store slice.
+  const recordSessionAttempt = useTutorStore((s) => s.recordSessionAttempt);
   const [selected, setSelected] = useState<number | null>(null);
   const [text, setText] = useState("");
   const [verdict, setVerdict] = useState<boolean | null>(null);
@@ -699,6 +797,7 @@ function PracticeCard({
   }
 
   function grade(answer: { choiceIndex?: number | null; text?: string | null }) {
+    recordSessionAttempt(userId, item.nodeId);
     const v = gradePracticeAnswer(item, answer);
     setVerdict(v);
     setGraded(true);
@@ -777,6 +876,7 @@ function PracticeCard({
             type="button"
             disabled={!text.trim()}
             onClick={() => {
+              recordSessionAttempt(userId, item.nodeId);
               onSend(`Here's my answer to "${item.prompt}": ${text.trim()}`);
               setText("");
             }}

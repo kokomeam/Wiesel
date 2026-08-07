@@ -7,8 +7,14 @@
  *   AC-T3.2  Prompt assembly — two DIFFERENT learners on the SAME (publication,
  *            lesson, charter) share BYTE-IDENTICAL system + developer; only the
  *            input (L3/L4/message) differs. TUTOR_L0 ≥ 4096 chars;
- *            TUTOR_PROMPT_VERSION === "tutor-v2" (A3 Wave 1: the ONE bump for
- *            the FORMATTING + THE CURRENT MESSAGE L0 sections).
+ *            TUTOR_PROMPT_VERSION === "tutor-v3" (A3 Wave 3: the ONE bump for
+ *            the PRACTICE & INVITATIONS L0 section).
+ *   A3-6..11 Invocation policy (Wave 3) — the seeded PROPERTY run (question
+ *            turns NEVER retain practiceItems; ≤1 invitation; cooldown/A3-9
+ *            guards), downgrade-to-invitation (pure + loop-level non-execution),
+ *            the practice-request regex matrix, acceptance validation
+ *            (fail-toward-question), and deriveInvitationState (offer/ignore/
+ *            accept/reset counting, the 30-min window, immediately-prior-only).
  *   A3/D-6   Grounding ok-rule — a short citation-less turn (a greeting) is ok;
  *            only SUBSTANTIVE (>200 chars) citation-less prose without an
  *            escalation proposal flags `ungrounded`; the escalation escape;
@@ -92,7 +98,22 @@ import {
   SUPPLEMENTAL_CLOSE,
   TurnOutputSchema,
   type TurnOutput,
+  type TurnPracticeItem,
 } from "@/lib/tutor/runtime/outputContract";
+import {
+  applyInvocationPolicy,
+  deriveInvitationState,
+  detectPracticeRequest,
+  effectiveCooldown,
+  invitationToolForRung,
+  resolveInitiation,
+  CLASS_A_TOOL_NAMES,
+  INVITATION_COOLDOWN_IGNORES,
+  INVITATION_LABELS,
+  RUNG_INVITATION_TOOLS,
+  type TurnInvitation,
+} from "@/lib/tutor/runtime/invocationPolicy";
+import type { SessionTurn } from "@/lib/tutor/runtime/session";
 
 let pass = 0,
   fail = 0;
@@ -332,7 +353,7 @@ async function main() {
   check("developer byte-identical across learners", promptA.developer === promptB.developer);
   check("input differs across learners", promptA.input !== promptB.input);
   check("TUTOR_L0 ≥ 4096 chars", TUTOR_L0.length >= 4096, `len=${TUTOR_L0.length}`);
-  check("TUTOR_PROMPT_VERSION === tutor-v2 (A3 Wave 1 bump)", TUTOR_PROMPT_VERSION === "tutor-v2");
+  check("TUTOR_PROMPT_VERSION === tutor-v3 (A3 Wave 3 bump)", TUTOR_PROMPT_VERSION === "tutor-v3");
   check("system IS TUTOR_L0 verbatim", promptA.system === TUTOR_L0);
 
   /* ───────────── AC-T3.3/T3.4 · scaffolding goldens ────────────────────── */
@@ -1013,14 +1034,23 @@ async function main() {
       "== ASSESSMENT INTEGRITY ==",
       "== YOUR TOOLS ==",
       "== OUTPUT CONTRACT (every turn) ==",
+      "== PRACTICE & INVITATIONS ==",
       "== FORMATTING ==",
       "== SAFETY ==",
     ];
     const headerLines = TUTOR_L0.match(/^== .+ ==$/gm) ?? [];
     check(
-      "L0 section inventory = the pre-A3 set + exactly the two new sections",
+      "L0 section inventory = the Wave-1 set + exactly the A3-Wave-3 PRACTICE & INVITATIONS section",
       expectedSections.every((s) => TUTOR_L0.includes(s)) && headerLines.length === expectedSections.length,
       `headers=${headerLines.join(" | ")}`
+    );
+    // The tutor-v3 section teaches offer-not-impose + deliver-on-ask (invocation
+    // policy is enforced in CODE — this is the model-facing framing only).
+    check(
+      "L0 practice section: never attach unasked practice + deliver immediately on ask/accept",
+      TUTOR_L0.includes("Never attach practice to an answer the learner did not ask for") &&
+        TUTOR_L0.includes("quiet invitation") &&
+        TUTOR_L0.includes("deliver it immediately")
     );
   }
 
@@ -1325,6 +1355,526 @@ async function main() {
         `ok=${res.ok} approvalRequired=${JSON.stringify(res.approvalRequired ?? null)}`
       );
     }
+  }
+
+  /* ══════════════ A3 Wave 3 · invocation policy (pure) ══════════════════ */
+
+  // Shared: a minimal, schema-valid practice item for policy inputs.
+  const policyItem = (nodeId: string): TurnPracticeItem => ({
+    nodeId,
+    practiceItemRef: `ref-${nodeId}`,
+    kind: "mc",
+    prompt: "Pick one.",
+    choices: ["a", "b", "c", "d"],
+    correctChoiceIndex: 0,
+    acceptedAnswers: null,
+    explanation: null,
+    itemBankRef: null,
+  });
+  const policyOutput = (o: Partial<TurnOutput>): TurnOutput => ({
+    proseWithSpanMarkers: o.proseWithSpanMarkers ?? "Here's the idea.",
+    citations: o.citations ?? [],
+    rung: o.rung ?? 2,
+    evidence: o.evidence ?? [],
+    practiceItems: o.practiceItems,
+    escalationProposal: o.escalationProposal ?? null,
+  });
+
+  /* ───────── A3-6 · PROPERTY: question turns never retain practice ───────── */
+  console.log("\n— A3-6 · applyInvocationPolicy PROPERTY (seeded, 120 turns) —");
+  {
+    // Deterministic LCG (the verify-social.ts precedent — no Math.random).
+    const makeLcg = (seed: number) => {
+      let s = seed >>> 0;
+      return () => {
+        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+        return s / 4294967296;
+      };
+    };
+    const rnd = makeLcg(0xa3c0ffee);
+
+    const RUNS = 120;
+    let retained = 0; // question outputs that kept practiceItems
+    let inviteWithItems = 0; // invitation coexisting with surviving items (A3-9)
+    let inviteDuringCooldown = 0; // invitation under cooldown (A3-10)
+    let malformedInvites = 0; // anything but ONE well-formed invitation or null
+    let inviteCount = 0;
+    for (let i = 0; i < RUNS; i += 1) {
+      const nItems = rnd() < 0.5 ? 0 : 1 + Math.floor(rnd() * 3);
+      const items =
+        nItems === 0
+          ? rnd() < 0.5
+            ? null
+            : undefined
+          : Array.from({ length: nItems }, (_, k) => policyItem(`node-${i}-${k}`));
+      const rung = Math.floor(rnd() * 5) as TurnOutput["rung"];
+      const cooldownActive = rnd() < 0.35;
+      const pendingDowngrade =
+        rnd() < 0.35 ? { toolName: "generate_practice", nodeId: `dg-${i}` } : null;
+      const res = applyInvocationPolicy({
+        output: policyOutput({ rung, practiceItems: items }),
+        initiation: { kind: "question" },
+        pendingDowngrade,
+        cooldownActive,
+      });
+      const survived = res.output.practiceItems?.length ?? 0;
+      if (survived > 0) retained += 1;
+      if (res.invitation && survived > 0) inviteWithItems += 1;
+      if (res.invitation && cooldownActive) inviteDuringCooldown += 1;
+      if (res.invitation) {
+        inviteCount += 1;
+        const inv = res.invitation;
+        if (
+          typeof inv.toolName !== "string" ||
+          typeof inv.nodeId !== "string" ||
+          typeof inv.label !== "string"
+        ) {
+          malformedInvites += 1;
+        }
+      }
+    }
+    check(`A3-6: ZERO of ${RUNS} question outputs retain practiceItems`, retained === 0, `retained=${retained}`);
+    check("A3-6: invitation never coexists with surviving items (A3-9)", inviteWithItems === 0, String(inviteWithItems));
+    check("A3-6: invitation never offered under cooldown (A3-10)", inviteDuringCooldown === 0, String(inviteDuringCooldown));
+    check("A3-6: every offered invitation is ONE well-formed {toolName,nodeId,label}", malformedInvites === 0, String(malformedInvites));
+    check("A3-6: the property run is not vacuous (some invitations offered)", inviteCount > 0, `n=${inviteCount}`);
+
+    // Paths 1/2 leave items intact + invitation null (A3-8).
+    const twoItems = [policyItem("n1"), policyItem("n2")];
+    const p1 = applyInvocationPolicy({
+      output: policyOutput({ practiceItems: twoItems }),
+      initiation: { kind: "practice_request" },
+      pendingDowngrade: null,
+      cooldownActive: false,
+    });
+    check("A3-8: Path 1 (practice_request) — items intact + invitation null", p1.output.practiceItems?.length === 2 && p1.invitation === null);
+    const p2 = applyInvocationPolicy({
+      output: policyOutput({ practiceItems: twoItems }),
+      initiation: { kind: "invitation_accepted", toolName: "generate_practice", nodeId: "n1" },
+      pendingDowngrade: null,
+      cooldownActive: false,
+    });
+    check("A3-8: Path 2 (invitation_accepted) — items intact + invitation null", p2.output.practiceItems?.length === 2 && p2.invitation === null);
+    // Cooldown never touches Paths 1/2 (the learner initiated).
+    const p1cd = applyInvocationPolicy({
+      output: policyOutput({ practiceItems: twoItems }),
+      initiation: { kind: "practice_request" },
+      pendingDowngrade: null,
+      cooldownActive: true,
+    });
+    check("A3-8: Path 1 under cooldown — items STILL intact", p1cd.output.practiceItems?.length === 2 && p1cd.invitation === null);
+  }
+
+  /* ───────── A3-7 · downgrade-to-invitation (pure + loop-level) ─────────── */
+  console.log("\n— A3-7 · downgrade-to-invitation —");
+  {
+    // Pure: the loop-recorded tool-call downgrade converts (toolName + nodeId
+    // preserved, label correct) and WINS over a stripped model item.
+    const winner = applyInvocationPolicy({
+      output: policyOutput({ practiceItems: [policyItem("item-node")] }),
+      initiation: { kind: "question" },
+      pendingDowngrade: { toolName: "generate_practice", nodeId: "call-node" },
+      cooldownActive: false,
+    });
+    check(
+      "A3-7: tool-call downgrade wins over the stripped item (toolName + nodeId preserved)",
+      winner.invitation?.toolName === "generate_practice" && winner.invitation?.nodeId === "call-node",
+      JSON.stringify(winner.invitation)
+    );
+    check("A3-7: downgrade label is the directive copy", winner.invitation?.label === "Try a practice problem");
+    check("A3-7: items stripped alongside the downgrade", (winner.output.practiceItems?.length ?? 0) === 0);
+
+    // No tool-call downgrade → the FIRST stripped item's nodeId seeds it.
+    const fromItem = applyInvocationPolicy({
+      output: policyOutput({ practiceItems: [policyItem("first-node"), policyItem("second-node")] }),
+      initiation: { kind: "question" },
+      pendingDowngrade: null,
+      cooldownActive: false,
+    });
+    check(
+      "A3-7: the FIRST stripped item's nodeId becomes the invitation",
+      fromItem.invitation?.nodeId === "first-node" && fromItem.invitation?.toolName === "generate_practice",
+      JSON.stringify(fromItem.invitation)
+    );
+
+    // The rung→invitation-tool map (ruling R-6) is FULL data; today every rung
+    // resolves to generate_practice (the only implemented Class-A surface).
+    check(
+      "R-6: RUNG_INVITATION_TOOLS is the full 0–4 map",
+      RUNG_INVITATION_TOOLS[0].includes("checkUnderstanding") &&
+        RUNG_INVITATION_TOOLS[0].includes("predictThenReveal") &&
+        RUNG_INVITATION_TOOLS[2].includes("sequenceTask") &&
+        RUNG_INVITATION_TOOLS[2].includes("fadedExample") &&
+        RUNG_INVITATION_TOOLS[3].includes("fadedExample") &&
+        RUNG_INVITATION_TOOLS[4].includes("checkUnderstanding")
+    );
+    check(
+      "R-6: every rung resolves to generate_practice while it is the only implemented surface",
+      [0, 1, 2, 3, 4].every((r) => invitationToolForRung(r) === "generate_practice")
+    );
+    check(
+      "CLASS_A_TOOL_NAMES = {generate_practice} today; every member has a label",
+      CLASS_A_TOOL_NAMES.size === 1 &&
+        CLASS_A_TOOL_NAMES.has("generate_practice") &&
+        [...CLASS_A_TOOL_NAMES].every((t) => typeof INVITATION_LABELS[t] === "string")
+    );
+
+    // LOOP-LEVEL: a scripted generate_practice call on a QUESTION turn is NOT
+    // executed — no tutor_practice_gen structured call, no toolTrace entry, the
+    // synthetic function_call_output fed back, invitation surfaced, downgrade
+    // logged. The structured map DOES carry tutor_practice_gen, so if the loop
+    // wrongly executed the tool it would SUCCEED (not error) — non-execution is
+    // proven by the absence of the call.
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [NODE_1] } }] },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 1,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, {
+        model: LUNA,
+        structured: {
+          tutor_practice_gen: JSON.stringify({
+            items: [{ nodeId: NODE_1, kind: "mc", prompt: "?", choices: ["a", "b", "c", "d"], correctChoiceIndex: 0 }],
+          }),
+        },
+      });
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...a: unknown[]) => {
+        logs.push(a.map(String).join(" "));
+      };
+      let res!: Awaited<ReturnType<typeof runTutorTurn>>;
+      try {
+        res = await runTutorTurn(
+          {
+            learnerClient: emptyLearnerClient(),
+            serviceClient: capturingServiceClient().client,
+            model,
+            loadSnapshot: async () => ({ snapshot: snapshotFx }),
+            conceptNodes: CONCEPT_NODES,
+            conceptEdges: CONCEPT_EDGES,
+          },
+          {
+            userId: USER_A,
+            courseId: COURSE,
+            publicationId: PUB,
+            version: 1,
+            lessonId: L1,
+            charterRow: CHARTER_ROW("guided_default"),
+            historyTurns: [{ role: "learner", content: "prior" }],
+            learnerMessage: "why does price settle there?",
+            // initiation omitted → defaults to { kind: "question" }
+          }
+        );
+      } finally {
+        console.log = origLog;
+      }
+      check(
+        "A3-7 loop: generate_practice NOT executed on a question turn (no tutor_practice_gen call)",
+        model.getCalls().every((c) => c.responseFormat?.name !== "tutor_practice_gen"),
+        model.getCalls().map((c) => c.responseFormat?.name ?? "-").join(",")
+      );
+      check("A3-7 loop: no generate_practice in toolTrace (downgraded, not executed)", res.toolTrace.every((t) => t.tool !== "generate_practice"));
+      check(
+        "A3-7 loop: invitation surfaced {generate_practice, NODE_1, label}",
+        res.invitation?.toolName === "generate_practice" &&
+          res.invitation?.nodeId === NODE_1 &&
+          res.invitation?.label === "Try a practice problem",
+        JSON.stringify(res.invitation ?? null)
+      );
+      check(
+        "A3-7 loop: settled output + side channel carry ZERO practiceItems",
+        (res.output?.practiceItems?.length ?? 0) === 0 && res.practiceItems.length === 0
+      );
+      check("A3-7 loop: the turn is ok — downgraded, never blocked (no approvalRequired)", res.ok === true && !res.approvalRequired, `ok=${res.ok} err=${res.error ?? ""}`);
+      check(
+        "A3-7 loop: tutor_tool_downgraded logged with toolName + nodeId + courseId",
+        logs.some(
+          (l) =>
+            l.includes('"tag":"tutor_tool_downgraded"') &&
+            l.includes('"toolName":"generate_practice"') &&
+            l.includes(NODE_1) &&
+            l.includes(COURSE)
+        ),
+        logs.filter((l) => l.includes("tutor_tool_downgraded")).join(" | ")
+      );
+      // Round 2 saw the synthetic function_call_output (the model was told to
+      // finish its prose turn, not re-asked to run the tool).
+      const round2Input = model.getCalls()[1]?.input;
+      const sawSynthetic =
+        Array.isArray(round2Input) &&
+        round2Input.some(
+          (it) =>
+            it != null &&
+            typeof it === "object" &&
+            (it as Record<string, unknown>).type === "function_call_output" &&
+            String((it as Record<string, unknown>).output ?? "").includes("Converted to a quiet invitation")
+        );
+      check("A3-7 loop: the synthetic function_call_output was fed back to round 2", sawSynthetic);
+    }
+
+    // LOOP-LEVEL Path 2: an invitation_accepted turn EXECUTES the tool and the
+    // acceptance instruction rides the per-turn input (never L0).
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        { toolCalls: [{ name: "generate_practice", arguments: { nodeIds: [NODE_1] } }] },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Here's your practice.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 2,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, {
+        model: LUNA,
+        structured: {
+          tutor_practice_gen: JSON.stringify({
+            items: [{ nodeId: NODE_1, kind: "mc", prompt: "Where does price settle?", choices: ["a", "b", "c", "d"], correctChoiceIndex: 2 }],
+          }),
+        },
+      });
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "Yes, let's try one.",
+          initiation: { kind: "invitation_accepted", toolName: "generate_practice", nodeId: NODE_1 },
+        }
+      );
+      check("A3-7 loop: acceptance turn EXECUTES the tool (item minted)", res.practiceItems.length === 1 && res.practiceItems[0].nodeId === NODE_1, `n=${res.practiceItems.length} err=${res.error ?? ""}`);
+      check("A3-7 loop: acceptance turn carries NO invitation", (res.invitation ?? null) === null);
+      const userItem = (model.getCalls()[0]?.input as unknown[]).find(
+        (it) => it != null && typeof it === "object" && (it as Record<string, unknown>).role === "user"
+      ) as Record<string, unknown> | undefined;
+      check(
+        "A3-7 loop: the acceptance instruction rides the per-turn input",
+        String(userItem?.content ?? "").includes(
+          "The learner accepted your invitation: Try a practice problem on this concept. Deliver it now (call generate_practice for that concept)."
+        )
+      );
+      check("A3-7 loop: system prompt is STILL byte-stable L0 (instruction never in L0)", model.getCalls()[0]?.system === TUTOR_L0);
+    }
+
+    // LOOP-LEVEL cooldown: a question turn under an active cooldown carries the
+    // suppression instruction, and a model-attached practice strips to NO
+    // invitation (A3-10 at the loop surface).
+    {
+      const { deps, model } = loopDepsWithStructured({
+        proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+        citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+        rung: 2,
+        practiceItems: [policyItem(NODE_1)],
+      });
+      const res = await runTutorTurn(
+        { ...deps },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "and what about elasticity?",
+          initiation: { kind: "question" },
+          // Two ignored offers already persisted this session → cooldown.
+          invitationState: { priorInvitation: null, consecutiveIgnored: 2, cooldownActive: true },
+        }
+      );
+      check("A3-10 loop: cooldown question turn — items stripped AND invitation null", (res.output?.practiceItems?.length ?? 0) === 0 && (res.invitation ?? null) === null, JSON.stringify(res.invitation ?? null));
+      const userItem = (model.getCalls()[0]?.input as unknown[]).find(
+        (it) => it != null && typeof it === "object" && (it as Record<string, unknown>).role === "user"
+      ) as Record<string, unknown> | undefined;
+      check(
+        "A3-10 loop: the cooldown instruction rides the per-turn input",
+        String(userItem?.content ?? "").includes("Do not offer or attach practice this turn.")
+      );
+    }
+  }
+
+  /* ───────── A3-8 · resolveInitiation matrix (regex + acceptance) ────────── */
+  console.log("\n— A3-8 · resolveInitiation matrix —");
+  {
+    // Practice-request regex POSITIVES (unmistakable asks only).
+    const positives = [
+      "quiz me",
+      "Quiz me on this lesson", // the suggestion chip — MUST match
+      "test me",
+      "give me a practice problem",
+      "give me a practice question",
+      "give me practice exercises",
+      "give me another practice problem",
+      "can I practice",
+      "let me try one",
+      "let me try another",
+      "practice this",
+    ];
+    for (const p of positives) {
+      check(`detectPracticeRequest + "${p}"`, detectPracticeRequest(p));
+    }
+    // NEGATIVES (near-misses stay questions — false-negative bias).
+    const negatives = [
+      "I practiced yesterday",
+      "what is deliberate practice?",
+      "is this best practice",
+      "how do I test merge conflicts",
+      "the quiz merchants of venice",
+      "give me the answer",
+      "can I practise my English with you", // British spelling deliberately NOT caught (conservative)
+      "should I practice more often",
+      "what does the practice problem mean",
+    ];
+    for (const n of negatives) {
+      check(`detectPracticeRequest − "${n}"`, !detectPracticeRequest(n));
+    }
+
+    // Acceptance validation — matching accepted; mismatched/stale → question.
+    const prior: TurnInvitation = { toolName: "generate_practice", nodeId: NODE_1, label: "Try a practice problem" };
+    const claim = (toolName: string, nodeId: string) =>
+      ({ kind: "invitation_accepted", toolName, nodeId }) as const;
+
+    const okRes = resolveInitiation({ claimed: claim("generate_practice", NODE_1), message: "Yes", priorInvitation: prior });
+    check(
+      "matching claim → invitation_accepted (toolName + nodeId carried)",
+      okRes.kind === "invitation_accepted" && okRes.nodeId === NODE_1 && okRes.toolName === "generate_practice"
+    );
+
+    const badTool = resolveInitiation({ claimed: claim("checkUnderstanding", NODE_1), message: "Yes", priorInvitation: prior });
+    check("mismatched toolName → question", badTool.kind === "question");
+
+    const badNode = resolveInitiation({ claimed: claim("generate_practice", NODE_2), message: "Yes", priorInvitation: prior });
+    check("mismatched nodeId → question", badNode.kind === "question");
+
+    const stale = resolveInitiation({ claimed: claim("generate_practice", NODE_1), message: "Yes", priorInvitation: null });
+    check("stale claim (no prior invitation) → question", stale.kind === "question");
+
+    // A claimed acceptance NEVER falls through to practice-request detection —
+    // an invalid claim fails toward question even when the message says "quiz me".
+    const staleQuiz = resolveInitiation({ claimed: claim("generate_practice", NODE_2), message: "quiz me", priorInvitation: prior });
+    check("invalid claim + 'quiz me' message → STILL question (claims never fall through)", staleQuiz.kind === "question");
+
+    const noClaimQuiz = resolveInitiation({ claimed: null, message: "Quiz me on this lesson", priorInvitation: prior });
+    check("no claim + chip message → practice_request", noClaimQuiz.kind === "practice_request");
+
+    const plain = resolveInitiation({ claimed: null, message: "what is elasticity?", priorInvitation: prior });
+    check("no claim + plain question → question", plain.kind === "question");
+  }
+
+  /* ───── A3-9/10/11 · deriveInvitationState (offer/ignore/accept/window) ─── */
+  console.log("\n— A3-9/10/11 · deriveInvitationState —");
+  {
+    const BASE = Date.parse("2026-08-07T12:00:00Z");
+    const at = (min: number) => new Date(BASE + min * 60_000).toISOString();
+    const INV: TurnInvitation = { toolName: "generate_practice", nodeId: NODE_1, label: "Try a practice problem" };
+    const ACCEPT = { kind: "invitation_accepted", toolName: "generate_practice", nodeId: NODE_1 };
+    const learnerT = (min: number, initiation?: unknown): SessionTurn => ({
+      role: "learner",
+      content: "m",
+      createdAt: at(min),
+      grounding: initiation ? { initiation } : {},
+    });
+    const assistantT = (min: number, invitation?: TurnInvitation): SessionTurn => ({
+      role: "assistant",
+      content: "a",
+      createdAt: at(min),
+      grounding: invitation ? { invitation } : {},
+    });
+
+    // (1) offered → ignored by the next learner turn; prior null (learner after).
+    const s1 = deriveInvitationState([learnerT(0), assistantT(1, INV), learnerT(2)], at(3));
+    check("offer ignored by the next learner turn → consecutiveIgnored 1", s1.consecutiveIgnored === 1 && !s1.cooldownActive, JSON.stringify(s1));
+    check("ignored offer is NOT the priorInvitation (learner turn between)", s1.priorInvitation === null);
+
+    // (2) pending trailing offer: not counted, IS the priorInvitation; the
+    //     effective cooldown folds it in on a question turn (0 persisted + 1
+    //     pending = 1 < 2 → still no cooldown).
+    const s2 = deriveInvitationState([learnerT(0), assistantT(1, INV)], at(2));
+    check("pending trailing offer → priorInvitation set, count 0", s2.priorInvitation?.nodeId === NODE_1 && s2.consecutiveIgnored === 0, JSON.stringify(s2));
+    check("effectiveCooldown: 0 persisted + 1 pending on a question turn → false", effectiveCooldown(s2, { kind: "question" }) === false);
+    check("effectiveCooldown: acceptance resets (never cooldown on Path 2)", effectiveCooldown(s2, { kind: "invitation_accepted", toolName: "generate_practice", nodeId: NODE_1 }) === false);
+
+    // (3) two ignored + a pending third → persisted cooldown ACTIVE at 2, and
+    //     the effective view (question) is 3.
+    const s3 = deriveInvitationState(
+      [assistantT(0, INV), learnerT(1), assistantT(2, INV), learnerT(3), assistantT(4, INV)],
+      at(5)
+    );
+    check("two ignored offers → cooldownActive (threshold 2)", s3.consecutiveIgnored === 2 && s3.cooldownActive === true, JSON.stringify(s3));
+    check("pending third offer is the priorInvitation", s3.priorInvitation?.nodeId === NODE_1);
+    check("INVITATION_COOLDOWN_IGNORES === 2", INVITATION_COOLDOWN_IGNORES === 2);
+
+    // (3b) the SECOND brush-off happens on the CURRENT message: 1 persisted
+    //      ignore + 1 pending offer + a question message → effective cooldown.
+    const s3b = deriveInvitationState(
+      [assistantT(0, INV), learnerT(1), assistantT(2, INV)],
+      at(3)
+    );
+    check(
+      "1 ignored + 1 pending + question message → EFFECTIVE cooldown (suppressed THIS turn, not one late)",
+      s3b.consecutiveIgnored === 1 && effectiveCooldown(s3b, { kind: "question" }) === true,
+      JSON.stringify(s3b)
+    );
+
+    // (4) acceptance RESETS the run (trailing-run semantics).
+    const s4 = deriveInvitationState(
+      [assistantT(0, INV), learnerT(1), assistantT(2, INV), learnerT(3, ACCEPT), assistantT(4, INV), learnerT(5)],
+      at(6)
+    );
+    check("ignored → accepted → ignored ⇒ trailing run is 1 (acceptance reset)", s4.consecutiveIgnored === 1 && !s4.cooldownActive, JSON.stringify(s4));
+
+    // (5) an explicit practice_request RESETS the run.
+    const s5 = deriveInvitationState(
+      [assistantT(0, INV), learnerT(1), assistantT(2, INV), learnerT(3), learnerT(4, { kind: "practice_request" })],
+      at(5)
+    );
+    check("learner practice_request resets the ignore run to 0", s5.consecutiveIgnored === 0 && !s5.cooldownActive, JSON.stringify(s5));
+
+    // (6) the 30-min session window: a silent thread is an EMPTY session — the
+    //     lifecycle (incl. the prior offer) resets like every session behavior.
+    const s6 = deriveInvitationState([assistantT(0, INV)], at(31));
+    check("newest turn ≥30 min old → empty session: no prior offer, count 0", s6.priorInvitation === null && s6.consecutiveIgnored === 0, JSON.stringify(s6));
+    // A ≥30-min gap INSIDE the thread excludes everything before it.
+    const s7 = deriveInvitationState([assistantT(0, INV), learnerT(40), assistantT(41, INV)], at(42));
+    check(
+      "a ≥30-min gap excludes pre-gap offers; the in-session pending offer stands",
+      s7.consecutiveIgnored === 0 && s7.priorInvitation?.nodeId === NODE_1,
+      JSON.stringify(s7)
+    );
+
+    // (7) A3-11 discard: acceptance validates against the IMMEDIATELY-prior
+    //     turn only — an offer with a learner turn after it is unclaimable.
+    const s8 = deriveInvitationState([assistantT(0, INV), learnerT(1)], at(2));
+    const discarded = resolveInitiation({
+      claimed: { kind: "invitation_accepted", toolName: "generate_practice", nodeId: NODE_1 },
+      message: "actually about that invitation...",
+      priorInvitation: s8.priorInvitation,
+    });
+    check("A3-11: an offer answered by ANY learner message is unclaimable → question", s8.priorInvitation === null && discarded.kind === "question");
+    // ...and an intervening assistant turn WITHOUT an invitation also clears it.
+    const s9 = deriveInvitationState([assistantT(0, INV), learnerT(1), assistantT(2)], at(3));
+    check("A3-11: a later assistant turn without an offer → priorInvitation null", s9.priorInvitation === null, JSON.stringify(s9));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

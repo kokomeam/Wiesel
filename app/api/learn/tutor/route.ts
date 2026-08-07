@@ -106,6 +106,10 @@ interface TutorRequestBody {
   message?: string;
   quizActive?: boolean;
   sessionFlags?: Record<string, unknown>;
+  /** A3 Wave 3 — the OPTIONAL acceptance claim. ONLY acceptance claims ride the
+   *  wire (question vs practice_request is SERVER-derived); anything malformed is
+   *  dropped here, and the service fails invalid claims toward question anyway. */
+  initiation?: { kind?: string; toolName?: string; nodeId?: string } | null;
   // evidence signals
   nodeId?: string;
   practiceItemRef?: string;
@@ -296,6 +300,22 @@ export async function POST(req: Request): Promise<Response> {
     return errorJson("missing_message", "message is required for a turn.", 400);
   }
 
+  // A3 Wave 3 — extract the acceptance claim (the only initiation a client may
+  // assert). A malformed/partial claim is dropped to null → the turn is derived
+  // server-side (question vs practice_request); validation against the prior
+  // invitation happens in the service (fail-toward-question).
+  const initiationClaim =
+    body.initiation &&
+    body.initiation.kind === "invitation_accepted" &&
+    typeof body.initiation.toolName === "string" &&
+    typeof body.initiation.nodeId === "string"
+      ? {
+          kind: "invitation_accepted" as const,
+          toolName: body.initiation.toolName,
+          nodeId: body.initiation.nodeId,
+        }
+      : null;
+
   // A non-'ok' access returns a typed error streamed as SSE so the client's turn
   // reader still settles. author_preview + not_enrolled + disabled all emit NOTHING
   // (no model call, no persistence, no evidence).
@@ -433,6 +453,7 @@ export async function POST(req: Request): Promise<Response> {
             learnerMessage: body.message!,
             quizActive: body.quizActive,
             sessionFlags: body.sessionFlags,
+            initiation: initiationClaim,
             // access already resolved to 'ok' + context already loaded — pass both
             // to skip a re-read inside the service.
             access,
@@ -482,6 +503,7 @@ export async function POST(req: Request): Promise<Response> {
               escalationProposal: out.escalationProposal ?? null,
               escalationCandidateId: result.turn.escalation?.candidateId ?? null,
               flags: result.turn.groundingFlags,
+              invitation: result.turn.invitation ?? null,
             },
           });
           emit({

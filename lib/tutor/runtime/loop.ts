@@ -84,6 +84,15 @@ import {
   type TutorToolDeps,
 } from "./tools";
 import { tierOf } from "./toolTiers";
+import {
+  applyInvocationPolicy,
+  effectiveCooldown,
+  CLASS_A_TOOL_NAMES,
+  INVITATION_LABELS,
+  type InvitationState,
+  type TurnInitiation,
+  type TurnInvitation,
+} from "./invocationPolicy";
 import { evaluateEscalationTrigger } from "./escalationTriggers";
 import type { TurnEscalationProposal } from "./outputContract";
 import type { TutorInferencePayload } from "@/lib/analytics/events";
@@ -138,6 +147,14 @@ export interface RunTutorTurnCtx {
   learnerMessage: string;
   /** Opaque session flags (reserved — carried through, not interpreted). */
   sessionFlags?: Record<string, unknown>;
+  /** A3 Wave 3 — THIS turn's SERVER-RESOLVED initiation (default question). The
+   *  SERVICE resolves acceptance claims against the prior invitation BEFORE the
+   *  loop runs; the loop never re-derives it. */
+  initiation?: TurnInitiation;
+  /** A3 Wave 3 — the derived invitation state over the session window (the
+   *  service computes it from the loaded history via deriveInvitationState).
+   *  Absent ⇒ no prior offers (direct callers / tests). */
+  invitationState?: InvitationState;
 }
 
 /* ─────────────────────────────── result ─────────────────────────────────── */
@@ -174,6 +191,12 @@ export interface TutorTurnResult {
    *  persistence + evidence emission. The ROUTE maps this to an approval_required
    *  wire frame. Absent/null on every non-gated turn. */
   approvalRequired?: { toolName: string } | null;
+  /** A3 Wave 3 — the AT-MOST-ONE quiet invitation this turn offers (question
+   *  turns only: a downgraded Class-A tool call or a stripped model-emitted
+   *  practice attach). The service stamps it into the assistant grounding (the
+   *  offered-marker the NEXT turn's derived state reads); the route surfaces it
+   *  on the settled `turn` payload. Null/absent when none. */
+  invitation?: TurnInvitation | null;
   error?: string;
 }
 
@@ -358,6 +381,16 @@ export async function runTutorTurn(
       };
     }
 
+    /* ── A3 Wave 3 · INVOCATION-POLICY inputs. `initiation` is SERVER-RESOLVED
+     *    (default question); the effective cooldown folds the pending offer the
+     *    CURRENT message is about to resolve into the persisted trailing-ignore
+     *    run — so a second consecutive brush-off suppresses the offer on THIS
+     *    turn, not one turn late. ── */
+    const initiation: TurnInitiation = ctx.initiation ?? { kind: "question" };
+    const invitationState: InvitationState =
+      ctx.invitationState ?? { priorInvitation: null, consecutiveIgnored: 0, cooldownActive: false };
+    const cooldownActive = effectiveCooldown(invitationState, initiation);
+
     // (b) The extra per-turn instruction lines (input-only; L0 is never touched).
     const extraInstructions: string[] = [];
 
@@ -379,6 +412,18 @@ export async function runTutorTurn(
       const title = state.nodeTitleById?.get(state.rootCauseNodeId) ?? state.rootCauseNodeId;
       extraInstructions.push(rootCauseInterjectionInstruction(title));
       interjectionStamped = true;
+    }
+
+    // A3 Wave 3 — per-turn initiation awareness (input-only; L0 stays byte-stable).
+    if (initiation.kind === "invitation_accepted") {
+      const label = INVITATION_LABELS[initiation.toolName] ?? INVITATION_LABELS.generate_practice;
+      extraInstructions.push(
+        `The learner accepted your invitation: ${label} on this concept. Deliver it now (call generate_practice for that concept).`
+      );
+    } else if (initiation.kind === "practice_request") {
+      extraInstructions.push("The learner explicitly asked for practice — deliver it directly this turn.");
+    } else if (cooldownActive) {
+      extraInstructions.push("Do not offer or attach practice this turn.");
     }
 
     /* ── L4: textual history, OR provider-side chaining when the flag is on. ── */
@@ -426,6 +471,9 @@ export async function runTutorTurn(
     const evidence: TutorInferencePayload[] = [];
     const practiceItems: MintedPracticeItem[] = [];
     let escalation: TutorTurnResult["escalation"] = null;
+    // A3 Wave 3 — the FIRST downgraded Class-A tool call this turn (question turns
+    // only); applyInvocationPolicy converts it into the at-most-one invitation.
+    let pendingDowngrade: { toolName: string; nodeId: string } | null = null;
     // Seed with the chaining anchor (if any); the main call's `started` event / final
     // result overwrite it. Assigns to the hoisted binding so the catch can read it.
     lastResponseId = chained?.previousResponseId ?? null;
@@ -507,6 +555,40 @@ export async function runTutorTurn(
             approvalRequired: { toolName: call.name },
           };
         }
+
+        // A3 Wave 3 · THE INVOCATION-POLICY INTERCEPT (Path 3). A Class-A tool
+        // call on a QUESTION turn is NOT executed (§5: generation on acceptance
+        // costs nothing on offer): record the downgrade candidate, feed a
+        // synthetic function_call_output telling the model to finish its prose
+        // turn, log tutor_tool_downgraded (wire/log-only observability — a
+        // persisted event would need the full union recipe; deliberate), and
+        // CONTINUE — downgraded, never blocked (A3-7). The settled turn surfaces
+        // at most ONE invitation via applyInvocationPolicy.
+        if (initiation.kind === "question" && CLASS_A_TOOL_NAMES.has(call.name)) {
+          const nodeId = firstNodeIdFromArgs(call.arguments);
+          if (!pendingDowngrade) pendingDowngrade = { toolName: call.name, nodeId };
+          console.log(
+            JSON.stringify({
+              tag: "tutor_tool_downgraded",
+              toolName: call.name,
+              nodeId,
+              courseId: ctx.courseId,
+              initiation: "question",
+            })
+          );
+          conversation.push({ type: "function_call", callId: call.callId, name: call.name, arguments: call.arguments });
+          conversation.push({
+            type: "function_call_output",
+            callId: call.callId,
+            output: compactJson({
+              summary:
+                "Converted to a quiet invitation the learner can press — do not retry the tool; finish your prose turn.",
+              data: { downgraded: true },
+            }),
+          });
+          continue;
+        }
+
         conversation.push({ type: "function_call", callId: call.callId, name: call.name, arguments: call.arguments });
         const { summary, data } = await runTool(call.name, call.arguments, toolDeps);
         toolTrace.push({ tool: call.name, summary });
@@ -679,12 +761,28 @@ export async function runTutorTurn(
       }
     }
 
+    /* ── A3 Wave 3 · INVOCATION POLICY (Path 3 enforcement in CODE). ──────────
+     * On a QUESTION turn the settled output NEVER carries practiceItems: model-
+     * emitted items are stripped and (with any tool-call downgrade) collapse to
+     * AT MOST ONE quiet invitation; the two-ignore cooldown suppresses even
+     * that. Paths 1/2 pass through untouched, invitation null (A3-8). */
+    const policy = applyInvocationPolicy({
+      output: cleaned,
+      initiation,
+      pendingDowngrade,
+      cooldownActive,
+    });
+    cleaned = policy.output;
+
     return {
       ok: validated.ok,
       output: cleaned,
       groundingFlags: validated.flags,
       evidence: resolvedEvidence,
-      practiceItems,
+      // Belt-and-braces: the intercept means generate_practice never RAN on a
+      // question turn, so the minted side channel is empty by construction —
+      // force it anyway so no code path can render imposed items.
+      practiceItems: initiation.kind === "question" ? [] : practiceItems,
       escalation,
       toolTrace,
       usage,
@@ -693,6 +791,7 @@ export async function runTutorTurn(
       // Stamp the root-cause marker only when the interjection actually fired AND
       // the turn completed ok — a failed turn persists nothing, so no marker.
       sessionMarkers: interjectionStamped ? [ROOT_CAUSE_INTERJECTION_MARKER] : [],
+      invitation: policy.invitation,
     };
   } catch (err) {
     return empty(err instanceof Error ? err.message : String(err));
@@ -729,6 +828,24 @@ async function runTool(
   } catch (err) {
     return { summary: `${name} failed: ${err instanceof Error ? err.message : String(err)}`, data: { error: "tool_error" } };
   }
+}
+
+/** A3 Wave 3 — the concept a downgraded Class-A call targeted: the FIRST entry of
+ *  a `nodeIds` array (the generate_practice arg shape) or a scalar `nodeId`; ""
+ *  when the args don't parse (the invitation still offers — acceptance then
+ *  matches on the empty id, harmless). */
+function firstNodeIdFromArgs(rawArgs: string): string {
+  try {
+    const parsed = JSON.parse(rawArgs || "{}");
+    if (parsed && typeof parsed === "object") {
+      const rec = parsed as Record<string, unknown>;
+      if (Array.isArray(rec.nodeIds) && typeof rec.nodeIds[0] === "string") return rec.nodeIds[0];
+      if (typeof rec.nodeId === "string") return rec.nodeId;
+    }
+  } catch {
+    /* unparseable args still downgrade */
+  }
+  return "";
 }
 
 /** Route a tool's structured output into the loop's side channels. */

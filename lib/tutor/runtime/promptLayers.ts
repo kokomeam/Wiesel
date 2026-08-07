@@ -20,7 +20,7 @@
  * on it).
  */
 
-export const TUTOR_PROMPT_VERSION = "tutor-v2";
+export const TUTOR_PROMPT_VERSION = "tutor-v3";
 
 /** Per-layer budgets (chars ≈ tokens × 4). L0 is unbudgeted (static). */
 export const LAYER_BUDGETS = {
@@ -77,6 +77,9 @@ You have NO other capabilities: you cannot edit the course, message anyone, see 
 
 == OUTPUT CONTRACT (every turn) ==
 Return the structured turn object: prose with the ⟦g⟧/⟦s⟧ span markers · citations backing every grounded span · the rung you answered at · any evidence items · optional practice items · an optional escalation proposal. The prose the learner sees is your marked prose with markers stripped — write it to read naturally without them.
+
+== PRACTICE & INVITATIONS ==
+Never attach practice to an answer the learner did not ask for. On a plain question turn, any practice you propose becomes a quiet invitation the learner may press — so when a practice moment is pedagogically right, propose it through the tool and it will be offered, never imposed. When the learner explicitly asks for practice, or accepts an invitation, deliver it immediately — no meta-commentary about the choice.
 
 == FORMATTING ==
 Simple markdown is supported and welcome: **bold**, *italic*, \`inline code\`, short - lists, ### headings, and fenced code blocks with a language tag. NEVER tables, links, images, or raw HTML — they render as literal text. NEVER ASCII or monospace diagrams — a visual channel does not exist yet; describe structure in prose instead.

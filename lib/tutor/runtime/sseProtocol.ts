@@ -48,10 +48,22 @@ export const WireProseSpanSchema = z.object({
   text: z.string(),
 });
 
+/** A3 Wave 3 — the AT-MOST-ONE quiet invitation a question turn may offer (a
+ *  downgraded Class-A proposal). Null on Paths 1/2, under cooldown, or when the
+ *  turn proposed nothing. The client renders it as a pressable chip; pressing it
+ *  sends the acceptance claim on the next POST body. */
+export const WireInvitationSchema = z.object({
+  toolName: z.string(),
+  nodeId: z.string(),
+  label: z.string(),
+});
+export type WireInvitation = z.infer<typeof WireInvitationSchema>;
+
 /** The `turn` payload — the settled output of ONE tutor turn. Mirrors the
  *  route's inline payload (route.ts:46-60). `rung` is nullable (the route types
  *  it `number | null`); `practiceItems`/`flags` are always arrays (the route
- *  coalesces `?? []`); `escalationProposal`/`escalationCandidateId` are nullable. */
+ *  coalesces `?? []`); `escalationProposal`/`escalationCandidateId`/`invitation`
+ *  are nullable. */
 export const TutorTurnPayloadSchema = z.object({
   prose: z.string(),
   spans: z.array(WireProseSpanSchema),
@@ -61,6 +73,7 @@ export const TutorTurnPayloadSchema = z.object({
   escalationProposal: TurnEscalationProposalSchema.nullable(),
   escalationCandidateId: z.string().nullable(),
   flags: z.array(z.string()),
+  invitation: WireInvitationSchema.nullable(),
 });
 export type TutorTurnPayload = z.infer<typeof TutorTurnPayloadSchema>;
 

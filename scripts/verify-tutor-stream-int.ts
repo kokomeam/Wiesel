@@ -621,6 +621,7 @@ async function main() {
           escalationProposal: out.escalationProposal ?? null,
           escalationCandidateId: teeResult.turn.escalation?.candidateId ?? null,
           flags: teeResult.turn.groundingFlags,
+          invitation: teeResult.turn.invitation ?? null,
         },
       });
       await emit({

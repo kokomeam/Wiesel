@@ -15,7 +15,9 @@
  *
  * Persisted (one static key, per-learner map so signed-out/switched users
  * never leak panel state across each other): byUser[userId] = { open, width,
- * scrollPos }. Everything else is TRANSIENT (session-only, never persisted).
+ * scrollPos }. Everything else is TRANSIENT (session-only, never persisted) —
+ * including the A3-4 `sessionAttempts` tally: a refresh clears attempts (the
+ * conservative direction for the escape-hatch gate, deliberate).
  */
 
 import { create } from "zustand";
@@ -77,6 +79,16 @@ export interface CitationRequest {
   nonce: number;
 }
 
+/** A3-4 · one learner's SESSION-scoped practice-attempt tally. `nodeIds` are
+ *  the distinct practice nodes attempted (deduped); `count` is total attempts
+ *  (a null-node attempt bumps count only). NEVER persisted — excluded from the
+ *  partialize allowlist below, so a refresh clears attempts (conservative:
+ *  the escape hatch re-locks until the learner tries again). */
+export interface TutorSessionAttempts {
+  nodeIds: string[];
+  count: number;
+}
+
 interface TutorState {
   /** Persisted, per-learner. */
   byUser: Record<string, TutorUserSlice>;
@@ -86,6 +98,7 @@ interface TutorState {
   citationRequest: CitationRequest | null;
   seed: string | null;
   suggestionDot: boolean;
+  sessionAttempts: Record<string, TutorSessionAttempts>;
 
   /** Read the effective slice for a user (defaults when absent). */
   userSlice: (userId: string) => TutorUserSlice;
@@ -96,6 +109,9 @@ interface TutorState {
   seedComposer: (s: string) => void;
   consumeSeed: () => void;
   setSuggestionDot: (b: boolean) => void;
+  /** A3-4 · record one practice attempt for a learner (nodeId null = an
+   *  attempt with no node attribution — bumps the count only). */
+  recordSessionAttempt: (userId: string, nodeId: string | null) => void;
 }
 
 export const useTutorStore = create<TutorState>()(
@@ -107,6 +123,7 @@ export const useTutorStore = create<TutorState>()(
       citationRequest: null,
       seed: null,
       suggestionDot: false,
+      sessionAttempts: {},
 
       userSlice: (userId) => get().byUser[userId] ?? DEFAULT_USER_SLICE,
 
@@ -139,12 +156,28 @@ export const useTutorStore = create<TutorState>()(
       consumeSeed: () => set({ seed: null }),
 
       setSuggestionDot: (b) => set({ suggestionDot: b }),
+
+      recordSessionAttempt: (userId, nodeId) =>
+        set((s) => {
+          const prev = s.sessionAttempts[userId] ?? { nodeIds: [], count: 0 };
+          const nodeIds =
+            nodeId !== null && !prev.nodeIds.includes(nodeId)
+              ? [...prev.nodeIds, nodeId]
+              : prev.nodeIds;
+          return {
+            sessionAttempts: {
+              ...s.sessionAttempts,
+              [userId]: { nodeIds, count: prev.count + 1 },
+            },
+          };
+        }),
     }),
     {
       name: "wisesel.tutor.ui",
       skipHydration: true,
-      // Persist ONLY the per-learner panel map — ambient/citation/seed are
-      // session-scoped and must never survive a reload.
+      // Persist ONLY the per-learner panel map — ambient/citation/seed AND the
+      // A3-4 sessionAttempts tally are session-scoped and must never survive a
+      // reload (attempts clearing on refresh is the conservative direction).
       partialize: (s) => ({ byUser: s.byUser }),
     }
   )
