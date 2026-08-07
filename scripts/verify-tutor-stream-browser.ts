@@ -276,6 +276,54 @@ async function main() {
     await signIn(page, learner.email, learner.password);
     await openLandingEnrolled(page, slug, courseTitle);
 
+    /* ───────────────── A2-8 GET resume HTTP auth matrix ────────────────────── */
+    // Fast + independent: prove the resume endpoint's HTTP auth gate at the
+    // REAL route. Anonymous → 401 (no cookies); signed-in-but-not-enrolled → 403
+    // (cookie session rides via context.request); enrolled-idle → 204 (no active
+    // stream). 401/403 carry JSON error bodies; 204 has none — status only.
+    {
+      const end = section("A2-8", "GET resume HTTP auth matrix — 401 anon / 403 not-enrolled / 204 enrolled-idle");
+      const resumeUrl = `${BASE}/api/learn/tutor?courseId=${fixture.courseId}`;
+
+      // 1) Anonymous — plain node fetch, NO cookies → 401.
+      const anonRes = await retryingFetch(resumeUrl, { headers: { accept: "text/event-stream" } });
+      check(
+        "anonymous GET (no auth cookies) → 401",
+        anonRes.status === 401,
+        `status=${anonRes.status}`
+      );
+
+      // 2) Signed-in but NOT enrolled — a fresh throwaway user who never enrolls;
+      //    authenticate the request the app's way (cookie session), then use the
+      //    context's request client so the session cookies ride along → 403.
+      const stranger = await provisionUser(env, "stranger");
+      const strangerCtx = await newCtx({ viewport: { width: 1440, height: 900 } });
+      const strangerPage = await strangerCtx.newPage();
+      await signIn(strangerPage, stranger.email, stranger.password);
+      const notEnrolledRes = await strangerCtx.request.get(resumeUrl, {
+        headers: { accept: "text/event-stream" },
+      });
+      check(
+        "signed-in but NOT enrolled GET (cookie session) → 403",
+        notEnrolledRes.status() === 403,
+        `status=${notEnrolledRes.status()}`
+      );
+      await strangerCtx.close();
+
+      // 3) Enrolled learner, idle (no turn in flight) → 204 (no active stream);
+      //    reuse the enrolled learner's browser context so its session cookies ride.
+      const idleRes = await learnerCtx.request.get(resumeUrl, {
+        headers: { accept: "text/event-stream" },
+      });
+      check(
+        "enrolled learner, no turn in flight GET (cookie session) → 204",
+        idleRes.status() === 204,
+        `status=${idleRes.status()}`
+      );
+
+      end();
+    }
+
     /* ─────────────────── A2-13 incremental text + §6 status ────────────────── */
     {
       const end = section("A2-13", "incremental text — the streaming bubble grows across ≥3 samples");

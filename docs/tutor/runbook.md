@@ -2,7 +2,8 @@
 
 > How to run the AI tutor in production: what the flags do, where the money goes,
 > how to watch it, and how to recover safely. Companion docs: `architecture.md`
-> (the model/cost pipeline), `escalation.md`, `analytics.md`, `mastery.md`.
+> (the model/cost pipeline), `escalation.md`, `analytics.md`, `mastery.md`,
+> `streaming.md` (A2 — streamed turns, status phases, resume, tool tiers).
 
 ## Flag inventory
 
@@ -31,6 +32,18 @@ Model + budget env: `TUTOR_<JOB>_MODEL`/`_EFFORT`/`_TIMEOUT_MS`/`_MAX_RETRIES`/
 (0.83), `TUTOR_MASTERY_MIN_COHORT` (5, the D-4 floor). Infra:
 `OPENAI_API_KEY` (required for any live tutor turn), `INNGEST_EVENT_KEY` +
 `INNGEST_SIGNING_KEY` (prod; dev uses `npx inngest-cli dev`).
+
+**Streaming + resume (A2, full doc `streaming.md`):**
+`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — the resume buffer
+(Upstash Redis over REST via fetch, no SDK; keys `wisesel:tutor:*`). BOTH
+unset ⇒ graceful degrade: turns still stream, refresh-resume answers 204.
+`TUTOR_STREAM_TTL_SECONDS` (default 600) — the explicit per-write TTL on
+every buffered frame; never rely on a provider default. Timeouts are code
+constants (`lib/tutor/runtime/streamConfig.ts`): total 240s · step 90s
+(= `TUTOR_TURN_TIMEOUT_MS` default) · chunk-stall 20s; the route declares
+`maxDuration = 300`. Note `tutor_turn`'s per-call deadline default is
+**90_000** since A2 (was 30_000). The turn is deliberately NOT durable —
+see `streaming.md` § the Inngest boundary.
 
 ## Where the money goes (cost dashboards)
 
