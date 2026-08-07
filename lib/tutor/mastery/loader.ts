@@ -12,9 +12,10 @@
  *      attempt with per-question rows is source #1, never double-counted here).
  *      Ordinal is derived by (created_at, id) per (user, publication, block) in
  *      the mapper — reproducible from the raw rows (R-22).
- *   3. learning_events of the five evidence types (practice_answer, hint_request,
- *      self_report, tutor_inference, content_engagement) — the typed columns +
- *      metadata already ride the row.
+ *   3. learning_events of the evidence types (practice_answer, hint_request,
+ *      self_report, tutor_inference, content_engagement + A3's
+ *      tutor_evidence_recorded) — the typed columns + metadata already ride
+ *      the row.
  *   4. DERIVED dwell — slide_viewed dwell events joined against the per-slide
  *      cohort median in rollup_slide_dwell (the dwell_over_median derivation).
  *
@@ -228,10 +229,14 @@ async function loadHistoricalAttempts(
 /* ─────────────────────────────── event source ───────────────────────────── */
 
 /**
- * Load the five Wave-2 evidence-type learning_events for the (user, course).
- * The typed columns (evidence_correct, attempt_ordinal, hint_rung, node_id) ride
- * the row; tutor_inference direction/strength + content_engagement signal ride
- * `metadata` jsonb. The learner is `user_id` (the ingest RPC pins it to auth.uid).
+ * Load the evidence-type learning_events for the (user, course) — the five
+ * Wave-2 members + A3's tutor_evidence_recorded (whose `outcome` column feeds
+ * the conservative v1 tool-evidence fold; confidence/misconception deliberately
+ * NOT loaded — they never modulate the weight, see weights.ts).
+ * The typed columns (evidence_correct, attempt_ordinal, hint_rung, node_id,
+ * outcome) ride the row; tutor_inference direction/strength +
+ * content_engagement signal ride `metadata` jsonb. The learner is `user_id`
+ * (the ingest RPC pins it to auth.uid).
  */
 async function loadEvidenceEvents(
   supabase: DB,
@@ -241,7 +246,7 @@ async function loadEvidenceEvents(
   const { data, error } = await supabase
     .from("learning_events")
     .select(
-      "id, event_type, node_id, server_ts, evidence_correct, attempt_ordinal, hint_rung, metadata"
+      "id, event_type, node_id, server_ts, evidence_correct, attempt_ordinal, hint_rung, outcome, metadata"
     )
     .eq("user_id", userId)
     .eq("course_id", courseId)
@@ -251,6 +256,7 @@ async function loadEvidenceEvents(
       "self_report",
       "tutor_inference",
       "content_engagement",
+      "tutor_evidence_recorded",
     ]);
   if (error) throw new Error(`loadEvidenceEvents: ${error.message}`);
 
@@ -258,6 +264,7 @@ async function loadEvidenceEvents(
   for (const r of data ?? []) {
     const eventType = (r as { event_type: string }).event_type as MasteryEventRow["eventType"];
     const meta = ((r as { metadata: unknown }).metadata ?? {}) as Record<string, unknown>;
+    const outcome = (r as { outcome: string | null }).outcome;
     out.push({
       eventId: (r as { id: string }).id,
       eventType,
@@ -278,6 +285,11 @@ async function loadEvidenceEvents(
         eventType === "content_engagement" &&
         (meta.signal === "rewatch" || meta.signal === "scrub_back" || meta.signal === "completed")
           ? (meta.signal as "rewatch" | "scrub_back" | "completed")
+          : null,
+      toolOutcome:
+        eventType === "tutor_evidence_recorded" &&
+        (outcome === "demonstrated" || outcome === "partial" || outcome === "not_demonstrated")
+          ? outcome
           : null,
     });
   }

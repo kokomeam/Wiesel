@@ -51,6 +51,17 @@
  * precedent): full course envelope, its signal rides metadata (a browser cannot
  * know concept node ids). tutor_inference's direction/strength/turnRef ride
  * metadata as the frozen Wave-3 contract (TutorInferencePayloadSchema).
+ *
+ * TOOL EVIDENCE (TUTOR-1 Amendment A3 Wave 2): tutor_evidence_recorded (ruling
+ * R-4 — snake_case) is the 23rd member: one structured observation per tutor
+ * TOOL COMPLETION (migration 20260807100000). SERVER-emitted ONLY through the
+ * single repository function recordToolEvidence (lib/tutor/runtime/
+ * evidenceRecord.ts — ruling R-3); same tutor-evidence envelope (course +
+ * publication, lesson OPTIONAL). nodeId is the concept node uuid (ruling R-1 —
+ * concepts have no slug); misconceptionSlug is the human-readable registry slug
+ * (tutor_misconceptions). ABSENT from the client batch; the ingest RPC's
+ * tutor_% guard rejects it by name. reviewedItemId is [FWD] — literally null
+ * in A3 (the schema pins z.null() until the reviewed-item bank ships).
  */
 
 import { z } from "zod";
@@ -274,14 +285,56 @@ const tutorInference = z.object({
 export const TutorInferenceEventSchema = tutorInference;
 export type TutorInferenceEvent = z.infer<typeof tutorInference>;
 
-/** The four SERVER-only tutor-evidence event types (excluded from the client
+/* ──────────── TUTOR-1 Amendment A3 Wave 2: tool evidence ────────────────────
+ * One structured learning-evidence observation per tutor TOOL COMPLETION
+ * (checkUnderstanding et al.). SERVER-emitted ONLY through recordToolEvidence
+ * (lib/tutor/runtime/evidenceRecord.ts — the single writer, ruling R-3), keyed
+ * by tutorEvidenceId(`toolev:${completionKey}`) so a replay is a no-op. Rides
+ * the tutor-evidence envelope (course + publication, lesson OPTIONAL). */
+
+export const TOOL_EVIDENCE_OUTCOMES = ["demonstrated", "partial", "not_demonstrated"] as const;
+export type ToolEvidenceOutcome = (typeof TOOL_EVIDENCE_OUTCOMES)[number];
+export const TOOL_EVIDENCE_INITIATIONS = [
+  "question",
+  "practice_request",
+  "invitation_accepted",
+] as const;
+export type ToolEvidenceInitiation = (typeof TOOL_EVIDENCE_INITIATIONS)[number];
+export const TOOL_EVIDENCE_ITEM_SOURCES = ["generated", "reviewed"] as const;
+export type ToolEvidenceItemSource = (typeof TOOL_EVIDENCE_ITEM_SOURCES)[number];
+
+const tutorEvidenceRecorded = z.object({
+  ...tutorEvidenceBase,
+  eventType: z.literal("tutor_evidence_recorded"),
+  /** The tutor tool whose completion produced this observation. */
+  toolName: z.string().min(1),
+  outcome: z.enum(TOOL_EVIDENCE_OUTCOMES),
+  /** Normalized registry slug (tutor_misconceptions; ruling R-1 — mirrors the
+   *  DB CHECK char_length between 1 and 80). */
+  misconceptionSlug: z.string().min(1).max(80).nullable(),
+  /** Learner-declared confidence at completion, when the tool captured one. */
+  confidence: z.enum(["sure", "unsure"]).nullable(),
+  /** Scaffolding fade level 0–3 (Wave 5 reads this; nullable until then). */
+  fadeLevel: z.number().int().min(0).max(3).nullable(),
+  initiation: z.enum(TOOL_EVIDENCE_INITIATIONS),
+  itemSource: z.enum(TOOL_EVIDENCE_ITEM_SOURCES),
+  /** [FWD] — ALWAYS null in A3 (no reviewed-item bank yet). Pinned z.null() so
+   *  a non-null value fails parse until the bank ships and this widens. */
+  reviewedItemId: z.null(),
+  latencyMs: z.number().int().nonnegative().nullable(),
+});
+export const TutorEvidenceRecordedSchema = tutorEvidenceRecorded;
+export type TutorEvidenceRecordedEvent = z.infer<typeof tutorEvidenceRecorded>;
+
+/** The five SERVER-only tutor-evidence event types (excluded from the client
  *  batch; the ingest RPC rejects the three non-tutor_% ones by name and
- *  tutor_inference by the tutor_% guard). */
+ *  tutor_inference + tutor_evidence_recorded by the tutor_% guard). */
 export const TUTOR_EVIDENCE_SERVER_EVENT_TYPES = [
   "practice_answer",
   "hint_request",
   "self_report",
   "tutor_inference",
+  "tutor_evidence_recorded",
 ] as const;
 
 /** The client engagement signal — the ONE client tutor-evidence member (the
@@ -390,6 +443,7 @@ export const AnalyticsEventSchema = z.discriminatedUnion("eventType", [
   selfReport,
   tutorInference,
   contentEngagement,
+  tutorEvidenceRecorded,
 ]);
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsEventType = AnalyticsEvent["eventType"];
@@ -463,17 +517,20 @@ export function buildCommsDeliveryEvent(
   });
 }
 
-/** The four SERVER-only tutor-evidence events (Wave 2). */
+/** The five SERVER-only tutor-evidence events (Wave 2 + A3's
+ *  tutor_evidence_recorded). */
 export type TutorEvidenceServerEvent =
   | PracticeAnswerEvent
   | HintRequestEvent
   | SelfReportEvent
-  | TutorInferenceEvent;
+  | TutorInferenceEvent
+  | TutorEvidenceRecordedEvent;
 export const TutorEvidenceServerEventSchema = z.discriminatedUnion("eventType", [
   practiceAnswer,
   hintRequest,
   selfReport,
   tutorInference,
+  tutorEvidenceRecorded,
 ]);
 
 /** Assemble + validate one SERVER tutor-evidence event (server emitters only).
@@ -585,6 +642,42 @@ export function mapEventToColumns(event: AnalyticsEvent, userId: string): Learni
       computed_cost_usd: event.computedCostUsd,
       latency_ms: event.latencyMs,
       learner_user_id: event.learnerUserId,
+      metadata: {},
+      client_ts: event.clientTs,
+    };
+  }
+  if (event.eventType === "tutor_evidence_recorded") {
+    // A3 tool evidence: tutor-evidence envelope (course+publication, lesson
+    // OPTIONAL). Carries node_id + its OWN typed column family; the OLD
+    // evidence columns stay NULL (DB CHECK enforces isolation both ways).
+    // latency_ms is legitimately shared with tutor_model_call (nullable here).
+    return {
+      client_event_id: event.clientEventId,
+      user_id: userId,
+      event_type: event.eventType,
+      publication_id: event.publicationId,
+      version: event.version,
+      course_id: event.courseId,
+      lesson_id: event.lessonId,
+      block_id: null,
+      slide_id: null,
+      dwell_ms: null,
+      quartile: null,
+      attempt_id: null,
+      node_id: event.nodeId,
+      attempt_ordinal: null,
+      hint_rung: null,
+      evidence_correct: null,
+      practice_item_ref: null,
+      tool_name: event.toolName,
+      outcome: event.outcome,
+      misconception_slug: event.misconceptionSlug,
+      confidence: event.confidence,
+      fade_level: event.fadeLevel,
+      initiation: event.initiation,
+      item_source: event.itemSource,
+      reviewed_item_id: event.reviewedItemId, // [FWD] — always null in A3
+      latency_ms: event.latencyMs,
       metadata: {},
       client_ts: event.clientTs,
     };

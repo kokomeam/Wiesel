@@ -1949,15 +1949,19 @@ export type Database = {
           client_event_id: string
           client_ts: string
           computed_cost_usd: number | null
+          confidence: string | null
           course_id: string | null
           device_class: string | null
           dwell_ms: number | null
           event_type: string
           evidence_correct: boolean | null
+          fade_level: number | null
           feedback_comment: string | null
           hint_rung: number | null
           id: string
+          initiation: string | null
           input_tokens: number | null
+          item_source: string | null
           job_type: string | null
           latency_ms: number | null
           learner_user_id: string | null
@@ -1966,17 +1970,21 @@ export type Database = {
           metric_name: string | null
           metric_rating: string | null
           metric_value: number | null
+          misconception_slug: string | null
           model: string | null
           navigation_type: string | null
           node_id: string | null
+          outcome: string | null
           output_tokens: number | null
           practice_item_ref: string | null
           publication_id: string | null
           quartile: number | null
           reaction: string | null
+          reviewed_item_id: string | null
           route: string | null
           server_ts: string
           slide_id: string | null
+          tool_name: string | null
           user_id: string
           version: number | null
         }
@@ -1988,15 +1996,19 @@ export type Database = {
           client_event_id: string
           client_ts: string
           computed_cost_usd?: number | null
+          confidence?: string | null
           course_id?: string | null
           device_class?: string | null
           dwell_ms?: number | null
           event_type: string
           evidence_correct?: boolean | null
+          fade_level?: number | null
           feedback_comment?: string | null
           hint_rung?: number | null
           id?: string
+          initiation?: string | null
           input_tokens?: number | null
+          item_source?: string | null
           job_type?: string | null
           latency_ms?: number | null
           learner_user_id?: string | null
@@ -2005,17 +2017,21 @@ export type Database = {
           metric_name?: string | null
           metric_rating?: string | null
           metric_value?: number | null
+          misconception_slug?: string | null
           model?: string | null
           navigation_type?: string | null
           node_id?: string | null
+          outcome?: string | null
           output_tokens?: number | null
           practice_item_ref?: string | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
+          reviewed_item_id?: string | null
           route?: string | null
           server_ts?: string
           slide_id?: string | null
+          tool_name?: string | null
           user_id: string
           version?: number | null
         }
@@ -2027,15 +2043,19 @@ export type Database = {
           client_event_id?: string
           client_ts?: string
           computed_cost_usd?: number | null
+          confidence?: string | null
           course_id?: string | null
           device_class?: string | null
           dwell_ms?: number | null
           event_type?: string
           evidence_correct?: boolean | null
+          fade_level?: number | null
           feedback_comment?: string | null
           hint_rung?: number | null
           id?: string
+          initiation?: string | null
           input_tokens?: number | null
+          item_source?: string | null
           job_type?: string | null
           latency_ms?: number | null
           learner_user_id?: string | null
@@ -2044,17 +2064,21 @@ export type Database = {
           metric_name?: string | null
           metric_rating?: string | null
           metric_value?: number | null
+          misconception_slug?: string | null
           model?: string | null
           navigation_type?: string | null
           node_id?: string | null
+          outcome?: string | null
           output_tokens?: number | null
           practice_item_ref?: string | null
           publication_id?: string | null
           quartile?: number | null
           reaction?: string | null
+          reviewed_item_id?: string | null
           route?: string | null
           server_ts?: string
           slide_id?: string | null
+          tool_name?: string | null
           user_id?: string
           version?: number | null
         }
@@ -4428,6 +4452,51 @@ export type Database = {
           },
         ]
       }
+      tutor_misconceptions: {
+        Row: {
+          course_id: string
+          created_at: string
+          id: string
+          node_id: string
+          slug: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          id?: string
+          node_id: string
+          slug: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          id?: string
+          node_id?: string
+          slug?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_misconceptions_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tutor_misconceptions_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "concept_nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tutor_threads: {
         Row: {
           active_response_id: string | null
@@ -4859,6 +4928,17 @@ export type Database = {
       submit_course_review: {
         Args: { p_course_id: string; p_rating: number; p_review_text: string }
         Returns: Json
+      }
+      tutor_misconception_rollup: {
+        Args: { p_course_id: string }
+        Returns: {
+          cohort_size: number
+          evidence_count: number
+          learner_count: number
+          misconception_slug: string
+          node_id: string
+          node_title: string
+        }[]
       }
       tutor_upsert_concept_edge: {
         Args: {

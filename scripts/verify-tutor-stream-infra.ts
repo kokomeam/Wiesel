@@ -166,8 +166,10 @@ async function protocolSuite(): Promise<void> {
 
 /* ───────── 2. A2-5: the persisted analytics union gained NOTHING ─────────── */
 
-/** The EXACT pre-A2 member set of AnalyticsEventSchema (read from
- *  lib/analytics/events.ts). Hardcoded so ANY future addition trips this loudly. */
+/** The EXACT locked member set of AnalyticsEventSchema (read from
+ *  lib/analytics/events.ts). Hardcoded so ANY future addition trips this loudly.
+ *  A3 Wave 2 added tutor_evidence_recorded (the tool-evidence spine, migration
+ *  20260807100000) — 23 members. Still ZERO streaming/delta members (A2-5). */
 const EXPECTED_ANALYTICS_EVENT_TYPES = [
   "lesson_started",
   "slide_viewed",
@@ -191,6 +193,7 @@ const EXPECTED_ANALYTICS_EVENT_TYPES = [
   "self_report",
   "tutor_inference",
   "content_engagement",
+  "tutor_evidence_recorded",
 ];
 
 function analyticsGuardSuite(): void {
@@ -220,10 +223,11 @@ function analyticsGuardSuite(): void {
   const leaked = actual.filter((t) => banned.some((b) => t.includes(b)));
   check(`no streaming member in the analytics union (found: ${JSON.stringify(leaked)})`, leaked.length === 0);
 
-  // (b) The member set is EXACTLY the pre-A2 known list — a future addition here
-  //     trips this test loudly (both directions).
+  // (b) The member set is EXACTLY the locked list (23 since A3 Wave 2's
+  //     tutor_evidence_recorded) — a future addition trips this loudly (both
+  //     directions).
   check(
-    `analytics union member set is exactly the pre-A2 list (${actual.length} members)`,
+    `analytics union member set is exactly the locked list (${actual.length} members)`,
     actual.length === expected.length && actual.every((t, i) => t === expected[i])
   );
   const extra = actual.filter((t) => !expected.includes(t));

@@ -12,8 +12,8 @@
  *   2. historical detail-less quiz_attempts — block-level score only (pre-
  *      deployment data, the cold-start story). Direction = score ≥ pass; weight =
  *      HISTORICAL_DETAILLESS_FACTOR × ordinal weight, applied to every anchored node.
- *   3. the five Wave-2 event types (practice_answer, hint_request, self_report,
- *      tutor_inference, content_engagement).
+ *   3. the evidence event types (practice_answer, hint_request, self_report,
+ *      tutor_inference, content_engagement + A3's tutor_evidence_recorded).
  *   4. DERIVED dwell — a slide_viewed dwell over the cohort median (from
  *      rollup_slide_dwell) is a weak negative on the node(s) anchored to that slide.
  *
@@ -28,11 +28,13 @@ import {
   hintWeight,
   contentEngagementWeight,
   tutorInferenceWeight,
+  toolEvidenceWeight,
   SELF_REPORT_WEIGHT,
   HISTORICAL_DETAILLESS_FACTOR,
   HISTORICAL_PASS_FRACTION,
   DWELL_OVER_MEDIAN_WEIGHT,
   type TutorInferenceStrength,
+  type ToolEvidenceOutcomeKind,
 } from "./weights";
 
 /* ────────────────────────────── the evidence shape ──────────────────────── */
@@ -59,6 +61,7 @@ export type MasteryEvidenceKind =
   | "self_report"
   | "tutor_inference"
   | "content_engagement"
+  | "tutor_evidence_recorded"
   | "dwell_over_median";
 
 /* ────────────────────────────── raw source rows ─────────────────────────── */
@@ -86,10 +89,9 @@ export interface HistoricalAttemptRow {
   createdAt: string;
 }
 
-/** A Wave-2 event row (practice_answer / hint_request / self_report /
- *  tutor_inference / content_engagement), reduced to what the mappers read. The
- *  loader has already pulled node_id + the typed columns/metadata off
- *  learning_events. */
+/** An evidence-type event row (the five Wave-2 members + A3's
+ *  tutor_evidence_recorded), reduced to what the mappers read. The loader has
+ *  already pulled node_id + the typed columns/metadata off learning_events. */
 export interface MasteryEventRow {
   eventId: string;
   eventType:
@@ -97,7 +99,8 @@ export interface MasteryEventRow {
     | "hint_request"
     | "self_report"
     | "tutor_inference"
-    | "content_engagement";
+    | "content_engagement"
+    | "tutor_evidence_recorded";
   nodeId: string | null;
   createdAt: string;
   /** practice_answer: correctness (evidence_correct) + attempt_ordinal. */
@@ -110,6 +113,10 @@ export interface MasteryEventRow {
   inferenceStrength?: TutorInferenceStrength | null;
   /** content_engagement: metadata.signal. */
   contentSignal?: "rewatch" | "scrub_back" | "completed" | null;
+  /** tutor_evidence_recorded (A3): the tool-completion outcome column.
+   *  confidence/misconception deliberately absent — they do NOT modulate the
+   *  v1 weight (see weights.ts toolEvidenceWeight). */
+  toolOutcome?: ToolEvidenceOutcomeKind | null;
 }
 
 /** A slide_viewed dwell observation the loader has paired with its slide's cohort
@@ -213,8 +220,9 @@ export function mapHistoricalAttempts(
 }
 
 /**
- * PURE. Map the five Wave-2 event types to evidence. A row with no node_id (or an
- * event that carries no usable signal) yields nothing.
+ * PURE. Map the evidence event types (five Wave-2 members + A3's
+ * tutor_evidence_recorded) to evidence. A row with no node_id (or an event that
+ * carries no usable signal) yields nothing.
  */
 export function mapEvents(rows: MasteryEventRow[]): MasteryEvidence[] {
   const out: MasteryEvidence[] = [];
@@ -268,6 +276,21 @@ export function mapEvents(rows: MasteryEventRow[]): MasteryEvidence[] {
         if (!r.contentSignal) break;
         const { direction, weight } = contentEngagementWeight(r.contentSignal);
         out.push({ nodeId: r.nodeId, direction, weight, at: r.createdAt, sourceId: `content_engagement:${r.eventId}`, kind: "content_engagement" });
+        break;
+      }
+      case "tutor_evidence_recorded": {
+        // A3 tool completion — conservative v1: outcome alone sets the fold
+        // (practice-answer magnitudes; confidence/misconception never modulate).
+        if (!r.toolOutcome) break;
+        const { direction, weight } = toolEvidenceWeight(r.toolOutcome);
+        out.push({
+          nodeId: r.nodeId,
+          direction,
+          weight,
+          at: r.createdAt,
+          sourceId: `tutor_evidence_recorded:${r.eventId}`,
+          kind: "tutor_evidence_recorded",
+        });
         break;
       }
     }

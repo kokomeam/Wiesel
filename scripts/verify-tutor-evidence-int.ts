@@ -5,6 +5,32 @@
  * running it (record_quiz_attempt / quiz_attempt_detail / the mastery RPCs do
  * not exist until then). DO NOT run this before the migrations are applied.
  *
+ * ── AMENDMENT A3 Wave 2 (evidence spine) — `a3EvidenceSpine()` below ─────────
+ * A second, self-contained phase covering the A3 tool-evidence contract
+ * (tutor_evidence_recorded + the tutor_misconceptions registry + the
+ * tutor_misconception_rollup RPC). It requires the A3 Wave-2 migration AND
+ * lib/tutor/runtime/evidenceRecord.ts (Builder C's half) — it dynamic-imports
+ * that module so the ORIGINAL Wave-2 sections above stay runnable before C
+ * lands. DO NOT run the A3 phase before the A3 migration is applied. Sections:
+ *   • A3-21a exactly-one — recordToolEvidence writes exactly ONE
+ *     learning_events row per completionKey; a replay writes ZERO new rows and
+ *     still returns recorded:true.
+ *   • A3-21b registry conflict — two CONCURRENT calls proposing the SAME new
+ *     (node, slug) yield exactly ONE tutor_misconceptions row + the SAME
+ *     misconceptionId; plus the R-3 restatement: a direct optimistic UPDATE
+ *     with a stale version matches 0 rows.
+ *   • A3-22 not-approval-gated — a table-touch spy over the admin client
+ *     (only learning_events + tutor_misconceptions + concept_nodes reads) and
+ *     the live leg: the row lands with ZERO agent_runs rows on the course.
+ *   • Concept-graph path — unknown node → unknown_concept + zero rows; a
+ *     merged node resolves to its survivor (event + registry); retired →
+ *     unknown_concept.
+ *   • RLS matrix — author SELECTs registry rows; stranger/learner read zero;
+ *     NO client can insert/update/delete the registry.
+ *   • Rollup RPC — a 5-learner misconception is returned, a 2-learner one is
+ *     OMITTED; a sub-5 cohort returns NOTHING; non-authors are gated;
+ *     cohort_size is correct.
+ *
  * Requires SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) — grading writes
  * are service-role by design (record_quiz_attempt is granted to service_role
  * only).
@@ -76,6 +102,10 @@ import {
   type PublicationRow,
 } from "@/lib/learn/resolve";
 import { submitQuizAttempt } from "@/lib/learn/quizService";
+// A3 Wave 2 (the frozen evidence-spine contract) — TYPE-ONLY import here; the
+// runtime module is dynamic-imported inside a3EvidenceSpine() so the original
+// Wave-2 sections stay runnable before that half lands.
+import type { ToolEvidenceInput } from "@/lib/tutor/runtime/evidenceRecord";
 
 let pass = 0,
   fail = 0;
@@ -502,12 +532,581 @@ async function main() {
     await cleanup();
     console.log("\n# cleaned up course (throwaway users remain — clean in Supabase → Auth)");
   }
+}
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * AMENDMENT A3 Wave 2 — the evidence spine (tutor_evidence_recorded +
+ * tutor_misconceptions + tutor_misconception_rollup). Self-contained phase:
+ * own fixture, own users, own cleanup. Requires the A3 Wave-2 migration.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Untyped handles for A3 tables/columns not yet spliced into database.types. */
+type AnyDB = SupabaseClient;
+const untyped = (c: DB | AnyDB): AnyDB => c as unknown as AnyDB;
+type RpcCaller = {
+  rpc: (
+    fn: string,
+    args: Record<string, unknown>
+  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+};
+const rpcOf = (c: DB | AnyDB): RpcCaller => c as unknown as RpcCaller;
+
+/** The frozen rollup row shape (snake_case on the wire). */
+interface RollupRow {
+  node_id: string;
+  node_title: string;
+  misconception_slug: string;
+  learner_count: number;
+  evidence_count: number;
+  cohort_size: number;
+}
+
+async function a3EvidenceSpine() {
+  console.log(
+    "\n════════ A3 Wave 2 — evidence spine (tutor_evidence_recorded · registry · rollup) ════════"
+  );
+  // Dynamic import: the module is Builder C's half of the frozen contract.
+  const { recordToolEvidence } = await import("@/lib/tutor/runtime/evidenceRecord");
+
+  const { url, anon, service } = loadEnv();
+  if (!url || !anon) throw new Error("Missing Supabase env in .env.local");
+  if (!service) throw new Error("the A3 evidence-spine phase needs SUPABASE_SERVICE_ROLE_KEY");
+
+  const author = await provisionUser(url, anon, "a3-author");
+  const learner = await provisionUser(url, anon, "a3-learner");
+  const stranger = await provisionUser(url, anon, "a3-stranger");
+  // Four extra learners for the ≥5-distinct-learner rollup seed (loop provision —
+  // learning_events.user_id FKs auth.users, so fake uuids can't be inserted).
+  const extras: Array<{ client: DB; userId: string }> = [];
+  for (let i = 1; i <= 4; i++) extras.push(await provisionUser(url, anon, `a3-extra${i}`));
+
+  const admin = createClient<Database>(url, service, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: retryingFetch },
+  });
+  // An UNAUTHENTICATED client (anon key, no session) for the gate check.
+  const anonClient = createClient<Database>(url, anon, { global: { fetch: retryingFetch } });
+
+  const courseId = newRowId();
+  const { doc } = makeDoc(courseId, author.userId, `Tutor A3 evidence itest ${crypto.randomUUID().slice(0, 6)}`);
+  await seedCourse(author.client, doc, author.userId);
+  console.log("# seeded A3 course");
+
+  const cleanup = async () => {
+    // Explicit fixture deletes (events by course, registry by course), then the
+    // course cascade (modules/lessons/blocks/publications/enrollments/nodes).
+    await admin.from("learning_events").delete().eq("course_id", courseId);
+    await untyped(admin).from("tutor_misconceptions").delete().eq("course_id", courseId);
+    await author.client.from("courses").delete().eq("id", courseId);
+  };
+
+  /** Count the course's tutor_evidence_recorded rows. */
+  const countEvidence = async (): Promise<number> => {
+    const { count, error } = await admin
+      .from("learning_events")
+      .select("id", { count: "exact", head: true })
+      .eq("course_id", courseId)
+      .eq("event_type", "tutor_evidence_recorded");
+    if (error) throw new Error(`countEvidence: ${error.message}`);
+    return count ?? 0;
+  };
+
+  /** Registry rows for (course [, node [, slug]]). */
+  const registryRows = async (
+    nodeId?: string,
+    slug?: string
+  ): Promise<Array<{ id: string; node_id: string; slug: string; version: number }>> => {
+    let q = untyped(admin)
+      .from("tutor_misconceptions")
+      .select("id, node_id, slug, version")
+      .eq("course_id", courseId);
+    if (nodeId) q = q.eq("node_id", nodeId);
+    if (slug) q = q.eq("slug", slug);
+    const { data, error } = await q;
+    if (error) throw new Error(`registryRows: ${error.message}`);
+    return (data ?? []) as Array<{ id: string; node_id: string; slug: string; version: number }>;
+  };
+
+  try {
+    /* ── publish + enroll the primary learner ── */
+    console.log("\n# A3 fixture — publish + enroll + concept nodes");
+    const v1 = await publishCourse(author.client, doc, { visibility: "public" });
+    check("A3 course published live", v1.publication.version === 1 && v1.publication.status === "live");
+    const found = await resolveLivePublicationBySlug(learner.client, v1.publication.slug);
+    if (found.kind !== "found") throw new Error("A3 publication not resolvable");
+    const publication: PublicationRow = found.publication;
+    const lessonId = doc.modules[0].lessons[0].id;
+
+    const enrolled = await learner.client
+      .from("enrollments")
+      .insert({ course_id: courseId, user_id: learner.userId })
+      .select("*")
+      .single();
+    check("A3 primary learner self-enrolls", !enrolled.error, String(enrolled.error?.message));
+
+    // Concept nodes: two active, one merged into a survivor, one retired.
+    const nodeHash = crypto.randomUUID(); // active — "Hash tables"
+    const nodeOrder = crypto.randomUUID(); // active survivor — "Insertion order"
+    const nodeMerged = crypto.randomUUID(); // merged_into → nodeOrder
+    const nodeRetired = crypto.randomUUID(); // retired
+    const nodeInsert = await admin.from("concept_nodes").insert([
+      {
+        id: nodeHash,
+        course_id: courseId,
+        title: "Hash tables",
+        description: "Buckets, hashing, collisions.",
+        anchors: [{ lessonId }],
+        status: "active",
+      },
+      {
+        id: nodeOrder,
+        course_id: courseId,
+        title: "Insertion order",
+        description: "What ordering a structure preserves.",
+        anchors: [{ lessonId }],
+        status: "active",
+      },
+      {
+        id: nodeMerged,
+        course_id: courseId,
+        title: "Ordering (duplicate)",
+        description: "Merged duplicate of Insertion order.",
+        anchors: [{ lessonId }],
+        status: "merged_into",
+        merged_into_node_id: nodeOrder,
+      },
+      {
+        id: nodeRetired,
+        course_id: courseId,
+        title: "Retired concept",
+        description: "No longer taught.",
+        anchors: [{ lessonId }],
+        status: "retired",
+      },
+    ] as never);
+    check("seeded 4 concept nodes (active ×2, merged, retired)", !nodeInsert.error, String(nodeInsert.error?.message));
+
+    /** A full valid input; overrides layer on top. */
+    const baseInput = (overrides: Partial<ToolEvidenceInput>): ToolEvidenceInput =>
+      ({
+        courseId,
+        publicationId: publication.id,
+        version: publication.version,
+        lessonId,
+        userId: learner.userId,
+        conceptSlug: nodeHash, // R-1: the concept node's uuid IS the "slug"
+        toolName: "check_understanding",
+        outcome: "not_demonstrated",
+        misconceptionSlug: "insertion-order-preserved",
+        confidence: "sure",
+        fadeLevel: 1,
+        initiation: "invitation_accepted",
+        itemSource: "generated",
+        reviewedItemId: null,
+        latencyMs: 1234,
+        ...overrides,
+      }) as ToolEvidenceInput;
+
+    let expectedEvents = 0;
+
+    /* ═══════════ A3-21a — exactly one row per completionKey; replay = no-op ═══ */
+    console.log("\n# A3-21a — exactly-one: one learning_events row per completionKey; replay writes zero");
+
+    const key21a = `a3-21a:${crypto.randomUUID()}`;
+    const r1 = await recordToolEvidence(admin, baseInput({ completionKey: key21a }));
+    check("first write returns recorded:true", r1.recorded === true, JSON.stringify(r1));
+    check(
+      "a misconceptionSlug input yields a non-null misconceptionId",
+      r1.recorded === true && typeof r1.misconceptionId === "string" && r1.misconceptionId.length > 0,
+      JSON.stringify(r1)
+    );
+    expectedEvents = 1;
+    check("exactly ONE tutor_evidence_recorded row landed", (await countEvidence()) === 1);
+
+    const landed = await untyped(admin)
+      .from("learning_events")
+      .select(
+        "event_type, user_id, publication_id, version, lesson_id, node_id, tool_name, outcome, misconception_slug, confidence, fade_level, initiation, item_source, reviewed_item_id, latency_ms"
+      )
+      .eq("course_id", courseId)
+      .eq("event_type", "tutor_evidence_recorded")
+      .limit(2);
+    const row = ((landed.data ?? []) as Array<Record<string, unknown>>)[0];
+    check(
+      "the row carries the typed evidence columns verbatim",
+      !landed.error &&
+        row !== undefined &&
+        row.user_id === learner.userId &&
+        row.publication_id === publication.id &&
+        row.version === publication.version &&
+        row.lesson_id === lessonId &&
+        row.node_id === nodeHash &&
+        row.tool_name === "check_understanding" &&
+        row.outcome === "not_demonstrated" &&
+        row.misconception_slug === "insertion-order-preserved" &&
+        row.confidence === "sure" &&
+        row.fade_level === 1 &&
+        row.initiation === "invitation_accepted" &&
+        row.item_source === "generated" &&
+        row.reviewed_item_id === null &&
+        row.latency_ms === 1234,
+      JSON.stringify({ error: landed.error?.message, row })
+    );
+
+    const replay = await recordToolEvidence(admin, baseInput({ completionKey: key21a }));
+    check("REPLAY of the same completionKey still returns recorded:true", replay.recorded === true, JSON.stringify(replay));
+    check("REPLAY wrote ZERO new rows (count unchanged)", (await countEvidence()) === expectedEvents);
+
+    /* ── sub-5 cohort: the rollup returns NOTHING (before the extra learners) ── */
+    console.log("\n# rollup floor — a sub-5 cohort course returns NOTHING");
+    const early = await rpcOf(author.client).rpc("tutor_misconception_rollup", { p_course_id: courseId });
+    check(
+      "cohort of 1 → rollup returns no rows (and no error for the author)",
+      early.error === null && ((early.data as unknown[] | null) ?? []).length === 0,
+      JSON.stringify({ error: early.error?.message, rows: early.data })
+    );
+
+    /* ═══════════ A3-21b — registry get-or-create race + version guard ═════════ */
+    console.log("\n# A3-21b — two CONCURRENT calls proposing the same NEW (node, slug)");
+
+    const raceSlug = "race-condition-slug";
+    const [ra, rb] = await Promise.all([
+      recordToolEvidence(
+        admin,
+        baseInput({ completionKey: `a3-21b-a:${crypto.randomUUID()}`, misconceptionSlug: raceSlug })
+      ),
+      recordToolEvidence(
+        admin,
+        baseInput({ completionKey: `a3-21b-b:${crypto.randomUUID()}`, misconceptionSlug: raceSlug })
+      ),
+    ]);
+    expectedEvents += 2;
+    check("both concurrent calls recorded:true", ra.recorded === true && rb.recorded === true, JSON.stringify({ ra, rb }));
+    check(
+      "both calls returned the SAME misconceptionId",
+      ra.recorded === true &&
+        rb.recorded === true &&
+        typeof ra.misconceptionId === "string" &&
+        ra.misconceptionId === rb.misconceptionId,
+      JSON.stringify({ a: ra.recorded && ra.misconceptionId, b: rb.recorded && rb.misconceptionId })
+    );
+    const raceRows = await registryRows(nodeHash, raceSlug);
+    check("exactly ONE tutor_misconceptions row exists for the raced (node, slug)", raceRows.length === 1, JSON.stringify(raceRows));
+    check("both events landed (2 rows for the 2 distinct completionKeys)", (await countEvidence()) === expectedEvents);
+
+    // R-3 restatement: the registry rows are VERSIONED — a direct optimistic
+    // update carrying a stale version matches 0 rows; the current version wins.
+    console.log("\n# A3-21b — registry version guard (stale optimistic update → 0 rows)");
+    const regRow = raceRows[0];
+    const stale = await untyped(admin)
+      .from("tutor_misconceptions")
+      .update({ version: regRow.version + 1 })
+      .eq("id", regRow.id)
+      .eq("version", regRow.version + 41) // a version nobody holds
+      .select("id");
+    check(
+      "a STALE-version optimistic update matches 0 rows (no error, no effect)",
+      !stale.error && ((stale.data as unknown[] | null) ?? []).length === 0,
+      JSON.stringify({ error: stale.error?.message, data: stale.data })
+    );
+    const current = await untyped(admin)
+      .from("tutor_misconceptions")
+      .update({ version: regRow.version + 1 })
+      .eq("id", regRow.id)
+      .eq("version", regRow.version)
+      .select("id, version");
+    check(
+      "the CURRENT-version optimistic update matches exactly 1 row (the idiom works)",
+      !current.error && ((current.data as unknown[] | null) ?? []).length === 1,
+      JSON.stringify({ error: current.error?.message, data: current.data })
+    );
+
+    /* ═══════════ A3-22 — NOT approval-gated (spy + live legs) ═════════════════ */
+    console.log("\n# A3-22 — the write path touches NO approval/tool-tier machinery");
+
+    const touchedTables: string[] = [];
+    const rpcNames: string[] = [];
+    const spyAdmin = new Proxy(admin as object, {
+      get(target, prop) {
+        if (prop === "from") {
+          return (table: string) => {
+            touchedTables.push(table);
+            return (target as { from: (t: string) => unknown }).from(table);
+          };
+        }
+        if (prop === "rpc") {
+          return (...args: unknown[]) => {
+            rpcNames.push(String(args[0]));
+            return (target as { rpc: (...a: unknown[]) => unknown }).rpc(...args);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof admin;
+
+    const spyResult = await recordToolEvidence(spyAdmin, baseInput({ completionKey: `a3-22:${crypto.randomUUID()}` }));
+    expectedEvents += 1;
+    check("the spied write recorded:true", spyResult.recorded === true, JSON.stringify(spyResult));
+    const allowedTables = new Set(["learning_events", "tutor_misconceptions", "concept_nodes"]);
+    check(
+      "ONLY learning_events + tutor_misconceptions (+ concept_nodes read) are touched",
+      touchedTables.length > 0 && touchedTables.every((t) => allowedTables.has(t)),
+      JSON.stringify([...new Set(touchedTables)])
+    );
+    check("the event write itself went through learning_events", touchedTables.includes("learning_events"));
+    check(
+      "NO approval/tier/agent-run RPC or table is in the path",
+      !touchedTables.some((t) => /approval|agent_run|change_set|tier/i.test(t)) &&
+        !rpcNames.some((n) => /approval|agent_run|change_set|tier/i.test(n)),
+      JSON.stringify({ tables: [...new Set(touchedTables)], rpcs: rpcNames })
+    );
+    // Live leg: the write landed although the course has NO agent_runs rows at all.
+    const runs = await admin
+      .from("agent_runs")
+      .select("id", { count: "exact", head: true })
+      .eq("course_id", courseId);
+    check(
+      "live leg: the row landed with ZERO agent_runs/approval rows on the course",
+      (runs.count ?? 0) === 0 && (await countEvidence()) === expectedEvents,
+      `agent_runs=${runs.count}`
+    );
+
+    /* ═══════════ concept-graph path — unknown / merged / retired ══════════════ */
+    console.log("\n# concept-graph path — unknown node, merged→survivor, retired");
+
+    const unknown = await recordToolEvidence(
+      admin,
+      baseInput({ completionKey: `a3-unknown:${crypto.randomUUID()}`, conceptSlug: crypto.randomUUID() })
+    );
+    check(
+      "an UNKNOWN node id → { recorded:false, reason:'unknown_concept' }",
+      unknown.recorded === false && unknown.reason === "unknown_concept",
+      JSON.stringify(unknown)
+    );
+    check("the unknown-node attempt wrote ZERO rows", (await countEvidence()) === expectedEvents);
+
+    const mergedSlug = "merged-node-slug";
+    const merged = await recordToolEvidence(
+      admin,
+      baseInput({
+        completionKey: `a3-merged:${crypto.randomUUID()}`,
+        conceptSlug: nodeMerged,
+        misconceptionSlug: mergedSlug,
+      })
+    );
+    expectedEvents += 1;
+    check("a MERGED node records against its survivor (recorded:true)", merged.recorded === true, JSON.stringify(merged));
+    const mergedEvent = await untyped(admin)
+      .from("learning_events")
+      .select("node_id")
+      .eq("course_id", courseId)
+      .eq("event_type", "tutor_evidence_recorded")
+      .eq("misconception_slug", mergedSlug)
+      .limit(2);
+    const mergedRows = (mergedEvent.data ?? []) as Array<{ node_id: string }>;
+    check(
+      "the merged-node event carries the SURVIVOR's node_id",
+      mergedRows.length === 1 && mergedRows[0].node_id === nodeOrder,
+      JSON.stringify(mergedRows)
+    );
+    check(
+      "the registry links the survivor, never the merged node",
+      (await registryRows(nodeOrder, mergedSlug)).length === 1 &&
+        (await registryRows(nodeMerged, mergedSlug)).length === 0
+    );
+
+    const retired = await recordToolEvidence(
+      admin,
+      baseInput({ completionKey: `a3-retired:${crypto.randomUUID()}`, conceptSlug: nodeRetired })
+    );
+    check(
+      "a RETIRED node → { recorded:false, reason:'unknown_concept' }",
+      retired.recorded === false && retired.reason === "unknown_concept",
+      JSON.stringify(retired)
+    );
+    check("the retired-node attempt wrote ZERO rows", (await countEvidence()) === expectedEvents);
+
+    /* ═══════════ RLS matrix — author-SELECT-only, service-role writer ═════════ */
+    console.log("\n# RLS matrix — tutor_misconceptions is author-SELECT-only; no client writes");
+
+    const authorSel = await untyped(author.client)
+      .from("tutor_misconceptions")
+      .select("id, node_id, slug")
+      .eq("course_id", courseId);
+    const authorRows = (authorSel.data ?? []) as unknown[];
+    check(
+      "the author SELECTs the course's registry rows (3 so far)",
+      !authorSel.error && authorRows.length === 3,
+      JSON.stringify({ error: authorSel.error?.message, n: authorRows.length })
+    );
+    const strangerSel = await untyped(stranger.client)
+      .from("tutor_misconceptions")
+      .select("id")
+      .eq("course_id", courseId);
+    check("a STRANGER reads ZERO registry rows", !strangerSel.error && ((strangerSel.data ?? []) as unknown[]).length === 0);
+    const learnerSel = await untyped(learner.client)
+      .from("tutor_misconceptions")
+      .select("id")
+      .eq("course_id", courseId);
+    check("an enrolled LEARNER reads ZERO registry rows", !learnerSel.error && ((learnerSel.data ?? []) as unknown[]).length === 0);
+
+    const regBefore = await registryRows();
+    const authorIns = await untyped(author.client)
+      .from("tutor_misconceptions")
+      .insert({ course_id: courseId, node_id: nodeHash, slug: "author-forged-slug" })
+      .select("id");
+    const insBlocked = authorIns.error !== null || ((authorIns.data ?? []) as unknown[]).length === 0;
+    check(
+      "the AUTHOR cannot INSERT into the registry (service-role writer only)",
+      insBlocked && (await registryRows()).length === regBefore.length,
+      JSON.stringify({ error: authorIns.error?.message })
+    );
+    const learnerIns = await untyped(learner.client)
+      .from("tutor_misconceptions")
+      .insert({ course_id: courseId, node_id: nodeHash, slug: "learner-forged-slug" })
+      .select("id");
+    check(
+      "a LEARNER cannot INSERT into the registry",
+      (learnerIns.error !== null || ((learnerIns.data ?? []) as unknown[]).length === 0) &&
+        (await registryRows()).length === regBefore.length
+    );
+    const authorUpd = await untyped(author.client)
+      .from("tutor_misconceptions")
+      .update({ slug: "author-renamed-slug" })
+      .eq("id", regBefore[0].id)
+      .select("id");
+    const updBlocked = authorUpd.error !== null || ((authorUpd.data ?? []) as unknown[]).length === 0;
+    const afterUpd = await registryRows();
+    check(
+      "the AUTHOR cannot UPDATE a registry row (0 rows / error; value unchanged)",
+      updBlocked && afterUpd.some((r) => r.id === regBefore[0].id && r.slug === regBefore[0].slug),
+      JSON.stringify({ error: authorUpd.error?.message })
+    );
+    const authorDel = await untyped(author.client)
+      .from("tutor_misconceptions")
+      .delete()
+      .eq("id", regBefore[0].id)
+      .select("id");
+    check(
+      "the AUTHOR cannot DELETE a registry row (row survives)",
+      (authorDel.error !== null || ((authorDel.data ?? []) as unknown[]).length === 0) &&
+        (await registryRows()).length === regBefore.length
+    );
+
+    /* ═══════════ rollup RPC — floors, omission, gate, cohort_size ═════════════ */
+    console.log("\n# tutor_misconception_rollup — ≥5 disclosure floor + gate + cohort_size");
+
+    // Enroll the 4 extras, then seed: slug A ← 5 distinct learners (primary + 4
+    // extras) on nodeHash; slug B ← 2 distinct learners on nodeOrder. All through
+    // the REAL writer (unique completionKeys). One call omits lessonId — the
+    // envelope's lesson is optional for tutor evidence.
+    for (const e of extras) {
+      const en = await e.client
+        .from("enrollments")
+        .insert({ course_id: courseId, user_id: e.userId })
+        .select("id")
+        .single();
+      if (en.error) throw new Error(`extra enroll: ${en.error.message}`);
+    }
+    const commonSlug = "rollup-common-misconception";
+    const rareSlug = "rollup-rare-misconception";
+    const fiveUsers = [learner.userId, ...extras.map((e) => e.userId)];
+    for (const [i, uid] of fiveUsers.entries()) {
+      const res = await recordToolEvidence(
+        admin,
+        baseInput({
+          completionKey: `a3-rollup-common:${uid}`,
+          userId: uid,
+          conceptSlug: nodeHash,
+          misconceptionSlug: commonSlug,
+          // one of the five rides WITHOUT a lesson (optional in the envelope)
+          lessonId: i === 0 ? undefined : lessonId,
+        })
+      );
+      if (res.recorded !== true) throw new Error(`rollup seed (common, ${uid}): ${JSON.stringify(res)}`);
+      expectedEvents += 1;
+    }
+    for (const uid of [learner.userId, extras[0].userId]) {
+      const res = await recordToolEvidence(
+        admin,
+        baseInput({
+          completionKey: `a3-rollup-rare:${uid}`,
+          userId: uid,
+          conceptSlug: nodeOrder,
+          misconceptionSlug: rareSlug,
+        })
+      );
+      if (res.recorded !== true) throw new Error(`rollup seed (rare, ${uid}): ${JSON.stringify(res)}`);
+      expectedEvents += 1;
+    }
+    check("all rollup seed events landed (running total intact)", (await countEvidence()) === expectedEvents);
+
+    const rollup = await rpcOf(author.client).rpc("tutor_misconception_rollup", { p_course_id: courseId });
+    const rows = ((rollup.data as RollupRow[] | null) ?? []) as RollupRow[];
+    check("the author calls the rollup without error", rollup.error === null, String(rollup.error?.message));
+    const commonRow = rows.find((r) => r.misconception_slug === commonSlug);
+    check(
+      "the 5-learner misconception IS returned (learner_count 5, on the right node)",
+      commonRow !== undefined &&
+        commonRow.learner_count === 5 &&
+        commonRow.node_id === nodeHash &&
+        commonRow.node_title === "Hash tables" &&
+        commonRow.evidence_count >= 5,
+      JSON.stringify(commonRow ?? rows)
+    );
+    check(
+      "the 2-learner misconception is OMITTED (below the ≥5 floor)",
+      !rows.some((r) => r.misconception_slug === rareSlug)
+    );
+    check(
+      "every single-learner slug from earlier sections is omitted too",
+      !rows.some((r) =>
+        ["insertion-order-preserved", raceSlug, mergedSlug].includes(r.misconception_slug)
+      )
+    );
+    check("EVERY returned row satisfies learner_count >= 5", rows.every((r) => r.learner_count >= 5));
+    check(
+      "cohort_size is correct (5 distinct evidence-bearing learners)",
+      rows.length > 0 && rows.every((r) => r.cohort_size === 5),
+      JSON.stringify(rows.map((r) => r.cohort_size))
+    );
+    check("exactly ONE row survives the floor in this fixture", rows.length === 1, String(rows.length));
+
+    // Gate: non-authors get an error or nothing — never data.
+    const strangerRoll = await rpcOf(stranger.client).rpc("tutor_misconception_rollup", { p_course_id: courseId });
+    check(
+      "a STRANGER's rollup call is gated (error or empty)",
+      strangerRoll.error !== null || ((strangerRoll.data as unknown[] | null) ?? []).length === 0,
+      JSON.stringify({ error: strangerRoll.error?.message, rows: strangerRoll.data })
+    );
+    const learnerRoll = await rpcOf(learner.client).rpc("tutor_misconception_rollup", { p_course_id: courseId });
+    check(
+      "an enrolled LEARNER's rollup call is gated (error or empty)",
+      learnerRoll.error !== null || ((learnerRoll.data as unknown[] | null) ?? []).length === 0
+    );
+    const anonRoll = await rpcOf(anonClient).rpc("tutor_misconception_rollup", { p_course_id: courseId });
+    check(
+      "an ANON (unauthenticated) rollup call is gated (error or empty)",
+      anonRoll.error !== null || ((anonRoll.data as unknown[] | null) ?? []).length === 0,
+      JSON.stringify({ error: anonRoll.error?.message })
+    );
+  } finally {
+    await cleanup();
+    console.log(
+      "\n# A3 cleaned up (events by course, registry by course, course cascade — throwaway users remain, clean in Supabase → Auth)"
+    );
+  }
+}
+
+async function run() {
+  await main();
+  await a3EvidenceSpine();
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }
 
-void main().catch((err) => {
+void run().catch((err) => {
   console.error("suite crashed:", err);
   process.exit(1);
 });

@@ -45,10 +45,12 @@ import {
   hintWeight,
   contentEngagementWeight,
   tutorInferenceWeight,
+  toolEvidenceWeight,
   SELF_REPORT_WEIGHT,
   HISTORICAL_DETAILLESS_FACTOR,
   HISTORICAL_PASS_FRACTION,
   DWELL_OVER_MEDIAN_WEIGHT,
+  TOOL_EVIDENCE_PARTIAL_FACTOR,
 } from "@/lib/tutor/mastery/weights";
 import { resolveNodeId, type LineageIndex } from "@/lib/tutor/mastery/lineage";
 import { refoldMastery } from "@/lib/tutor/mastery/refold";
@@ -314,6 +316,25 @@ function main() {
   check("historical detail-less factor = 0.3", HISTORICAL_DETAILLESS_FACTOR === 0.3);
   check("historical pass fraction = 0.6", HISTORICAL_PASS_FRACTION === 0.6);
   check("dwell-over-median weight = 0.05 (negative)", DWELL_OVER_MEDIAN_WEIGHT === 0.05);
+  // A3 Wave 2: tutor_evidence_recorded mirrors the practice_answer magnitudes
+  // (conservative v1 — confidence/misconception never modulate the weight).
+  check(
+    "tool evidence demonstrated → +1.0 (the practice-correct weight)",
+    toolEvidenceWeight("demonstrated").direction === 1 &&
+      toolEvidenceWeight("demonstrated").weight === ORDINAL_WEIGHTS[0]
+  );
+  check(
+    "tool evidence partial → +0.5 (HALF the correct weight)",
+    toolEvidenceWeight("partial").direction === 1 &&
+      toolEvidenceWeight("partial").weight === ORDINAL_WEIGHTS[0] * TOOL_EVIDENCE_PARTIAL_FACTOR &&
+      toolEvidenceWeight("partial").weight === 0.5
+  );
+  check(
+    "tool evidence not_demonstrated → −1.0 (the practice-wrong weight)",
+    toolEvidenceWeight("not_demonstrated").direction === -1 &&
+      toolEvidenceWeight("not_demonstrated").weight === ORDINAL_WEIGHTS[0]
+  );
+  check("TOOL_EVIDENCE_PARTIAL_FACTOR = 0.5", TOOL_EVIDENCE_PARTIAL_FACTOR === 0.5);
 
   /* ─────────────────────── GUARD — zero-model + config seam ──────────────── */
   console.log("\nGUARD — zero-model grep + config override seam");

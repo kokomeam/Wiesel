@@ -62,6 +62,49 @@ and a teaching-slide deep link — **ranked by first-attempt error desc**.
 - **Concept mapping**: a question's block → concept nodes whose `anchors[].blockId`
   reference that block (the R-13 anchor shape).
 
+## Tool evidence (A3) — `tutor_evidence_recorded` + misconceptions
+
+Amendment A3 Wave 2 (evidence spine). Every completed assessment-tool
+interaction persists ONE event on the same `learning_events` stream, and
+recurring wrong ideas roll up per concept for the console.
+
+- **Event**: `tutor_evidence_recorded` (server-emitted; the ingest RPC's
+  `tutor_%` arm rejects any client submission) with typed columns
+  `tool_name` · `outcome` (`demonstrated|partial|not_demonstrated`) ·
+  `misconception_slug` · `confidence` (`sure|unsure`) · `fade_level` (0–3) ·
+  `initiation` (`question|practice_request|invitation_accepted`) ·
+  `item_source` (`generated|reviewed`) · `reviewed_item_id` (null in A3) ·
+  `latency_ms`. Envelope: `publication_id` + `version` required, lesson
+  OPTIONAL (a tutor conversation spans lessons); `node_id` carries the concept
+  node uuid.
+- **Naming (ruling R-1)**: concepts have NO slug — the writer's `conceptSlug`
+  parameter IS the concept node's uuid (merged nodes resolve to their survivor;
+  unknown/retired nodes are refused as `unknown_concept`). Misconception ids
+  are human-readable slugs (model-proposed, e.g. `insertion-order-preserved`),
+  scoped per course.
+- **Writer**: `recordToolEvidence` (`lib/tutor/runtime/evidenceRecord.ts`) is
+  the single write path — admin client, NO approval/tool-tier machinery in the
+  path (evidence recording is not a governed side effect). **Idempotency**: the
+  `completionKey` derives the event's `client_event_id`, so exactly ONE row
+  lands per completionKey and a replay is a no-op that still reports
+  `recorded:true`. Misconception get-or-create against the registry is
+  race-safe (concurrent proposers converge on one row).
+- **Registry**: `public.tutor_misconceptions` — `(course_id, node_id, slug)`
+  UNIQUE, versioned rows (optimistic updates: a stale `version` matches 0
+  rows). RLS: author SELECT only; the service role is the only writer.
+- **Rollup + floors**: `tutor_misconception_rollup(p_course_id)` (author-gated
+  definer RPC) returns `{node_id, node_title, misconception_slug,
+  learner_count, evidence_count, cohort_size}` — v1 semantics: `learner_count`
+  = distinct learners ever observed holding the (node, slug) with
+  `outcome ≠ demonstrated`; `cohort_size` = distinct learners with ANY tool
+  evidence on the course. The ≥5 disclosure floor is applied INSIDE the RPC —
+  a pair seen by <5 distinct learners is OMITTED, and a course whose cohort is
+  <5 returns NOTHING. **Display rule (A3-23)** layers
+  ON TOP: below a 20-learner cohort the console shows RAW COUNTS ONLY
+  ("4 learners"); at ≥20 a percentage may ride alongside — encoded once in
+  `misconceptionCountDisplay` (`lib/analytics/misconceptions.ts`) and rendered
+  by the Analytics tab's "Misconceptions" section.
+
 ## Privacy — what creators can and can't see (Amendment D-4)
 
 The **cohort floor is 5** and is applied INSIDE every author-gated definer RPC —

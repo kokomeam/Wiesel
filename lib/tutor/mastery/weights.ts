@@ -131,3 +131,35 @@ export function contentEngagementWeight(
  *   dwell > mult × cohort-median → −0.05
  */
 export const DWELL_OVER_MEDIAN_WEIGHT = 0.05;
+
+/**
+ * tutor_evidence_recorded weights (TUTOR-1 Amendment A3 Wave 2) — one
+ * observation per tutor TOOL COMPLETION, by `outcome`.
+ *
+ * RATIONALE (conservative v1 — mirror the practice_answer magnitudes): a tool
+ * completion is a graded read of the learner's knowledge, the same trust class
+ * as a first practice answer, so it carries the practice weight
+ * (ORDINAL_WEIGHTS[0] = 1.0 — tool completions have no retry ordinal; each
+ * completionKey is one fresh observation):
+ *
+ *   demonstrated     → +1.0  (positive at the practice-correct weight)
+ *   partial          → +0.5  (positive at HALF the correct weight)
+ *   not_demonstrated → −1.0  (negative at the practice-wrong weight)
+ *
+ * [FWD] `confidence` and `misconceptionSlug` deliberately do NOT modulate the
+ * weight in v1 — a later wave may down-weight an "unsure" demonstrated or
+ * sharpen a misconception-tagged not_demonstrated; today they ride the event
+ * for the rollup/registry only.
+ */
+export const TOOL_EVIDENCE_PARTIAL_FACTOR = 0.5;
+export type ToolEvidenceOutcomeKind = "demonstrated" | "partial" | "not_demonstrated";
+export interface ToolEvidenceWeight {
+  direction: 1 | -1;
+  weight: number;
+}
+export function toolEvidenceWeight(outcome: ToolEvidenceOutcomeKind): ToolEvidenceWeight {
+  if (outcome === "demonstrated") return { direction: 1, weight: ORDINAL_WEIGHTS[0] };
+  if (outcome === "partial")
+    return { direction: 1, weight: ORDINAL_WEIGHTS[0] * TOOL_EVIDENCE_PARTIAL_FACTOR };
+  return { direction: -1, weight: ORDINAL_WEIGHTS[0] };
+}

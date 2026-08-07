@@ -16,13 +16,16 @@
  * SECTIONS: (1) Lessons needing attention — ranked, Terra rationale + evidence
  * naming the implicated question/node; (2) Most-missed questions — ranked table
  * with per-option distractor counts + teaching-slide deep links (suppressed
- * sub-floor EmptyState); (3) Confusion heatmap over the outline; (4) Mastery
- * funnel by module. Charts are the dependency-free Area/Bar (empty-guarded).
+ * sub-floor EmptyState); (2b) Misconceptions — the A3 tool-evidence rollup
+ * (tutor_misconception_rollup, pre-floored ≥5; <20-cohort raw-counts display
+ * rule in lib/analytics/misconceptions.ts); (3) Confusion heatmap over the
+ * outline; (4) Mastery funnel by module. Charts are the dependency-free
+ * Area/Bar (empty-guarded).
  */
 
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
-import { AlertTriangle, LineChart, ListChecks, Layers, MessageCircleWarning } from "lucide-react";
+import { AlertTriangle, LineChart, ListChecks, Layers, MessageCircleWarning, Puzzle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getCachedSnapshot } from "@/lib/learn/publicationCache";
 import { editorBlockHref } from "@/lib/analytics/dashboard";
@@ -33,6 +36,13 @@ import {
   type LessonHealthRow,
   type MostMissedRow,
 } from "@/lib/analytics/lessonHealth";
+import {
+  loadMisconceptionRollup,
+  groupMisconceptionsByNode,
+  humanizeMisconceptionSlug,
+  misconceptionCountDisplay,
+  type MisconceptionRollupRow,
+} from "@/lib/analytics/misconceptions";
 import { Card } from "@/components/ui/Card";
 import { IconTile } from "@/components/ui/IconTile";
 import { EmptyState } from "@/components/studio/analytics/EmptyState";
@@ -137,10 +147,11 @@ export async function AnalyticsTutorTab({ courseId }: { courseId: string }) {
 
   const publicationId = (pubRow.data as { id: string }).id;
 
-  // Parallel: the two author-gated RPCs + the immutable snapshot (id→title).
-  const [lessonHealth, mostMissed, snap] = await Promise.all([
+  // Parallel: the three author-gated RPCs + the immutable snapshot (id→title).
+  const [lessonHealth, mostMissed, misconceptions, snap] = await Promise.all([
     loadLessonHealth(supabase, courseId),
     loadMostMissed(supabase, courseId),
+    loadMisconceptionRollup(supabase, courseId),
     getCachedSnapshot(publicationId).catch(() => null),
   ]);
 
@@ -161,7 +172,8 @@ export async function AnalyticsTutorTab({ courseId }: { courseId: string }) {
   const healthByLesson = new Map<string, LessonHealthRow>();
   for (const h of lessonHealth) healthByLesson.set(h.lessonId, h);
 
-  const nothingYet = lessonHealth.length === 0 && mostMissed.length === 0;
+  const nothingYet =
+    lessonHealth.length === 0 && mostMissed.length === 0 && misconceptions.length === 0;
   if (nothingYet) {
     return (
       <EmptyState
@@ -181,6 +193,7 @@ export async function AnalyticsTutorTab({ courseId }: { courseId: string }) {
         mostMissed={mostMissed}
       />
       <MostMissedQuestions courseId={courseId} rows={mostMissed} lessonTitle={lessonTitle} />
+      <MisconceptionsSection rows={misconceptions} />
       <ConfusionHeatmap courseId={courseId} outline={outline} healthByLesson={healthByLesson} />
       <MasteryFunnel outline={outline} healthByLesson={healthByLesson} />
     </div>
@@ -422,6 +435,71 @@ function MostMissedQuestions({
             );
           })}
         </Table>
+      )}
+    </Card>
+  );
+}
+
+/* ─────────────────── 2b. Misconceptions (A3-23, tool evidence) ───────────────
+ * The tutor_misconception_rollup rows, grouped per concept node. The RPC has
+ * ALREADY applied both privacy floors (sub-5-learner pairs OMITTED; a sub-5
+ * cohort returns nothing) — this section never recomputes a floor. DISPLAY RULE
+ * (A3-23): below a 20-learner cohort we show RAW COUNTS ONLY; at ≥20 a
+ * percentage rides alongside (misconceptionCountDisplay owns the rule). */
+function MisconceptionsSection({ rows }: { rows: MisconceptionRollupRow[] }) {
+  const groups = groupMisconceptionsByNode(rows);
+  // cohort_size is course-wide — identical on every row; 0 only when empty.
+  const cohortSize = rows[0]?.cohortSize ?? 0;
+
+  return (
+    <Card>
+      <SerifCardHeader
+        icon={Puzzle}
+        tone="brand"
+        title="Misconceptions"
+        subtitle="Recurring wrong ideas the tutor's assessment tools observed, grouped by concept. Patterns below five learners are never shown."
+      />
+      {groups.length === 0 ? (
+        <div className="p-card-pad">
+          <EmptyState
+            icon={Puzzle}
+            title="No misconception signal yet"
+            hint="Appears once assessment tools are in use and at least 5 learners have evidence. Patterns below a five-learner cohort are never shown."
+          />
+        </div>
+      ) : (
+        <div className="space-y-5 p-card-pad">
+          {groups.map((g) => (
+            <div key={g.nodeId}>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                {g.nodeTitle}
+              </p>
+              <ul className="space-y-1.5">
+                {g.items.map((item) => (
+                  <li
+                    key={item.slug}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-panel border border-stone-200/80 bg-gradient-to-b from-white to-stone-50/60 px-3 py-2"
+                  >
+                    <span className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-stone-800">
+                        {humanizeMisconceptionSlug(item.slug)}
+                      </span>
+                      <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[11px] text-stone-500 ring-1 ring-inset ring-stone-200/80">
+                        {item.slug}
+                      </span>
+                    </span>
+                    <span className="text-xs font-semibold tabular-nums text-stone-600">
+                      {misconceptionCountDisplay(item.learnerCount, cohortSize)}
+                      <span className="ml-1.5 font-normal text-stone-400">
+                        · {item.evidenceCount} observation{item.evidenceCount === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
       )}
     </Card>
   );
