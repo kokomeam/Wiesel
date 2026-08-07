@@ -73,9 +73,16 @@ export interface TurnInvitation {
 /* ─────────────────────────────── Class-A registry ───────────────────────── */
 
 /** The Class-A (learner-active assessment) tool names GOVERNED by this policy.
- *  Only generate_practice is ACTIVE today — Waves 4/5 extend this set alongside
- *  INVITATION_LABELS as checkUnderstanding / sequenceTask / … land. */
-export const CLASS_A_TOOL_NAMES: ReadonlySet<string> = new Set(["generate_practice"]);
+ *  A3 Wave 4 activated checkUnderstanding + sequenceTask (they are now
+ *  IMPLEMENTED), so the rung map's preferences start winning; generate_practice
+ *  stays governed (Wave-3 legs still use it) but is no longer the preferred
+ *  offer. renderStructure is Class P (presentational) — deliberately NOT here, so
+ *  the Wave-3 intercept never touches it (it renders on any turn, A3-12). */
+export const CLASS_A_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "generate_practice",
+  "checkUnderstanding",
+  "sequenceTask",
+]);
 
 /** Invitation button labels — directive copy VERBATIM, the single source. Keys
  *  beyond generate_practice are the Waves-4/5 tools (label copy ships now so the
@@ -103,14 +110,17 @@ export const RUNG_INVITATION_TOOLS: Record<0 | 1 | 2 | 3 | 4, readonly string[]>
 
 /**
  * The invitation tool to offer at a rung: the mapped preference list filtered by
- * what is ACTIVE (CLASS_A_TOOL_NAMES ∩ implemented), falling back to
- * generate_practice while it is the only implemented Class-A surface. Once Waves
- * 4/5 activate the mapped tools, the preference order starts winning with no
- * change here.
+ * what is ACTIVE (the `activeImplemented` set = CLASS_A_TOOL_NAMES), with
+ * generate_practice the ultimate fallback only if nothing in the rung's map is
+ * active. A3 Wave 4 activated checkUnderstanding + sequenceTask, so rungs 0–1 & 4
+ * now resolve to checkUnderstanding and rung 2 to sequenceTask (the map's
+ * preference order wins); predictThenReveal / fadedExample stay inactive until
+ * Wave 5, so they are filtered out.
  */
 export function invitationToolForRung(rung: number): string {
   const clamped = Math.min(4, Math.max(0, Math.round(rung))) as 0 | 1 | 2 | 3 | 4;
-  const active = RUNG_INVITATION_TOOLS[clamped].filter((t) => CLASS_A_TOOL_NAMES.has(t));
+  const activeImplemented = CLASS_A_TOOL_NAMES;
+  const active = RUNG_INVITATION_TOOLS[clamped].filter((t) => activeImplemented.has(t));
   return active[0] ?? "generate_practice";
 }
 

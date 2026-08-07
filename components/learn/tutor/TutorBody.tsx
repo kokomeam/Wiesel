@@ -33,9 +33,11 @@ import {
   selfReportStableKey,
   shouldOfferEscapeHatch,
   shouldRenderInvitation,
+  type TutorAssessmentCard,
   type TutorCitation,
   type TutorInvitation,
   type TutorPracticeItem,
+  type TutorRenderStructureCard,
   type TutorSpan,
 } from "@/lib/learn/tutorClientTypes";
 import {
@@ -47,6 +49,9 @@ import {
 import { Markdown } from "@/components/ui/Markdown";
 import { TutorEscalationCard } from "./TutorEscalationCard";
 import { TutorStatusIndicator } from "./TutorStatusIndicator";
+import { TutorStructureCard } from "./TutorStructureCard";
+import { TutorCheckUnderstandingCard } from "./TutorCheckUnderstandingCard";
+import { TutorSequenceCard } from "./TutorSequenceCard";
 
 /** The props contract TutorMount mounts this component with (unchanged from the
  *  package-A placeholder). `onClose` returns focus to the edge tab (TutorMount
@@ -531,6 +536,13 @@ function TurnBubble({
   // A3 Wave 3: live turns carry the invitation on the payload; history turns
   // carry it in the assistant grounding jsonb (`?? null` tolerates pre-A3 rows).
   const invitation = payload?.invitation ?? turn.grounding?.invitation ?? null;
+  // A3 Wave 4: structures (presentational diagrams) + assessments (formative
+  // cards). Live turns carry them on the payload; history turns in the grounding
+  // jsonb (`?? []` tolerates pre-A3-Wave-4 rows / an unpersisted history gap).
+  const structures: TutorRenderStructureCard[] =
+    payload?.structures ?? turn.grounding?.structures ?? [];
+  const assessments: TutorAssessmentCard[] =
+    payload?.assessments ?? turn.grounding?.assessments ?? [];
 
   // A3-4: when this turn names practice nodes, the attempt must land on one of
   // THEM; a turn without practice items accepts any session attempt.
@@ -589,6 +601,14 @@ function TurnBubble({
         ) : null}
       </div>
 
+      {/* A3 Wave 4 — presentational structures (diagrams). Rendered ALWAYS
+          (A3-12), including on a `question` turn and even when this turn also
+          carries an answer: a structure is part of the explanation. In payload
+          order, beneath the prose. */}
+      {structures.map((s, i) => (
+        <TutorStructureCard key={`struct-${i}`} card={s} />
+      ))}
+
       {/* A3 Wave 3 — the invitation pill. Pressing it sends the LABEL verbatim
           (the learner bubble shows what they pressed) plus the deterministic
           initiation provenance payload. */}
@@ -620,6 +640,33 @@ function TurnBubble({
             />
           ))
         : null}
+
+      {/* A3 Wave 4 — assessment cards (checkUnderstanding / sequenceTask), in
+          payload order. Present only when the turn carried them (the server
+          strips them on a `question` turn, like practiceItems). */}
+      {assessments.map((card) =>
+        card.toolName === "checkUnderstanding" ? (
+          <TutorCheckUnderstandingCard
+            key={card.cardId}
+            card={card}
+            courseId={courseId}
+            publicationId={publicationId}
+            version={version}
+            lessonId={ambient.lessonId}
+            userId={userId}
+          />
+        ) : (
+          <TutorSequenceCard
+            key={card.cardId}
+            card={card}
+            courseId={courseId}
+            publicationId={publicationId}
+            version={version}
+            lessonId={ambient.lessonId}
+            userId={userId}
+          />
+        )
+      )}
 
       {escalationsUi && escalation ? (
         <TutorEscalationCard

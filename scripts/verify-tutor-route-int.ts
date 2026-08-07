@@ -96,6 +96,7 @@ import {
   recordPracticeAnswer,
   type TurnEnvelope,
 } from "@/lib/tutor/runtime/service";
+import { recordToolEvidence } from "@/lib/tutor/runtime/evidenceRecord";
 
 let pass = 0,
   fail = 0;
@@ -768,6 +769,133 @@ async function main() {
     const rowE3Lrn = await admin.from("tutor_turns").select("grounding").eq("id", turnA3e.persistedTurnIds.learner!).single();
     check("(e) learner grounding lean (the invalid claim resolved to question)",
       !(rowE3Lrn.data?.grounding as Record<string, unknown> | null)?.initiation);
+
+    /* ═══════ A3 Wave 4 — checkUnderstanding + tool_evidence + renderStructure ═══ */
+    console.log("\n# A3 Wave 4 — checkUnderstanding assessment → tool_evidence → tutor_evidence_recorded; renderStructure on a question turn");
+
+    // A FRESH learner isolates the assessment lifecycle.
+    const learner4 = await provisionUser(url, anon, "learner4");
+    const enrolled4 = await learner4.client
+      .from("enrollments")
+      .insert({ course_id: courseId, user_id: learner4.userId })
+      .select("*")
+      .single();
+    check("W4 learner self-enrolls", !enrolled4.error, String(enrolled4.error?.message));
+
+    // (f) A practice_request turn ("Quiz me on this lesson") that SCRIPTS a
+    //     checkUnderstanding tool call with a misconception-labeled distractor →
+    //     the tool EXECUTES (practice_request is a delivery path), the card lands
+    //     on turn.assessments with its answer key + misconceptions.
+    const checkArgs = {
+      conceptSlug: nodeId,
+      stem: "Why does a wash stay transparent?",
+      options: [
+        { id: "a", text: "Little pigment in the binder", correct: true, feedback: "Right — the binder stays clear." },
+        { id: "b", text: "The paper repels water", correct: false, misconceptionId: "paper-repels-water", feedback: "It's about pigment load, not the paper." },
+        { id: "c", text: "The brush is dry", correct: false, misconceptionId: "drybrush-transparency", feedback: "Drybrush is a different technique." },
+      ],
+    };
+    const modelW4f = createMockModelClient(
+      [
+        { toolCalls: [{ name: "checkUnderstanding", arguments: checkArgs }] },
+        { text: groundedOutput() },
+      ],
+      {}
+    );
+    const turnW4f = await runTutorTurnForRequest(
+      { learnerClient: learner4.client, admin, model: withPooledModel(modelW4f, { pool: poolFor("learner") }), loadSnapshot },
+      { userId: learner4.userId, envelope, learnerMessage: "Quiz me on this lesson" }
+    );
+    check("(f) practice_request turn ok + checkUnderstanding executed", turnW4f.turn?.ok === true, JSON.stringify({ ok: turnW4f.turn?.ok, err: turnW4f.turn?.error }));
+    const w4Assessments = turnW4f.turn?.assessments ?? [];
+    const w4Card = w4Assessments[0] as { cardId: string; toolName: string; conceptSlug: string; initiation: string; options: { id: string; correct: boolean; misconceptionId: string | null }[] } | undefined;
+    check("(f) the assessment card rides turn.assessments (checkUnderstanding, key + misconceptions)",
+      w4Assessments.length === 1 &&
+        w4Card?.toolName === "checkUnderstanding" &&
+        w4Card?.conceptSlug === nodeId &&
+        w4Card?.initiation === "practice_request" &&
+        w4Card?.options.find((o) => o.id === "b")?.misconceptionId === "paper-repels-water" &&
+        w4Card?.options.find((o) => o.id === "a")?.misconceptionId === null,
+      JSON.stringify(w4Card ?? null));
+    check("(f) a question-turn assessment is NEVER imposed — invitation null on this delivery turn", (turnW4f.turn?.invitation ?? null) === null);
+
+    // The learner COMPLETES the card by selecting the wrong option (b) → the route's
+    // tool_evidence handler. This suite drives the SERVICE, so it mirrors the route
+    // handler exactly: recordToolEvidence with completionKey = "toolcard:" + cardId.
+    const cardId = w4Card!.cardId;
+    const evBefore = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    const rec = await recordToolEvidence(admin, {
+      courseId,
+      publicationId: publication.id,
+      version: publication.version,
+      lessonId: envelope.lessonId ?? null,
+      userId: learner4.userId,
+      conceptSlug: nodeId,
+      toolName: "checkUnderstanding",
+      outcome: "not_demonstrated",
+      misconceptionSlug: "paper-repels-water",
+      confidence: "unsure",
+      fadeLevel: null,
+      initiation: "practice_request",
+      itemSource: "generated",
+      reviewedItemId: null,
+      latencyMs: 4200,
+      completionKey: `toolcard:${cardId}`,
+    });
+    check("(f) tool_evidence recorded", rec.recorded === true, JSON.stringify(rec));
+    const evAfter = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    check("(f) exactly ONE tutor_evidence_recorded row was appended", evAfter - evBefore === 1, JSON.stringify({ before: evBefore, after: evAfter }));
+
+    const evRow = await admin
+      .from("learning_events")
+      .select("event_type, node_id, tool_name, outcome, misconception_slug, initiation")
+      .eq("user_id", learner4.userId)
+      .eq("course_id", courseId)
+      .eq("event_type", "tutor_evidence_recorded")
+      .single();
+    check("(f) the row carries outcome + misconception + toolName + node",
+      !evRow.error &&
+        evRow.data?.node_id === nodeId &&
+        evRow.data?.tool_name === "checkUnderstanding" &&
+        evRow.data?.outcome === "not_demonstrated" &&
+        evRow.data?.misconception_slug === "paper-repels-water" &&
+        evRow.data?.initiation === "practice_request",
+      String(evRow.error?.message ?? JSON.stringify(evRow.data)));
+
+    // Idempotent: re-POSTing the SAME card (same completionKey) is a no-op.
+    const recDup = await recordToolEvidence(admin, {
+      courseId, publicationId: publication.id, version: publication.version, lessonId: envelope.lessonId ?? null,
+      userId: learner4.userId, conceptSlug: nodeId, toolName: "checkUnderstanding", outcome: "not_demonstrated",
+      misconceptionSlug: "paper-repels-water", confidence: "unsure", fadeLevel: null, initiation: "practice_request",
+      itemSource: "generated", reviewedItemId: null, latencyMs: 4200, completionKey: `toolcard:${cardId}`,
+    });
+    const evAfterDup = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    check("(f) a re-POST of the same card is a no-op (deterministic completionKey)", recDup.recorded === true && evAfterDup - evBefore === 1, JSON.stringify({ after: evAfterDup }));
+
+    // An author-preview tool_evidence would no-op at the route (access gate). The
+    // route no-ops BEFORE recordToolEvidence; assert the gate.
+    const authorW4Access = await resolveTutorAccess(admin, { userId: author.userId, courseId });
+    check("(f) an author-preview caller is gated (route no-ops before recordToolEvidence)", authorW4Access.kind === "author_preview");
+
+    // (g) A renderStructure call on a QUESTION turn → the structure rides
+    //     turn.structures, there is NO assessment, and NO evidence is emitted.
+    const evBeforeG = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    const modelW4g = createMockModelClient(
+      [
+        { toolCalls: [{ name: "renderStructure", arguments: { kind: "tree", title: "Layers", tree: { root: { label: "wash", children: [{ label: "glaze" }, { label: "drybrush" }] } } } }] },
+        { text: groundedOutput() },
+      ],
+      {}
+    );
+    const turnW4g = await runTutorTurnForRequest(
+      { learnerClient: learner4.client, admin, model: withPooledModel(modelW4g, { pool: poolFor("learner") }), loadSnapshot },
+      { userId: learner4.userId, envelope, learnerMessage: "Show me how the layers relate" }
+    );
+    check("(g) question turn ok + a structure rides turn.structures", turnW4g.turn?.ok === true && (turnW4g.turn?.structures.length ?? 0) === 1, JSON.stringify({ ok: turnW4g.turn?.ok, n: turnW4g.turn?.structures.length, err: turnW4g.turn?.error }));
+    check("(g) the built structure is a tree_diagram", turnW4g.turn?.structures[0]?.diagram?.kind === "tree_diagram");
+    check("(g) NO assessment on a renderStructure turn", (turnW4g.turn?.assessments.length ?? -1) === 0);
+    const evAfterG = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    check("(g) renderStructure emits NO tool evidence", evAfterG - evBeforeG === 0, JSON.stringify({ before: evBeforeG, after: evAfterG }));
   } finally {
     await cleanup();
     console.log("\n# cleaned up course + tutor rows (throwaway users remain — clean in Supabase → Auth)");

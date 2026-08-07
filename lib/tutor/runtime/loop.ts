@@ -87,12 +87,18 @@ import { tierOf } from "./toolTiers";
 import {
   applyInvocationPolicy,
   effectiveCooldown,
+  invitationToolForRung,
   CLASS_A_TOOL_NAMES,
   INVITATION_LABELS,
   type InvitationState,
   type TurnInitiation,
   type TurnInvitation,
 } from "./invocationPolicy";
+import type {
+  AssessmentCard,
+  AssessmentInitiation,
+  RenderStructureCard,
+} from "./toolsA3";
 import { evaluateEscalationTrigger } from "./escalationTriggers";
 import type { TurnEscalationProposal } from "./outputContract";
 import type { TutorInferencePayload } from "@/lib/analytics/events";
@@ -197,6 +203,13 @@ export interface TutorTurnResult {
    *  offered-marker the NEXT turn's derived state reads); the route surfaces it
    *  on the settled `turn` payload. Null/absent when none. */
   invitation?: TurnInvitation | null;
+  /** A3 Wave 4 — the renderStructure cards this turn produced (Class P). They ride
+   *  ANY turn incl. a question turn (A3-12) — NEVER stripped. Default []. */
+  structures: RenderStructureCard[];
+  /** A3 Wave 4 — the checkUnderstanding / sequenceTask cards this turn produced
+   *  (Class A). Forced [] on a question turn (mirrors practiceItems). The sink
+   *  stamps each card's `initiation` from the turn ctx. Default []. */
+  assessments: AssessmentCard[];
   error?: string;
 }
 
@@ -272,6 +285,8 @@ export async function runTutorTurn(
     responseId: lastResponseId,
     rung: null,
     sessionMarkers: [],
+    structures: [],
+    assessments: [],
     error,
   });
 
@@ -378,6 +393,8 @@ export async function runTutorTurn(
         responseId: null,
         rung: 0,
         sessionMarkers: [],
+        structures: [],
+        assessments: [],
       };
     }
 
@@ -414,11 +431,19 @@ export async function runTutorTurn(
       interjectionStamped = true;
     }
 
-    // A3 Wave 3 — per-turn initiation awareness (input-only; L0 stays byte-stable).
+    // A3 Wave 3/4 — per-turn initiation awareness (input-only; L0 stays
+    // byte-stable). On acceptance, NAME THE MAPPED TOOL (the offer was produced by
+    // invitationToolForRung): the accepted invitation's toolName is the tool to
+    // call — checkUnderstanding / sequenceTask / generate_practice — so the
+    // instruction no longer hard-codes generate_practice. A stale/unknown accepted
+    // toolName degrades to the rung-mapped tool (fallback generate_practice).
     if (initiation.kind === "invitation_accepted") {
       const label = INVITATION_LABELS[initiation.toolName] ?? INVITATION_LABELS.generate_practice;
+      const deliverTool = CLASS_A_TOOL_NAMES.has(initiation.toolName)
+        ? initiation.toolName
+        : invitationToolForRung(0);
       extraInstructions.push(
-        `The learner accepted your invitation: ${label} on this concept. Deliver it now (call generate_practice for that concept).`
+        `The learner accepted your invitation: ${label} on this concept. Deliver it now (call ${deliverTool} for that concept).`
       );
     } else if (initiation.kind === "practice_request") {
       extraInstructions.push("The learner explicitly asked for practice — deliver it directly this turn.");
@@ -470,6 +495,15 @@ export async function runTutorTurn(
     const toolTrace: { tool: string; summary: string }[] = [];
     const evidence: TutorInferencePayload[] = [];
     const practiceItems: MintedPracticeItem[] = [];
+    // A3 Wave 4 · the structure + assessment side channels. `assessments` are
+    // stamped with the turn's real initiation as the sink collects them (question
+    // turns carry none — the intercept downgrades a Class-A call BEFORE execution).
+    const structures: RenderStructureCard[] = [];
+    const assessments: AssessmentCard[] = [];
+    const assessmentInitiation: AssessmentInitiation | null =
+      initiation.kind === "practice_request" || initiation.kind === "invitation_accepted"
+        ? initiation.kind
+        : null;
     let escalation: TutorTurnResult["escalation"] = null;
     // A3 Wave 3 — the FIRST downgraded Class-A tool call this turn (question turns
     // only); applyInvocationPolicy converts it into the at-most-one invitation.
@@ -510,6 +544,15 @@ export async function runTutorTurn(
           timeoutMs: job.timeoutMs,
           maxRetries: job.maxRetries,
           maxOutputTokens: job.maxOutputTokens,
+          // R-2 (approved ruling) — P-3 UPDATE: the MAIN foreground tutor turn is
+          // stored provider-side (store:true), so `previous_response_id` chaining is
+          // a LIVE seam (there is now something to chain onto). This is scoped to
+          // the tutor_turn foreground call only — the item-gen / repair sub-calls
+          // keep their per-path default. It ENABLES the seam; it does NOT turn
+          // chaining on: TUTOR_ENABLE_CHAINING stays OFF by default (L4 textual
+          // replay is unchanged), and the A2 chain-id capture already reads the
+          // response id off the `started` event.
+          store: true,
           ...(chained ? { previousResponseId: chained.previousResponseId } : {}),
         },
         onEvent
@@ -552,6 +595,8 @@ export async function runTutorTurn(
             responseId: lastResponseId,
             rung: null,
             sessionMarkers: [],
+            structures: [],
+            assessments: [],
             approvalRequired: { toolName: call.name },
           };
         }
@@ -593,8 +638,17 @@ export async function runTutorTurn(
         const { summary, data } = await runTool(call.name, call.arguments, toolDeps);
         toolTrace.push({ tool: call.name, summary });
 
-        // Collect side-channel outputs the loop must surface.
-        collectToolOutputs(call.name, data, { evidence, practiceItems, setEscalation: (e) => (escalation = e) });
+        // Collect side-channel outputs the loop must surface. The sink stamps
+        // each assessment card's `initiation` from the turn ctx (the tool minted a
+        // placeholder — the sink knows the real initiation).
+        collectToolOutputs(call.name, data, {
+          evidence,
+          practiceItems,
+          structures,
+          assessments,
+          assessmentInitiation,
+          setEscalation: (e) => (escalation = e),
+        });
 
         conversation.push({
           type: "function_call_output",
@@ -792,6 +846,12 @@ export async function runTutorTurn(
       // the turn completed ok — a failed turn persists nothing, so no marker.
       sessionMarkers: interjectionStamped ? [ROOT_CAUSE_INTERJECTION_MARKER] : [],
       invitation: policy.invitation,
+      // A3 Wave 4 · structures ride ANY turn untouched (A3-12); assessments are
+      // FORCED [] on a question turn (mirroring practiceItems) — belt-and-braces
+      // over the intercept, which already prevents a Class-A tool from executing
+      // on a question turn.
+      structures,
+      assessments: initiation.kind === "question" ? [] : assessments,
     };
   } catch (err) {
     return empty(err instanceof Error ? err.message : String(err));
@@ -830,10 +890,11 @@ async function runTool(
   }
 }
 
-/** A3 Wave 3 — the concept a downgraded Class-A call targeted: the FIRST entry of
- *  a `nodeIds` array (the generate_practice arg shape) or a scalar `nodeId`; ""
- *  when the args don't parse (the invitation still offers — acceptance then
- *  matches on the empty id, harmless). */
+/** A3 Wave 3/4 — the concept a downgraded Class-A call targeted: the FIRST entry
+ *  of a `nodeIds` array (generate_practice), a scalar `nodeId`, or a scalar
+ *  `conceptSlug` (the checkUnderstanding / sequenceTask arg shape — the concept
+ *  node uuid, R-1); "" when the args don't parse (the invitation still offers —
+ *  acceptance then matches on the empty id, harmless). */
 function firstNodeIdFromArgs(rawArgs: string): string {
   try {
     const parsed = JSON.parse(rawArgs || "{}");
@@ -841,6 +902,7 @@ function firstNodeIdFromArgs(rawArgs: string): string {
       const rec = parsed as Record<string, unknown>;
       if (Array.isArray(rec.nodeIds) && typeof rec.nodeIds[0] === "string") return rec.nodeIds[0];
       if (typeof rec.nodeId === "string") return rec.nodeId;
+      if (typeof rec.conceptSlug === "string") return rec.conceptSlug;
     }
   } catch {
     /* unparseable args still downgrade */
@@ -848,13 +910,23 @@ function firstNodeIdFromArgs(rawArgs: string): string {
   return "";
 }
 
-/** Route a tool's structured output into the loop's side channels. */
+/** Route a tool's structured output into the loop's side channels. A3 Wave 4:
+ *  renderStructure → structures sink; checkUnderstanding / sequenceTask →
+ *  assessments sink, STAMPING each card's `initiation` from the turn ctx (the tool
+ *  minted a placeholder — the sink is where the per-turn initiation is known). A
+ *  question turn never reaches here for a Class-A tool (the intercept downgrades
+ *  it BEFORE execution), so `assessmentInitiation` is non-null whenever an
+ *  assessment card actually lands; a defensive null falls back to
+ *  practice_request. */
 function collectToolOutputs(
   name: string,
   data: unknown,
   sinks: {
     evidence: TutorInferencePayload[];
     practiceItems: MintedPracticeItem[];
+    structures: RenderStructureCard[];
+    assessments: AssessmentCard[];
+    assessmentInitiation: AssessmentInitiation | null;
     setEscalation: (e: TutorTurnResult["escalation"]) => void;
   }
 ): void {
@@ -864,6 +936,13 @@ function collectToolOutputs(
     for (const it of rec.items) sinks.evidence.push(it as TutorInferencePayload);
   } else if (name === "generate_practice" && Array.isArray(rec.items)) {
     for (const it of rec.items) sinks.practiceItems.push(it as MintedPracticeItem);
+  } else if (name === "renderStructure" && rec.structure != null) {
+    // Class P — the built (validated) OR drop-and-flagged card. Never stamped
+    // with initiation; renders on any turn incl. a question turn (A3-12).
+    sinks.structures.push(rec.structure as RenderStructureCard);
+  } else if ((name === "checkUnderstanding" || name === "sequenceTask") && rec.assessment != null) {
+    const card = rec.assessment as AssessmentCard;
+    sinks.assessments.push({ ...card, initiation: sinks.assessmentInitiation ?? "practice_request" });
   } else if (name === "propose_escalation") {
     sinks.setEscalation({
       candidateId: (rec.candidateId as string | null) ?? null,

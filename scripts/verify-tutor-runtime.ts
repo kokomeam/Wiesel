@@ -7,8 +7,16 @@
  *   AC-T3.2  Prompt assembly — two DIFFERENT learners on the SAME (publication,
  *            lesson, charter) share BYTE-IDENTICAL system + developer; only the
  *            input (L3/L4/message) differs. TUTOR_L0 ≥ 4096 chars;
- *            TUTOR_PROMPT_VERSION === "tutor-v3" (A3 Wave 3: the ONE bump for
- *            the PRACTICE & INVITATIONS L0 section).
+ *            TUTOR_PROMPT_VERSION === "tutor-v4" (A3 Wave 4: the tools bump —
+ *            renderStructure / checkUnderstanding / sequenceTask in YOUR TOOLS +
+ *            the FORMATTING ASCII ban now routes to renderStructure).
+ *   A3-12/   Wave 4 — renderStructure survives a question turn (structures pass
+ *   13/15/24 through, assessments forced []); checkUnderstanding schema rejects a
+ *            missing-misconception distractor + a keyless item; sequenceTask
+ *            permutation gate; the pure scoreSequence matrix; a malformed spec
+ *            drops-and-flags (never throws); a downgraded checkUnderstanding on a
+ *            question turn → an invitation naming checkUnderstanding; the R-2
+ *            store:true chaining seam on the MAIN turn.
  *   A3-6..11 Invocation policy (Wave 3) — the seeded PROPERTY run (question
  *            turns NEVER retain practiceItems; ≤1 invitation; cooldown/A3-9
  *            guards), downgrade-to-invitation (pure + loop-level non-execution),
@@ -114,6 +122,14 @@ import {
   type TurnInvitation,
 } from "@/lib/tutor/runtime/invocationPolicy";
 import type { SessionTurn } from "@/lib/tutor/runtime/session";
+import {
+  A3_WAVE4_TOOLS,
+  scoreSequence,
+  type AssessmentCard,
+  type CheckUnderstandingCard,
+  type RenderStructureCard,
+  type SequenceTaskCard,
+} from "@/lib/tutor/runtime/toolsA3";
 
 let pass = 0,
   fail = 0;
@@ -353,7 +369,7 @@ async function main() {
   check("developer byte-identical across learners", promptA.developer === promptB.developer);
   check("input differs across learners", promptA.input !== promptB.input);
   check("TUTOR_L0 ≥ 4096 chars", TUTOR_L0.length >= 4096, `len=${TUTOR_L0.length}`);
-  check("TUTOR_PROMPT_VERSION === tutor-v3 (A3 Wave 3 bump)", TUTOR_PROMPT_VERSION === "tutor-v3");
+  check("TUTOR_PROMPT_VERSION === tutor-v4 (A3 Wave 4 bump)", TUTOR_PROMPT_VERSION === "tutor-v4");
   check("system IS TUTOR_L0 verbatim", promptA.system === TUTOR_L0);
 
   /* ───────────── AC-T3.3/T3.4 · scaffolding goldens ────────────────────── */
@@ -541,24 +557,41 @@ async function main() {
   console.log("\n— AC-T3.6 tools —");
 
   check(
-    "TUTOR_TOOL_NAMES is exactly the five (order-insensitive)",
-    new Set(TUTOR_TOOL_NAMES).size === 5 &&
-      ["get_lesson_context", "get_mastery_summary", "generate_practice", "emit_evidence", "propose_escalation"].every((n) =>
-        (TUTOR_TOOL_NAMES as readonly string[]).includes(n)
-      ),
+    "TUTOR_TOOL_NAMES is exactly the EIGHT (Wave-3 five + A3 Wave-4 three, order-insensitive)",
+    new Set(TUTOR_TOOL_NAMES).size === 8 &&
+      [
+        "get_lesson_context",
+        "get_mastery_summary",
+        "generate_practice",
+        "emit_evidence",
+        "propose_escalation",
+        "renderStructure",
+        "checkUnderstanding",
+        "sequenceTask",
+      ].every((n) => (TUTOR_TOOL_NAMES as readonly string[]).includes(n)),
     TUTOR_TOOL_NAMES.join(",")
   );
 
-  // Every tool's zod → toStrictJsonSchema without throw.
+  // Every tool's zod → toStrictJsonSchema without throw AND with a top-level
+  // `type: "object"`. The OpenAI function-calling API rejects a `parameters`
+  // schema whose top type isn't object (a top-level discriminatedUnion converts
+  // to bare `anyOf` → "got type: None", a live-only 400 the mock never sees —
+  // caught by the Wave-4 live smoke, now pinned here).
   let schemaOk = true;
+  let topTypeOk = true;
   for (const name of TUTOR_TOOL_NAMES) {
     try {
-      toStrictJsonSchema(TUTOR_TOOLS[name].params as z.ZodType);
+      const js = toStrictJsonSchema(TUTOR_TOOLS[name].params as z.ZodType) as Record<string, unknown>;
+      if (js.type !== "object") {
+        topTypeOk = false;
+        console.log(`  … ${name} top-level type is ${JSON.stringify(js.type)} (needs "object")`);
+      }
     } catch {
       schemaOk = false;
     }
   }
-  check("all five tool param schemas convert to strict JSON schema", schemaOk);
+  check("all eight tool param schemas convert to strict JSON schema", schemaOk);
+  check("every tool's params is a top-level type:object (OpenAI-valid)", topTypeOk);
 
   // emit_evidence with a CAPTURING stub performs ZERO writes.
   {
@@ -1040,17 +1073,37 @@ async function main() {
     ];
     const headerLines = TUTOR_L0.match(/^== .+ ==$/gm) ?? [];
     check(
-      "L0 section inventory = the Wave-1 set + exactly the A3-Wave-3 PRACTICE & INVITATIONS section",
+      "L0 section inventory UNCHANGED across the A3-Wave-4 bump (same 11 headers)",
       expectedSections.every((s) => TUTOR_L0.includes(s)) && headerLines.length === expectedSections.length,
       `headers=${headerLines.join(" | ")}`
     );
     // The tutor-v3 section teaches offer-not-impose + deliver-on-ask (invocation
-    // policy is enforced in CODE — this is the model-facing framing only).
+    // policy is enforced in CODE — this is the model-facing framing only). A3
+    // Wave 4 KEEPS this line verbatim.
     check(
       "L0 practice section: never attach unasked practice + deliver immediately on ask/accept",
       TUTOR_L0.includes("Never attach practice to an answer the learner did not ask for") &&
         TUTOR_L0.includes("quiet invitation") &&
         TUTOR_L0.includes("deliver it immediately")
+    );
+    // A3 Wave 4 — the three new tools appear in the YOUR TOOLS capability list with
+    // their teaching lines.
+    check(
+      "L0 YOUR TOOLS lists renderStructure / checkUnderstanding / sequenceTask",
+      TUTOR_L0.includes("\n  renderStructure —") &&
+        TUTOR_L0.includes("\n  checkUnderstanding —") &&
+        TUTOR_L0.includes("\n  sequenceTask —")
+    );
+    check(
+      "L0 teaches: renderStructure for tree/graph/timeline/axes; every wrong option names its misconception",
+      TUTOR_L0.includes("tree, graph, timeline, or coordinate axes") &&
+        TUTOR_L0.includes("EVERY wrong option MUST name the misconception it represents")
+    );
+    // The FORMATTING ASCII ban now points at renderStructure (not "no channel yet").
+    check(
+      "L0 FORMATTING: the ASCII ban routes tree/graph/timeline/plot to renderStructure",
+      TUTOR_L0.includes("NEVER ASCII or monospace diagrams") &&
+        TUTOR_L0.includes("use the renderStructure tool")
     );
   }
 
@@ -1509,13 +1562,23 @@ async function main() {
         RUNG_INVITATION_TOOLS[4].includes("checkUnderstanding")
     );
     check(
-      "R-6: every rung resolves to generate_practice while it is the only implemented surface",
-      [0, 1, 2, 3, 4].every((r) => invitationToolForRung(r) === "generate_practice")
+      "R-6: rungs 0–1 & 4 → checkUnderstanding, rung 2 → sequenceTask (mapped tools now implemented)",
+      invitationToolForRung(0) === "checkUnderstanding" &&
+        invitationToolForRung(1) === "checkUnderstanding" &&
+        invitationToolForRung(2) === "sequenceTask" &&
+        invitationToolForRung(4) === "checkUnderstanding",
+      [0, 1, 2, 3, 4].map((r) => `${r}:${invitationToolForRung(r)}`).join(" ")
     );
     check(
-      "CLASS_A_TOOL_NAMES = {generate_practice} today; every member has a label",
-      CLASS_A_TOOL_NAMES.size === 1 &&
+      "R-6: rung 3 falls back to generate_practice (fadedExample is Wave 5, not yet active)",
+      invitationToolForRung(3) === "generate_practice"
+    );
+    check(
+      "CLASS_A_TOOL_NAMES = {generate_practice, checkUnderstanding, sequenceTask}; every member has a label",
+      CLASS_A_TOOL_NAMES.size === 3 &&
         CLASS_A_TOOL_NAMES.has("generate_practice") &&
+        CLASS_A_TOOL_NAMES.has("checkUnderstanding") &&
+        CLASS_A_TOOL_NAMES.has("sequenceTask") &&
         [...CLASS_A_TOOL_NAMES].every((t) => typeof INVITATION_LABELS[t] === "string")
     );
 
@@ -1875,6 +1938,406 @@ async function main() {
     // ...and an intervening assistant turn WITHOUT an invitation also clears it.
     const s9 = deriveInvitationState([assistantT(0, INV), learnerT(1), assistantT(2)], at(3));
     check("A3-11: a later assistant turn without an offer → priorInvitation null", s9.priorInvitation === null, JSON.stringify(s9));
+  }
+
+  /* ────────── A3 Wave 4 · renderStructure / checkUnderstanding / sequenceTask ── */
+  console.log("\n— A3 Wave 4 · structure + assessment tools —");
+  {
+    const deps = baseToolDeps();
+
+    /* ── A3-13 · checkUnderstanding schema REJECTS a missing-misconception distractor
+     *    and ACCEPTS a fully-labeled one. ── */
+    const cuTool = A3_WAVE4_TOOLS.checkUnderstanding;
+    const badCheck = {
+      conceptSlug: NODE_1,
+      stem: "Where does price settle?",
+      options: [
+        { id: "a", text: "At equilibrium", correct: true, feedback: "Right — supply meets demand." },
+        // A wrong option with NO misconceptionId → A3-13 must reject at parse.
+        { id: "b", text: "Above equilibrium", correct: false, feedback: "Not quite." },
+        { id: "c", text: "Below equilibrium", correct: false, misconceptionId: "confuses-shortage", feedback: "Think about surplus." },
+      ],
+    };
+    check("A3-13: checkUnderstanding schema REJECTS a wrong option with no misconceptionId", !cuTool.params.safeParse(badCheck).success);
+
+    const goodCheck = {
+      conceptSlug: NODE_1,
+      stem: "Where does price settle?",
+      options: [
+        { id: "a", text: "At equilibrium", correct: true, feedback: "Right — supply meets demand." },
+        { id: "b", text: "Above equilibrium", correct: false, misconceptionId: "price-only-rises", feedback: "That would create a surplus." },
+        { id: "c", text: "Below equilibrium", correct: false, misconceptionId: "price-only-falls", feedback: "That would create a shortage." },
+      ],
+      collectConfidence: true,
+    };
+    check("A3-13: checkUnderstanding schema ACCEPTS a fully-labeled item", cuTool.params.safeParse(goodCheck).success);
+
+    // Executing a good check mints a cardId + carries the answer key + every wrong
+    // option's misconceptionId; a correct option's misconceptionId is null.
+    const cuOut = await cuTool.execute(cuTool.params.parse(goodCheck) as never, deps);
+    const cuCard = (cuOut.data as { assessment: CheckUnderstandingCard }).assessment;
+    check(
+      "A3-13: checkUnderstanding card mints a cardId + preserves the key + wrong-option misconceptions",
+      typeof cuCard.cardId === "string" &&
+        cuCard.cardId.length > 0 &&
+        cuCard.toolName === "checkUnderstanding" &&
+        cuCard.conceptSlug === NODE_1 &&
+        cuCard.options.find((o) => o.id === "a")?.misconceptionId === null &&
+        cuCard.options.find((o) => o.id === "b")?.misconceptionId === "price-only-rises",
+      JSON.stringify(cuCard.options.map((o) => [o.id, o.misconceptionId]))
+    );
+
+    // A check with NO correct option is rejected (unusable key).
+    const noKey = {
+      conceptSlug: NODE_1,
+      stem: "?",
+      options: [
+        { id: "a", text: "x", correct: false, misconceptionId: "m1", feedback: "f" },
+        { id: "b", text: "y", correct: false, misconceptionId: "m2", feedback: "f" },
+        { id: "c", text: "z", correct: false, misconceptionId: "m3", feedback: "f" },
+      ],
+    };
+    check("A3-13: checkUnderstanding schema REJECTS an item with no correct option", !cuTool.params.safeParse(noKey).success);
+
+    /* ── sequenceTask schema: correctOrder must be a permutation of item ids. ── */
+    const seqTool = A3_WAVE4_TOOLS.sequenceTask;
+    const goodSeq = {
+      conceptSlug: NODE_1,
+      prompt: "Order the steps.",
+      items: [
+        { id: "s1", text: "Read input" },
+        { id: "s2", text: "Process" },
+        { id: "s3", text: "Write output" },
+      ],
+      correctOrder: ["s1", "s2", "s3"],
+      partialCreditRule: "adjacent-pairs" as const,
+    };
+    check("sequenceTask schema ACCEPTS a valid permutation", seqTool.params.safeParse(goodSeq).success);
+    check(
+      "sequenceTask schema REJECTS correctOrder that isn't a permutation of item ids",
+      !seqTool.params.safeParse({ ...goodSeq, correctOrder: ["s1", "s2", "s2"] }).success &&
+        !seqTool.params.safeParse({ ...goodSeq, correctOrder: ["s1", "s2"] }).success &&
+        !seqTool.params.safeParse({ ...goodSeq, correctOrder: ["s1", "s2", "sX"] }).success
+    );
+    const seqOut = await seqTool.execute(seqTool.params.parse(goodSeq) as never, deps);
+    const seqCard = (seqOut.data as { assessment: SequenceTaskCard }).assessment;
+    check(
+      "sequenceTask card mints a cardId + carries items + correctOrder + rule",
+      typeof seqCard.cardId === "string" &&
+        seqCard.toolName === "sequenceTask" &&
+        seqCard.items.length === 3 &&
+        seqCard.correctOrder.join(",") === "s1,s2,s3" &&
+        seqCard.partialCreditRule === "adjacent-pairs"
+    );
+
+    /* ── A3-15 · the pure scoreSequence scorer matrix. ── */
+    const CO = ["a", "b", "c", "d"];
+    check("A3-15: exact all-right → demonstrated", scoreSequence(CO, ["a", "b", "c", "d"], "exact") === "demonstrated");
+    check("A3-15: exact one swap → not_demonstrated (no partial for exact)", scoreSequence(CO, ["b", "a", "c", "d"], "exact") === "not_demonstrated");
+    check("A3-15: adjacent-pairs all-right → demonstrated", scoreSequence(CO, ["a", "b", "c", "d"], "adjacent-pairs") === "demonstrated");
+    check(
+      "A3-15: adjacent-pairs one misplaced (2/3 pairs) → partial",
+      scoreSequence(CO, ["a", "b", "d", "c"], "adjacent-pairs") === "partial",
+      scoreSequence(CO, ["a", "b", "d", "c"], "adjacent-pairs")
+    );
+    check("A3-15: adjacent-pairs reversed → not_demonstrated", scoreSequence(CO, ["d", "c", "b", "a"], "adjacent-pairs") === "not_demonstrated");
+    // The middle-transposition case that split the server/client scorers before
+    // consolidation: b,c swapped keeps 2/3 relative orders → partial (NOT the
+    // adjacency metric's total failure). This pins the relative-order definition
+    // that AGREES with the client twin scoreSequenceCard.
+    check(
+      "A3-15: adjacent-pairs middle transposition a,c,b,d → partial (relative-order metric)",
+      scoreSequence(CO, ["a", "c", "b", "d"], "adjacent-pairs") === "partial",
+      scoreSequence(CO, ["a", "c", "b", "d"], "adjacent-pairs")
+    );
+    // A non-permutation submission never passes.
+    check("A3-15: a non-permutation submission → not_demonstrated", scoreSequence(CO, ["a", "b", "c"], "adjacent-pairs") === "not_demonstrated");
+
+    /* ── renderStructure: each kind builds + validates; the built diagram ships. ── */
+    const rsTool = A3_WAVE4_TOOLS.renderStructure;
+    const treeArgs = {
+      kind: "tree" as const,
+      title: "Recursion",
+      caption: "The recursion tree",
+      tree: { root: { label: "f(3)", children: [{ label: "f(2)" }, { label: "f(1)" }] } },
+    };
+    const treeOut = await rsTool.execute(rsTool.params.parse(treeArgs) as never, deps);
+    const treeCard = (treeOut.data as { structure: RenderStructureCard }).structure;
+    check(
+      "renderStructure tree → a valid tree_diagram ships (kind mapped)",
+      treeCard.diagram?.kind === "tree_diagram" && treeCard.title === "Recursion"
+    );
+    const axesArgs = {
+      kind: "axes" as const,
+      axes: {
+        xLabel: "x",
+        yLabel: "y",
+        xRange: { min: 0, max: 10 },
+        yRange: { min: 0, max: 10 },
+        series: [{ label: "line", points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }],
+      },
+    };
+    const axesOut = await rsTool.execute(rsTool.params.parse(axesArgs) as never, deps);
+    check("renderStructure axes → coordinate_plot", (axesOut.data as { structure: RenderStructureCard }).structure.diagram?.kind === "coordinate_plot");
+    const timelineArgs = {
+      kind: "timeline" as const,
+      timeline: { points: [{ label: "1990" }, { label: "2000" }, { label: "2010" }] },
+    };
+    const tlOut = await rsTool.execute(rsTool.params.parse(timelineArgs) as never, deps);
+    const tlCard = (tlOut.data as { structure: RenderStructureCard }).structure;
+    check("renderStructure timeline → number_line with ordered labeled points", tlCard.diagram?.kind === "number_line" && tlCard.diagram !== null);
+    const graphArgs = {
+      kind: "graph" as const,
+      graph: {
+        weighted: true,
+        nodes: [{ id: "A" }, { id: "B" }],
+        edges: [{ from: "A", to: "B", weight: 3 }],
+      },
+    };
+    const graphOut = await rsTool.execute(rsTool.params.parse(graphArgs) as never, deps);
+    check(
+      "renderStructure graph (weighted, every edge weighted) → graph_diagram",
+      (graphOut.data as { structure: RenderStructureCard }).structure.diagram?.kind === "graph_diagram"
+    );
+    // A missing body for the chosen kind drops-and-flags (no throw).
+    const noBodyOut = await rsTool.execute(rsTool.params.parse({ kind: "tree" }) as never, deps);
+    check(
+      "renderStructure with kind but no body → dropped (diagram null)",
+      (noBodyOut.data as { structure: RenderStructureCard }).structure.diagram === null
+    );
+
+    /* ── A3-24 · a malformed spec → dropped (diagram null + error), NEVER throws. ──
+     *    A weighted graph with an UNWEIGHTED edge fails validateDiagram; the tool
+     *    drops-and-flags rather than throwing. ── */
+    const logsRS: string[] = [];
+    const origLogRS = console.log;
+    console.log = (...a: unknown[]) => { logsRS.push(a.map(String).join(" ")); };
+    let badRsOut!: Awaited<ReturnType<typeof rsTool.execute>>;
+    try {
+      badRsOut = await rsTool.execute(
+        rsTool.params.parse({
+          kind: "graph",
+          graph: {
+            weighted: true,
+            nodes: [{ id: "A" }, { id: "B" }],
+            edges: [{ from: "A", to: "B" }], // no weight → invalid for a weighted graph
+          },
+        }) as never,
+        deps
+      );
+    } finally {
+      console.log = origLogRS;
+    }
+    const badCard = (badRsOut.data as { structure: RenderStructureCard; error?: string });
+    check("A3-24: a malformed renderStructure spec drops-and-flags (diagram null + error)", badCard.structure.diagram === null && typeof badCard.error === "string");
+    check("A3-24: tutor_structure_dropped logged, tool never threw", logsRS.some((l) => l.includes('"tag":"tutor_structure_dropped"')));
+
+    /* ── A3-12 · renderStructure SURVIVES a question turn (structures pass through;
+     *    assessments forced []). Drive the full loop with a scripted renderStructure
+     *    tool call on a QUESTION turn, then a grounded final. ── */
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "renderStructure",
+              arguments: { kind: "tree", title: "T", tree: { root: { label: "root", children: [{ label: "L" }, { label: "R" }] } } },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Here is the structure.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 2,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "draw me the recursion tree",
+          // initiation omitted → { kind: "question" }
+        }
+      );
+      check("A3-12: renderStructure EXECUTES on a question turn (never intercepted)", res.ok === true && res.structures.length === 1, `ok=${res.ok} n=${res.structures.length} err=${res.error ?? ""}`);
+      check("A3-12: the structure passes through to the settled turn (tree_diagram)", res.structures[0]?.diagram?.kind === "tree_diagram");
+      check("A3-12: a question turn forces assessments []", res.assessments.length === 0);
+      check("A3-12: renderStructure carries NO invitation (Class P, not gated)", (res.invitation ?? null) === null);
+    }
+
+    /* ── downgrade-of-checkUnderstanding-on-a-question-turn: the intercept converts
+     *    the Class-A call to an invitation NAMING checkUnderstanding (never executes
+     *    the tool), and firstNodeIdFromArgs reads conceptSlug so the node rides. ── */
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "checkUnderstanding",
+              arguments: {
+                conceptSlug: NODE_1,
+                stem: "Where does price settle?",
+                options: [
+                  { id: "a", text: "At equilibrium", correct: true, feedback: "Right." },
+                  { id: "b", text: "Above", correct: false, misconceptionId: "m1", feedback: "No." },
+                  { id: "c", text: "Below", correct: false, misconceptionId: "m2", feedback: "No." },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 1,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const logsDG: string[] = [];
+      const origLogDG = console.log;
+      console.log = (...a: unknown[]) => { logsDG.push(a.map(String).join(" ")); };
+      let res!: Awaited<ReturnType<typeof runTutorTurn>>;
+      try {
+        res = await runTutorTurn(
+          {
+            learnerClient: emptyLearnerClient(),
+            serviceClient: capturingServiceClient().client,
+            model,
+            loadSnapshot: async () => ({ snapshot: snapshotFx }),
+            conceptNodes: CONCEPT_NODES,
+            conceptEdges: CONCEPT_EDGES,
+          },
+          {
+            userId: USER_A,
+            courseId: COURSE,
+            publicationId: PUB,
+            version: 1,
+            lessonId: L1,
+            charterRow: CHARTER_ROW("guided_default"),
+            historyTurns: [{ role: "learner", content: "prior" }],
+            learnerMessage: "why does price settle there?",
+          }
+        );
+      } finally {
+        console.log = origLogDG;
+      }
+      check("downgrade: checkUnderstanding on a question turn is NOT executed (no assessment)", res.assessments.length === 0);
+      check(
+        "downgrade: the invitation NAMES checkUnderstanding + carries the conceptSlug node (firstNodeIdFromArgs reads conceptSlug)",
+        res.invitation?.toolName === "checkUnderstanding" && res.invitation?.nodeId === NODE_1,
+        JSON.stringify(res.invitation ?? null)
+      );
+      check("downgrade: the turn still settles ok (downgraded, never blocked)", res.ok === true && !res.approvalRequired, `ok=${res.ok} err=${res.error ?? ""}`);
+      check("downgrade: tutor_tool_downgraded logged for checkUnderstanding", logsDG.some((l) => l.includes('"tag":"tutor_tool_downgraded"') && l.includes('"toolName":"checkUnderstanding"')));
+    }
+
+    /* ── acceptance path: an invitation_accepted turn EXECUTES checkUnderstanding →
+     *    the card surfaces on `assessments`, stamped with the acceptance initiation,
+     *    and NO invitation. ── */
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "checkUnderstanding",
+              arguments: {
+                conceptSlug: NODE_1,
+                stem: "Where does price settle?",
+                options: [
+                  { id: "a", text: "At equilibrium", correct: true, feedback: "Right." },
+                  { id: "b", text: "Above", correct: false, misconceptionId: "m1", feedback: "No." },
+                  { id: "c", text: "Below", correct: false, misconceptionId: "m2", feedback: "No." },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Here's a quick check.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 2,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "yes, check me",
+          initiation: { kind: "invitation_accepted", toolName: "checkUnderstanding", nodeId: NODE_1 },
+        }
+      );
+      const asmt = res.assessments[0] as AssessmentCard | undefined;
+      check("acceptance: checkUnderstanding EXECUTES → one assessment card", res.assessments.length === 1 && asmt?.toolName === "checkUnderstanding", `n=${res.assessments.length} err=${res.error ?? ""}`);
+      check("acceptance: the card's initiation is stamped invitation_accepted by the sink", asmt?.initiation === "invitation_accepted", JSON.stringify(asmt?.initiation));
+      check("acceptance: the delivery turn carries NO invitation", (res.invitation ?? null) === null);
+      // The acceptance instruction NAMES the mapped tool (checkUnderstanding), not generate_practice.
+      const userItem = (model.getCalls()[0]?.input as unknown[]).find(
+        (it) => it != null && typeof it === "object" && (it as Record<string, unknown>).role === "user"
+      ) as Record<string, unknown> | undefined;
+      check("acceptance: the per-turn instruction names checkUnderstanding (not generate_practice)", String(userItem?.content ?? "").includes("call checkUnderstanding for that concept"));
+    }
+
+    /* ── R-2 · the MAIN tutor turn is dispatched with store:true (the chaining seam
+     *    is live). Inspect the mock's captured params. ── */
+    {
+      const { deps, model } = loopDepsWithStructured({
+        proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+        citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+        rung: 2,
+      });
+      await runTutorTurn(
+        { ...deps },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "why?",
+        }
+      );
+      const mainCall = model.getCalls().find((c) => c.responseFormat?.name === "tutor_turn_output");
+      check("R-2: the MAIN tutor_turn call is dispatched with store:true", mainCall?.store === true, JSON.stringify({ store: mainCall?.store }));
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -38,6 +38,12 @@ import {
   TurnPracticeItemSchema,
   TurnEscalationProposalSchema,
 } from "./outputContract";
+// A3 Wave 4 — the diagram field on a renderStructure card is a VALIDATED
+// lib/course/diagram spec (storage-schema shape). This is SERVER-only (zod is
+// fine here); the zod-free client mirror (tutorClientTypes.ts) hand-types it and
+// imports ONLY {types,geometry,validate} + the renderers, NEVER this Zod half
+// (the PERF-1 zod-free learn-bundle rule).
+import { DiagramSpecStorageSchema } from "@/lib/course/diagram/schemas";
 
 /* ─────────────────────────── turn payload sub-shapes ────────────────────────── */
 
@@ -59,6 +65,63 @@ export const WireInvitationSchema = z.object({
 });
 export type WireInvitation = z.infer<typeof WireInvitationSchema>;
 
+/* ─────────────────────── A3 Wave 4 — structure + assessment cards ────────── */
+
+/** Class P — a renderStructure card. MAY appear on a question turn (A3-12); never
+ *  stripped. `diagram` is the validated storage-shape spec, or null on the
+ *  drop-and-flag path (the tool logged tutor_structure_dropped). */
+export const RenderStructureCardSchema = z.object({
+  kind: z.enum(["tree", "graph", "timeline", "axes"]),
+  title: z.string().nullable(),
+  caption: z.string().nullable(),
+  diagram: DiagramSpecStorageSchema.nullable(),
+});
+export type RenderStructureCard = z.infer<typeof RenderStructureCardSchema>;
+
+/** Class A — a checkUnderstanding card. Formative: the answer key + every wrong
+ *  option's misconceptionId ship (the client grades locally, the practiceItems
+ *  precedent). NEVER on a question turn (stripped like practiceItems). */
+export const CheckUnderstandingCardSchema = z.object({
+  cardId: z.string(),
+  toolName: z.literal("checkUnderstanding"),
+  conceptSlug: z.string(),
+  initiation: z.enum(["practice_request", "invitation_accepted"]),
+  stem: z.string(),
+  options: z
+    .array(
+      z.object({
+        id: z.string(),
+        text: z.string(),
+        correct: z.boolean(),
+        misconceptionId: z.string().nullable(),
+        feedback: z.string(),
+      })
+    )
+    .min(3)
+    .max(4),
+  collectConfidence: z.boolean(),
+});
+
+/** Class A — a sequenceTask card. `correctOrder` ships (formative, client-scored
+ *  by `partialCreditRule`). */
+export const SequenceTaskCardSchema = z.object({
+  cardId: z.string(),
+  toolName: z.literal("sequenceTask"),
+  conceptSlug: z.string(),
+  initiation: z.enum(["practice_request", "invitation_accepted"]),
+  prompt: z.string(),
+  items: z.array(z.object({ id: z.string(), text: z.string() })).min(3),
+  correctOrder: z.array(z.string()),
+  partialCreditRule: z.enum(["exact", "adjacent-pairs"]),
+});
+
+/** The assessment-card union — discriminated on `toolName`. */
+export const AssessmentCardSchema = z.discriminatedUnion("toolName", [
+  CheckUnderstandingCardSchema,
+  SequenceTaskCardSchema,
+]);
+export type AssessmentCard = z.infer<typeof AssessmentCardSchema>;
+
 /** The `turn` payload — the settled output of ONE tutor turn. Mirrors the
  *  route's inline payload (route.ts:46-60). `rung` is nullable (the route types
  *  it `number | null`); `practiceItems`/`flags` are always arrays (the route
@@ -74,6 +137,11 @@ export const TutorTurnPayloadSchema = z.object({
   escalationCandidateId: z.string().nullable(),
   flags: z.array(z.string()),
   invitation: WireInvitationSchema.nullable(),
+  // A3 Wave 4 — appended AFTER invitation (streaming/prose-extractor order
+  // unaffected; these ride the settled `turn` frame only). Nullable arrays
+  // defaulting [] so an older client-shaped payload without them still parses.
+  structures: z.array(RenderStructureCardSchema).nullable().default([]),
+  assessments: z.array(AssessmentCardSchema).nullable().default([]),
 });
 export type TutorTurnPayload = z.infer<typeof TutorTurnPayloadSchema>;
 

@@ -40,6 +40,11 @@ export const TUTOR_TOOL_TIERS: Record<(typeof TUTOR_TOOL_NAMES)[number], TutorTo
   generate_practice: "read", // no DB write — items live only for the turn
   emit_evidence: "read", // validates + hands back; the ROUTE writes
   propose_escalation: "reversible", // consent_pending insert; learner-gated + revocable
+  // A3 Wave 4 — all three carry NO DB write: the card lives for the turn; the
+  // ROUTE writes evidence on the learner's interaction (`tool_evidence`).
+  renderStructure: "read", // presentational — a validated diagram, no side effect
+  checkUnderstanding: "read", // Class A — the item rides the turn output
+  sequenceTask: "read", // Class A — the item rides the turn output
 };
 
 /**

@@ -45,6 +45,8 @@ import {
   type TurnEnvelope,
   type TutorAccessKind,
 } from "@/lib/tutor/runtime/service";
+import { recordToolEvidence } from "@/lib/tutor/runtime/evidenceRecord";
+import { sendTutorMasteryRefoldRequested } from "@/lib/inngest/tutorMasteryEvents";
 import { sendTutorEscalationConsented } from "@/lib/inngest/escalationEvents";
 import type { ModelStreamEvent } from "@/lib/ai/modelClient";
 import {
@@ -95,7 +97,13 @@ function singleEventStream(event: TutorWireEvent): ReadableStream<Uint8Array> {
 /* ─────────────────────────────── request body ───────────────────────────── */
 
 interface TutorRequestBody {
-  action?: "turn" | "practice_answer" | "self_report" | "hint_request" | "escalate_consent";
+  action?:
+    | "turn"
+    | "practice_answer"
+    | "self_report"
+    | "hint_request"
+    | "escalate_consent"
+    | "tool_evidence";
   courseId?: string;
   publicationId?: string;
   version?: number;
@@ -122,6 +130,16 @@ interface TutorRequestBody {
   candidateId?: string;
   finalQuestion?: string;
   consentAction?: "send" | "cancel";
+  // tool_evidence (A3 Wave 4 · §6, A3-21) — the learner COMPLETED a
+  // checkUnderstanding / sequenceTask card (one evidence per card).
+  cardId?: string;
+  toolName?: string;
+  conceptSlug?: string;
+  outcome?: "demonstrated" | "partial" | "not_demonstrated";
+  misconceptionId?: string | null;
+  confidence?: "sure" | "unsure" | null;
+  fadeLevel?: number | null;
+  latencyMs?: number | null;
 }
 
 /** A typed JSON error the client renders inline. */
@@ -237,6 +255,59 @@ export async function POST(req: Request): Promise<Response> {
       key: body.key,
     });
     return Response.json({ ok: true, access: access.kind, emitted: res.emitted });
+  }
+
+  /* ── tool_evidence (A3 Wave 4 · §6, A3-21, plain JSON) ──
+   *
+   * The learner COMPLETED a checkUnderstanding / sequenceTask card. Access-gated
+   * EXACTLY like practice_answer (author preview / not-enrolled / disabled → a
+   * no-op `{ ok:true, emitted:false }` — never writes evidence). completionKey is
+   * "toolcard:" + cardId so re-POSTing the same card is idempotent (the
+   * deterministic-id upsert no-ops). recordToolEvidence resolves the concept node
+   * (merge chains → survivor; else drop-and-flag) + get-or-creates the
+   * misconception registry row, then appends the ONE tutor_evidence_recorded row.
+   * On ≥1 emission we fire the SAME mastery refold the other evidence endpoints
+   * fire (recordPracticeAnswer's sendTutorMasteryRefoldRequested). renderStructure
+   * emits NO evidence — it never reaches this action. */
+  if (action === "tool_evidence") {
+    if (access.kind !== "ok") {
+      return Response.json({ ok: true, access: access.kind, emitted: false });
+    }
+    if (!body.cardId || !body.toolName || !body.conceptSlug || !body.outcome) {
+      return errorJson("invalid_tool_evidence", "cardId, toolName, conceptSlug, outcome required.", 400);
+    }
+    // The acceptance-claim initiation may ride this body too (the card carries it);
+    // default 'invitation_accepted' vs 'practice_request' is derived from the wire
+    // claim, else practice_request (a completed card was learner-initiated).
+    const toolEvidenceInitiation =
+      body.initiation?.kind === "invitation_accepted" ? "invitation_accepted" : "practice_request";
+    const rec = await recordToolEvidence(admin, {
+      courseId,
+      publicationId,
+      version,
+      lessonId: body.lessonId ?? null,
+      userId: user.id,
+      conceptSlug: body.conceptSlug,
+      toolName: body.toolName,
+      outcome: body.outcome,
+      misconceptionSlug: body.misconceptionId ?? null,
+      confidence: body.confidence ?? null,
+      fadeLevel: body.fadeLevel ?? null, // null in Wave 4 (fadedExample is Wave 5)
+      initiation: toolEvidenceInitiation,
+      itemSource: "generated",
+      reviewedItemId: null,
+      latencyMs: body.latencyMs ?? null,
+      completionKey: `toolcard:${body.cardId}`,
+    });
+    if (rec.recorded) {
+      await sendTutorMasteryRefoldRequested({ userId: user.id, courseId });
+    }
+    return Response.json({
+      ok: true,
+      access: access.kind,
+      emitted: rec.recorded,
+      misconceptionId: rec.recorded ? rec.misconceptionId : null,
+    });
   }
 
   /* ── the escalation-consent transition (W6 · P6.1, plain JSON) ──
@@ -504,6 +575,11 @@ export async function POST(req: Request): Promise<Response> {
               escalationCandidateId: result.turn.escalation?.candidateId ?? null,
               flags: result.turn.groundingFlags,
               invitation: result.turn.invitation ?? null,
+              // A3 Wave 4 — the structure + assessment cards (default []). The loop
+              // already forced assessments [] on a question turn; structures ride
+              // any turn untouched (A3-12).
+              structures: result.turn.structures ?? [],
+              assessments: result.turn.assessments ?? [],
             },
           });
           emit({

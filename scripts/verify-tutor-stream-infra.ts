@@ -83,6 +83,10 @@ async function protocolSuite(): Promise<void> {
         escalationCandidateId: null,
         flags: [],
         invitation: null,
+        // A3 Wave 4 — the two new wire arrays (default []; this is wire shape, not
+        // a persisted union — no union-lock change).
+        structures: [],
+        assessments: [],
       },
     },
     { type: "error", message: "boom" },
@@ -156,6 +160,78 @@ async function protocolSuite(): Promise<void> {
   check("encodeWireEvent framing exact", framed === `data: ${JSON.stringify({ type: "done" })}\n\n`);
   check("encodeWireEvent ends with a blank line", framed.endsWith("\n\n"));
   check("encodeWireEvent starts with 'data: '", framed.startsWith("data: "));
+
+  // A3 Wave 4 — a CARD-BEARING turn payload parses (renderStructure + both
+  // assessment kinds). These are wire shape, not a persisted union — no A2-5
+  // union-lock change (asserted below over AnalyticsEventSchema, unchanged).
+  const cardPayload = TutorWireEventSchema.safeParse({
+    type: "turn",
+    payload: {
+      prose: "Here.",
+      spans: [{ kind: "grounded", text: "Here." }],
+      citations: [],
+      rung: 2,
+      practiceItems: [],
+      escalationProposal: null,
+      escalationCandidateId: null,
+      flags: [],
+      invitation: null,
+      structures: [
+        { kind: "tree", title: "T", caption: null, diagram: { kind: "tree_diagram", root: { label: "root" } } },
+      ],
+      assessments: [
+        {
+          cardId: "card-1",
+          toolName: "checkUnderstanding",
+          conceptSlug: uuid,
+          initiation: "practice_request",
+          stem: "?",
+          options: [
+            { id: "a", text: "x", correct: true, misconceptionId: null, feedback: "f" },
+            { id: "b", text: "y", correct: false, misconceptionId: "m1", feedback: "f" },
+            { id: "c", text: "z", correct: false, misconceptionId: "m2", feedback: "f" },
+          ],
+          collectConfidence: false,
+        },
+        {
+          cardId: "card-2",
+          toolName: "sequenceTask",
+          conceptSlug: uuid,
+          initiation: "invitation_accepted",
+          prompt: "order",
+          items: [{ id: "s1", text: "a" }, { id: "s2", text: "b" }, { id: "s3", text: "c" }],
+          correctOrder: ["s1", "s2", "s3"],
+          partialCreditRule: "adjacent-pairs",
+        },
+      ],
+    },
+  });
+  if (!cardPayload.success) console.log("    card payload parse error:", JSON.stringify(cardPayload.error.issues[0]));
+  check("A3 Wave 4: a card-bearing turn payload (structure + both assessment kinds) parses", cardPayload.success);
+  // structures/assessments default to [] when absent (nullable arrays with a default).
+  const noCards = TutorWireEventSchema.safeParse({
+    type: "turn",
+    payload: {
+      prose: "Hi.",
+      spans: [],
+      citations: [],
+      rung: 1,
+      practiceItems: [],
+      escalationProposal: null,
+      escalationCandidateId: null,
+      flags: [],
+      invitation: null,
+    },
+  });
+  check(
+    "A3 Wave 4: structures/assessments default to [] when omitted",
+    noCards.success &&
+      noCards.data.type === "turn" &&
+      Array.isArray(noCards.data.payload.structures) &&
+      noCards.data.payload.structures.length === 0 &&
+      Array.isArray(noCards.data.payload.assessments) &&
+      noCards.data.payload.assessments.length === 0
+  );
 
   // §7 copy lint on the DEFAULT approval message the route emits — sentence case
   // (no snake_case token), no terminal punctuation, and the toolName is NOT named in

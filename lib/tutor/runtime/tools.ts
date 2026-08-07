@@ -52,16 +52,26 @@ import {
 import { rootCause, type EdgeLike } from "@/lib/tutor/mastery/queries";
 import { TUTOR_MASTERY_THRESHOLD } from "@/lib/tutor/mastery/config";
 import type { TutorCharter } from "./charter";
+// A3 Wave 4 — the structure + assessment tools live in toolsA3.ts (it imports
+// ONLY the TutorTool/TutorToolResult TYPES from here, so the value dependency is
+// one-directional: tools.ts consumes A3_WAVE4_TOOLS, never the reverse).
+import { A3_WAVE4_TOOLS } from "./toolsA3";
 
 /* ─────────────────────────────── tool names ─────────────────────────────── */
 
-/** The FIVE tutor tool names — a const tuple (AC-T3.6 asserts exactly these). */
+/** The tutor tool names — a const tuple (AC-T3.6 asserts the Wave-3 five; A3
+ *  Wave 4 appends renderStructure / checkUnderstanding / sequenceTask). Every
+ *  name here MUST have a TUTOR_TOOL_TIERS row (compile-enforced). */
 export const TUTOR_TOOL_NAMES = [
   "get_lesson_context",
   "get_mastery_summary",
   "generate_practice",
   "emit_evidence",
   "propose_escalation",
+  // A3 Wave 4 — the structure + assessment tools (all tier `read`).
+  "renderStructure",
+  "checkUnderstanding",
+  "sequenceTask",
 ] as const;
 
 export type TutorToolName = (typeof TUTOR_TOOL_NAMES)[number];
@@ -489,13 +499,16 @@ const proposeEscalation: TutorTool<z.infer<typeof ProposeEscalationParams>> = {
 
 /* ─────────────────────────────── registry ───────────────────────────────── */
 
-/** The five tutor tools, keyed by name. */
+/** The tutor tools, keyed by name (the Wave-3 five + the A3 Wave-4 three). */
 export const TUTOR_TOOLS: Record<TutorToolName, TutorTool> = {
   get_lesson_context: getLessonContext as TutorTool,
   get_mastery_summary: getMasterySummary as TutorTool,
   generate_practice: generatePractice as TutorTool,
   emit_evidence: emitEvidence as TutorTool,
   propose_escalation: proposeEscalation as TutorTool,
+  renderStructure: A3_WAVE4_TOOLS.renderStructure,
+  checkUnderstanding: A3_WAVE4_TOOLS.checkUnderstanding,
+  sequenceTask: A3_WAVE4_TOOLS.sequenceTask,
 };
 
 /** Re-export the snapshot-index builder so a caller wiring deps has one import. */

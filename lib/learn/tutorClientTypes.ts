@@ -12,7 +12,19 @@
  *   • TutorTurnPayload mirrors the `turn` SSE event's `payload` object.
  *   • TutorSSEEvent mirrors the route's own `TutorSSEEvent` union verbatim.
  * The SOURCES win: if a field name ever diverges, correct it here to match them.
+ *
+ * A3 Wave 4 additions: `TutorRenderStructureCard` (a validated lib/course/diagram
+ * spec rendered via DiagramView) + `TutorAssessmentCard` (checkUnderstanding /
+ * sequenceTask, discriminated on `toolName`) + `structures`/`assessments` on the
+ * turn payload, plus the pure LOCAL scorers the client grades formative cards with
+ * (the answer key ships on the payload — the practiceItems precedent).
  */
+
+// TYPE-ONLY import — lib/course/diagram/types.ts is "PURE TYPES no Zod", so this
+// is bundle-free (erased at compile) and never drags the Zod half onto the learn
+// client. NEVER import lib/course/diagram/schemas.ts here (the PERF-1 zod-free
+// learn-bundle rule).
+import type { DiagramSpec } from "@/lib/course/diagram/types";
 
 /* ───────────────────────────── wire shapes ───────────────────────────── */
 
@@ -75,6 +87,70 @@ export interface TutorInvitation {
 }
 
 /**
+ * A3 Wave 4 · Class-P (presentational) render-structure card. The model emits a
+ * tree/graph/timeline/axes shape as tool args; the SERVER maps it onto a
+ * `lib/course/diagram` spec and validates it with `validateDiagram` (invalid ⇒
+ * dropped server-side, never reaches the client). What ships is the built,
+ * validated `diagram` (the storage-schema `DiagramSpec` shape) + a title +
+ * `caption` (the alt text / accessible description). Rendered via DiagramView on
+ * ANY turn — including a `question` turn (A3-12); it carries no evidence.
+ * Mirrors `TurnRenderStructureCardSchema`.
+ */
+export interface TutorRenderStructureCard {
+  kind: "tree" | "graph" | "timeline" | "axes";
+  title: string | null;
+  /** The alt text / accessible description of the diagram. */
+  caption: string | null;
+  /** A validated lib/course/diagram spec (storage-schema shape). */
+  diagram: DiagramSpec;
+}
+
+/**
+ * A3 Wave 4 · Class-A (assessment) card, discriminated on `toolName`. The model
+ * emits the item as tool args; the answer KEY rides the payload (formative,
+ * low-stakes → the CLIENT grades locally, the practiceItems precedent). Stripped
+ * on a `question` turn exactly like `practiceItems`. `cardId` (a minted uuid) is
+ * the evidence completion-key base. Mirrors `TurnAssessmentCardSchema`.
+ *
+ * - `checkUnderstanding` — a stem + 3–4 options; every WRONG option MUST name the
+ *   misconception it represents (`misconceptionId`) — the server Zod enforces it.
+ * - `sequenceTask` — an ordering task; `correctOrder` is a permutation of the
+ *   `items[].id` set; scored `exact` (all-or-nothing) or `adjacent-pairs`.
+ */
+export type TutorAssessmentCard =
+  | {
+      cardId: string;
+      toolName: "checkUnderstanding";
+      /** The concept node uuid this card checks (R-1). */
+      conceptSlug: string;
+      initiation: "practice_request" | "invitation_accepted";
+      stem: string;
+      options: {
+        id: string;
+        text: string;
+        correct: boolean;
+        misconceptionId: string | null;
+        feedback: string;
+      }[];
+      /** Ask a sure/unsure confidence read BEFORE reveal. */
+      collectConfidence: boolean;
+    }
+  | {
+      cardId: string;
+      toolName: "sequenceTask";
+      conceptSlug: string;
+      initiation: "practice_request" | "invitation_accepted";
+      prompt: string;
+      items: { id: string; text: string }[];
+      /** Ships to the client — formative, the client scores locally. */
+      correctOrder: string[];
+      partialCreditRule: "exact" | "adjacent-pairs";
+    };
+
+/** The outcome of a locally-graded assessment card (fed to `tool_evidence`). */
+export type TutorAssessmentOutcome = "demonstrated" | "partial" | "not_demonstrated";
+
+/**
  * The `turn` SSE event's `payload`. `prose` is the cleaned reply (span markers
  * stripped); `spans`/`citations` are the classified/anchored maps; `rung` is the
  * 0..4 scaffolding rung (null when absent); `practiceItems`/`escalationProposal`
@@ -97,6 +173,12 @@ export interface TutorTurnPayload {
    *  `shouldRenderInvitation` (final turn, idle, no practiceItems — the server
    *  already forces null alongside practiceItems, A3-9). */
   invitation: TutorInvitation | null;
+  /** A3 Wave 4 · presentational diagrams for this turn (default []). Rendered on
+   *  ANY turn, including a `question` turn (A3-12) — never stripped. */
+  structures: TutorRenderStructureCard[];
+  /** A3 Wave 4 · assessment cards for this turn (default []). Stripped on a
+   *  `question` turn exactly like `practiceItems`. */
+  assessments: TutorAssessmentCard[];
   flags: string[];
 }
 
@@ -275,4 +357,130 @@ export function ttftRating(ms: number): "good" | "needs-improvement" | "poor" {
   if (ms < 4000) return "good";
   if (ms < 12000) return "needs-improvement";
   return "poor";
+}
+
+/* ──────────────── A3 Wave 4 · formative card scorers (pure) ───────────────── */
+
+/** A `checkUnderstanding` card. */
+type CheckUnderstandingCard = Extract<TutorAssessmentCard, { toolName: "checkUnderstanding" }>;
+/** A `sequenceTask` card. */
+type SequenceCard = Extract<TutorAssessmentCard, { toolName: "sequenceTask" }>;
+
+/**
+ * A3 Wave 4 (A3-13/§3) — grade a checkUnderstanding pick LOCALLY. The answer key
+ * ships on the card (formative, low-stakes → the practiceItems precedent).
+ *
+ * - `demonstrated` iff the picked option is `correct`; feedback = a brief
+ *   affirmation (the option's own `feedback`).
+ * - else `not_demonstrated`, carrying THAT distractor's `misconceptionId` (the
+ *   reasoning it names) + its `feedback` (which explains the misconception —
+ *   never "the answer is X"; §3).
+ *
+ * An unknown / null `pickedOptionId` (no option matched) is treated as an
+ * unanswered wrong: `not_demonstrated`, null misconception, empty feedback.
+ */
+export function scoreCheckUnderstanding(
+  card: CheckUnderstandingCard,
+  pickedOptionId: string | null,
+): { outcome: "demonstrated" | "not_demonstrated"; misconceptionId: string | null; feedback: string } {
+  const picked = pickedOptionId === null ? undefined : card.options.find((o) => o.id === pickedOptionId);
+  if (!picked) {
+    return { outcome: "not_demonstrated", misconceptionId: null, feedback: "" };
+  }
+  if (picked.correct) {
+    return { outcome: "demonstrated", misconceptionId: null, feedback: picked.feedback };
+  }
+  return {
+    outcome: "not_demonstrated",
+    misconceptionId: picked.misconceptionId,
+    feedback: picked.feedback,
+  };
+}
+
+/**
+ * A3 Wave 4 (A3-15) — score a sequenceTask ordering LOCALLY against the card's
+ * `correctOrder` + `partialCreditRule`. MUST agree with the server twin's
+ * semantics (each side owns its own copy).
+ *
+ * - `exact`: all positions equal ⇒ `demonstrated`, else `not_demonstrated`.
+ *   `ratio` is 1 iff fully correct, else 0.
+ * - `adjacent-pairs`: `ratio` = (# adjacent pairs in the submitted order whose two
+ *   items are in the correct relative order) / (total adjacent pairs). A pair
+ *   counts iff BOTH ids exist in `correctOrder` and the earlier-submitted one has
+ *   the smaller correct index. `ratio ≥ 0.999` ⇒ `demonstrated`; `> 0` ⇒
+ *   `partial`; else `not_demonstrated`.
+ *
+ * A length mismatch or an id not in `correctOrder` never throws — pairs with an
+ * unknown id simply don't count as correctly ordered.
+ */
+export function scoreSequenceCard(
+  card: SequenceCard,
+  submittedOrder: string[],
+): { outcome: TutorAssessmentOutcome; ratio: number } {
+  const correct = card.correctOrder;
+
+  if (card.partialCreditRule === "exact") {
+    const allRight =
+      submittedOrder.length === correct.length &&
+      submittedOrder.every((id, i) => id === correct[i]);
+    return { outcome: allRight ? "demonstrated" : "not_demonstrated", ratio: allRight ? 1 : 0 };
+  }
+
+  // adjacent-pairs
+  const rank = new Map<string, number>();
+  correct.forEach((id, i) => rank.set(id, i));
+
+  const totalPairs = Math.max(0, submittedOrder.length - 1);
+  if (totalPairs === 0) {
+    // A 0- or 1-item ordering: trivially in order (there are no pairs to violate).
+    return { outcome: "demonstrated", ratio: 1 };
+  }
+
+  let ordered = 0;
+  for (let i = 0; i + 1 < submittedOrder.length; i++) {
+    const a = rank.get(submittedOrder[i]);
+    const b = rank.get(submittedOrder[i + 1]);
+    if (a !== undefined && b !== undefined && a < b) ordered += 1;
+  }
+  const ratio = ordered / totalPairs;
+  const outcome: TutorAssessmentOutcome =
+    ratio >= 0.999 ? "demonstrated" : ratio > 0 ? "partial" : "not_demonstrated";
+  return { outcome, ratio };
+}
+
+/**
+ * A3 Wave 4 — a pure, seeded shuffle so a sequenceTask presents its items in a
+ * stable NON-authored order (never the answer order, never `Math.random` in
+ * render). A small LCG (Numerical Recipes constants) drives a Fisher–Yates pass;
+ * the seed comes from `hashSeed(cardId)`, so the same card always shuffles the
+ * same way (idempotent across re-renders / reloads). Returns a NEW array — never
+ * mutates the input.
+ */
+export function shuffleDeterministic<T>(ids: readonly T[], seed: number): T[] {
+  const out = ids.slice();
+  // Fold the seed to a positive 32-bit state; a 0 state would freeze the LCG.
+  let state = (seed >>> 0) || 0x9e3779b9;
+  const next = () => {
+    // LCG: state = (a·state + c) mod 2^32, then normalize to [0,1).
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
+}
+
+/** A stable 32-bit hash of a string (FNV-1a) — seeds `shuffleDeterministic` from
+ *  a cardId so the presentation order is deterministic per card. */
+export function hashSeed(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
 }

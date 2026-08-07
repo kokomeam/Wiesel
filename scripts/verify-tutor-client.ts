@@ -43,10 +43,15 @@ import {
   dedupeCitations,
   gradePracticeAnswer,
   hasAttemptedFor,
+  hashSeed,
+  scoreCheckUnderstanding,
+  scoreSequenceCard,
   selfReportStableKey,
   shouldOfferEscapeHatch,
   shouldRenderInvitation,
+  shuffleDeterministic,
   ttftRating,
+  type TutorAssessmentCard,
   type TutorCitation,
   type TutorInvitation,
   type TutorPracticeItem,
@@ -457,8 +462,20 @@ async function main() {
 
     // The SSE `turn` payload field list must appear in BOTH the route source and
     // the client mirror (the client renders exactly these fields). `invitation`
-    // is the A3 Wave-3 member (frozen contract — E's server half carries it).
-    for (const field of ["prose", "spans", "citations", "rung", "practiceItems", "escalationProposal", "invitation", "flags"]) {
+    // is the A3 Wave-3 member; `structures`/`assessments` are the A3 Wave-4
+    // members (frozen contract — Builder J's server half carries them).
+    for (const field of [
+      "prose",
+      "spans",
+      "citations",
+      "rung",
+      "practiceItems",
+      "escalationProposal",
+      "invitation",
+      "structures",
+      "assessments",
+      "flags",
+    ]) {
       check(
         `SSE payload field '${field}' in both route + client mirror`,
         route.includes(field) && clientTypes.includes(field)
@@ -775,6 +792,8 @@ async function main() {
       escalationProposal: null,
       escalationCandidateId: null,
       invitation: null,
+      structures: [],
+      assessments: [],
       flags: [],
     });
 
@@ -1240,6 +1259,442 @@ async function main() {
     const junk = coerceGrounding({ invitation: "press me" });
     check("string invitation degrades to null", junk?.invitation === null);
     check("non-object grounding stays null", coerceGrounding("nope") === null);
+  }
+
+  /* ══════════════════════ A3 WAVE 4 · CORE TOOLS (client) ═════════════════ */
+
+  const checkCard = (
+    options: { id: string; text: string; correct: boolean; misconceptionId: string | null; feedback: string }[],
+    collectConfidence = false,
+  ): Extract<TutorAssessmentCard, { toolName: "checkUnderstanding" }> => ({
+    cardId: "card-1",
+    toolName: "checkUnderstanding",
+    conceptSlug: "node-abc",
+    initiation: "invitation_accepted",
+    stem: "Which is true of a hash table lookup?",
+    options,
+    collectConfidence,
+  });
+
+  const seqCard = (
+    correctOrder: string[],
+    partialCreditRule: "exact" | "adjacent-pairs",
+  ): Extract<TutorAssessmentCard, { toolName: "sequenceTask" }> => ({
+    cardId: "seq-1",
+    toolName: "sequenceTask",
+    conceptSlug: "node-xyz",
+    initiation: "practice_request",
+    prompt: "Order the steps of binary search",
+    items: correctOrder.map((id) => ({ id, text: `step ${id}` })),
+    correctOrder,
+    partialCreditRule,
+  });
+
+  /* ─────── A3 Wave 4 · scoreCheckUnderstanding matrix ─────── */
+  console.log("\n— A3 Wave 4 · scoreCheckUnderstanding (correct→demonstrated, distractors→misconception) —");
+  {
+    const card = checkCard([
+      { id: "a", text: "amortized O(1)", correct: true, misconceptionId: null, feedback: "Right — a good hash spreads keys evenly." },
+      { id: "b", text: "always O(1)", correct: false, misconceptionId: "ignores-collisions", feedback: "Collisions make the worst case O(n)." },
+      { id: "c", text: "O(log n)", correct: false, misconceptionId: "confuses-with-bst", feedback: "That's a balanced tree, not a hash table." },
+    ]);
+
+    const right = scoreCheckUnderstanding(card, "a");
+    check(
+      "correct pick → demonstrated, null misconception, affirmation feedback",
+      right.outcome === "demonstrated" &&
+        right.misconceptionId === null &&
+        right.feedback === "Right — a good hash spreads keys evenly.",
+    );
+
+    const wrongB = scoreCheckUnderstanding(card, "b");
+    check(
+      "distractor b → not_demonstrated + its misconceptionId + its feedback",
+      wrongB.outcome === "not_demonstrated" &&
+        wrongB.misconceptionId === "ignores-collisions" &&
+        wrongB.feedback === "Collisions make the worst case O(n).",
+    );
+
+    const wrongC = scoreCheckUnderstanding(card, "c");
+    check(
+      "distractor c → not_demonstrated + its OWN misconceptionId",
+      wrongC.outcome === "not_demonstrated" && wrongC.misconceptionId === "confuses-with-bst",
+    );
+
+    // An unknown / null pick is an unanswered wrong.
+    check(
+      "unknown option id → not_demonstrated, null misconception, empty feedback",
+      (() => {
+        const r = scoreCheckUnderstanding(card, "zzz");
+        return r.outcome === "not_demonstrated" && r.misconceptionId === null && r.feedback === "";
+      })(),
+    );
+    check(
+      "null pick → not_demonstrated, null misconception",
+      (() => {
+        const r = scoreCheckUnderstanding(card, null);
+        return r.outcome === "not_demonstrated" && r.misconceptionId === null;
+      })(),
+    );
+  }
+
+  /* ─────── A3 Wave 4 · scoreSequenceCard matrix (A3-15, server twin) ─────── */
+  console.log("\n— A3 Wave 4 · scoreSequenceCard (exact + adjacent-pairs; agrees with the contract) —");
+  {
+    // EXACT rule.
+    const exact = seqCard(["1", "2", "3", "4"], "exact");
+    check(
+      "exact · all positions right → demonstrated, ratio 1",
+      (() => {
+        const r = scoreSequenceCard(exact, ["1", "2", "3", "4"]);
+        return r.outcome === "demonstrated" && r.ratio === 1;
+      })(),
+    );
+    check(
+      "exact · one swap → not_demonstrated, ratio 0",
+      (() => {
+        const r = scoreSequenceCard(exact, ["1", "2", "4", "3"]);
+        return r.outcome === "not_demonstrated" && r.ratio === 0;
+      })(),
+    );
+    check(
+      "exact · fully reversed → not_demonstrated",
+      scoreSequenceCard(exact, ["4", "3", "2", "1"]).outcome === "not_demonstrated",
+    );
+    check(
+      "exact · length mismatch → not_demonstrated (no throw)",
+      scoreSequenceCard(exact, ["1", "2", "3"]).outcome === "not_demonstrated",
+    );
+
+    // ADJACENT-PAIRS rule.
+    const adj = seqCard(["1", "2", "3", "4"], "adjacent-pairs");
+    check(
+      "adjacent-pairs · all right → demonstrated (ratio 1)",
+      (() => {
+        const r = scoreSequenceCard(adj, ["1", "2", "3", "4"]);
+        return r.outcome === "demonstrated" && r.ratio === 1;
+      })(),
+    );
+    check(
+      "adjacent-pairs · reversed → not_demonstrated (ratio 0)",
+      (() => {
+        const r = scoreSequenceCard(adj, ["4", "3", "2", "1"]);
+        return r.outcome === "not_demonstrated" && r.ratio === 0;
+      })(),
+    );
+    // One item misplaced: [1,3,2,4] → pairs (1,3)✓ (3,2)✗ (2,4)✓ = 2/3 → partial.
+    check(
+      "adjacent-pairs · one misplaced → partial (2/3 correctly ordered)",
+      (() => {
+        const r = scoreSequenceCard(adj, ["1", "3", "2", "4"]);
+        return r.outcome === "partial" && Math.abs(r.ratio - 2 / 3) < 1e-9;
+      })(),
+    );
+    // A single-adjacent-error at the front: [2,1,3,4] → (2,1)✗ (1,3)✓ (3,4)✓ = 2/3.
+    check(
+      "adjacent-pairs · front swap → partial (2/3)",
+      (() => {
+        const r = scoreSequenceCard(adj, ["2", "1", "3", "4"]);
+        return r.outcome === "partial" && Math.abs(r.ratio - 2 / 3) < 1e-9;
+      })(),
+    );
+    // Two-item ordering: right pair → demonstrated; wrong pair → not_demonstrated.
+    const adj2 = seqCard(["a", "b"], "adjacent-pairs");
+    check(
+      "adjacent-pairs · 2 items right → demonstrated",
+      scoreSequenceCard(adj2, ["a", "b"]).outcome === "demonstrated",
+    );
+    check(
+      "adjacent-pairs · 2 items wrong → not_demonstrated (ratio 0)",
+      (() => {
+        const r = scoreSequenceCard(adj2, ["b", "a"]);
+        return r.outcome === "not_demonstrated" && r.ratio === 0;
+      })(),
+    );
+    // An unknown id in the submitted order never counts as ordered (no throw).
+    check(
+      "adjacent-pairs · unknown id in order → that pair uncounted, no throw",
+      (() => {
+        const r = scoreSequenceCard(adj, ["1", "2", "3", "zzz"]);
+        // pairs (1,2)✓ (2,3)✓ (3,zzz)✗ = 2/3 → partial
+        return r.outcome === "partial" && Math.abs(r.ratio - 2 / 3) < 1e-9;
+      })(),
+    );
+  }
+
+  /* ─────── A3 Wave 4 · shuffleDeterministic ─────── */
+  console.log("\n— A3 Wave 4 · shuffleDeterministic (stable per seed, permutation, seed-sensitive) —");
+  {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const seedA = hashSeed("card-1");
+    const seedB = hashSeed("card-2");
+
+    const s1 = shuffleDeterministic(ids, seedA);
+    const s2 = shuffleDeterministic(ids, seedA);
+    check("same seed → identical order (idempotent)", s1.join(",") === s2.join(","));
+
+    const s3 = shuffleDeterministic(ids, seedB);
+    check("different seed → different order (with high probability)", s3.join(",") !== s1.join(","));
+
+    // Always a permutation of the input (same multiset).
+    check(
+      "shuffle is a permutation (same elements)",
+      s1.length === ids.length && [...s1].sort().join(",") === [...ids].sort().join(","),
+    );
+    check("input array is not mutated", ids.join(",") === "a,b,c,d,e,f");
+
+    // Edge: empty + single-element inputs are stable.
+    check("empty input → empty output", shuffleDeterministic([], 123).length === 0);
+    check("single-element input → same single element", shuffleDeterministic(["x"], 7).join(",") === "x");
+
+    // hashSeed is deterministic + differs for different strings.
+    check("hashSeed deterministic per string", hashSeed("card-1") === hashSeed("card-1"));
+    check("hashSeed differs across strings", hashSeed("card-1") !== hashSeed("card-2"));
+    check("hashSeed returns an unsigned 32-bit int", Number.isInteger(seedA) && seedA >= 0 && seedA <= 0xffffffff);
+  }
+
+  /* ─────── A3 Wave 4 · render rule (structures always; assessments when present) ─────── */
+  console.log("\n— A3 Wave 4 · TurnBubble render path (structures on any turn; assessments gated) —");
+  {
+    const body = readSource("components/learn/tutor/TutorBody.tsx");
+
+    // Structures render unconditionally (A3-12) — a `.map` over `structures`, not
+    // guarded behind an answer/practice/question condition.
+    check("TutorBody imports TutorStructureCard", body.includes("TutorStructureCard"));
+    check("TutorBody imports TutorCheckUnderstandingCard", body.includes("TutorCheckUnderstandingCard"));
+    check("TutorBody imports TutorSequenceCard", body.includes("TutorSequenceCard"));
+    check(
+      "TutorBody extracts structures from payload OR grounding (history parity)",
+      body.includes("payload?.structures ?? turn.grounding?.structures ?? []"),
+    );
+    check(
+      "TutorBody extracts assessments from payload OR grounding",
+      body.includes("payload?.assessments ?? turn.grounding?.assessments ?? []"),
+    );
+    check(
+      "structures render via a plain .map (unconditional — A3-12, not gated on answer/question)",
+      /structures\.map\(\(s,\s*i\)\s*=>\s*\(\s*<TutorStructureCard/.test(body),
+    );
+    // The structures map must NOT be inside a `question`/`answer`/practice guard.
+    check(
+      "structures map is not gated behind a hasPracticeItems / question conditional",
+      /\{structures\.map\(/.test(body),
+    );
+    // Assessments render, dispatched on toolName.
+    check(
+      "assessments dispatch on toolName === checkUnderstanding",
+      body.includes('card.toolName === "checkUnderstanding"'),
+    );
+    check("assessments render TutorCheckUnderstandingCard + TutorSequenceCard", body.includes("<TutorCheckUnderstandingCard") && body.includes("<TutorSequenceCard"));
+
+    // The mirror onto grounding (live turns render like history turns).
+    const hook = readSource("lib/learn/useTutorStream.ts");
+    check(
+      "assistantTurnFromPayload mirrors structures onto grounding",
+      hook.includes("structures: payload.structures ?? []"),
+    );
+    check(
+      "assistantTurnFromPayload mirrors assessments onto grounding",
+      hook.includes("assessments: payload.assessments ?? []"),
+    );
+  }
+
+  /* ─────── A3 Wave 4 · card components a11y + house-style source asserts (A3-25) ─────── */
+  console.log("\n— A3 Wave 4 · component a11y (radiogroup/radio, aria move labels, no framer/Date.now) —");
+  {
+    const structure = readSource("components/learn/tutor/TutorStructureCard.tsx");
+    const check4 = readSource("components/learn/tutor/TutorCheckUnderstandingCard.tsx");
+    const sequence = readSource("components/learn/tutor/TutorSequenceCard.tsx");
+    const evidence = readSource("lib/learn/tutorEvidence.ts");
+    const all = [structure, check4, sequence, evidence];
+
+    // checkUnderstanding: radiogroup + radio semantics + accessible names.
+    check("check card uses role=radiogroup", check4.includes('role="radiogroup"'));
+    check("check card uses role=radio", check4.includes('role="radio"'));
+    check("check card sets aria-checked on options", check4.includes("aria-checked={isSel}"));
+    check("check card radiogroup has an accessible label", check4.includes('aria-label="Answer choices"'));
+
+    // sequenceTask: up/down move buttons with aria-labels (keyboard+SR reorder).
+    check("sequence card move-up button has an aria-label", /aria-label=\{`Move ".*up`\}/.test(sequence) || sequence.includes("up`}"));
+    check("sequence card move-down button has an aria-label", sequence.includes("down`}"));
+    check("sequence card uses an ordered list for position", sequence.includes("<ol"));
+
+    // structure card: role=img + an accessible name (never empty).
+    check("structure card frames the diagram with role=img", structure.includes('role="img"'));
+    check("structure card gives the diagram an accessible name", structure.includes("aria-label={accessibleName}"));
+    check("structure card never lets the accessible name go empty", structure.includes("accessibleName"));
+    check("structure card reuses DiagramView (audit §5 reuse)", structure.includes("DiagramView"));
+    check(
+      "structure card imports DiagramView from the slide diagram surface",
+      structure.includes('@/components/editor/slide/diagram/DiagramView'),
+    );
+    check(
+      "structure card NEVER imports the diagram Zod schemas (zod-free learn bundle)",
+      structure.includes("diagram/schemas") === false,
+    );
+
+    // A3-25 structural: NO positive tabindex anywhere in the three components.
+    for (const [i, src] of [structure, check4, sequence].entries()) {
+      check(
+        `component ${i} has no positive tabindex (only 0 / -1)`,
+        /tabindex=\{?["']?[1-9]/i.test(src) === false && /tabIndex=\{[1-9]/.test(src) === false,
+      );
+    }
+
+    // House rules: no framer-motion import, no Math.random anywhere in CODE (the
+    // clock is only ever `performance.now()`/Date.now() inside a `now()` helper
+    // called from handlers/effects — never inline in JSX). Inspect code lines only
+    // (strip // and /* */ prose so a doc comment naming the ban can't false-fail).
+    const stripComments = (src: string): string =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter((line) => !/^\s*\*/.test(line) && !/^\s*\/\//.test(line))
+        .join("\n");
+    for (const [i, src] of all.entries()) {
+      const code = stripComments(src);
+      check(`file ${i} imports no framer-motion`, code.includes("framer-motion") === false);
+      // Math.random must not appear at all (shuffle seeds come from hashSeed).
+      check(`file ${i} contains no Math.random`, code.includes("Math.random") === false);
+    }
+    // The latency clock is captured in a mount EFFECT (never in render) in both
+    // assessment cards.
+    check(
+      "check card captures mount time in an effect (not render)",
+      check4.includes("mountedAtRef.current = now()") && check4.includes("useEffect(() => {"),
+    );
+    check(
+      "sequence card captures mount time in an effect (not render)",
+      sequence.includes("mountedAtRef.current = now()") && sequence.includes("useEffect(() => {"),
+    );
+    // shuffle order is a lazy useState init (computed once, no clock/random in render).
+    check(
+      "sequence order is a lazy useState init over shuffleDeterministic",
+      /useState<string\[\]>\(\(\)\s*=>\s*\n?\s*shuffleDeterministic/.test(sequence),
+    );
+  }
+
+  /* ─────── A3 Wave 4 · tool_evidence POST helper (contract §6) ─────── */
+  console.log("\n— A3 Wave 4 · postToolEvidence shape + best-effort fence —");
+  {
+    const evidence = readSource("lib/learn/tutorEvidence.ts");
+    check("evidence helper POSTs the tool_evidence action", evidence.includes('action: "tool_evidence"'));
+    check("evidence helper posts to /api/learn/tutor", evidence.includes("/api/learn/tutor"));
+    check("evidence helper is fire-and-forget (swallows errors)", evidence.includes(".catch(() => {})"));
+    check("evidence helper carries the completionKey base cardId", evidence.includes("cardId: input.cardId"));
+    check("evidence helper carries outcome/misconceptionId/confidence/initiation/latencyMs",
+      evidence.includes("outcome: input.outcome") &&
+      evidence.includes("misconceptionId: input.misconceptionId ?? null") &&
+      evidence.includes("confidence: input.confidence ?? null") &&
+      evidence.includes("initiation: input.initiation") &&
+      evidence.includes("latencyMs: input.latencyMs ?? null"),
+    );
+    check("evidence helper sends fadeLevel null (Wave 5 is fadedExample)", evidence.includes("fadeLevel: null"));
+    check("evidence helper imports no zod", evidence.includes('from "zod"') === false);
+    check("evidence helper imports no lib/tutor/runtime", evidence.includes('from "@/lib/tutor/runtime') === false);
+  }
+
+  /* ─────── A3 Wave 4 · zod-free fence over the new client files ─────── */
+  console.log("\n— A3 Wave 4 · zod-free / runtime-free fence (new Wave-4 files) —");
+  {
+    const files = [
+      "components/learn/tutor/TutorStructureCard.tsx",
+      "components/learn/tutor/TutorCheckUnderstandingCard.tsx",
+      "components/learn/tutor/TutorSequenceCard.tsx",
+      "lib/learn/tutorEvidence.ts",
+    ];
+    // Inspect ACTUAL import/require specifier lines only, so a file's own doc
+    // comment naming a ban ("NEVER import diagram/schemas") can't false-fail.
+    const importSpecifiers = (src: string): string =>
+      src
+        .split("\n")
+        .filter((line) => /^\s*import\b/.test(line) || /(?:import|require)\s*\(/.test(line))
+        .join("\n");
+    const banned = ['from "zod"', 'from "@/lib/tutor/runtime', 'from "@/lib/analytics/events"', "diagram/schemas"];
+    for (const file of files) {
+      const imports = importSpecifiers(readSource(file));
+      for (const needle of banned) {
+        check(`${file} does not import ${needle}`, imports.includes(needle) === false);
+      }
+    }
+    // The client types file imports the diagram TYPES (type-only) but never the schemas.
+    const clientTypes = readSource("lib/learn/tutorClientTypes.ts");
+    check(
+      "tutorClientTypes imports DiagramSpec TYPE-only (import type)",
+      /import type \{ DiagramSpec \} from "@\/lib\/course\/diagram\/types"/.test(clientTypes),
+    );
+    check(
+      "tutorClientTypes NEVER imports diagram/schemas",
+      importSpecifiers(clientTypes).includes("diagram/schemas") === false,
+    );
+  }
+
+  /* ─────── A3 Wave 4 · history coercion of structures/assessments ─────── */
+  console.log("\n— A3 Wave 4 · coerceGrounding structures/assessments (tolerant) —");
+  {
+    const validDiagram = {
+      kind: "tree" as const,
+      title: "A tree",
+      caption: "the structure",
+      diagram: { kind: "tree_diagram", root: { label: "root" } },
+    };
+    const g = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      rung: 2,
+      structures: [validDiagram],
+      assessments: [
+        {
+          cardId: "c1",
+          toolName: "checkUnderstanding",
+          conceptSlug: "n1",
+          initiation: "invitation_accepted",
+          stem: "q?",
+          options: [{ id: "a", text: "A", correct: true, misconceptionId: null, feedback: "yes" }],
+          collectConfidence: false,
+        },
+        {
+          cardId: "s1",
+          toolName: "sequenceTask",
+          conceptSlug: "n2",
+          initiation: "practice_request",
+          prompt: "order",
+          items: [{ id: "1", text: "one" }, { id: "2", text: "two" }],
+          correctOrder: ["1", "2"],
+          partialCreditRule: "adjacent-pairs",
+        },
+      ],
+    });
+    check(
+      "well-formed structures survive coercion",
+      g?.structures.length === 1 && g.structures[0].kind === "tree",
+    );
+    check(
+      "well-formed assessments survive coercion (both kinds)",
+      g?.assessments.length === 2 &&
+        g.assessments[0].toolName === "checkUnderstanding" &&
+        g.assessments[1].toolName === "sequenceTask",
+    );
+
+    // Missing structures/assessments default to [] (grounding still usable).
+    const bare = coerceGrounding({ citations: [], spans: [], flags: [], rung: 1 });
+    check("absent structures coerce to []", bare?.structures.length === 0);
+    check("absent assessments coerce to []", bare?.assessments.length === 0);
+
+    // Malformed entries are DROPPED, not rendered broken.
+    const malformed = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      structures: [{ kind: "bogus", diagram: {} }, { kind: "tree" /* no diagram */ }],
+      assessments: [
+        { cardId: "x", toolName: "unknownTool", conceptSlug: "n" },
+        { cardId: "y", toolName: "checkUnderstanding", conceptSlug: "n", initiation: "practice_request", stem: "s", options: [] },
+      ],
+    });
+    check("structure with a bad kind / missing diagram is dropped", malformed?.structures.length === 0);
+    check("assessment with an unknown tool / empty options is dropped", malformed?.assessments.length === 0);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

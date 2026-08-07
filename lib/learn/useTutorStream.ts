@@ -181,6 +181,10 @@ function assistantTurnFromPayload(payload: TutorTurnPayload): TutorChatTurn {
       // live and history assistant turns render identically (`?? null` tolerates
       // a pre-A3 payload that doesn't carry the field yet).
       invitation: payload.invitation ?? null,
+      // A3 Wave 4 — mirror the settled structures/assessments (like practiceItems)
+      // so a live turn renders them; `?? []` tolerates a pre-A3-Wave-4 payload.
+      structures: payload.structures ?? [],
+      assessments: payload.assessments ?? [],
     },
     payload,
   };

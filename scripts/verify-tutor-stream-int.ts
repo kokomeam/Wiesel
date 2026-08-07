@@ -622,6 +622,8 @@ async function main() {
           escalationCandidateId: teeResult.turn.escalation?.candidateId ?? null,
           flags: teeResult.turn.groundingFlags,
           invitation: teeResult.turn.invitation ?? null,
+          structures: teeResult.turn.structures ?? [],
+          assessments: teeResult.turn.assessments ?? [],
         },
       });
       await emit({

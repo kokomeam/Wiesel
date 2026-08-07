@@ -20,8 +20,10 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  TutorAssessmentCard,
   TutorCitation,
   TutorInvitation,
+  TutorRenderStructureCard,
   TutorSpan,
 } from "@/lib/learn/tutorClientTypes";
 
@@ -53,6 +55,12 @@ export interface TutorHistoryTurn {
     flags: string[];
     rung: number | null;
     invitation: TutorInvitation | null;
+    /** A3 Wave 4 · presentational diagrams (default [] — survive reload IFF the
+     *  server persisted them into the grounding jsonb; the practiceItems
+     *  precedent). */
+    structures: TutorRenderStructureCard[];
+    /** A3 Wave 4 · assessment cards (default [], same persistence caveat). */
+    assessments: TutorAssessmentCard[];
   } | null;
 }
 
@@ -72,9 +80,96 @@ function coerceInvitation(raw: unknown): TutorInvitation | null {
   return { toolName: inv.toolName, nodeId: inv.nodeId, label: inv.label };
 }
 
+/** A3 Wave 4 · tolerantly coerce a persisted `grounding.structures` array — each
+ *  entry must carry a valid `kind` + a `diagram` object (the diagram itself was
+ *  validated server-side before persistence). Any malformed entry is DROPPED so a
+ *  broken card never renders; a non-array degrades to []. */
+function coerceStructures(raw: unknown): TutorRenderStructureCard[] {
+  if (!Array.isArray(raw)) return [];
+  const KINDS = new Set(["tree", "graph", "timeline", "axes"]);
+  const out: TutorRenderStructureCard[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    if (typeof s.kind !== "string" || !KINDS.has(s.kind)) continue;
+    if (!s.diagram || typeof s.diagram !== "object") continue;
+    out.push({
+      kind: s.kind as TutorRenderStructureCard["kind"],
+      title: typeof s.title === "string" ? s.title : null,
+      caption: typeof s.caption === "string" ? s.caption : null,
+      diagram: s.diagram as TutorRenderStructureCard["diagram"],
+    });
+  }
+  return out;
+}
+
+/** A3 Wave 4 · tolerantly coerce a persisted `grounding.assessments` array — each
+ *  entry must have a known `toolName` + the fields that entry's card renders.
+ *  Malformed entries are DROPPED; a non-array degrades to []. */
+function coerceAssessments(raw: unknown): TutorAssessmentCard[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TutorAssessmentCard[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+    if (
+      typeof a.cardId !== "string" ||
+      typeof a.conceptSlug !== "string" ||
+      (a.initiation !== "practice_request" && a.initiation !== "invitation_accepted")
+    ) {
+      continue;
+    }
+    if (a.toolName === "checkUnderstanding" && typeof a.stem === "string" && Array.isArray(a.options)) {
+      const options = (a.options as unknown[])
+        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+        .filter((o) => typeof o.id === "string" && typeof o.text === "string" && typeof o.correct === "boolean")
+        .map((o) => ({
+          id: o.id as string,
+          text: o.text as string,
+          correct: o.correct as boolean,
+          misconceptionId: typeof o.misconceptionId === "string" ? (o.misconceptionId as string) : null,
+          feedback: typeof o.feedback === "string" ? (o.feedback as string) : "",
+        }));
+      if (options.length === 0) continue;
+      out.push({
+        cardId: a.cardId,
+        toolName: "checkUnderstanding",
+        conceptSlug: a.conceptSlug,
+        initiation: a.initiation,
+        stem: a.stem,
+        options,
+        collectConfidence: a.collectConfidence === true,
+      });
+    } else if (
+      a.toolName === "sequenceTask" &&
+      typeof a.prompt === "string" &&
+      Array.isArray(a.items) &&
+      Array.isArray(a.correctOrder)
+    ) {
+      const items = (a.items as unknown[])
+        .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
+        .filter((it) => typeof it.id === "string" && typeof it.text === "string")
+        .map((it) => ({ id: it.id as string, text: it.text as string }));
+      const correctOrder = (a.correctOrder as unknown[]).filter((x): x is string => typeof x === "string");
+      if (items.length === 0) continue;
+      out.push({
+        cardId: a.cardId,
+        toolName: "sequenceTask",
+        conceptSlug: a.conceptSlug,
+        initiation: a.initiation,
+        prompt: a.prompt,
+        items,
+        correctOrder,
+        partialCreditRule: a.partialCreditRule === "adjacent-pairs" ? "adjacent-pairs" : "exact",
+      });
+    }
+  }
+  return out;
+}
+
 /** Tolerantly coerce a `grounding` jsonb blob to the client shape. Any missing or
- *  malformed field degrades — citations/spans/flags default to `[]`, rung and
- *  invitation to null. Returns null when there's nothing usable.
+ *  malformed field degrades — citations/spans/flags/structures/assessments default
+ *  to `[]`, rung and invitation to null. Returns null when there's nothing usable.
  *  Exported for the pure suite (scripts/verify-tutor-client.ts). */
 export function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
   if (!raw || typeof raw !== "object") return null;
@@ -88,7 +183,9 @@ export function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
     : [];
   const rung = typeof g.rung === "number" ? g.rung : null;
   const invitation = coerceInvitation(g.invitation);
-  return { citations, spans, flags, rung, invitation };
+  const structures = coerceStructures(g.structures);
+  const assessments = coerceAssessments(g.assessments);
+  return { citations, spans, flags, rung, invitation, structures, assessments };
 }
 
 /**
