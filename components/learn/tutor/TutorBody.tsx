@@ -30,6 +30,7 @@ import {
 } from "@/lib/learn/tutorClientTypes";
 import { useTutorStream, type TutorChatTurn } from "@/lib/learn/useTutorStream";
 import { TutorEscalationCard } from "./TutorEscalationCard";
+import { TutorStatusIndicator } from "./TutorStatusIndicator";
 
 /** The props contract TutorMount mounts this component with (unchanged from the
  *  package-A placeholder). `onClose` returns focus to the edge tab (TutorMount
@@ -87,7 +88,7 @@ export function TutorBody({
   const setUserSlice = useTutorStore((s) => s.setUserSlice);
   const scrollPos = useTutorStore((s) => s.byUser[userId]?.scrollPos ?? 0);
 
-  const { turns, status, historyLoaded, send, retry } = useTutorStream({
+  const { turns, status, streamingText, historyLoaded, send, retry } = useTutorStream({
     userId,
     courseId,
     publicationId,
@@ -113,7 +114,13 @@ export function TutorBody({
     [ambient.lessonId, ambient.blockId, ambient.slideId, ambient.quizActive]
   );
 
-  const busy = status.kind === "thinking" || status.kind === "queued";
+  // A send is in flight through every pre-answer phase (the hook floors each) and
+  // while queued — all disable the composer + suggestion chips.
+  const busy =
+    status.kind === "sent" ||
+    status.kind === "thinking" ||
+    status.kind === "composing" ||
+    status.kind === "queued";
 
   const doSend = useCallback(
     (message: string) => {
@@ -201,14 +208,16 @@ export function TutorBody({
   }, []);
 
   // Follow new turns to the bottom while the learner is at/near the bottom (the
-  // restore effect owns the FIRST scroll; this keeps up as replies land).
+  // restore effect owns the FIRST scroll; this keeps up as replies land AND as
+  // the streamed answer grows — streamingText is a dep so each token nudges the
+  // view down, but only while the learner hasn't scrolled up to read).
   useEffect(() => {
     if (!restoredRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [turns, status]);
+  }, [turns, status, streamingText]);
 
   /* ── keyboard: Esc closes (focus return owned by TutorMount's onClose) ── */
   useEffect(() => {
@@ -293,10 +302,36 @@ export function TutorBody({
           ))
         )}
 
-        {status.kind === "thinking" ? <ThinkingRow reduce={reduce} /> : null}
+        {/* STREAMED BUBBLE — the growing answer. Once it shows, the status
+            indicator does NOT render (§6: never stack status above the answer).
+            When the settled turn lands the hook nulls streamingText in the same
+            update that appends the turn, so this bubble vanishes as the real turn
+            renders through the list above — no double bubble. */}
+        {streamingText !== null ? (
+          <StreamingBubble text={streamingText} reduce={reduce} />
+        ) : null}
+
+        {/* The pre-answer status phrase — ONLY while no streamed text is flowing.
+            The hook floors each phase (sent/thinking/composing); this component
+            holds no timers. */}
+        {streamingText === null &&
+        (status.kind === "sent" || status.kind === "thinking" || status.kind === "composing") ? (
+          <TutorStatusIndicator phase={{ kind: status.kind }} reduce={reduce} />
+        ) : null}
+
         {status.kind === "queued" ? (
           <p className="text-xs text-stone-400">{status.position} ahead of you…</p>
         ) : null}
+
+        {/* Approval pause — a distinct amber notice (NOT the rose error card). No
+            action buttons in A2: the flow is dormant (no tutor tool is
+            irreversible yet); the preview-then-decide UI bolts on when one
+            exists. §7: sentence case, no terminal punctuation, no tool name in
+            prose (the toolName rides a muted mono chip). */}
+        {status.kind === "approval" ? (
+          <ApprovalNotice message={status.message} toolName={status.toolName} />
+        ) : null}
+
         {status.kind === "error" ? (
           <div
             role="alert"
@@ -377,15 +412,51 @@ function EmptyState() {
   );
 }
 
-function ThinkingRow({ reduce }: { reduce: boolean }) {
-  if (reduce) {
-    return <p className="text-xs text-stone-400">Thinking…</p>;
-  }
+/** The growing streamed answer — same bubble chrome as a settled tutor turn, but
+ *  PLAIN text (no grounded-span / citation / rung chrome; that lands with the
+ *  settled turn). A subtle caret trails the text while motion is allowed. */
+function StreamingBubble({ text, reduce }: { text: string; reduce: boolean }) {
   return (
-    <div className="flex items-center gap-1.5 text-stone-400" aria-label="Thinking">
-      <span className="tutor-dot size-1.5 animate-pulse rounded-full bg-stone-400" />
-      <span className="tutor-dot size-1.5 animate-pulse rounded-full bg-stone-400 [animation-delay:150ms]" />
-      <span className="tutor-dot size-1.5 animate-pulse rounded-full bg-stone-400 [animation-delay:300ms]" />
+    <div className="flex flex-col items-start gap-2">
+      <div
+        data-ai-component="tutor-streaming-bubble"
+        className="max-w-[92%] rounded-2xl rounded-bl-md border border-stone-200/80 bg-stone-50/80 px-3.5 py-2.5 text-sm leading-relaxed text-stone-800"
+      >
+        <p className="whitespace-pre-wrap">
+          {text}
+          {reduce ? null : (
+            <span
+              aria-hidden
+              className="ml-0.5 inline-block w-[2px] animate-pulse self-stretch align-text-bottom text-brand-500"
+            >
+              ▍
+            </span>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** The approval pause — the tutor stopped before doing something. Amber (a calm
+ *  notice, distinct from the rose error card); no buttons in A2 (dormant flow).
+ *  §7: sentence case, no terminal punctuation, no tool name in the prose. */
+function ApprovalNotice({ message, toolName }: { message: string; toolName: string }) {
+  return (
+    <div
+      role="status"
+      data-ai-component="tutor-approval-notice"
+      className="rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-sm text-amber-800"
+    >
+      <p>{message}</p>
+      <p className="mt-1.5 flex items-center gap-1.5 text-xs text-amber-700">
+        <span>The tutor paused before doing this</span>
+        {toolName ? (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-700">
+            {toolName}
+          </span>
+        ) : null}
+      </p>
     </div>
   );
 }

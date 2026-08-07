@@ -42,7 +42,15 @@ import {
   selfReportStableKey,
   ttftRating,
   type TutorPracticeItem,
+  type TutorSSEEvent,
+  type TutorTurnPayload,
 } from "@/lib/learn/tutorClientTypes";
+import { createPhaseFloor, PHASE_FLOOR_MS } from "@/lib/learn/phaseFloor";
+import {
+  processTutorFrame,
+  type TutorFrameCallbacks,
+  type TutorStreamStatus,
+} from "@/lib/learn/useTutorStream";
 
 let pass = 0,
   fail = 0;
@@ -326,12 +334,17 @@ async function main() {
   }
 
   /* ─────────────────────────── TTFT THRESHOLDS ─────────────────────────── */
-  console.log("\n— ttftRating thresholds (good <1500 / ni <3000 / poor) —");
+  // A2 RE-POINT: the vital measures the FIRST VISIBLE TOKEN now (reasoning-tail
+  // latencies ~9–13s), so the buckets widened: good <4000 / ni <12000 / poor.
+  console.log("\n— ttftRating thresholds (A2: good <4000 / ni <12000 / poor) —");
   {
-    check("1499 → good", ttftRating(1499) === "good");
-    check("1500 → needs-improvement (boundary)", ttftRating(1500) === "needs-improvement");
-    check("2999 → needs-improvement", ttftRating(2999) === "needs-improvement");
-    check("3000 → poor (boundary)", ttftRating(3000) === "poor");
+    check("0 → good", ttftRating(0) === "good");
+    check("3999 → good", ttftRating(3999) === "good");
+    check("4000 → needs-improvement (boundary)", ttftRating(4000) === "needs-improvement");
+    check("9000 → needs-improvement (typical reasoning first-token)", ttftRating(9000) === "needs-improvement");
+    check("11999 → needs-improvement", ttftRating(11999) === "needs-improvement");
+    check("12000 → poor (boundary)", ttftRating(12000) === "poor");
+    check("20000 → poor", ttftRating(20000) === "poor");
   }
 
   /* ──────────────────────── CLIENT-TYPES DRIFT GREPS ───────────────────── */
@@ -399,6 +412,406 @@ async function main() {
     // The card must render ONLY behind the flag: a JSX conditional `escalationsUi &&`.
     check("TutorBody gates TutorEscalationCard behind escalationsUi &&", /escalationsUi\s*&&/.test(body));
     check("TutorBody references TutorEscalationCard", body.includes("TutorEscalationCard"));
+  }
+
+  /* ──────────────── A2 · MIRROR DRIFT (seven new variants) ─────────────── */
+  console.log("\n— A2 wire mirror: the seven new variants present + zod-free —");
+  {
+    const clientTypes = readSource("lib/learn/tutorClientTypes.ts");
+    const proto = readSource("lib/tutor/runtime/sseProtocol.ts");
+    // Every A2 variant tag the server schema defines must appear in the client
+    // mirror (drift guard — the client can't import the zod schema, so the greps
+    // are the contract).
+    for (const variant of [
+      "turn_started",
+      "model_started",
+      "first_token",
+      "text_delta",
+      "turn_completed",
+      "turn_aborted",
+      "approval_required",
+    ]) {
+      check(
+        `client mirror + server proto both name variant '${variant}'`,
+        clientTypes.includes(variant) && proto.includes(variant)
+      );
+    }
+    // The per-variant fields the client renders/reads.
+    for (const field of [
+      "streamId",
+      "responseId",
+      "ttftMs",
+      "delta",
+      "finishReason",
+      "durationMs",
+      "tokensEmitted",
+      "toolName",
+      "inputTokens",
+      "outputTokens",
+      "cachedTokens",
+    ]) {
+      check(`client mirror names A2 field '${field}'`, clientTypes.includes(field));
+    }
+    // The mirror stays zod-free (it can never import the schema module).
+    check(
+      "tutorClientTypes.ts imports no zod",
+      clientTypes.includes('from "zod"') === false
+    );
+    check(
+      "tutorClientTypes.ts imports no lib/tutor/runtime",
+      clientTypes.includes('from "@/lib/tutor/runtime') === false
+    );
+    // A tiny structural exercise so TS proves the union is inhabited by the new
+    // variants (compile-time proof the mirror shapes are usable).
+    const sample: TutorSSEEvent[] = [
+      { type: "turn_started", streamId: "s", ts: "t" },
+      { type: "model_started", responseId: null },
+      { type: "first_token", ttftMs: 9000 },
+      { type: "text_delta", delta: "hi" },
+      {
+        type: "turn_completed",
+        finishReason: "stop",
+        durationMs: 12,
+        usage: { inputTokens: 1, outputTokens: 2, cachedTokens: null },
+      },
+      { type: "turn_aborted", reason: "stalled", tokensEmitted: 3 },
+      { type: "approval_required", toolName: "x", message: "m" },
+    ];
+    check("all seven A2 variants construct as TutorSSEEvent", sample.length === 7);
+  }
+
+  /* ───────────────────────── A2 · PHASE FLOOR ──────────────────────────── */
+  console.log("\n— phaseFloor (fake clock): immediate first, hold, latest-wins, reset —");
+  {
+    // A fake clock + scheduler: `advance(ms)` moves time AND flushes any timer
+    // whose deadline has passed. schedule/cancel are pure (no real timers).
+    function makeClock() {
+      let t = 0;
+      let seq = 0;
+      const timers = new Map<number, { at: number; fn: () => void }>();
+      return {
+        now: () => t,
+        schedule: (fn: () => void, ms: number) => {
+          const id = ++seq;
+          timers.set(id, { at: t + ms, fn });
+          return id;
+        },
+        cancel: (h: unknown) => timers.delete(h as number),
+        advance: (ms: number) => {
+          t += ms;
+          for (const [id, timer] of [...timers.entries()]) {
+            if (timer.at <= t) {
+              timers.delete(id);
+              timer.fn();
+            }
+          }
+        },
+        pending: () => timers.size,
+      };
+    }
+
+    // (1) First proposal applies immediately.
+    {
+      const c = makeClock();
+      const floor = createPhaseFloor<string>({ now: c.now, schedule: c.schedule, cancel: c.cancel });
+      const applied: string[] = [];
+      floor.propose("sent", (p) => applied.push(p));
+      check("first proposal applies immediately", applied.join(",") === "sent");
+      check("first proposal schedules nothing", c.pending() === 0);
+    }
+
+    // (2) A <400ms proposal is HELD then flushed at exactly floor expiry.
+    {
+      const c = makeClock();
+      const floor = createPhaseFloor<string>({ now: c.now, schedule: c.schedule, cancel: c.cancel });
+      const applied: string[] = [];
+      floor.propose("sent", (p) => applied.push(p));
+      c.advance(100); // within the 400ms floor
+      floor.propose("thinking", (p) => applied.push(p));
+      check("proposal within floor is held (not applied yet)", applied.join(",") === "sent");
+      check("a flush is scheduled", c.pending() === 1);
+      c.advance(299); // total 399 — still before expiry
+      check("still held just before floor expiry", applied.join(",") === "sent");
+      c.advance(1); // total 400 — floor expires, flush fires
+      check("held phase flushes at exactly floor expiry", applied.join(",") === "sent,thinking");
+      check("no timer left after flush", c.pending() === 0);
+    }
+
+    // (3) Latest-wins when two proposals arrive during one hold.
+    {
+      const c = makeClock();
+      const floor = createPhaseFloor<string>({ now: c.now, schedule: c.schedule, cancel: c.cancel });
+      const applied: string[] = [];
+      floor.propose("sent", (p) => applied.push(p));
+      c.advance(50);
+      floor.propose("thinking", (p) => applied.push(p)); // held
+      c.advance(50);
+      floor.propose("composing", (p) => applied.push(p)); // supersedes the held one
+      check("two held proposals schedule exactly ONE flush", c.pending() === 1);
+      c.advance(300); // total 400 — flush fires with the LATEST proposal only
+      check("latest proposal wins the single flush", applied.join(",") === "sent,composing");
+    }
+
+    // (4) A post-floor proposal applies immediately (no queue).
+    {
+      const c = makeClock();
+      const floor = createPhaseFloor<string>({ now: c.now, schedule: c.schedule, cancel: c.cancel });
+      const applied: string[] = [];
+      floor.propose("sent", (p) => applied.push(p));
+      c.advance(400); // exactly at the floor → treated as past
+      floor.propose("thinking", (p) => applied.push(p));
+      check("proposal AT/after floor applies immediately", applied.join(",") === "sent,thinking");
+      check("immediate post-floor proposal schedules nothing", c.pending() === 0);
+    }
+
+    // (5) reset() cancels a pending flush.
+    {
+      const c = makeClock();
+      const floor = createPhaseFloor<string>({ now: c.now, schedule: c.schedule, cancel: c.cancel });
+      const applied: string[] = [];
+      floor.propose("sent", (p) => applied.push(p));
+      c.advance(50);
+      floor.propose("thinking", (p) => applied.push(p)); // held
+      check("reset target: one flush pending before reset", c.pending() === 1);
+      floor.reset();
+      check("reset cancels the pending flush", c.pending() === 0);
+      c.advance(1000);
+      check("nothing flushes after reset", applied.join(",") === "sent");
+      // After reset the NEXT proposal is the fresh first → immediate again.
+      floor.propose("composing", (p) => applied.push(p));
+      check("post-reset proposal applies immediately (fresh cycle)", applied.join(",") === "sent,composing");
+    }
+
+    // PHASE_FLOOR_MS is the documented default.
+    check("PHASE_FLOOR_MS === 400", PHASE_FLOOR_MS === 400);
+  }
+
+  /* ─────────────────────── A2 · FRAME REDUCER ──────────────────────────── */
+  // Drive processTutorFrame with a harness that mirrors the hook's callback
+  // wiring (a real phaseFloor over a fake clock + a mutable status/text tracker),
+  // so the assertions cover the floor interplay the hook produces.
+  console.log("\n— processTutorFrame: scripted sequences + floor interplay —");
+  {
+    function makeClock() {
+      let t = 0;
+      let seq = 0;
+      const timers = new Map<number, { at: number; fn: () => void }>();
+      return {
+        now: () => t,
+        schedule: (fn: () => void, ms: number) => {
+          const id = ++seq;
+          timers.set(id, { at: t + ms, fn });
+          return id;
+        },
+        cancel: (h: unknown) => timers.delete(h as number),
+        advance: (ms: number) => {
+          t += ms;
+          for (const [id, timer] of [...timers.entries()]) {
+            if (timer.at <= t) {
+              timers.delete(id);
+              timer.fn();
+            }
+          }
+        },
+      };
+    }
+
+    /** A harness mirroring useTutorStream.makeCallbacks — real floor + trackers. */
+    function makeHarness() {
+      const clock = makeClock();
+      const floor = createPhaseFloor<TutorStreamStatus["kind"]>({
+        now: clock.now,
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+      });
+      let status: TutorStreamStatus = { kind: "idle" };
+      let streamingText: string | null = null;
+      let buffer = "";
+      let composingApplied = false;
+      const turns: string[] = []; // settled assistant prose
+      let ttftCount = 0;
+      // Mirror the hook's per-run once-guard: processTutorFrame calls
+      // markFirstToken on EVERY text_delta; the CALLER dedupes to one TTFT emit.
+      let ttftFired = false;
+
+      const applyFloored = (phase: TutorStreamStatus["kind"]) => {
+        status = { kind: phase } as TutorStreamStatus;
+        if (phase === "composing") {
+          composingApplied = true;
+          streamingText = buffer;
+        }
+      };
+
+      const cb: TutorFrameCallbacks = {
+        phase: (p) => floor.propose(p, applyFloored),
+        status: (next) => {
+          floor.reset();
+          status = next;
+        },
+        markFirstToken: () => {
+          if (ttftFired) return;
+          ttftFired = true;
+          ttftCount += 1;
+        },
+        appendText: (delta) => {
+          buffer += delta;
+          if (composingApplied) streamingText = buffer;
+        },
+        settleTurn: (payload) => {
+          floor.reset();
+          turns.push(payload.prose);
+          streamingText = null;
+        },
+        clearStreamingText: () => {
+          streamingText = null;
+        },
+        finishIdle: () => {
+          floor.reset();
+          if (status.kind !== "error" && status.kind !== "approval") status = { kind: "idle" };
+        },
+      };
+
+      return {
+        cb,
+        clock,
+        feed: (ev: TutorSSEEvent) => processTutorFrame(ev, cb),
+        snapshot: () => ({ status, streamingText, turns: [...turns], ttftCount }),
+      };
+    }
+
+    const payload = (prose: string): TutorTurnPayload => ({
+      prose,
+      spans: [],
+      citations: [],
+      rung: null,
+      practiceItems: [],
+      escalationProposal: null,
+      escalationCandidateId: null,
+      flags: [],
+    });
+
+    // (A) The happy path: turn_started → model_started → first_token → 3 deltas →
+    //     turn → done. Assert phase transitions + streaming text + settle.
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" });
+      check("turn_started → sent phase", h.snapshot().status.kind === "sent");
+      h.clock.advance(400); // let 'sent' clear the floor
+      h.feed({ type: "model_started", responseId: "r1" });
+      check("model_started → thinking phase", h.snapshot().status.kind === "thinking");
+      check("no streaming text before composing", h.snapshot().streamingText === null);
+      h.clock.advance(400);
+      h.feed({ type: "first_token", ttftMs: 9000 });
+      check("first_token → composing phase", h.snapshot().status.kind === "composing");
+      h.clock.advance(400);
+      h.feed({ type: "text_delta", delta: "Hel" });
+      h.feed({ type: "text_delta", delta: "lo " });
+      h.feed({ type: "text_delta", delta: "there" });
+      check("first text_delta fired TTFT once", h.snapshot().ttftCount === 1);
+      check("streaming text accumulates the deltas", h.snapshot().streamingText === "Hello there");
+      h.feed({ type: "turn", payload: payload("Hello there.") });
+      check("turn settles the assistant bubble", h.snapshot().turns.join("|") === "Hello there.");
+      check("turn nulls streamingText (settled replaces streaming)", h.snapshot().streamingText === null);
+      h.feed({ type: "done" });
+      check("done → idle from non-terminal", h.snapshot().status.kind === "idle");
+    }
+
+    // (A2) text_delta BEFORE composing has been released by the floor: the buffer
+    //      accumulates, streamingText stays null, then goes live when composing
+    //      flushes.
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" }); // sent (immediate)
+      h.clock.advance(10); // still within floor
+      h.feed({ type: "text_delta", delta: "abc" }); // proposes composing (held) + buffers
+      check("composing HELD by floor → streamingText still null", h.snapshot().streamingText === null);
+      check("TTFT still fired on the buffered first delta", h.snapshot().ttftCount === 1);
+      h.clock.advance(390); // total 400 → composing flushes
+      check("composing flush reveals buffered text", h.snapshot().streamingText === "abc" && h.snapshot().status.kind === "composing");
+    }
+
+    // (B) The error path: …→ error → done keeps kind "error" AFTER done.
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" });
+      h.clock.advance(400);
+      h.feed({ type: "model_started", responseId: null });
+      h.feed({ type: "error", message: "boom" });
+      check("error applies immediately (bypasses floor)", h.snapshot().status.kind === "error");
+      check("error nulls streamingText", h.snapshot().streamingText === null);
+      h.feed({ type: "done" });
+      const s = h.snapshot();
+      check("done AFTER error PRESERVES the error (no wipe)", s.status.kind === "error" && (s.status as { message: string }).message === "boom");
+    }
+
+    // (C) The approval path: approval_required → done keeps kind "approval".
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" });
+      h.feed({ type: "approval_required", toolName: "danger_tool", message: "needs approval" });
+      check("approval_required → approval status", h.snapshot().status.kind === "approval");
+      h.feed({ type: "done" });
+      const s = h.snapshot();
+      check(
+        "done AFTER approval PRESERVES the approval",
+        s.status.kind === "approval" && (s.status as { toolName: string }).toolName === "danger_tool"
+      );
+    }
+
+    // (D) The aborted path: partial deltas → error → turn_aborted nulls text.
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" });
+      h.clock.advance(400);
+      h.feed({ type: "first_token", ttftMs: 5000 });
+      h.clock.advance(400);
+      h.feed({ type: "text_delta", delta: "partial…" });
+      check("partial streaming text present before abort", h.snapshot().streamingText === "partial…");
+      h.feed({ type: "error", message: "the turn was cancelled" });
+      h.feed({ type: "turn_aborted", reason: "aborted", tokensEmitted: 1 });
+      check("turn_aborted keeps streamingText null (partial not kept)", h.snapshot().streamingText === null);
+      h.feed({ type: "done" });
+      check("done after aborted-error still shows the error", h.snapshot().status.kind === "error");
+    }
+
+    // (E) queued applies immediately (bypasses the floor) and done from it → idle.
+    {
+      const h = makeHarness();
+      h.feed({ type: "turn_started", streamId: "s", ts: "t" });
+      h.feed({ type: "queued", position: 2 });
+      const s = h.snapshot();
+      check("queued applies immediately", s.status.kind === "queued" && (s.status as { position: number }).position === 2);
+      h.feed({ type: "done" });
+      check("done from queued (non-terminal) → idle", h.snapshot().status.kind === "idle");
+    }
+  }
+
+  /* ─────────────── A2 · useTutorStream new public surface ──────────────── */
+  console.log("\n— useTutorStream A2 surface (status kinds + streamingText + reducer export) —");
+  {
+    const hook = readSource("lib/learn/useTutorStream.ts");
+    // The new status kinds are declared on TutorStreamStatus.
+    for (const kind of ['kind: "sent"', 'kind: "composing"', 'kind: "approval"']) {
+      check(`TutorStreamStatus declares ${kind}`, hook.includes(kind));
+    }
+    check("UseTutorStreamResult exposes streamingText", /streamingText:\s*string\s*\|\s*null/.test(hook));
+    check("exports the pure processTutorFrame reducer", /export function processTutorFrame/.test(hook));
+    check("exports the TutorFrameCallbacks surface", /export interface TutorFrameCallbacks/.test(hook));
+    // TTFT re-point: the vital fires from the text_delta case, not on first bytes.
+    check("processTutorFrame calls markFirstToken in the text_delta case", /markFirstToken/.test(hook));
+    check("hook no longer has a markFirstFrame first-bytes emitter", hook.includes("markFirstFrame") === false);
+    // done-wipes-error fix: the terminal guard exists.
+    check("hook guards done against terminal status (isTerminalStatus)", hook.includes("isTerminalStatus"));
+    // Resume + dangling fallback are wired.
+    check("hook resumes via GET /api/learn/tutor?courseId", hook.includes("/api/learn/tutor?courseId") || hook.includes("courseId=${encodeURIComponent(courseId)}"));
+    check("hook has a dangling-question fallback re-load", hook.includes("scheduleDanglingReload"));
+    // Zod-free fence holds for the extended hook.
+    check("useTutorStream imports no zod", hook.includes('from "zod"') === false);
+    check("useTutorStream imports no lib/tutor/runtime", hook.includes('from "@/lib/tutor/runtime') === false);
+    // phaseFloor is zod-free too.
+    const floorSrc = readSource("lib/learn/phaseFloor.ts");
+    check("phaseFloor.ts imports no zod", floorSrc.includes('from "zod"') === false);
+    check("phaseFloor.ts imports nothing at all (pure)", /^\s*import\b/m.test(floorSrc) === false);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
