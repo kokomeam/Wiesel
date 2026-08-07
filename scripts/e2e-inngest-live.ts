@@ -50,7 +50,7 @@ async function main() {
     .from("social_provider_profile")
     .insert({ creator_id: uid, provider: "upload_post", profile_ref_enc: encryptSecret("ws_e2e") })
     .throwOnError();
-  const { data: acct } = await supabase
+  await supabase
     .from("social_account")
     .insert({ creator_id: uid, provider: "upload_post", platform: "linkedin", status: "linked", display_name: "E2E Creator", handle: "@e2e", last_synced_at: new Date().toISOString() })
     .select("id")

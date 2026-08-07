@@ -8,6 +8,9 @@
  *   QUIZACTIVE  — the derived-active truth table (answeredCount>0 && result===null).
  *   IMPORT FENCE— the zod-free / editor-free / events-free / runtime-free source
  *                 greps over the files A introduces.
+ *   A3 (Wave 1) — markdown-lite goldens over the SHARED ui/Markdown parser
+ *                 (A3-1), the rung-chrome removal source assertions (A3-2),
+ *                 citation dedup (A3-3), and the escape-hatch gate (A3-5).
  *
  * Run: `npx tsx scripts/verify-tutor-client.ts`
  */
@@ -38,13 +41,17 @@ import {
 } from "@/lib/learn/tutorStore";
 import { createEngagementTracker, type EngagementSignal } from "@/lib/learn/engagement";
 import {
+  dedupeCitations,
   gradePracticeAnswer,
   selfReportStableKey,
+  shouldOfferEscapeHatch,
   ttftRating,
+  type TutorCitation,
   type TutorPracticeItem,
   type TutorSSEEvent,
   type TutorTurnPayload,
 } from "@/lib/learn/tutorClientTypes";
+import { parseMarkdownBlocks } from "@/components/ui/Markdown";
 import { createPhaseFloor, PHASE_FLOOR_MS } from "@/lib/learn/phaseFloor";
 import {
   processTutorFrame,
@@ -812,6 +819,145 @@ async function main() {
     const floorSrc = readSource("lib/learn/phaseFloor.ts");
     check("phaseFloor.ts imports no zod", floorSrc.includes('from "zod"') === false);
     check("phaseFloor.ts imports nothing at all (pure)", /^\s*import\b/m.test(floorSrc) === false);
+  }
+
+  /* ───────────── A3-1 · markdown-lite via the SHARED ui/Markdown ──────────── */
+  // The tutor renders prose through the moved components/ui/Markdown parser.
+  // One fixture carries ALL FOUR constructs: **bold**, a "- " list, a fenced
+  // code block WITH a language tag, and `inline code`.
+  console.log("\n— A3-1 · parseMarkdownBlocks (shared ui/Markdown) —");
+  {
+    const fixture =
+      "Here is **bold** and `applyCoursePatch` inline.\n\n- first item\n- second item\n\n```ts\nconst x = 1;\n```";
+    const blocks = parseMarkdownBlocks(fixture);
+    check("fixture parses to 3 blocks (paragraph, list, code)", blocks.length === 3, `got ${blocks.length}`);
+
+    const para = blocks[0];
+    check("first block is a paragraph", para?.type === "paragraph");
+    const inline = para?.type === "paragraph" ? para.inline : [];
+    check(
+      "**bold** parses to a bold inline segment",
+      inline.some((s) => s.type === "bold" && s.text === "bold")
+    );
+    check(
+      "`inline code` parses to a code inline segment",
+      inline.some((s) => s.type === "code" && s.text === "applyCoursePatch")
+    );
+
+    const list = blocks[1];
+    check("- list parses to an unordered list block", list?.type === "list" && list.ordered === false);
+    check(
+      "list carries both items",
+      list?.type === "list" &&
+        list.items.length === 2 &&
+        list.items[0].some((s) => s.type === "text" && s.text === "first item")
+    );
+
+    const code = blocks[2];
+    check("fenced block parses to a code block", code?.type === "code");
+    check(
+      "fence language tag is CONSUMED (lands in .lang, never in the text)",
+      code?.type === "code" && code.lang === "ts" && code.text === "const x = 1;" && !code.text.includes("```")
+    );
+
+    // Span-boundary reality: spans parse INDIVIDUALLY, so a list or fence split
+    // across two spans must parse per-segment without throwing.
+    {
+      const listA = "- alpha\n- be";
+      const listB = "ta\n- gamma";
+      let threw = false;
+      let aBlocks: ReturnType<typeof parseMarkdownBlocks> = [];
+      let bBlocks: ReturnType<typeof parseMarkdownBlocks> = [];
+      try {
+        aBlocks = parseMarkdownBlocks(listA);
+        bBlocks = parseMarkdownBlocks(listB);
+      } catch {
+        threw = true;
+      }
+      check("list split across two spans parses without throwing", threw === false);
+      check(
+        "each list half parses to its own list run",
+        aBlocks[0]?.type === "list" && aBlocks[0].items.length === 2 && bBlocks.some((b) => b.type === "list")
+      );
+    }
+    {
+      const fenceA = "```py\nprint(1)"; // unterminated — the open fence swallows the tail
+      const fenceB = "print(2)\n```";
+      let threw = false;
+      let aBlocks: ReturnType<typeof parseMarkdownBlocks> = [];
+      let bBlocks: ReturnType<typeof parseMarkdownBlocks> = [];
+      try {
+        aBlocks = parseMarkdownBlocks(fenceA);
+        bBlocks = parseMarkdownBlocks(fenceB);
+      } catch {
+        threw = true;
+      }
+      check("fence split across two spans parses without throwing", threw === false);
+      check(
+        "unterminated open fence parses as a code block with its lang consumed",
+        aBlocks[0]?.type === "code" && aBlocks[0].lang === "py" && aBlocks[0].text === "print(1)"
+      );
+      check("the fence's second half still yields blocks (no drop)", bBlocks.length > 0);
+    }
+  }
+
+  /* ─────────────── A3-2 · rung chrome removed from TutorBody ─────────────── */
+  console.log("\n— A3-2 · no RungBadge / learner-facing rung literal —");
+  {
+    const body = readSource("components/learn/tutor/TutorBody.tsx");
+    check("TutorBody has NO RungBadge symbol", body.includes("RungBadge") === false);
+    check('TutorBody has NO learner-facing "Rung " literal', body.includes("Rung ") === false);
+    // The rung stays EXTRACTED (the escape-hatch gate consumes it at render time).
+    check("TutorBody still extracts rung for the hatch gate", body.includes("shouldOfferEscapeHatch(rung)"));
+  }
+
+  /* ──────────────── A3-3 · citation dedup (client leg) ───────────────────── */
+  console.log("\n— A3-3 · dedupeCitations (frozen lessonId|blockId|slideId key) —");
+  {
+    const c = (lessonId: string, blockId: string, slideId: string | null): TutorCitation => ({
+      lessonId,
+      blockId,
+      slideId,
+    });
+
+    // Byte-identical duplicates collapse to one.
+    const identical = dedupeCitations([c("L1", "B1", "S1"), c("L1", "B1", "S1"), c("L1", "B1", "S1")]);
+    check("byte-identical citations collapse to one", identical.length === 1);
+
+    // Same target with slideId null-vs-null (the server's slide-downgrade
+    // manufactured pair) collapses too.
+    const downgraded = dedupeCitations([c("L1", "B1", null), c("L1", "B1", null)]);
+    check("same-target null-slideId pair collapses to one", downgraded.length === 1);
+
+    // Two DIFFERENT blocks are distinct actions — both survive, order preserved.
+    const twoBlocks = dedupeCitations([c("L1", "B1", null), c("L1", "B2", null)]);
+    check(
+      "two different blocks both survive, order preserved",
+      twoBlocks.length === 2 && twoBlocks[0].blockId === "B1" && twoBlocks[1].blockId === "B2"
+    );
+
+    // A block-level citation and a slide-level citation on the SAME block are
+    // different jump targets — both survive.
+    const slideVsBlock = dedupeCitations([c("L1", "B1", null), c("L1", "B1", "S1")]);
+    check("null-slide vs slide citation on one block are distinct targets", slideVsBlock.length === 2);
+
+    // First occurrence wins (order-preserving dedup).
+    const ordered = dedupeCitations([c("L1", "B2", null), c("L1", "B1", null), c("L1", "B2", null)]);
+    check(
+      "first occurrence survives in place",
+      ordered.length === 2 && ordered[0].blockId === "B2" && ordered[1].blockId === "B1"
+    );
+  }
+
+  /* ─────────────── A3-5 · escape-hatch gate (rung < 4, null hidden) ───────── */
+  console.log("\n— A3-5 · shouldOfferEscapeHatch —");
+  {
+    check("rung 0 → hatch offered", shouldOfferEscapeHatch(0) === true);
+    check("rung 1 → hatch offered", shouldOfferEscapeHatch(1) === true);
+    check("rung 2 → hatch offered", shouldOfferEscapeHatch(2) === true);
+    check("rung 3 → hatch offered", shouldOfferEscapeHatch(3) === true);
+    check("rung 4 (full answer given) → NO hatch", shouldOfferEscapeHatch(4) === false);
+    check("null rung (legacy/unknown) → NO hatch", shouldOfferEscapeHatch(null) === false);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

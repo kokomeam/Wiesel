@@ -1,5 +1,5 @@
 /**
- * TUTOR-1 W3.3 — grounding validation (Directive §3.3).
+ * TUTOR-1 W3.3 — grounding validation (Directive §3.3) · A3 Wave 1 ok-rule.
  *
  * Every substantive claim the tutor makes must carry an anchor RESOLVABLE in
  * the learner's OWN snapshot; prose is marked into grounded (⟦g⟧…⟦/g⟧) and
@@ -10,18 +10,29 @@
  *     the citation (flag `citation_dropped`); a slide id that doesn't resolve
  *     inside its block downgrades to block level (strip slideId, keep the
  *     citation — flag `anchor_downgraded`, the R-13 convention);
- *   · grounded spans with ZERO surviving citations flag `ungrounded`;
+ *   · surviving citations are DE-DUPLICATED by jump-target identity
+ *     (lessonId|blockId|slideId), order-preserving, NO flag — the downgrade
+ *     path can manufacture byte-identical duplicates, and the persisted
+ *     grounding jsonb must be clean for every future consumer;
  *   · supplemental spans survive only under `course_canon: open` — strict
  *     canon REMOVES their text (flag `supplemental_suppressed`): the charter
  *     says outside-the-course material must not contradict the course;
- *   · substantive prose (>200 chars) with no surviving citations and no
- *     escalation proposal flags `ungrounded` — low confidence must become an
- *     escalation proposal, never invention;
+ *   · THE `ungrounded` CONTRACT (A3/D-6): SUBSTANTIVE cleaned prose
+ *     (>200 chars) with zero surviving citations and no escalation proposal
+ *     flags `ungrounded` — low confidence must become an escalation proposal,
+ *     never invention. Proposing the hand-off is the documented ESCAPE: a
+ *     substantive citation-less turn that carries an escalationProposal is ok.
+ *     Short citation-less prose (a greeting, "what would you like to
+ *     review?") NEVER flags — a greeting is not a claim (the Wave-1 decision;
+ *     the old any-grounded-span-without-citations rule silently discarded
+ *     routine streamed turns and stranded the learner's question — D-6);
  *   · malformed/unbalanced markers never throw: the remainder is treated as
  *     plain text and the turn flags `span_parse_error`.
  *
  * `ok` is false only on `ungrounded` / `span_parse_error` — dropped
- * citations, downgrades, and suppressions are CLEANUPS, not failures.
+ * citations, downgrades, dedup, and suppressions are CLEANUPS, not failures.
+ * (`span_parse_error` still fails ok DELIBERATELY: relaxing it could leak
+ * supplemental content under a strict canon.)
  */
 
 import type { PublicationSnapshot } from "@/lib/course/publish/schemas";
@@ -131,7 +142,7 @@ export function validateTurnOutput(
   const flags: string[] = [];
 
   // 1. Citations resolve — drop unknown blocks; downgrade unresolvable slides.
-  const citations: TurnOutput["citations"] = [];
+  const resolved: TurnOutput["citations"] = [];
   for (const c of output.citations) {
     if (!index.blockIds.has(c.blockId) || index.lessonByBlock.get(c.blockId) !== c.lessonId) {
       flags.push("citation_dropped");
@@ -141,19 +152,31 @@ export function validateTurnOutput(
       const slides = index.slideIdsByBlock.get(c.blockId);
       if (!slides || !slides.has(c.slideId)) {
         flags.push("anchor_downgraded");
-        citations.push({ ...c, slideId: null });
+        resolved.push({ ...c, slideId: null });
         continue;
       }
     }
+    resolved.push(c);
+  }
+
+  // 1a. A3/D-3 — dedup survivors by jump-target identity, ORDER-PRESERVING.
+  //     The downgrade path above manufactures byte-identical duplicates (two
+  //     unresolvable slideIds on one block both become {block, slideId: null}),
+  //     and the model may repeat a citation within its allowance. The persisted
+  //     grounding jsonb must be clean for every future consumer. No flag —
+  //     dedup is a cleanup, not a failure.
+  const seenTargets = new Set<string>();
+  const citations: TurnOutput["citations"] = [];
+  for (const c of resolved) {
+    const key = `${c.lessonId}|${c.blockId}|${c.slideId ?? ""}`;
+    if (seenTargets.has(key)) continue;
+    seenTargets.add(key);
     citations.push(c);
   }
 
   // 2. Spans.
   const { spans: parsed, parseError } = parseSpans(output.proseWithSpanMarkers);
   if (parseError) flags.push("span_parse_error");
-
-  const hasGrounded = parsed.some((s) => s.kind === "grounded" && s.text.trim().length > 0);
-  if (hasGrounded && citations.length === 0) flags.push("ungrounded");
 
   // 3. Canon: strict suppresses supplemental content entirely.
   let spans = parsed;
@@ -164,9 +187,11 @@ export function validateTurnOutput(
   }
   const prose = spans.map((s) => s.text).join("").trim();
 
-  // 4. Substantive-but-unsupported prose → escalate, never invent.
+  // 4. THE ungrounded rule (A3/D-6): only SUBSTANTIVE citation-less prose with
+  //    no escalation escape flags — a greeting is not a claim. Substantive-but-
+  //    unsupported prose must become an escalation proposal, never invention.
   if (prose.length > 200 && citations.length === 0 && !output.escalationProposal) {
-    if (!flags.includes("ungrounded")) flags.push("ungrounded");
+    flags.push("ungrounded");
   }
 
   const ok = !flags.includes("ungrounded") && !flags.includes("span_parse_error");

@@ -241,8 +241,17 @@ export async function persistAssistantTurn(
 }
 
 /**
- * Replay a thread's turns (oldest → newest) into the loop's HistoryTurn[]. Reads
- * role + content + response_id; the loop's history layer bounds/collapses it.
+ * Replay a thread's turns (oldest → newest) into the loop's HistoryTurn[].
+ *
+ * A3/D-6 (iv): the page is the NEWEST `cap` rows — order created_at DESCENDING
+ * with limit(cap), then reverse in memory. (The old ascending+limit replayed the
+ * OLDEST tail once a thread passed `cap` turns.)
+ *
+ * A3 rung-trail fix (audit §2 bonus defect b): `rung` lives ONLY in the
+ * dedicated column — the immutable grounding jsonb never stores it — so the
+ * loader INJECTS the column into each mapped HistoryTurn's grounding object at
+ * load time. rungTrailFromHistory (loop.ts) finally sees real values for ALL
+ * rows; the DB jsonb is never written back.
  */
 export async function loadThreadHistory(
   admin: DB,
@@ -251,21 +260,26 @@ export async function loadThreadHistory(
 ): Promise<HistoryTurn[]> {
   const { data, error } = await admin
     .from("tutor_turns")
-    .select("role, content, response_id, created_at, grounding")
+    .select("id, role, content, response_id, created_at, grounding, rung")
     .eq("thread_id", threadId)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(cap);
   if (error) throw new Error(`loadThreadHistory: ${error.message}`);
-  return (data ?? []).map((r) => ({
-    role: r.role as HistoryTurn["role"],
-    content: r.content,
-    responseId: r.response_id,
-    // createdAt + grounding feed the SESSION-state derivation (W3.5). The textual
-    // history replay ignores them; session.ts reads createdAt (the window) and
-    // grounding.sessionMarkers (the once-per-session behavior markers).
-    createdAt: r.created_at,
-    grounding: r.grounding,
-  }));
+  return (data ?? []).reverse().map((r) => {
+    const g = r.grounding;
+    const groundingBase = g && typeof g === "object" && !Array.isArray(g) ? g : {};
+    return {
+      id: r.id,
+      role: r.role as HistoryTurn["role"],
+      content: r.content,
+      responseId: r.response_id,
+      // createdAt + grounding feed the SESSION-state derivation (W3.5). The textual
+      // history replay ignores them; session.ts reads createdAt (the window) and
+      // grounding.sessionMarkers (the once-per-session behavior markers).
+      createdAt: r.created_at,
+      grounding: { ...groundingBase, rung: r.rung },
+    };
+  });
 }
 
 /* ─────────────────────────────── evidence ids ───────────────────────────── */
@@ -607,9 +621,15 @@ export async function runTutorTurnForRequest(
   });
 
   // (3) history (the tail BEFORE this turn's learner row — replay it, then drop
-  //     the row we just wrote so it isn't echoed as history).
+  //     the row we just wrote BY ID so it isn't echoed as history; a positional
+  //     last-row drop only as a fallback if the id is somehow absent from the
+  //     page — A3/D-6: the blind slice(0,-1) dropped a legitimate old row).
   const allHistory = await loadThreadHistory(deps.admin, threadId);
-  const historyTurns = allHistory.slice(0, -1); // drop the just-written learner row
+  const justWrittenIdx = allHistory.findIndex((t) => t.id === learnerTurnId);
+  const historyTurns =
+    justWrittenIdx >= 0
+      ? allHistory.filter((_, i) => i !== justWrittenIdx)
+      : allHistory.slice(0, -1);
 
   // (4) context (concept graph + charter) — passed in by the route, else loaded.
   const context =

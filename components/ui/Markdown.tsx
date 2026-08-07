@@ -177,7 +177,7 @@ function InlineRun({ segments }: { segments: MarkdownInline[] }) {
             return <em key={i}>{seg.text}</em>;
           case "code":
             return (
-              <code key={i} className="rounded bg-stone-200/60 px-1 py-px font-mono text-[12px]">
+              <code key={i} className="rounded bg-stone-200/60 px-1 py-px font-mono text-meta">
                 {seg.text}
               </code>
             );
@@ -203,7 +203,7 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
         switch (b.type) {
           case "heading":
             return (
-              <p key={i} className={cn("text-[13px] font-semibold text-stone-800", spaced && "mt-2.5")}>
+              <p key={i} className={cn("text-secondary font-semibold text-stone-800", spaced && "mt-2.5")}>
                 <InlineRun segments={b.inline} />
               </p>
             );
@@ -230,7 +230,7 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
               <pre
                 key={i}
                 className={cn(
-                  "overflow-x-auto rounded-lg border border-stone-200 bg-stone-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-stone-700",
+                  "overflow-x-auto rounded-lg border border-stone-200 bg-stone-50 px-2.5 py-2 font-mono text-meta leading-relaxed text-stone-700",
                   spaced && "mt-2"
                 )}
               >

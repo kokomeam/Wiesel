@@ -194,8 +194,10 @@ function makeSnapshotLoader(admin: DB): (publicationId: string) => Promise<{ sna
 
 /** Build a scripted tutor_turn_output with N tutor_inference evidence items for
  *  the given concept node. The prose carries ONE grounded span backed by a real
- *  citation (lesson+block from the snapshot) so grounding validates ok — bare
- *  prose is grounded-by-default, so an uncited turn would flag `ungrounded`. */
+ *  citation (lesson+block from the snapshot) so grounding validates clean with a
+ *  surviving citation. (A3 Wave 1: short uncited prose no longer flags
+ *  `ungrounded` — only substantive >200-char citation-less prose without an
+ *  escalation proposal does; the citation here exercises the resolution path.) */
 function scriptedTurnOutput(
   nodeId: string,
   evidenceCount: number,

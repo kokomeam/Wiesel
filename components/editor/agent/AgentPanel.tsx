@@ -50,7 +50,7 @@ import {
   type ValidationStatus,
 } from "@/lib/editor/agentStore";
 import { useUIStore } from "@/lib/editor/uiStore";
-import { Markdown } from "./Markdown";
+import { Markdown } from "@/components/ui/Markdown";
 import { StatusStrip } from "./StatusStrip";
 import { useAgentStream } from "./useAgentStream";
 

@@ -5,7 +5,10 @@
  * The `tutor_threads` select is user_id-own + enrolled (the strict-regime RLS in
  * migration 20260804100000): a learner reads only their OWN thread, and only
  * while enrolled. Assistant rows carry a `grounding` jsonb (the Wave-3 output
- * contract — cited anchors + the grounded/supplemental span map + flags + rung).
+ * contract — cited anchors + the grounded/supplemental span map + flags) plus
+ * the dedicated `rung` COLUMN, which this loader injects into the in-memory
+ * grounding object (A3 D-2 — the jsonb never carried rung; the column is the
+ * truth).
  *
  * ZOD-FREE by house rule: no zod, no lib/tutor/runtime import (the learn route
  * bundle stays schema-free). The supabase param is typed structurally
@@ -98,19 +101,25 @@ export async function loadTutorHistory(
     const threadId = (thread as { id: string }).id;
     const { data: turns, error: turnsError } = await db
       .from("tutor_turns")
-      .select("id, role, content, grounding, created_at")
+      .select("id, role, content, grounding, rung, created_at")
       .eq("thread_id", threadId)
       .order("created_at", { ascending: true });
     if (turnsError || !Array.isArray(turns)) return [];
 
     return turns.map((raw): TutorHistoryTurn => {
       const row = raw as Record<string, unknown>;
+      // A3 D-2: the rung lives ONLY in the dedicated `rung` COLUMN (it was never
+      // written into the grounding jsonb) — inject it into the coerced grounding
+      // at load time so history turns carry it (the escape-hatch gate reads it).
+      // The column is the truth; any jsonb value is only a defensive fallback.
+      const grounding = coerceGrounding(row.grounding);
+      const rung = typeof row.rung === "number" ? row.rung : null;
       return {
         id: String(row.id),
         role: row.role as TutorHistoryTurn["role"],
         content: typeof row.content === "string" ? row.content : "",
         createdAt: String(row.created_at),
-        grounding: coerceGrounding(row.grounding),
+        grounding: grounding === null ? null : { ...grounding, rung: rung ?? grounding.rung },
       };
     });
   } catch {

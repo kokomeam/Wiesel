@@ -152,6 +152,35 @@ export function gradePracticeAnswer(
 }
 
 /**
+ * A3 D-3 — dedupe citations by their jump TARGET (the frozen identity key
+ * `${lessonId}|${blockId}|${slideId ?? ""}`), order-preserving: the FIRST
+ * occurrence of each target survives. Never dedups by label — two different
+ * blocks both rendered "Show me" are distinct actions. The server dedups new
+ * turns at validate time; this covers legacy persisted rows that still carry
+ * duplicates.
+ */
+export function dedupeCitations(citations: TutorCitation[]): TutorCitation[] {
+  const seen = new Set<string>();
+  const out: TutorCitation[] = [];
+  for (const c of citations) {
+    const key = `${c.lessonId}|${c.blockId}|${c.slideId ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * A3 D-4 — should a tutor turn offer the "Just show me" de-scaffold hatch?
+ * Rung 4 = the full answer was already given → no hatch; null/unknown (legacy
+ * rows without a rung) → no hatch (hidden, the safe default).
+ */
+export function shouldOfferEscapeHatch(rung: number | null): boolean {
+  return rung !== null && rung < 4;
+}
+
+/**
  * The stable idempotency key for a per-node self-report on a given day. Scopes to
  * the node + lesson (falling back to `"course"`) + the ISO date (day granularity).
  */

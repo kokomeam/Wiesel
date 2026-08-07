@@ -237,7 +237,7 @@ async function closeTutor(page: Page) {
  */
 async function sendRealTurn(page: Page, message: string, retries = 2): Promise<boolean> {
   await waitForTutorReady(page); // never send before history settles (it'd wipe the turn)
-  const bubbles = () => page.locator('[data-ai-tool="tutor-just-show-me"]').count();
+  const bubbles = () => page.locator('[data-ai-component="tutor-assistant-bubble"]').count();
   const before = await bubbles();
   await page.fill('[data-ai-tool="tutor-composer"]', message);
   await page.click('[data-ai-tool="tutor-send"]');
@@ -246,7 +246,7 @@ async function sendRealTurn(page: Page, message: string, retries = 2): Promise<b
     const landed = await page
       .waitForFunction(
         (n) =>
-          document.querySelectorAll('[data-ai-tool="tutor-just-show-me"]').length > n ||
+          document.querySelectorAll('[data-ai-component="tutor-assistant-bubble"]').length > n ||
           document.querySelector('[data-ai-tool="tutor-retry"]') !== null,
         before,
         { timeout: 90000 }
@@ -1479,11 +1479,11 @@ async function main() {
           await route.fulfill({ response: resp }).catch(() => {});
         });
         await page.fill('[data-ai-tool="tutor-composer"]', q);
-        const bubblesBefore = await page.locator('[data-ai-tool="tutor-just-show-me"]').count();
+        const bubblesBefore = await page.locator('[data-ai-component="tutor-assistant-bubble"]').count();
         await page.click('[data-ai-tool="tutor-send"]');
         await page
           .waitForFunction(
-            (n) => document.querySelectorAll('[data-ai-tool="tutor-just-show-me"]').length > n,
+            (n) => document.querySelectorAll('[data-ai-component="tutor-assistant-bubble"]').length > n,
             bubblesBefore,
             { timeout: 90000 }
           )

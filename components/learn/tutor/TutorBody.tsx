@@ -3,11 +3,13 @@
 /**
  * TUTOR-1 Wave 4 — the tutor panel BODY (the heavy, next/dynamic-imported
  * surface). Owns the whole conversation UI: the SSE-backed transcript, grounded/
- * supplemental span rendering, citation chips, the scaffolding rung + "Just show
- * me", formative practice cards + self-report, suggestion chips, the composer,
- * the escalation card (dormant behind the flag), and the docked width-drag
- * divider. The streaming/history/vitals plumbing lives in the sibling
- * `useTutorStream` hook — this component is presentation + local interaction.
+ * supplemental span rendering (markdown-lite via the shared ui/Markdown), citation
+ * chips, the rung-gated "Just show me" escape hatch (A3 — the rung itself stays
+ * internal, never rendered), formative practice cards + self-report, suggestion
+ * chips, the composer, the escalation card (dormant behind the flag), and the
+ * docked width-drag divider. The streaming/history/vitals plumbing lives in the
+ * sibling `useTutorStream` hook — this component is presentation + local
+ * interaction.
  *
  * House rules honoured here: warm paper/stone design system; NO framer-motion
  * (reduced motion via a hydration-safe media query); no Date.now()/Math.random()
@@ -22,13 +24,16 @@ import { createClient } from "@/lib/supabase/client";
 import { useMediaQuery } from "@/lib/ui/useMediaQuery";
 import { useTutorStore, type TutorAmbient } from "@/lib/learn/tutorStore";
 import {
+  dedupeCitations,
   gradePracticeAnswer,
   selfReportStableKey,
+  shouldOfferEscapeHatch,
   type TutorCitation,
   type TutorPracticeItem,
   type TutorSpan,
 } from "@/lib/learn/tutorClientTypes";
 import { useTutorStream, type TutorChatTurn } from "@/lib/learn/useTutorStream";
+import { Markdown } from "@/components/ui/Markdown";
 import { TutorEscalationCard } from "./TutorEscalationCard";
 import { TutorStatusIndicator } from "./TutorStatusIndicator";
 
@@ -413,8 +418,10 @@ function EmptyState() {
 }
 
 /** The growing streamed answer — same bubble chrome as a settled tutor turn, but
- *  PLAIN text (no grounded-span / citation / rung chrome; that lands with the
- *  settled turn). A subtle caret trails the text while motion is allowed. */
+ *  markdown only (no grounded-span / citation chrome; that lands with the settled
+ *  turn). The shared ui/Markdown renderer is streaming-safe (stable-prefix
+ *  caching; half-typed markup renders as plain text). A subtle caret trails the
+ *  markdown block while motion is allowed. */
 function StreamingBubble({ text, reduce }: { text: string; reduce: boolean }) {
   return (
     <div className="flex flex-col items-start gap-2">
@@ -422,17 +429,15 @@ function StreamingBubble({ text, reduce }: { text: string; reduce: boolean }) {
         data-ai-component="tutor-streaming-bubble"
         className="max-w-[92%] rounded-2xl rounded-bl-md border border-stone-200/80 bg-stone-50/80 px-3.5 py-2.5 text-sm leading-relaxed text-stone-800"
       >
-        <p className="whitespace-pre-wrap">
-          {text}
-          {reduce ? null : (
-            <span
-              aria-hidden
-              className="ml-0.5 inline-block w-[2px] animate-pulse self-stretch align-text-bottom text-brand-500"
-            >
-              ▍
-            </span>
-          )}
-        </p>
+        <Markdown text={text} />
+        {reduce ? null : (
+          <span
+            aria-hidden
+            className="ml-0.5 inline-block w-[2px] animate-pulse align-text-bottom text-brand-500"
+          >
+            ▍
+          </span>
+        )}
       </div>
     </div>
   );
@@ -506,8 +511,10 @@ function TurnBubble({
 
   return (
     <div className="flex flex-col items-start gap-2">
-      <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-stone-200/80 bg-stone-50/80 px-3.5 py-2.5 text-sm leading-relaxed text-stone-800">
-        {rung !== null ? <RungBadge rung={rung} /> : null}
+      <div
+        data-ai-component="tutor-assistant-bubble"
+        className="max-w-[92%] rounded-2xl rounded-bl-md border border-stone-200/80 bg-stone-50/80 px-3.5 py-2.5 text-sm leading-relaxed text-stone-800"
+      >
         <TutorProse spans={spans} content={turn.content} />
         {citations.length > 0 ? (
           <CitationChips
@@ -518,15 +525,19 @@ function TurnBubble({
             requestCitation={requestCitation}
           />
         ) : null}
-        {/* Always-visible de-scaffold escape hatch on tutor replies. */}
-        <button
-          type="button"
-          data-ai-tool="tutor-just-show-me"
-          onClick={() => onSend("just show me")}
-          className="mt-2 text-[11px] font-medium text-stone-500 underline decoration-dotted underline-offset-2 transition-colors hover:text-brand-700"
-        >
-          Just show me
-        </button>
+        {/* De-scaffold escape hatch — offered ONLY below rung 4 (A3 D-4): a
+            rung-4 turn already gave the full answer, and null/legacy rungs stay
+            hidden (fail toward no hatch). */}
+        {shouldOfferEscapeHatch(rung) ? (
+          <button
+            type="button"
+            data-ai-tool="tutor-just-show-me"
+            onClick={() => onSend("just show me")}
+            className="mt-2 text-[11px] font-medium text-stone-500 underline decoration-dotted underline-offset-2 transition-colors hover:text-brand-700"
+          >
+            Just show me
+          </button>
+        ) : null}
       </div>
 
       {practiceItems && practiceItems.length > 0
@@ -557,23 +568,14 @@ function TurnBubble({
   );
 }
 
-/** The 0–4 scaffolding rung badge. */
-function RungBadge({ rung }: { rung: number }) {
-  const labels = ["Direct answer", "Big hint", "Nudge", "Small nudge", "Socratic"];
-  const clamped = Math.max(0, Math.min(4, rung));
-  return (
-    <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand-700 ring-1 ring-inset ring-brand-200/70">
-      Rung {rung} · {labels[clamped]}
-    </span>
-  );
-}
-
-/** Render the reply text as grounded/supplemental spans. Supplemental runs get a
- *  tinted left border + a tiny "beyond this course" label. Falls back to the raw
- *  content when no span map is present. */
+/** Render the reply text as grounded/supplemental spans, each through the shared
+ *  markdown-lite renderer (A3 D-1 — spans stay the visual classification unit;
+ *  markdown parses per-span). Supplemental runs keep the tinted left border + the
+ *  tiny "beyond this course" label. Falls back to the raw content (also markdown)
+ *  when no span map is present. */
 function TutorProse({ spans, content }: { spans: TutorSpan[] | null; content: string }) {
   if (!spans || spans.length === 0) {
-    return <p className="whitespace-pre-wrap">{content}</p>;
+    return <Markdown text={content} />;
   }
   return (
     <div className="space-y-2">
@@ -586,12 +588,12 @@ function TutorProse({ spans, content }: { spans: TutorSpan[] | null; content: st
             <span className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-amber-600">
               beyond this course
             </span>
-            <p className="whitespace-pre-wrap">{span.text}</p>
+            <Markdown text={span.text} />
           </div>
         ) : (
-          <p key={i} className="whitespace-pre-wrap">
-            {span.text}
-          </p>
+          <div key={i}>
+            <Markdown text={span.text} />
+          </div>
         )
       )}
     </div>
@@ -621,13 +623,16 @@ function CitationChips({
       router.push(`/learn/${slug}/${c.lessonId}?block=${encodeURIComponent(c.blockId)}${slidePart}`);
     }
   }
+  // A3 D-3: collapse duplicate jump targets (legacy persisted rows still carry
+  // duplicates; the server dedups new turns). Post-dedup the target key is
+  // unique, so the React key needs no index suffix.
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
-      {citations.map((c, i) => {
+      {dedupeCitations(citations).map((c) => {
         const sameLesson = ambient.lessonId != null && c.lessonId === ambient.lessonId;
         return (
           <button
-            key={`${c.blockId}:${c.slideId ?? ""}:${i}`}
+            key={`${c.lessonId}|${c.blockId}|${c.slideId ?? ""}`}
             type="button"
             data-ai-tool="tutor-citation"
             onClick={() => jump(c)}

@@ -493,7 +493,6 @@ export function useTutorStream(
     return () => {
       disposed = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyLoaded, courseId, consumeStream, scheduleDanglingReload]);
 
   /* ── the core send: optimistic learner turn → POST → consume the stream ── */

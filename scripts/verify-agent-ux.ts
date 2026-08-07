@@ -31,7 +31,7 @@ import {
   TOOL_CATEGORIES,
   TOOL_LABELS,
 } from "@/lib/ai/toolLabels";
-import { parseInline, parseMarkdownBlocks } from "@/components/editor/agent/Markdown";
+import { parseInline, parseMarkdownBlocks } from "@/components/ui/Markdown";
 
 let pass = 0,
   fail = 0;

@@ -7,7 +7,16 @@
  *   AC-T3.2  Prompt assembly — two DIFFERENT learners on the SAME (publication,
  *            lesson, charter) share BYTE-IDENTICAL system + developer; only the
  *            input (L3/L4/message) differs. TUTOR_L0 ≥ 4096 chars;
- *            TUTOR_PROMPT_VERSION === "tutor-v1".
+ *            TUTOR_PROMPT_VERSION === "tutor-v2" (A3 Wave 1: the ONE bump for
+ *            the FORMATTING + THE CURRENT MESSAGE L0 sections).
+ *   A3/D-6   Grounding ok-rule — a short citation-less turn (a greeting) is ok;
+ *            only SUBSTANTIVE (>200 chars) citation-less prose without an
+ *            escalation proposal flags `ungrounded`; the escalation escape;
+ *            span_parse_error still fails ok (unchanged).
+ *   A3/D-3   Citation dedup by jump-target identity (order-preserving) — incl.
+ *            the downgrade-manufactured duplicate collapse.
+ *   A3/D-6   Replay framing — the frozen dangling-question marker on unanswered
+ *            learner lines; the ==-delimited per-turn input (byte-exact).
  *   AC-T3.3/ Scaffolding — applyScaffolding opening-turn clamps per style;
  *   AC-T3.4  detectJustShowMe positives/negatives; "just show me" forces rung 4
  *            in ALL THREE styles through a full runTutorTurn.
@@ -67,8 +76,13 @@ import {
   detectJustShowMe,
   resolveRungPolicy,
 } from "@/lib/tutor/runtime/scaffolding";
-import { buildSnapshotIndex, parseSpans } from "@/lib/tutor/runtime/grounding";
-import { serializeHistory, collapseToChaining, type HistoryTurn } from "@/lib/tutor/runtime/history";
+import { buildSnapshotIndex, parseSpans, validateTurnOutput } from "@/lib/tutor/runtime/grounding";
+import {
+  serializeHistory,
+  collapseToChaining,
+  DANGLING_LEARNER_MARKER,
+  type HistoryTurn,
+} from "@/lib/tutor/runtime/history";
 import { TUTOR_MASTERY_THRESHOLD } from "@/lib/tutor/mastery/config";
 import type { EdgeLike } from "@/lib/tutor/mastery/queries";
 import {
@@ -318,7 +332,7 @@ async function main() {
   check("developer byte-identical across learners", promptA.developer === promptB.developer);
   check("input differs across learners", promptA.input !== promptB.input);
   check("TUTOR_L0 ≥ 4096 chars", TUTOR_L0.length >= 4096, `len=${TUTOR_L0.length}`);
-  check("TUTOR_PROMPT_VERSION === tutor-v1", TUTOR_PROMPT_VERSION === "tutor-v1");
+  check("TUTOR_PROMPT_VERSION === tutor-v2 (A3 Wave 1 bump)", TUTOR_PROMPT_VERSION === "tutor-v2");
   check("system IS TUTOR_L0 verbatim", promptA.system === TUTOR_L0);
 
   /* ───────────── AC-T3.3/T3.4 · scaffolding goldens ────────────────────── */
@@ -744,9 +758,11 @@ async function main() {
     const emitted = text.split("\n\n").length;
     check("13 turns → 12 (hard cap)", emitted === 12, `emitted=${emitted}`);
 
-    // Budget drop-oldest: a tight budget drops the oldest whole turns.
-    const tight = serializeHistory(turns, 60);
-    check("tight budget drops oldest whole turns", tight.length <= 60 && tight.includes("turn 12"), `len=${tight.length}`);
+    // Budget drop-oldest: a tight budget drops the oldest whole turns. (Budget
+    // 100, not the pre-A3 60: the fixture's TRAILING learner line now carries
+    // the 31-char dangling marker — the last line alone is 68 chars.)
+    const tight = serializeHistory(turns, 100);
+    check("tight budget drops oldest whole turns", tight.length <= 100 && tight.includes("turn 12"), `len=${tight.length}`);
     check("tight budget dropped the oldest turn", !tight.includes("turn 1 "), tight);
   }
 
@@ -777,6 +793,235 @@ async function main() {
 
     const unclosed = parseSpans(`${GROUNDED_OPEN}A never closed`);
     check("unclosed marker → span_parse_error", unclosed.parseError);
+  }
+
+  /* ─────────────── A3/D-6 · the grounding ok-rule (Wave 1) ─────────────── */
+  console.log("\n— A3/D-6 grounding ok-rule —");
+  {
+    const idx = buildSnapshotIndex(buildSnapshot());
+    const mkOut = (o: Partial<TurnOutput>): TurnOutput => ({
+      proseWithSpanMarkers: o.proseWithSpanMarkers ?? "",
+      citations: o.citations ?? [],
+      rung: o.rung ?? 1,
+      evidence: o.evidence ?? [],
+      practiceItems: o.practiceItems ?? null,
+      escalationProposal: o.escalationProposal ?? null,
+    });
+    // Deterministically > 200 cleaned chars (55 × 5 − trim = 274).
+    const longProse = "The equilibrium price balances supply and demand here. ".repeat(5).trim();
+
+    // (a) A short citation-less GROUNDED-span greeting → ok:true, NO ungrounded
+    //     flag (a greeting is not a claim — the D-6 precondition killer).
+    const greeting = validateTurnOutput(
+      mkOut({ proseWithSpanMarkers: `${GROUNDED_OPEN}Hi! What would you like to review today?${GROUNDED_CLOSE}` }),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check("greeting (short, citation-less, grounded span) → ok:true", greeting.ok === true, `flags=${greeting.flags.join(",")}`);
+    check("greeting carries NO ungrounded flag", !greeting.flags.includes("ungrounded"), `flags=${greeting.flags.join(",")}`);
+
+    // Bare-text variant (no markers at all) — also ok, zero flags.
+    const bare = validateTurnOutput(
+      mkOut({ proseWithSpanMarkers: "Happy to help — where shall we start?" }),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check("bare short citation-less text → ok:true, zero flags", bare.ok === true && bare.flags.length === 0, `flags=${bare.flags.join(",")}`);
+
+    // (b) SUBSTANTIVE (>200 chars) citation-less, no escalation → ok:false +
+    //     ungrounded (the substantive rule — UNCHANGED).
+    const substantive = validateTurnOutput(
+      mkOut({ proseWithSpanMarkers: `${GROUNDED_OPEN}${longProse}${GROUNDED_CLOSE}` }),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "substantive citation-less, no escalation → ok:false + ungrounded",
+      substantive.ok === false && substantive.flags.includes("ungrounded"),
+      `ok=${substantive.ok} flags=${substantive.flags.join(",")}`
+    );
+
+    // (c) Substantive citation-less WITH an escalationProposal → ok:true (the
+    //     documented escape — previously broken by the blunt rule).
+    const escaped = validateTurnOutput(
+      mkOut({
+        proseWithSpanMarkers: `${GROUNDED_OPEN}${longProse}${GROUNDED_CLOSE}`,
+        escalationProposal: { learnerQuestion: "q", nodeIds: [NODE_1], proposedAnswer: "a" },
+      }),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "substantive citation-less WITH escalation proposal → ok:true (the escape)",
+      escaped.ok === true && !escaped.flags.includes("ungrounded"),
+      `ok=${escaped.ok} flags=${escaped.flags.join(",")}`
+    );
+
+    // (d) span_parse_error still fails ok (UNCHANGED — the deliberate Wave-1
+    //     decision: relaxing it could leak supplemental under strict canon).
+    const malformed = validateTurnOutput(
+      mkOut({ proseWithSpanMarkers: `${GROUNDED_OPEN}never closed` }),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "span_parse_error still fails ok (unchanged)",
+      malformed.ok === false && malformed.flags.includes("span_parse_error"),
+      `ok=${malformed.ok} flags=${malformed.flags.join(",")}`
+    );
+  }
+
+  /* ──────────── A3/D-3 · citation dedup (jump-target identity) ─────────── */
+  console.log("\n— A3/D-3 citation dedup —");
+  {
+    const idx = buildSnapshotIndex(buildSnapshot());
+    const mkCite = (citations: TurnOutput["citations"]): TurnOutput => ({
+      proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+      citations,
+      rung: 2,
+      evidence: [],
+      practiceItems: null,
+      escalationProposal: null,
+    });
+
+    // Byte-identical duplicates collapse to ONE (no flag — dedup is a cleanup).
+    const dup = validateTurnOutput(
+      mkCite([
+        { lessonId: L1, blockId: B1, slideId: null },
+        { lessonId: L1, blockId: B1, slideId: null },
+      ]),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "byte-identical duplicates collapse to one, no flag",
+      dup.ok === true && dup.cleaned.citations.length === 1 && dup.flags.length === 0,
+      `n=${dup.cleaned.citations.length} flags=${dup.flags.join(",")}`
+    );
+
+    // Downgrade-manufactured duplicates: two unresolvable slideIds on ONE block
+    // both become {block, slideId:null} → dedup collapses them to ONE survivor.
+    const downgraded = validateTurnOutput(
+      mkCite([
+        { lessonId: L1, blockId: B1, slideId: "dddddddd-0000-4000-8000-00000000000a" },
+        { lessonId: L1, blockId: B1, slideId: "dddddddd-0000-4000-8000-00000000000b" },
+      ]),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "downgrade-manufactured duplicates collapse to ONE {block, slideId:null}",
+      downgraded.ok === true &&
+        downgraded.cleaned.citations.length === 1 &&
+        downgraded.cleaned.citations[0].blockId === B1 &&
+        downgraded.cleaned.citations[0].slideId === null,
+      `n=${downgraded.cleaned.citations.length} cites=${JSON.stringify(downgraded.cleaned.citations)}`
+    );
+    check("downgrade still flags anchor_downgraded", downgraded.flags.includes("anchor_downgraded"));
+
+    // Two DIFFERENT blocks both survive — dedup never over-collapses, and the
+    // first-seen order is preserved.
+    const distinct = validateTurnOutput(
+      mkCite([
+        { lessonId: L2, blockId: B2, slideId: null },
+        { lessonId: L1, blockId: B1, slideId: null },
+        { lessonId: L2, blockId: B2, slideId: null }, // repeat of the first
+      ]),
+      idx,
+      { courseCanon: "strict" }
+    );
+    check(
+      "two different blocks survive, order-preserving (first-seen wins)",
+      distinct.cleaned.citations.length === 2 &&
+        distinct.cleaned.citations[0].blockId === B2 &&
+        distinct.cleaned.citations[1].blockId === B1,
+      `cites=${JSON.stringify(distinct.cleaned.citations)}`
+    );
+  }
+
+  /* ─────────── A3/D-6 · replay framing (dangling-question marker) ────────── */
+  console.log("\n— A3/D-6 replay framing —");
+  {
+    const turns: HistoryTurn[] = [
+      { role: "learner", content: "what is equilibrium?" }, // answered → no marker
+      { role: "assistant", content: "let's find out together." },
+      { role: "learner", content: "why is my curve flat?" }, // next is learner → marker
+      { role: "learner", content: "hello" }, // trailing learner line → marker
+    ];
+    const lines = serializeHistory(turns, 100_000).split("\n\n");
+    check("frozen marker bytes", DANGLING_LEARNER_MARKER === " [no tutor reply was delivered]");
+    check("answered learner line carries NO marker", lines[0] === "Learner: what is equilibrium?", lines[0]);
+    check("assistant line untouched", lines[1] === "Tutor: let's find out together.", lines[1]);
+    check(
+      "dangling learner line (next is learner) carries the frozen marker",
+      lines[2] === `Learner: why is my curve flat?${DANGLING_LEARNER_MARKER}`,
+      lines[2]
+    );
+    check(
+      "trailing learner line carries the frozen marker",
+      lines[3] === `Learner: hello${DANGLING_LEARNER_MARKER}`,
+      lines[3]
+    );
+
+    // A learner line answered by an INSTRUCTOR reply is NOT dangling.
+    const instr = serializeHistory(
+      [
+        { role: "learner", content: "q1" },
+        { role: "instructor", content: "the instructor answered" },
+      ],
+      100_000
+    ).split("\n\n");
+    check("learner line answered by instructor → no marker", instr[0] === "Learner: q1", instr[0]);
+  }
+
+  /* ────── A3/D-6 · per-turn input delimiters + the tutor-v2 L0 bump ──────── */
+  console.log("\n— A3/D-6 prompt delimiters + L0 —");
+  {
+    const parts = { charterSerialized: "C", lessonContext: "LC", learnerState: "LS" };
+    const withHist = assembleTutorPrompt({ ...parts, historyText: "Learner: earlier", learnerMessage: "hello" });
+    check(
+      "input WITH history is byte-exact (SO FAR + CURRENT MESSAGE)",
+      withHist.input === "LS\n\n== CONVERSATION SO FAR ==\nLearner: earlier\n\n== CURRENT MESSAGE ==\nLearner: hello",
+      JSON.stringify(withHist.input)
+    );
+    const noHist = assembleTutorPrompt({ ...parts, historyText: "", learnerMessage: "hello" });
+    check(
+      "input WITHOUT history is byte-exact (no SO FAR block)",
+      noHist.input === "LS\n\n== CURRENT MESSAGE ==\nLearner: hello",
+      JSON.stringify(noHist.input)
+    );
+    check("empty history omits the SO FAR header", !noHist.input.includes("== CONVERSATION SO FAR =="));
+
+    // L0: the two NEW sections exist, teach the right rules, and the section
+    // inventory is EXACTLY the pre-A3 set + the two additions.
+    check("L0 has == FORMATTING ==", TUTOR_L0.includes("\n== FORMATTING ==\n"));
+    check("L0 has == THE CURRENT MESSAGE ==", TUTOR_L0.includes("\n== THE CURRENT MESSAGE ==\n"));
+    check("L0 formatting bans tables/links/images/raw HTML", TUTOR_L0.includes("NEVER tables, links, images, or raw HTML"));
+    check("L0 bans ASCII/monospace diagrams", TUTOR_L0.includes("NEVER ASCII or monospace diagrams"));
+    check(
+      "L0 current-message rule names the frozen headers + marker",
+      TUTOR_L0.includes('"== CURRENT MESSAGE =="') &&
+        TUTOR_L0.includes('"== CONVERSATION SO FAR =="') &&
+        TUTOR_L0.includes('"[no tutor reply was delivered]"')
+    );
+    const expectedSections = [
+      "== WHO YOU ARE TALKING TO ==",
+      "== THE CURRENT MESSAGE ==",
+      "== PEDAGOGY ==",
+      "== THE SCAFFOLDING LADDER (rungs 0–4) ==",
+      "== GROUNDING (non-negotiable) ==",
+      "== ASSESSMENT INTEGRITY ==",
+      "== YOUR TOOLS ==",
+      "== OUTPUT CONTRACT (every turn) ==",
+      "== FORMATTING ==",
+      "== SAFETY ==",
+    ];
+    const headerLines = TUTOR_L0.match(/^== .+ ==$/gm) ?? [];
+    check(
+      "L0 section inventory = the pre-A3 set + exactly the two new sections",
+      expectedSections.every((s) => TUTOR_L0.includes(s)) && headerLines.length === expectedSections.length,
+      `headers=${headerLines.join(" | ")}`
+    );
   }
 
   /* ──────────────────── A2: early chain-id capture ─────────────────────── */

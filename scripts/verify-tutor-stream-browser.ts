@@ -35,14 +35,13 @@ import { readFileSync } from "node:fs";
 import dns from "node:dns";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { AxeBuilder } from "@axe-core/playwright";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import { seedTutorFixture } from "./seed-fixture-tutor";
 
 dns.setDefaultResultOrder("ipv4first");
 
 const BASE = process.env.TUTOR_BROWSER_BASE ?? "http://localhost:3000";
-type DB = SupabaseClient<Database>;
 
 /** A single deterministic, substantial question that reliably yields ~10s of
  *  reasoning + several seconds of visible streaming (a long, step-by-step ask). */
@@ -195,17 +194,7 @@ async function openTutor(page: Page) {
 
 /** Count the settled assistant bubbles (each carries the "Just show me" affordance). */
 function assistantBubbleCount(page: Page): Promise<number> {
-  return page.locator('[data-ai-tool="tutor-just-show-me"]').count();
-}
-
-/** The streaming bubble's live text (empty string if the bubble isn't present). */
-async function streamingText(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    const el = document.querySelector('[data-ai-component="tutor-streaming-bubble"]');
-    if (!el) return null;
-    // The trailing caret span is aria-hidden "▍" — strip it so length reflects prose.
-    return (el.textContent ?? "").replace(/▍\s*$/, "").trimEnd();
-  });
+  return page.locator('[data-ai-component="tutor-assistant-bubble"]').count();
 }
 
 /** Is a transport error card (with a Retry button) currently showing? */
@@ -221,11 +210,6 @@ async function main() {
   if (!ping || !ping.ok) {
     throw new Error(`No server at ${BASE} — run \`npm run dev\` first.`);
   }
-
-  const admin = createClient<Database>(env.url, env.service, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    global: { fetch: retryingFetch },
-  });
 
   console.log("# seeding tutor fixture (author auto-provisioned) …");
   const fixture = await seedTutorFixture({ url: env.url, anon: env.anon });
@@ -414,16 +398,15 @@ async function main() {
         }
 
         // The settled assistant turn's prose = the LAST tutor bubble's block text
-        // (exclude the "Just show me" label from the measured length).
+        // (strip interactive chrome — escape hatch + citation chips — from the clone).
         const settledText = await page.evaluate(() => {
           const bubbles = Array.from(
-            document.querySelectorAll('aside[aria-label="Course tutor"] [data-ai-tool="tutor-just-show-me"]')
+            document.querySelectorAll('aside[aria-label="Course tutor"] [data-ai-component="tutor-assistant-bubble"]')
           );
           const last = bubbles[bubbles.length - 1];
-          const container = last?.closest("div");
-          if (!container) return "";
-          const clone = container.cloneNode(true) as HTMLElement;
-          clone.querySelectorAll('[data-ai-tool="tutor-just-show-me"]').forEach((b) => b.remove());
+          if (!last) return "";
+          const clone = last.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll("button").forEach((b) => b.remove());
           return (clone.textContent ?? "").trim();
         });
 
@@ -491,13 +474,12 @@ async function main() {
           }
           const settledText = await page.evaluate(() => {
             const bubbles = Array.from(
-              document.querySelectorAll('aside[aria-label="Course tutor"] [data-ai-tool="tutor-just-show-me"]')
+              document.querySelectorAll('aside[aria-label="Course tutor"] [data-ai-component="tutor-assistant-bubble"]')
             );
             const last = bubbles[bubbles.length - 1];
-            const container = last?.closest("div");
-            if (!container) return "";
-            const clone = container.cloneNode(true) as HTMLElement;
-            clone.querySelectorAll('[data-ai-tool="tutor-just-show-me"]').forEach((b) => b.remove());
+            if (!last) return "";
+            const clone = last.cloneNode(true) as HTMLElement;
+            clone.querySelectorAll("button").forEach((b) => b.remove());
             return (clone.textContent ?? "").trim();
           });
           return {
@@ -662,7 +644,7 @@ async function main() {
         const snap = await page.evaluate(() => {
           const streamEl = document.querySelector('[data-ai-component="tutor-streaming-bubble"]');
           const assistantBubbles = document.querySelectorAll(
-            'aside[aria-label="Course tutor"] [data-ai-tool="tutor-just-show-me"]'
+            'aside[aria-label="Course tutor"] [data-ai-component="tutor-assistant-bubble"]'
           ).length;
           return { streaming: streamEl !== null, assistantBubbles };
         });
@@ -695,7 +677,7 @@ async function main() {
       // thread the whole transcript is [learner Q, assistant A]; assert exactly 1.
       const assistantForIt = await page.evaluate(() => {
         return document.querySelectorAll(
-          'aside[aria-label="Course tutor"] [data-ai-tool="tutor-just-show-me"]'
+          'aside[aria-label="Course tutor"] [data-ai-component="tutor-assistant-bubble"]'
         ).length;
       });
       check(
