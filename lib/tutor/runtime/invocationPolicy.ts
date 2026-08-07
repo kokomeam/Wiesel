@@ -73,15 +73,19 @@ export interface TurnInvitation {
 /* ─────────────────────────────── Class-A registry ───────────────────────── */
 
 /** The Class-A (learner-active assessment) tool names GOVERNED by this policy.
- *  A3 Wave 4 activated checkUnderstanding + sequenceTask (they are now
- *  IMPLEMENTED), so the rung map's preferences start winning; generate_practice
- *  stays governed (Wave-3 legs still use it) but is no longer the preferred
- *  offer. renderStructure is Class P (presentational) — deliberately NOT here, so
- *  the Wave-3 intercept never touches it (it renders on any turn, A3-12). */
+ *  A3 Wave 4 activated checkUnderstanding + sequenceTask; A3 Wave 5 activates
+ *  fadedExample + predictThenReveal + explainBack (all now IMPLEMENTED), so the
+ *  rung map's preferences win end-to-end (rung 2 → sequenceTask, rung 3 →
+ *  fadedExample); generate_practice stays governed (older legs still use it) but
+ *  is no longer the preferred offer. renderStructure is Class P (presentational)
+ *  — deliberately NOT here, so the intercept never touches it (A3-12). */
 export const CLASS_A_TOOL_NAMES: ReadonlySet<string> = new Set([
   "generate_practice",
   "checkUnderstanding",
   "sequenceTask",
+  "fadedExample",
+  "predictThenReveal",
+  "explainBack",
 ]);
 
 /** Invitation button labels — directive copy VERBATIM, the single source. Keys

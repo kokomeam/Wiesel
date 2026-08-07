@@ -345,9 +345,22 @@ export async function runTutorTurn(
       model: deps.model,
     };
 
+    // Wall-clock seam (deterministic tests). Hoisted above L3 so the A3 Wave-5
+    // explain-back session derivation + the W3.5 session state share one clock.
+    const nowIso = deps.nowIso ?? new Date().toISOString();
+
     /* ── L3: the learner state (own rows, learner-scoped) + a recent synopsis. ── */
     const state = await gatherLearnerState(toolDeps);
     state.recentSynopsis = deriveSynopsis(ctx.historyTurns);
+
+    /* ── A3 Wave 5 · the adaptive-tool deps (threaded AFTER L3 is built). ──
+     *  masteryByNode: the learner's decayed mastery keyed by concept node id
+     *  (R-1 — conceptSlug IS the node uuid); fadedExample derives its fade level
+     *  from it (A3-16). explainBackConcepts: the node ids already explainBacked in
+     *  THIS session window, so explainBack drops a per-session-per-concept
+     *  duplicate. Both are optional deps the loop mutates onto toolDeps. */
+    toolDeps.masteryByNode = new Map(state.masteryRows.map((r) => [r.nodeId, r.decayedP]));
+    toolDeps.explainBackConcepts = explainBackedConceptsThisSession(ctx.historyTurns, nowIso);
     const learnerState = assembleLearnerState(state, {
       threshold: TUTOR_MASTERY_THRESHOLD,
       budgetChars: LAYER_BUDGETS.l3Chars,
@@ -360,7 +373,6 @@ export async function runTutorTurn(
      * untouched): the root-cause interjection instruction and the assessment-
      * integrity instruction. The `block` case short-circuits BEFORE any model
      * call; the concept_review_only clamp is applied AFTER scaffolding. */
-    const nowIso = deps.nowIso ?? new Date().toISOString();
     const sessionTurns: SessionTurn[] = ctx.historyTurns.map((t) => ({
       role: t.role,
       content: t.content,
@@ -940,7 +952,18 @@ function collectToolOutputs(
     // Class P — the built (validated) OR drop-and-flagged card. Never stamped
     // with initiation; renders on any turn incl. a question turn (A3-12).
     sinks.structures.push(rec.structure as RenderStructureCard);
-  } else if ((name === "checkUnderstanding" || name === "sequenceTask") && rec.assessment != null) {
+  } else if (
+    (name === "checkUnderstanding" ||
+      name === "sequenceTask" ||
+      // A3 Wave 5 — the adaptive assessment tools land in the SAME sink. explainBack
+      // returns a NULL assessment when it drops a per-session-per-concept duplicate
+      // (rec.assessment == null) — the `!= null` guard skips it (the loop stamps
+      // nothing for a null card).
+      name === "fadedExample" ||
+      name === "predictThenReveal" ||
+      name === "explainBack") &&
+    rec.assessment != null
+  ) {
     const card = rec.assessment as AssessmentCard;
     sinks.assessments.push({ ...card, initiation: sinks.assessmentInitiation ?? "practice_request" });
   } else if (name === "propose_escalation") {
@@ -1005,6 +1028,41 @@ function anchorsFromHistory(turns: HistoryTurn[]): unknown[] {
     }
   }
   return anchors;
+}
+
+/** A3 Wave 5 — the concept node ids already explainBacked in the CURRENT session
+ *  window (so explainBack drops a per-session-per-concept duplicate — A3-17).
+ *  Derived from the assistant turns' persisted `grounding.assessments` (service.ts
+ *  buildGrounding stamps every settled assessment card's {toolName, conceptSlug}
+ *  onto the assistant row's grounding), filtered to toolName === "explainBack" and
+ *  restricted to the SAME trailing < SESSION_GAP_MS window session.ts derives — a
+ *  31-minute silence resets it like every once-per-session behavior. Tolerant:
+ *  malformed/absent grounding contributes nothing. */
+function explainBackedConceptsThisSession(turns: HistoryTurn[], nowIso: string): Set<string> {
+  const sessionTurns: SessionTurn[] = turns.map((t) => ({
+    role: t.role,
+    content: t.content,
+    createdAt: t.createdAt ?? nowIso,
+    grounding: t.grounding,
+  }));
+  const { sessionTurns: windowed } = deriveSessionState(sessionTurns, nowIso);
+  const seen = new Set<string>();
+  for (const t of windowed) {
+    if (t.role !== "assistant") continue;
+    const g = t.grounding;
+    if (!g || typeof g !== "object") continue;
+    const assessments = (g as Record<string, unknown>).assessments;
+    if (!Array.isArray(assessments)) continue;
+    for (const a of assessments) {
+      if (a && typeof a === "object") {
+        const rec = a as Record<string, unknown>;
+        if (rec.toolName === "explainBack" && typeof rec.conceptSlug === "string") {
+          seen.add(rec.conceptSlug);
+        }
+      }
+    }
+  }
+  return seen;
 }
 
 /** The recent-session synopsis for L3: each of the last ≤6 turns' first ~80 chars. */

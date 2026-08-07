@@ -124,9 +124,16 @@ import {
 import type { SessionTurn } from "@/lib/tutor/runtime/session";
 import {
   A3_WAVE4_TOOLS,
+  A3_WAVE5_TOOLS,
   scoreSequence,
+  fadeLevelForMastery,
+  blankStepsForFade,
+  outcomeFromExplainBackGrade,
   type AssessmentCard,
   type CheckUnderstandingCard,
+  type ExplainBackCard,
+  type FadedExampleCard,
+  type PredictThenRevealCard,
   type RenderStructureCard,
   type SequenceTaskCard,
 } from "@/lib/tutor/runtime/toolsA3";
@@ -369,7 +376,7 @@ async function main() {
   check("developer byte-identical across learners", promptA.developer === promptB.developer);
   check("input differs across learners", promptA.input !== promptB.input);
   check("TUTOR_L0 ≥ 4096 chars", TUTOR_L0.length >= 4096, `len=${TUTOR_L0.length}`);
-  check("TUTOR_PROMPT_VERSION === tutor-v4 (A3 Wave 4 bump)", TUTOR_PROMPT_VERSION === "tutor-v4");
+  check("TUTOR_PROMPT_VERSION === tutor-v5 (A3 Wave 5 bump)", TUTOR_PROMPT_VERSION === "tutor-v5");
   check("system IS TUTOR_L0 verbatim", promptA.system === TUTOR_L0);
 
   /* ───────────── AC-T3.3/T3.4 · scaffolding goldens ────────────────────── */
@@ -557,8 +564,8 @@ async function main() {
   console.log("\n— AC-T3.6 tools —");
 
   check(
-    "TUTOR_TOOL_NAMES is exactly the EIGHT (Wave-3 five + A3 Wave-4 three, order-insensitive)",
-    new Set(TUTOR_TOOL_NAMES).size === 8 &&
+    "TUTOR_TOOL_NAMES is exactly the ELEVEN (Wave-3 five + A3 Wave-4 three + A3 Wave-5 three, order-insensitive)",
+    new Set(TUTOR_TOOL_NAMES).size === 11 &&
       [
         "get_lesson_context",
         "get_mastery_summary",
@@ -568,6 +575,9 @@ async function main() {
         "renderStructure",
         "checkUnderstanding",
         "sequenceTask",
+        "fadedExample",
+        "predictThenReveal",
+        "explainBack",
       ].every((n) => (TUTOR_TOOL_NAMES as readonly string[]).includes(n)),
     TUTOR_TOOL_NAMES.join(",")
   );
@@ -590,7 +600,7 @@ async function main() {
       schemaOk = false;
     }
   }
-  check("all eight tool param schemas convert to strict JSON schema", schemaOk);
+  check("all eleven tool param schemas convert to strict JSON schema", schemaOk);
   check("every tool's params is a top-level type:object (OpenAI-valid)", topTypeOk);
 
   // emit_evidence with a CAPTURING stub performs ZERO writes.
@@ -1073,7 +1083,7 @@ async function main() {
     ];
     const headerLines = TUTOR_L0.match(/^== .+ ==$/gm) ?? [];
     check(
-      "L0 section inventory UNCHANGED across the A3-Wave-4 bump (same 11 headers)",
+      "L0 section inventory UNCHANGED across the A3-Wave-5 bump (same 11 headers)",
       expectedSections.every((s) => TUTOR_L0.includes(s)) && headerLines.length === expectedSections.length,
       `headers=${headerLines.join(" | ")}`
     );
@@ -1093,6 +1103,19 @@ async function main() {
       TUTOR_L0.includes("\n  renderStructure —") &&
         TUTOR_L0.includes("\n  checkUnderstanding —") &&
         TUTOR_L0.includes("\n  sequenceTask —")
+    );
+    // A3 Wave 5 — the three adaptive tools appear in the YOUR TOOLS list with their
+    // teaching lines (fadedExample fades from mastery; explainBack is sparing).
+    check(
+      "L0 YOUR TOOLS lists fadedExample / predictThenReveal / explainBack",
+      TUTOR_L0.includes("\n  fadedExample —") &&
+        TUTOR_L0.includes("\n  predictThenReveal —") &&
+        TUTOR_L0.includes("\n  explainBack —")
+    );
+    check(
+      "L0 teaches: fadedExample fades from the learner's mastery; explainBack is used sparingly (once per concept per session)",
+      TUTOR_L0.includes("the tutor fades the trailing steps from the learner's own mastery") &&
+        TUTOR_L0.includes("at most once per concept per session")
     );
     check(
       "L0 teaches: renderStructure for tree/graph/timeline/axes; every wrong option names its misconception",
@@ -1271,6 +1294,15 @@ async function main() {
         tierOf("emit_evidence") === "read"
     );
     check("tierOf propose_escalation === 'reversible'", tierOf("propose_escalation") === "reversible");
+    check(
+      "A3 Wave 4/5: renderStructure / checkUnderstanding / sequenceTask / fadedExample / predictThenReveal / explainBack are all 'read'",
+      tierOf("renderStructure") === "read" &&
+        tierOf("checkUnderstanding") === "read" &&
+        tierOf("sequenceTask") === "read" &&
+        tierOf("fadedExample") === "read" &&
+        tierOf("predictThenReveal") === "read" &&
+        tierOf("explainBack") === "read"
+    );
 
     // FAIL CLOSED: an unclassified/unknown name is treated as irreversible.
     check('tierOf("wipe_all_data") === "irreversible" (fail closed)', tierOf("wipe_all_data") === "irreversible");
@@ -1570,15 +1602,18 @@ async function main() {
       [0, 1, 2, 3, 4].map((r) => `${r}:${invitationToolForRung(r)}`).join(" ")
     );
     check(
-      "R-6: rung 3 falls back to generate_practice (fadedExample is Wave 5, not yet active)",
-      invitationToolForRung(3) === "generate_practice"
+      "R-6: rung 3 → fadedExample (A3 Wave 5 activated it — the mapped tool now wins over generate_practice)",
+      invitationToolForRung(3) === "fadedExample"
     );
     check(
-      "CLASS_A_TOOL_NAMES = {generate_practice, checkUnderstanding, sequenceTask}; every member has a label",
-      CLASS_A_TOOL_NAMES.size === 3 &&
+      "CLASS_A_TOOL_NAMES = the SIX governed tools (Wave 3 practice + Wave 4/5 assessments); every member has a label",
+      CLASS_A_TOOL_NAMES.size === 6 &&
         CLASS_A_TOOL_NAMES.has("generate_practice") &&
         CLASS_A_TOOL_NAMES.has("checkUnderstanding") &&
         CLASS_A_TOOL_NAMES.has("sequenceTask") &&
+        CLASS_A_TOOL_NAMES.has("fadedExample") &&
+        CLASS_A_TOOL_NAMES.has("predictThenReveal") &&
+        CLASS_A_TOOL_NAMES.has("explainBack") &&
         [...CLASS_A_TOOL_NAMES].every((t) => typeof INVITATION_LABELS[t] === "string")
     );
 
@@ -2337,6 +2372,320 @@ async function main() {
       );
       const mainCall = model.getCalls().find((c) => c.responseFormat?.name === "tutor_turn_output");
       check("R-2: the MAIN tutor_turn call is dispatched with store:true", mainCall?.store === true, JSON.stringify({ store: mainCall?.store }));
+    }
+  }
+
+  /* ══════════ A3 Wave 5 · fadedExample / predictThenReveal / explainBack ═══════ */
+  console.log("\n— A3 Wave 5 · adaptive assessment tools —");
+  {
+    /* ── A3-16 · fadeLevelForMastery matrix (none→0, thresholds, high→3). ── */
+    check("A3-16: fadeLevelForMastery(undefined) === 0 (no mastery → fully worked)", fadeLevelForMastery(undefined) === 0);
+    check("A3-16: fadeLevelForMastery(NaN) === 0 (no signal)", fadeLevelForMastery(Number.NaN) === 0);
+    check("A3-16: p=0.0 → 0", fadeLevelForMastery(0) === 0);
+    check("A3-16: p=0.24 → 0 (below 0.25)", fadeLevelForMastery(0.24) === 0);
+    check("A3-16: p=0.25 → 1", fadeLevelForMastery(0.25) === 1);
+    check("A3-16: p=0.49 → 1", fadeLevelForMastery(0.49) === 1);
+    check("A3-16: p=0.5 → 2", fadeLevelForMastery(0.5) === 2);
+    check("A3-16: p=0.74 → 2", fadeLevelForMastery(0.74) === 2);
+    check("A3-16: p=0.75 → 3 (independent problem)", fadeLevelForMastery(0.75) === 3);
+    check("A3-16: p=0.99 → 3 (high mastery → full fade)", fadeLevelForMastery(0.99) === 3);
+
+    /* ── A3-16 · blankStepsForFade matrix (0→0, 3→all, proportional). ── */
+    check("A3-16: blankStepsForFade(6, 0) === 0", blankStepsForFade(6, 0) === 0);
+    check("A3-16: blankStepsForFade(6, 3) === 6 (all)", blankStepsForFade(6, 3) === 6);
+    check("A3-16: blankStepsForFade(6, 1) === 2 (round(1/3*6))", blankStepsForFade(6, 1) === 2);
+    check("A3-16: blankStepsForFade(6, 2) === 4 (round(2/3*6))", blankStepsForFade(6, 2) === 4);
+    check("A3-16: blankStepsForFade(4, 1) === 1 (round(1/3*4))", blankStepsForFade(4, 1) === 1);
+    check("A3-16: blankStepsForFade(4, 2) === 3 (round(2/3*4))", blankStepsForFade(4, 2) === 3);
+    check("A3-16: blankStepsForFade never exceeds stepCount", blankStepsForFade(3, 3) === 3 && blankStepsForFade(3, 5) === 3);
+
+    /* ── A3-16 · a fadedExample exec with a stubbed masteryByNode: high-mastery
+     *    node blanks ALL steps; a no-mastery node blanks NONE. ── */
+    const fadedTool = A3_WAVE5_TOOLS.fadedExample;
+    const fadedArgs = {
+      conceptSlug: NODE_1,
+      title: "Recursion",
+      problem: "Compute f(3).",
+      steps: [
+        { text: "State f(3)", answer: "f(3) = f(2) + f(1)" },
+        { text: "State f(2)", answer: "f(2) = f(1) + f(0)" },
+        { text: "Resolve f(1)", answer: "f(1) = 1" },
+        { text: "Resolve f(0)", answer: "f(0) = 0" },
+      ],
+    };
+    // High mastery (0.9 ≥ 0.75) → fade 3 → all 4 blanked.
+    const highDeps = baseToolDeps({ masteryByNode: new Map([[NODE_1, 0.9]]) });
+    const highOut = await fadedTool.execute(fadedTool.params.parse(fadedArgs) as never, highDeps);
+    const highCard = (highOut.data as { assessment: FadedExampleCard }).assessment;
+    check(
+      "A3-16: high-mastery node → fadeLevel 3, ALL steps blanked, keys ship",
+      highCard.fadeLevel === 3 &&
+        highCard.steps.every((s) => s.blanked === true) &&
+        highCard.steps.every((s) => typeof s.answer === "string" && s.answer.length > 0),
+      JSON.stringify({ fade: highCard.fadeLevel, blanked: highCard.steps.map((s) => s.blanked) })
+    );
+    check("A3-16: fadedExample mints a cardId + toolName + conceptSlug", typeof highCard.cardId === "string" && highCard.cardId.length > 0 && highCard.toolName === "fadedExample" && highCard.conceptSlug === NODE_1);
+
+    // No mastery (node absent from the map) → fade 0 → NONE blanked (fully worked).
+    const noneDeps = baseToolDeps({ masteryByNode: new Map() });
+    const noneOut = await fadedTool.execute(fadedTool.params.parse(fadedArgs) as never, noneDeps);
+    const noneCard = (noneOut.data as { assessment: FadedExampleCard }).assessment;
+    check(
+      "A3-16: no-mastery node → fadeLevel 0, NONE blanked (fully worked), still ships answers",
+      noneCard.fadeLevel === 0 && noneCard.steps.every((s) => s.blanked === false),
+      JSON.stringify({ fade: noneCard.fadeLevel, blanked: noneCard.steps.map((s) => s.blanked) })
+    );
+
+    // Mid mastery (0.6 → fade 2 → round(2/3*4)=3 trailing blanked; the FIRST step shown).
+    const midDeps = baseToolDeps({ masteryByNode: new Map([[NODE_1, 0.6]]) });
+    const midOut = await fadedTool.execute(fadedTool.params.parse(fadedArgs) as never, midDeps);
+    const midCard = (midOut.data as { assessment: FadedExampleCard }).assessment;
+    check(
+      "A3-16: mid-mastery (0.6 → fade 2) blanks the LAST 3 of 4 (backward fading — first shown)",
+      midCard.fadeLevel === 2 &&
+        midCard.steps.map((s) => s.blanked).join(",") === "false,true,true,true",
+      JSON.stringify(midCard.steps.map((s) => s.blanked))
+    );
+    // Absent masteryByNode dep entirely → fade 0 (the safe default).
+    const noDep = await fadedTool.execute(fadedTool.params.parse(fadedArgs) as never, baseToolDeps());
+    check("A3-16: absent masteryByNode dep → fadeLevel 0", (noDep.data as { assessment: FadedExampleCard }).assessment.fadeLevel === 0);
+
+    /* ── predictThenReveal card builds (keys + near-misses + reveal ship). ── */
+    const predictTool = A3_WAVE5_TOOLS.predictThenReveal;
+    const predictArgs = {
+      conceptSlug: NODE_1,
+      title: "Price shock",
+      setup: "Demand rises sharply while supply is fixed.",
+      prompt: "What happens to the equilibrium price?",
+      acceptedAnswers: ["it rises", "price increases"],
+      nearMisses: [{ pattern: "falls", misconceptionId: "inverts-supply-demand", feedback: "Check which curve shifted." }],
+      revealExplanation: "With fixed supply, a demand increase pushes the equilibrium price up.",
+    };
+    const predictOut = await predictTool.execute(predictTool.params.parse(predictArgs) as never, baseToolDeps());
+    const predictCard = (predictOut.data as { assessment: PredictThenRevealCard }).assessment;
+    check(
+      "predictThenReveal card mints a cardId + carries setup/prompt/accepted/nearMisses/reveal",
+      typeof predictCard.cardId === "string" &&
+        predictCard.toolName === "predictThenReveal" &&
+        predictCard.conceptSlug === NODE_1 &&
+        predictCard.acceptedAnswers.length === 2 &&
+        predictCard.nearMisses[0]?.misconceptionId === "inverts-supply-demand" &&
+        predictCard.revealExplanation.length > 0,
+      JSON.stringify(predictCard)
+    );
+    // nearMisses omitted → an empty array (nullish coalesced).
+    const predictNoMiss = await predictTool.execute(
+      predictTool.params.parse({ ...predictArgs, nearMisses: undefined }) as never,
+      baseToolDeps()
+    );
+    check("predictThenReveal: omitted nearMisses → []", (predictNoMiss.data as { assessment: PredictThenRevealCard }).assessment.nearMisses.length === 0);
+
+    /* ── explainBack card builds + the session-duplicate DROP. ── */
+    const explainTool = A3_WAVE5_TOOLS.explainBack;
+    const explainArgs = {
+      conceptSlug: NODE_1,
+      title: "Equilibrium",
+      prompt: "In your own words, why does price settle at equilibrium?",
+      rubric: [
+        { criterion: "names supply and demand meeting", required: true },
+        { criterion: "explains surplus/shortage pressure", required: false },
+      ],
+    };
+    const explainOut = await explainTool.execute(explainTool.params.parse(explainArgs) as never, baseToolDeps());
+    const explainCard = (explainOut.data as { assessment: ExplainBackCard | null }).assessment;
+    check(
+      "explainBack card builds (cardId + prompt + rubric, NO answer key)",
+      !!explainCard &&
+        explainCard.toolName === "explainBack" &&
+        explainCard.conceptSlug === NODE_1 &&
+        explainCard.rubric.length === 2 &&
+        !("options" in (explainCard as object)),
+      JSON.stringify(explainCard)
+    );
+    // The SESSION-DUPLICATE drop: explainBackConcepts already contains NODE_1 → the
+    // tool returns a null assessment + "already_explained" (the loop skips a null).
+    const dupLogs: string[] = [];
+    const origDupLog = console.log;
+    console.log = (...a: unknown[]) => { dupLogs.push(a.map(String).join(" ")); };
+    let dupOut!: Awaited<ReturnType<typeof explainTool.execute>>;
+    try {
+      dupOut = await explainTool.execute(
+        explainTool.params.parse(explainArgs) as never,
+        baseToolDeps({ explainBackConcepts: new Set([NODE_1]) })
+      );
+    } finally {
+      console.log = origDupLog;
+    }
+    const dupData = dupOut.data as { assessment: ExplainBackCard | null; error?: string };
+    check("A3-17: explainBack DROPS a per-session-per-concept duplicate (assessment null + error)", dupData.assessment === null && dupData.error === "already_explained");
+    check("A3-17: the drop is logged tutor_explain_back_dropped", dupLogs.some((l) => l.includes('"tag":"tutor_explain_back_dropped"')));
+    // A DIFFERENT concept in the same session is NOT dropped.
+    const otherOut = await explainTool.execute(
+      explainTool.params.parse({ ...explainArgs, conceptSlug: NODE_2 }) as never,
+      baseToolDeps({ explainBackConcepts: new Set([NODE_1]) })
+    );
+    check("A3-17: a DIFFERENT concept in the same session is NOT dropped", (otherOut.data as { assessment: ExplainBackCard | null }).assessment !== null);
+
+    /* ── outcomeFromExplainBackGrade mapping (all→demonstrated, some→partial, none→not). ── */
+    const rubric2 = [
+      { criterion: "A", required: true },
+      { criterion: "B", required: true },
+      { criterion: "C", required: false },
+    ];
+    check(
+      "explainBack grade: all required present → demonstrated",
+      outcomeFromExplainBackGrade(rubric2, { criteria: [{ criterion: "A", present: true, note: "" }, { criterion: "B", present: true, note: "" }, { criterion: "C", present: false, note: "" }] }) === "demonstrated"
+    );
+    check(
+      "explainBack grade: ≥1 required but not all → partial",
+      outcomeFromExplainBackGrade(rubric2, { criteria: [{ criterion: "A", present: true, note: "" }, { criterion: "B", present: false, note: "" }] }) === "partial"
+    );
+    check(
+      "explainBack grade: no required present → not_demonstrated",
+      outcomeFromExplainBackGrade(rubric2, { criteria: [{ criterion: "A", present: false, note: "" }, { criterion: "B", present: false, note: "" }, { criterion: "C", present: true, note: "" }] }) === "not_demonstrated"
+    );
+    check(
+      "explainBack grade: a rubric with NO required items falls back to ALL criteria (all present → demonstrated)",
+      outcomeFromExplainBackGrade(
+        [{ criterion: "A", required: false }, { criterion: "B", required: false }],
+        { criteria: [{ criterion: "A", present: true, note: "" }, { criterion: "B", present: true, note: "" }] }
+      ) === "demonstrated"
+    );
+
+    /* ── A3-19 · a Class-A tool exec is NOT called on an intercepted QUESTION turn
+     *    (structural over the loop): a scripted fadedExample call on a question turn
+     *    is downgraded → the fadedExample tool NEVER executes (no assessment card,
+     *    a downgrade log, an invitation NAMING fadedExample), and the turn is ok. ── */
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "fadedExample",
+              arguments: {
+                conceptSlug: NODE_1,
+                problem: "Compute f(3).",
+                steps: [
+                  { text: "State f(3)", answer: "f(2)+f(1)" },
+                  { text: "Resolve", answer: "2" },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Price settles at equilibrium.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 3,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const logsA19: string[] = [];
+      const origLogA19 = console.log;
+      console.log = (...a: unknown[]) => { logsA19.push(a.map(String).join(" ")); };
+      let res!: Awaited<ReturnType<typeof runTutorTurn>>;
+      try {
+        res = await runTutorTurn(
+          {
+            learnerClient: emptyLearnerClient(),
+            serviceClient: capturingServiceClient().client,
+            model,
+            loadSnapshot: async () => ({ snapshot: snapshotFx }),
+            conceptNodes: CONCEPT_NODES,
+            conceptEdges: CONCEPT_EDGES,
+          },
+          {
+            userId: USER_A,
+            courseId: COURSE,
+            publicationId: PUB,
+            version: 1,
+            lessonId: L1,
+            charterRow: CHARTER_ROW("guided_default"),
+            historyTurns: [{ role: "learner", content: "prior" }],
+            learnerMessage: "walk me through a worked example",
+            // initiation omitted → { kind: "question" }
+          }
+        );
+      } finally {
+        console.log = origLogA19;
+      }
+      check("A3-19: fadedExample on a question turn is NOT executed (no assessment)", res.assessments.length === 0, `n=${res.assessments.length} err=${res.error ?? ""}`);
+      check(
+        "A3-19: the downgraded invitation NAMES fadedExample + carries the conceptSlug node",
+        res.invitation?.toolName === "fadedExample" && res.invitation?.nodeId === NODE_1,
+        JSON.stringify(res.invitation ?? null)
+      );
+      check("A3-19: the turn is ok — downgraded, never blocked (no approvalRequired)", res.ok === true && !res.approvalRequired, `ok=${res.ok} err=${res.error ?? ""}`);
+      check("A3-19: tutor_tool_downgraded logged for fadedExample", logsA19.some((l) => l.includes('"tag":"tutor_tool_downgraded"') && l.includes('"toolName":"fadedExample"')));
+    }
+
+    /* ── acceptance path: an invitation_accepted turn EXECUTES fadedExample → the
+     *    card surfaces on `assessments` with the runtime-derived fade level (high
+     *    mastery seeded via a learner client). ── */
+    {
+      const snapshotFx = buildSnapshot();
+      // A learner client that reports HIGH mastery on NODE_1 so the fade level derives 3.
+      const highMasteryLearner = {
+        rpc: async () => ({ data: [], error: null }),
+        from: () => ({
+          select: () => ({ eq: async () => ({ data: [{ node_id: NODE_1, decayed_p: 0.9 }], error: null }) }),
+        }),
+      } as unknown as TutorToolDeps["learnerClient"];
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "fadedExample",
+              arguments: {
+                conceptSlug: NODE_1,
+                problem: "Compute f(3).",
+                steps: [
+                  { text: "State f(3)", answer: "f(2)+f(1)" },
+                  { text: "Resolve f(2)", answer: "1" },
+                  { text: "Resolve f(1)", answer: "1" },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Here's one to try.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 3,
+          }),
+        },
+      ];
+      const model = createMockModelClient(script, { model: LUNA });
+      const res = await runTutorTurn(
+        {
+          learnerClient: highMasteryLearner,
+          serviceClient: capturingServiceClient().client,
+          model,
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "yes, give me one to try",
+          initiation: { kind: "invitation_accepted", toolName: "fadedExample", nodeId: NODE_1 },
+        }
+      );
+      const asmt = res.assessments[0] as FadedExampleCard | undefined;
+      check("acceptance: fadedExample EXECUTES → one assessment card", res.assessments.length === 1 && asmt?.toolName === "fadedExample", `n=${res.assessments.length} err=${res.error ?? ""}`);
+      check("acceptance: the loop threads masteryByNode → fadeLevel 3 (all steps blanked)", asmt?.fadeLevel === 3 && (asmt?.steps.every((s) => s.blanked) ?? false), JSON.stringify({ fade: asmt?.fadeLevel, blanked: asmt?.steps.map((s) => s.blanked) }));
+      check("acceptance: the card's initiation is stamped invitation_accepted by the sink", asmt?.initiation === "invitation_accepted");
+      check("acceptance: the delivery turn carries NO invitation", (res.invitation ?? null) === null);
     }
   }
 

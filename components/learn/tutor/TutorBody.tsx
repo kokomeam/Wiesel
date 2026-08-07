@@ -52,6 +52,9 @@ import { TutorStatusIndicator } from "./TutorStatusIndicator";
 import { TutorStructureCard } from "./TutorStructureCard";
 import { TutorCheckUnderstandingCard } from "./TutorCheckUnderstandingCard";
 import { TutorSequenceCard } from "./TutorSequenceCard";
+import { TutorFadedExampleCard } from "./TutorFadedExampleCard";
+import { TutorPredictCard } from "./TutorPredictCard";
+import { TutorExplainBackCard } from "./TutorExplainBackCard";
 
 /** The props contract TutorMount mounts this component with (unchanged from the
  *  package-A placeholder). `onClose` returns focus to the edge tab (TutorMount
@@ -641,32 +644,33 @@ function TurnBubble({
           ))
         : null}
 
-      {/* A3 Wave 4 — assessment cards (checkUnderstanding / sequenceTask), in
-          payload order. Present only when the turn carried them (the server
-          strips them on a `question` turn, like practiceItems). */}
-      {assessments.map((card) =>
-        card.toolName === "checkUnderstanding" ? (
-          <TutorCheckUnderstandingCard
-            key={card.cardId}
-            card={card}
-            courseId={courseId}
-            publicationId={publicationId}
-            version={version}
-            lessonId={ambient.lessonId}
-            userId={userId}
-          />
-        ) : (
-          <TutorSequenceCard
-            key={card.cardId}
-            card={card}
-            courseId={courseId}
-            publicationId={publicationId}
-            version={version}
-            lessonId={ambient.lessonId}
-            userId={userId}
-          />
-        )
-      )}
+      {/* A3 Wave 4/5 — assessment cards, dispatched on toolName in payload order.
+          Present only when the turn carried them (the server strips them on a
+          `question` turn, like practiceItems). Wave 4: checkUnderstanding /
+          sequenceTask; Wave 5: fadedExample / predictThenReveal / explainBack. */}
+      {assessments.map((card) => {
+        const cardProps = {
+          courseId,
+          publicationId,
+          version,
+          lessonId: ambient.lessonId,
+          userId,
+        };
+        switch (card.toolName) {
+          case "checkUnderstanding":
+            return <TutorCheckUnderstandingCard key={card.cardId} card={card} {...cardProps} />;
+          case "sequenceTask":
+            return <TutorSequenceCard key={card.cardId} card={card} {...cardProps} />;
+          case "fadedExample":
+            return <TutorFadedExampleCard key={card.cardId} card={card} {...cardProps} />;
+          case "predictThenReveal":
+            return <TutorPredictCard key={card.cardId} card={card} {...cardProps} />;
+          case "explainBack":
+            return <TutorExplainBackCard key={card.cardId} card={card} {...cardProps} />;
+          default:
+            return null;
+        }
+      })}
 
       {escalationsUi && escalation ? (
         <TutorEscalationCard

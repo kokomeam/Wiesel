@@ -162,6 +162,89 @@ function coerceAssessments(raw: unknown): TutorAssessmentCard[] {
         correctOrder,
         partialCreditRule: a.partialCreditRule === "adjacent-pairs" ? "adjacent-pairs" : "exact",
       });
+    } else if (
+      // A3 Wave 5 · fadedExample — problem + the COMPLETE worked steps (each with a
+      // text + answer; `blanked` marks the trailing steps to fill). fadeLevel is a
+      // number; a step missing its text/answer drops.
+      a.toolName === "fadedExample" &&
+      typeof a.problem === "string" &&
+      Array.isArray(a.steps)
+    ) {
+      const steps = (a.steps as unknown[])
+        .filter((st): st is Record<string, unknown> => !!st && typeof st === "object")
+        .filter((st) => typeof st.text === "string" && typeof st.answer === "string")
+        .map((st) => ({
+          text: st.text as string,
+          blanked: st.blanked === true,
+          answer: st.answer as string,
+        }));
+      if (steps.length === 0) continue;
+      out.push({
+        cardId: a.cardId,
+        toolName: "fadedExample",
+        conceptSlug: a.conceptSlug,
+        initiation: a.initiation,
+        fadeLevel: typeof a.fadeLevel === "number" ? a.fadeLevel : 0,
+        problem: a.problem,
+        steps,
+      });
+    } else if (
+      // A3 Wave 5 · predictThenReveal — setup + prompt + the accepted/near-miss keys
+      // (ship for local grading) + the reveal.
+      a.toolName === "predictThenReveal" &&
+      typeof a.setup === "string" &&
+      typeof a.prompt === "string" &&
+      typeof a.revealExplanation === "string"
+    ) {
+      const acceptedAnswers = Array.isArray(a.acceptedAnswers)
+        ? (a.acceptedAnswers as unknown[]).filter((x): x is string => typeof x === "string")
+        : [];
+      const nearMisses = Array.isArray(a.nearMisses)
+        ? (a.nearMisses as unknown[])
+            .filter((nm): nm is Record<string, unknown> => !!nm && typeof nm === "object")
+            .filter(
+              (nm) =>
+                typeof nm.pattern === "string" &&
+                typeof nm.misconceptionId === "string" &&
+                typeof nm.feedback === "string",
+            )
+            .map((nm) => ({
+              pattern: nm.pattern as string,
+              misconceptionId: nm.misconceptionId as string,
+              feedback: nm.feedback as string,
+            }))
+        : [];
+      out.push({
+        cardId: a.cardId,
+        toolName: "predictThenReveal",
+        conceptSlug: a.conceptSlug,
+        initiation: a.initiation,
+        setup: a.setup,
+        prompt: a.prompt,
+        acceptedAnswers,
+        nearMisses,
+        revealExplanation: a.revealExplanation,
+      });
+    } else if (
+      // A3 Wave 5 · explainBack — prompt + a 2–5 criterion rubric. A rubric entry
+      // missing its criterion string drops; an empty rubric drops the whole card.
+      a.toolName === "explainBack" &&
+      typeof a.prompt === "string" &&
+      Array.isArray(a.rubric)
+    ) {
+      const rubric = (a.rubric as unknown[])
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .filter((r) => typeof r.criterion === "string")
+        .map((r) => ({ criterion: r.criterion as string, required: r.required === true }));
+      if (rubric.length === 0) continue;
+      out.push({
+        cardId: a.cardId,
+        toolName: "explainBack",
+        conceptSlug: a.conceptSlug,
+        initiation: a.initiation,
+        prompt: a.prompt,
+        rubric,
+      });
     }
   }
   return out;

@@ -100,7 +100,55 @@ export interface SequenceTaskCard {
   partialCreditRule: "exact" | "adjacent-pairs";
 }
 
-export type AssessmentCard = CheckUnderstandingCard | SequenceTaskCard;
+/** A3 Wave 5 — fadedExample (worked-example practice; the runtime derives how much
+ *  is blanked from the learner's mastery, NOT the model — A3-16). Every step ships
+ *  its `answer` (a shown step renders it inline; a blanked step ships it for local
+ *  grading). `fadeLevel` is fixed at authoring — the card MUST NOT advance it. */
+export interface FadedExampleCard {
+  cardId: string;
+  toolName: "fadedExample";
+  conceptSlug: string;
+  initiation: AssessmentInitiation;
+  fadeLevel: 0 | 1 | 2 | 3;
+  title: string | null;
+  problem: string;
+  steps: { text: string; blanked: boolean; answer: string }[];
+}
+
+/** A3 Wave 5 — predictThenReveal (commit a prediction before the answer). The
+ *  answer key + near-miss matchers ship (formative, client-graded). */
+export interface PredictThenRevealCard {
+  cardId: string;
+  toolName: "predictThenReveal";
+  conceptSlug: string;
+  initiation: AssessmentInitiation;
+  title: string | null;
+  setup: string;
+  prompt: string;
+  acceptedAnswers: string[];
+  nearMisses: { pattern: string; misconceptionId: string; feedback: string }[];
+  revealExplanation: string;
+}
+
+/** A3 Wave 5 — explainBack (self-explain against a rubric; SERVER-graded via the
+ *  explain_back_grade route action — A3-17). The rubric ships so the client renders
+ *  the criterion list, but grading is a server model call (no key on the card). */
+export interface ExplainBackCard {
+  cardId: string;
+  toolName: "explainBack";
+  conceptSlug: string;
+  initiation: AssessmentInitiation;
+  title: string | null;
+  prompt: string;
+  rubric: { criterion: string; required: boolean }[];
+}
+
+export type AssessmentCard =
+  | CheckUnderstandingCard
+  | SequenceTaskCard
+  | FadedExampleCard
+  | PredictThenRevealCard
+  | ExplainBackCard;
 
 /* ─────────────────────── renderStructure — Class P ───────────────────────── */
 
@@ -521,6 +569,256 @@ export function scoreSequence(
   return "not_demonstrated";
 }
 
+/* ═══════════════════════ A3 Wave 5 — the three new tools ═══════════════════ */
+
+/* ────────────────────── fadedExample — Class A (A3-16) ───────────────────── */
+
+/**
+ * PURE (A3-16, the load-bearing rule). Map the learner's DECAYED mastery for the
+ * resolved concept to a fade level — the RUNTIME derives this from stored mastery,
+ * NOT the model, NOT the turn count (expertise-reversal: a strong learner earns a
+ * near-independent problem; a new one gets the fully-worked example):
+ *   • no mastery (undefined) OR p < 0.25 → 0 (fully worked)
+ *   • p < 0.5  → 1
+ *   • p < 0.75 → 2
+ *   • p ≥ 0.75 → 3 (independent problem)
+ * A NaN p is treated as no mastery (→ 0).
+ */
+export function fadeLevelForMastery(p: number | undefined): 0 | 1 | 2 | 3 {
+  if (p === undefined || Number.isNaN(p) || p < 0.25) return 0;
+  if (p < 0.5) return 1;
+  if (p < 0.75) return 2;
+  return 3;
+}
+
+/**
+ * PURE. How many TRAILING steps a fade level blanks (backward fading): round
+ * `(fadeLevel / 3) * stepCount` — level 0 blanks none, level 3 blanks all. The
+ * tool marks the LAST N steps `blanked: true`. Clamped to [0, stepCount].
+ */
+export function blankStepsForFade(stepCount: number, fadeLevel: number): number {
+  const n = Math.round((fadeLevel / 3) * stepCount);
+  return Math.max(0, Math.min(stepCount, n));
+}
+
+const FadedExampleStep = z.object({
+  text: z.string().min(1).max(400).describe("The step instruction/prompt."),
+  answer: z.string().min(1).max(400).describe("The worked value/result for this step."),
+});
+
+const FadedExampleParams = z.object({
+  conceptSlug: z.string().min(1).describe("The concept node id (uuid) this practices (R-1)."),
+  title: z.string().max(120).nullish(),
+  problem: z.string().min(1).max(800).describe("The problem statement."),
+  steps: z
+    .array(FadedExampleStep)
+    .min(2)
+    .max(8)
+    .describe("2–8 FULLY-worked steps — author every step AND its answer; the runtime blanks the trailing ones from the learner's mastery."),
+});
+type FadedExampleArgs = z.infer<typeof FadedExampleParams>;
+
+const fadedExample: TutorTool<FadedExampleArgs> = {
+  name: "fadedExample",
+  description:
+    "Author a worked EXAMPLE for practice: the problem + 2–8 fully-worked steps (every step AND its answer). Do NOT decide how much to blank — the tutor fades the trailing steps automatically from the learner's own mastery (a strong learner gets a near-independent problem; a new one sees it fully worked). Use this for worked-example practice.",
+  params: FadedExampleParams,
+  async execute(args, deps): Promise<TutorToolResult> {
+    // R-1: conceptSlug IS the concept node uuid, so a direct lookup on the
+    // masteryByNode map keyed by the slug resolves the learner's decayed mastery
+    // for this concept (no merge-chain walk needed at authoring time — the
+    // route's recordToolEvidence resolves merge chains at evidence time). An
+    // absent map / absent node → undefined → fadeLevelForMastery 0 (fully worked),
+    // the safe default: a learner with no signal never gets a blanked problem.
+    const p = deps.masteryByNode?.get(args.conceptSlug);
+    const fadeLevel = fadeLevelForMastery(p);
+    const nBlanked = blankStepsForFade(args.steps.length, fadeLevel);
+    const firstBlankIdx = args.steps.length - nBlanked; // blank the LAST N (backward fading)
+    const card: FadedExampleCard = {
+      cardId: crypto.randomUUID(),
+      toolName: "fadedExample",
+      conceptSlug: args.conceptSlug,
+      // Placeholder — the loop's sink stamps the real per-turn initiation.
+      initiation: "practice_request",
+      fadeLevel,
+      title: args.title ?? null,
+      problem: args.problem,
+      steps: args.steps.map((s, i) => ({
+        text: s.text,
+        blanked: i >= firstBlankIdx,
+        answer: s.answer,
+      })),
+    };
+    return {
+      summary: `Authored a faded example (${args.steps.length} steps, fade level ${fadeLevel} → ${nBlanked} blanked).`,
+      data: { assessment: card },
+    };
+  },
+};
+
+/* ──────────────────── predictThenReveal — Class A ────────────────────────── */
+
+const PredictNearMiss = z.object({
+  pattern: z.string().min(1).max(200).describe("A substring/phrase a wrong prediction would contain."),
+  misconceptionId: z.string().min(1).max(80).describe("The misconception this near-miss names (A3-13 spirit)."),
+  feedback: z.string().min(1).max(320).describe("Feedback that names the reasoning, never 'the answer is X'."),
+});
+
+const PredictThenRevealParams = z.object({
+  conceptSlug: z.string().min(1).describe("The concept node id (uuid) this checks (R-1)."),
+  title: z.string().max(120).nullish(),
+  setup: z.string().min(1).max(600).describe("The scenario the learner reasons about."),
+  prompt: z.string().min(1).max(400).describe("The prediction question."),
+  acceptedAnswers: z
+    .array(z.string().min(1).max(200))
+    .min(1)
+    .max(4)
+    .describe("1–4 accepted predictions (matched trim/lowercase contains/equals)."),
+  nearMisses: z
+    .array(PredictNearMiss)
+    .max(4)
+    .nullish()
+    .describe("0–4 anticipated wrong predictions, each naming its misconception."),
+  revealExplanation: z.string().min(1).max(800).describe("The explanation shown after the learner predicts."),
+});
+type PredictThenRevealArgs = z.infer<typeof PredictThenRevealParams>;
+
+const predictThenReveal: TutorTool<PredictThenRevealArgs> = {
+  name: "predictThenReveal",
+  description:
+    "Make the learner COMMIT a prediction before revealing the answer. Author the setup, the prediction prompt, 1–4 accepted answers, optional anticipated near-misses (each naming its misconception), and the reveal explanation. Use this when committing to a guess sharpens the concept.",
+  params: PredictThenRevealParams,
+  async execute(args): Promise<TutorToolResult> {
+    const card: PredictThenRevealCard = {
+      cardId: crypto.randomUUID(),
+      toolName: "predictThenReveal",
+      conceptSlug: args.conceptSlug,
+      // Placeholder — the loop's sink stamps the real per-turn initiation.
+      initiation: "practice_request",
+      title: args.title ?? null,
+      setup: args.setup,
+      prompt: args.prompt,
+      acceptedAnswers: [...args.acceptedAnswers],
+      nearMisses: (args.nearMisses ?? []).map((m) => ({
+        pattern: m.pattern,
+        misconceptionId: m.misconceptionId,
+        feedback: m.feedback,
+      })),
+      revealExplanation: args.revealExplanation,
+    };
+    return {
+      summary: `Authored a predict-then-reveal for the concept (${card.acceptedAnswers.length} accepted, ${card.nearMisses.length} near-misses).`,
+      data: { assessment: card },
+    };
+  },
+};
+
+/* ───────────────────── explainBack — Class A (A3-17) ─────────────────────── */
+
+const ExplainBackRubricItem = z.object({
+  criterion: z.string().min(1).max(240).describe("One idea the learner's explanation should cover."),
+  required: z.boolean().describe("Whether this criterion is required for a full demonstration."),
+});
+
+const ExplainBackParams = z.object({
+  conceptSlug: z.string().min(1).describe("The concept node id (uuid) this checks (R-1)."),
+  title: z.string().max(120).nullish(),
+  prompt: z.string().min(1).max(600).describe("What to explain back, in the learner's own words."),
+  rubric: z
+    .array(ExplainBackRubricItem)
+    .min(2)
+    .max(5)
+    .describe("2–5 rubric criteria (server-graded on PRESENCE of the idea, not wording)."),
+});
+type ExplainBackArgs = z.infer<typeof ExplainBackParams>;
+
+const explainBack: TutorTool<ExplainBackArgs> = {
+  name: "explainBack",
+  description:
+    "Have the learner SELF-EXPLAIN a concept in their own words against a 2–5 point rubric. Their free-text answer is graded by the tutor on whether each idea is PRESENT (not wording). Use SPARINGLY — at most once per concept per session, and only when the learner's mastery is already strong.",
+  params: ExplainBackParams,
+  async execute(args, deps): Promise<TutorToolResult> {
+    // "At most once per session per concept": the loop threads the set of node ids
+    // already explainBacked this session (R-1: conceptSlug IS the node uuid). A
+    // duplicate DROPS — returns a null assessment + error (logged), and the loop's
+    // sink skips a null assessment. Offered only when mastery is strong is L0
+    // guidance, not a hard gate here.
+    if (deps.explainBackConcepts?.has(args.conceptSlug)) {
+      console.log(
+        JSON.stringify({
+          tag: "tutor_explain_back_dropped",
+          reason: "already_explained",
+          conceptSlug: args.conceptSlug,
+          courseId: deps.ctx.courseId,
+        })
+      );
+      return {
+        summary: "Already had the learner explain this concept back this session — skipping a duplicate.",
+        data: { assessment: null, error: "already_explained" },
+      };
+    }
+    const card: ExplainBackCard = {
+      cardId: crypto.randomUUID(),
+      toolName: "explainBack",
+      conceptSlug: args.conceptSlug,
+      // Placeholder — the loop's sink stamps the real per-turn initiation.
+      initiation: "practice_request",
+      title: args.title ?? null,
+      prompt: args.prompt,
+      rubric: args.rubric.map((r) => ({ criterion: r.criterion, required: r.required })),
+    };
+    return {
+      summary: `Authored an explain-back (${card.rubric.length} rubric criteria) for the concept.`,
+      data: { assessment: card },
+    };
+  },
+};
+
+/* ────────── explain_back_grade — the SERVER grading schema (route action) ─── */
+
+/** The strict shape the explain-back grading model returns: one presence verdict
+ *  per rubric criterion (A3-17 — graded on the PRESENCE of the idea, NOT wording).
+ *  Consumed by the route's `explain_back_grade` action (`gradeExplainBack`). */
+export const ExplainBackGradeSchema = z.object({
+  criteria: z
+    .array(
+      z.object({
+        criterion: z.string(),
+        present: z.boolean(),
+        note: z.string(),
+      })
+    )
+    .min(1),
+});
+export type ExplainBackGrade = z.infer<typeof ExplainBackGradeSchema>;
+
+/** The evidence outcome a criterion-presence grade maps to (A3-17):
+ *   • ALL `required` criteria present → demonstrated
+ *   • ≥1 required present but not all  → partial
+ *   • none of the required present     → not_demonstrated
+ * A rubric with NO required criteria treats every criterion as required-optional:
+ * we fall back to ALL criteria (a demonstrated needs them all; a partial needs
+ * ≥1). Pure + exported so the route AND the tests map identically. */
+export function outcomeFromExplainBackGrade(
+  rubric: readonly { criterion: string; required: boolean }[],
+  grade: ExplainBackGrade
+): SequenceOutcome {
+  // Presence by criterion text (the model echoes the criterion verbatim).
+  const presentByText = new Map<string, boolean>();
+  for (const c of grade.criteria) presentByText.set(c.criterion.trim(), c.present === true);
+  const requiredItems = rubric.filter((r) => r.required);
+  // No required criteria → treat every rubric item as the gating set.
+  const gating = requiredItems.length > 0 ? requiredItems : rubric;
+  if (gating.length === 0) return "not_demonstrated";
+  let present = 0;
+  for (const item of gating) {
+    if (presentByText.get(item.criterion.trim()) === true) present += 1;
+  }
+  if (present === gating.length) return "demonstrated";
+  if (present >= 1) return "partial";
+  return "not_demonstrated";
+}
+
 /* ─────────────────────────────── the registry ───────────────────────────── */
 
 /** The three A3 Wave-4 tools, keyed by name — imported into TUTOR_TOOLS. */
@@ -528,4 +826,13 @@ export const A3_WAVE4_TOOLS = {
   renderStructure: renderStructure as TutorTool,
   checkUnderstanding: checkUnderstanding as TutorTool,
   sequenceTask: sequenceTask as TutorTool,
+};
+
+/** The three A3 Wave-5 tools, keyed by name — imported into TUTOR_TOOLS (all tier
+ *  `read`, all Class A). fadedExample + explainBack read the loop-threaded
+ *  masteryByNode / explainBackConcepts deps; predictThenReveal is pure over args. */
+export const A3_WAVE5_TOOLS = {
+  fadedExample: fadedExample as TutorTool,
+  predictThenReveal: predictThenReveal as TutorTool,
+  explainBack: explainBack as TutorTool,
 };

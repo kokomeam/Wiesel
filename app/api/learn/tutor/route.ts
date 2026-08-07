@@ -34,7 +34,12 @@ export const maxDuration = 300;
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createOpenAIModelClient, isOpenAIConfigured } from "@/lib/ai/providers/openai";
-import { withPooledModel, poolFor } from "@/lib/ai/subagent";
+import { withPooledModel, poolFor, runStructuredCall } from "@/lib/ai/subagent";
+import {
+  ExplainBackGradeSchema,
+  outcomeFromExplainBackGrade,
+} from "@/lib/tutor/runtime/toolsA3";
+import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import {
   resolveTutorAccess,
   loadTutorContext,
@@ -103,7 +108,8 @@ interface TutorRequestBody {
     | "self_report"
     | "hint_request"
     | "escalate_consent"
-    | "tool_evidence";
+    | "tool_evidence"
+    | "explain_back_grade";
   courseId?: string;
   publicationId?: string;
   version?: number;
@@ -140,6 +146,11 @@ interface TutorRequestBody {
   confidence?: "sure" | "unsure" | null;
   fadeLevel?: number | null;
   latencyMs?: number | null;
+  // explain_back_grade (A3 Wave 5 · A3-17) — the learner submitted a free-text
+  // self-explanation for an explainBack card; the route grades rubric-criterion
+  // PRESENCE with a pooled model call.
+  text?: string;
+  rubric?: { criterion?: string; required?: boolean }[];
 }
 
 /** A typed JSON error the client renders inline. */
@@ -307,6 +318,96 @@ export async function POST(req: Request): Promise<Response> {
       access: access.kind,
       emitted: rec.recorded,
       misconceptionId: rec.recorded ? rec.misconceptionId : null,
+    });
+  }
+
+  /* ── explain_back_grade (A3 Wave 5 · A3-17, plain JSON) ──
+   *
+   * The learner submitted a free-text self-explanation for an explainBack card.
+   * SERVER grading: a POOLED structured model call judges whether each rubric
+   * criterion's IDEA is PRESENT (not its wording), returns per-criterion
+   * {present, note}. We map that to an evidence OUTCOME (all required present →
+   * demonstrated; ≥1 required present but not all → partial; none →
+   * not_demonstrated), record ONE tutor_evidence_recorded row (completionKey
+   * "toolcard:" + cardId — idempotent) + fire the same mastery refold, and return
+   * `{ ok, criteria, outcome }` — NO pass/fail verdict (the client renders the
+   * criterion list only). Access-gated like practice_answer. On a model failure we
+   * FAIL CLOSED: `{ ok:false, error }`, no evidence recorded, never a fake grade. */
+  if (action === "explain_back_grade") {
+    if (access.kind !== "ok") {
+      return Response.json({ ok: true, access: access.kind, emitted: false });
+    }
+    const rubric = Array.isArray(body.rubric)
+      ? body.rubric
+          .filter((r): r is { criterion: string; required?: boolean } => typeof r?.criterion === "string")
+          .map((r) => ({ criterion: r.criterion, required: r.required === true }))
+      : [];
+    if (!body.cardId || !body.conceptSlug || typeof body.text !== "string" || !body.text.trim() || rubric.length === 0) {
+      return errorJson("invalid_explain_back", "cardId, conceptSlug, non-empty text, and a rubric are required.", 400);
+    }
+    if (!isOpenAIConfigured()) {
+      return errorJson("tutor_unconfigured", "The tutor isn't configured to grade explanations yet.", 503);
+    }
+
+    // The POOLED learner model — reuse the small tier (jobType practice_gen, so the
+    // decorator does NOT emit tutor-turn cost telemetry for this sub-call). A3-20:
+    // NEVER a fresh unpooled client.
+    const model = withPooledModel(createOpenAIModelClient(), {
+      pool: poolFor("learner"),
+      cost: { supabase: admin, courseId, emittedBy: user.id, learnerUserId: user.id, jobType: "practice_gen" },
+    });
+    const job = TUTOR_MODELS.practice_gen;
+    const rubricLines = rubric
+      .map((r, i) => `${i + 1}. [${r.required ? "required" : "optional"}] ${r.criterion}`)
+      .join("\n");
+    const grade = await runStructuredCall(model, {
+      system:
+        "You grade a learner's free-text self-explanation against a rubric. For EACH criterion, judge whether the learner's explanation conveys that criterion's IDEA — grade on the PRESENCE of the idea, NOT on wording, phrasing, or exact terminology. A paraphrase that captures the idea IS present. Return ONLY the JSON object: { \"criteria\": [ { \"criterion\": <the criterion text verbatim>, \"present\": <boolean>, \"note\": <one short sentence on what was or wasn't shown> } ] }. Echo each criterion's text verbatim. Do not reveal the answer; the note names what the learner did or did not demonstrate.",
+      input: `RUBRIC:\n${rubricLines}\n\nLEARNER EXPLANATION:\n${body.text.trim()}`,
+      outputName: "tutor_explain_back_grade",
+      outputSchema: ExplainBackGradeSchema,
+      model: job.model,
+      effort: job.effort,
+      timeoutMs: job.timeoutMs,
+      maxRetries: job.maxRetries,
+      maxOutputTokens: job.maxOutputTokens,
+    });
+
+    if (!grade.ok || !grade.data) {
+      // Fail closed — no evidence, a plain retry on the client.
+      return errorJson("grade_failed", grade.error ?? "The tutor couldn't grade that explanation. Please try again.", 502);
+    }
+
+    const outcome = outcomeFromExplainBackGrade(rubric, grade.data);
+    const rec = await recordToolEvidence(admin, {
+      courseId,
+      publicationId,
+      version,
+      lessonId: body.lessonId ?? null,
+      userId: user.id,
+      conceptSlug: body.conceptSlug,
+      toolName: "explainBack",
+      outcome,
+      misconceptionSlug: null,
+      confidence: body.confidence ?? null,
+      fadeLevel: null,
+      initiation:
+        body.initiation?.kind === "invitation_accepted" ? "invitation_accepted" : "practice_request",
+      itemSource: "generated",
+      reviewedItemId: null,
+      latencyMs: body.latencyMs ?? null,
+      completionKey: `toolcard:${body.cardId}`,
+    });
+    if (rec.recorded) {
+      await sendTutorMasteryRefoldRequested({ userId: user.id, courseId });
+    }
+    // NO verdict field — the client shows criterion-level met/unmet + notes only.
+    return Response.json({
+      ok: true,
+      access: access.kind,
+      emitted: rec.recorded,
+      criteria: grade.data.criteria,
+      outcome,
     });
   }
 

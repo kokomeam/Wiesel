@@ -45,6 +45,12 @@ export const TUTOR_TOOL_TIERS: Record<(typeof TUTOR_TOOL_NAMES)[number], TutorTo
   renderStructure: "read", // presentational — a validated diagram, no side effect
   checkUnderstanding: "read", // Class A — the item rides the turn output
   sequenceTask: "read", // Class A — the item rides the turn output
+  // A3 Wave 5 — the adaptive assessment tools. Same discipline: the card rides
+  // the turn output; the ROUTE writes evidence on interaction (tool_evidence for
+  // faded/predict, explain_back_grade for explainBack). No DB write at authoring.
+  fadedExample: "read", // Class A — the worked example rides the turn output
+  predictThenReveal: "read", // Class A — the predict card rides the turn output
+  explainBack: "read", // Class A — the rubric card rides the turn output
 };
 
 /**

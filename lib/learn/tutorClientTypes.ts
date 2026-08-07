@@ -116,6 +116,11 @@ export interface TutorRenderStructureCard {
  *   misconception it represents (`misconceptionId`) — the server Zod enforces it.
  * - `sequenceTask` — an ordering task; `correctOrder` is a permutation of the
  *   `items[].id` set; scored `exact` (all-or-nothing) or `adjacent-pairs`.
+ *
+ * A3 Wave 5 adds three more variants (`fadedExample` / `predictThenReveal` /
+ * `explainBack`). The first two grade LOCALLY (their keys ride the card, the
+ * practiceItems precedent); `explainBack` grades on the SERVER (free text →
+ * semantic rubric presence) via the `explain_back_grade` route action.
  */
 export type TutorAssessmentCard =
   | {
@@ -145,6 +150,48 @@ export type TutorAssessmentCard =
       /** Ships to the client — formative, the client scores locally. */
       correctOrder: string[];
       partialCreditRule: "exact" | "adjacent-pairs";
+    }
+  | {
+      cardId: string;
+      toolName: "fadedExample";
+      conceptSlug: string;
+      initiation: "practice_request" | "invitation_accepted";
+      /** How much of the worked example is blanked (0 fully worked → 3 all
+       *  trailing steps blanked). Derived server-side from the learner's decayed
+       *  mastery (A3-16 — never the model, never turn count); fixed at authoring. */
+      fadeLevel: number;
+      problem: string;
+      /** The COMPLETE worked example. A blanked step ships its `answer` for local
+       *  grading (formative); a shown step ships its worked `answer` too, rendered
+       *  inline. `blanked` marks the trailing steps the learner must fill. */
+      steps: { text: string; blanked: boolean; answer: string }[];
+    }
+  | {
+      cardId: string;
+      toolName: "predictThenReveal";
+      conceptSlug: string;
+      initiation: "practice_request" | "invitation_accepted";
+      setup: string;
+      prompt: string;
+      /** Ships to the client — formative, the client scores the committed
+       *  prediction locally. A prediction that contains/equals one of these →
+       *  demonstrated. */
+      acceptedAnswers: string[];
+      /** Ordered near-miss patterns: the FIRST whose `pattern` the (normalized)
+       *  prediction contains names the misconception + its feedback. */
+      nearMisses: { pattern: string; misconceptionId: string; feedback: string }[];
+      /** Revealed AFTER the learner commits their prediction. */
+      revealExplanation: string;
+    }
+  | {
+      cardId: string;
+      toolName: "explainBack";
+      conceptSlug: string;
+      initiation: "practice_request" | "invitation_accepted";
+      prompt: string;
+      /** The rubric the learner's free-text explanation is graded against —
+       *  SERVER-side, on PRESENCE of each idea (never wording). 2–5 criteria. */
+      rubric: { criterion: string; required: boolean }[];
     };
 
 /** The outcome of a locally-graded assessment card (fed to `tool_evidence`). */
@@ -365,6 +412,12 @@ export function ttftRating(ms: number): "good" | "needs-improvement" | "poor" {
 type CheckUnderstandingCard = Extract<TutorAssessmentCard, { toolName: "checkUnderstanding" }>;
 /** A `sequenceTask` card. */
 type SequenceCard = Extract<TutorAssessmentCard, { toolName: "sequenceTask" }>;
+/** A `fadedExample` card. */
+type FadedExampleCard = Extract<TutorAssessmentCard, { toolName: "fadedExample" }>;
+/** A `predictThenReveal` card. */
+type PredictCard = Extract<TutorAssessmentCard, { toolName: "predictThenReveal" }>;
+/** An `explainBack` card. */
+type ExplainBackCard = Extract<TutorAssessmentCard, { toolName: "explainBack" }>;
 
 /**
  * A3 Wave 4 (A3-13/§3) — grade a checkUnderstanding pick LOCALLY. The answer key
@@ -484,3 +537,149 @@ export function hashSeed(s: string): number {
   }
   return h >>> 0;
 }
+
+/* ──────────────── A3 Wave 5 · formative card scorers (pure) ───────────────── */
+
+/** Normalize a free-text token for comparison: trim + lowercase (the practiceItems
+ *  short-answer precedent). */
+function normText(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+/**
+ * A3 Wave 5 (A3-16) — grade a `fadedExample` submission LOCALLY. The answer key
+ * ships on the card (each blanked step carries its `answer`; formative,
+ * low-stakes → the practiceItems precedent). Compares each BLANKED step's filled
+ * input to its answer trim/lowercase; a non-blanked step is worked (never graded).
+ *
+ * - all blanks right → `demonstrated`
+ * - some blanks right → `partial`
+ * - none right → `not_demonstrated`
+ * - a card with ZERO blanked steps (fadeLevel 0, fully worked) → `demonstrated`
+ *   on acknowledge (there was nothing to fill — the learner read the worked example).
+ *
+ * `filledAnswers` is keyed by the step INDEX (into `card.steps`); a missing entry
+ * for a blanked step is an empty (wrong) answer. Never throws.
+ */
+export function scoreFadedCard(
+  card: FadedExampleCard,
+  filledAnswers: Record<number, string>,
+): { outcome: TutorAssessmentOutcome; correctCount: number; blankCount: number } {
+  const blankIndexes: number[] = [];
+  card.steps.forEach((step, i) => {
+    if (step.blanked) blankIndexes.push(i);
+  });
+  const blankCount = blankIndexes.length;
+
+  // Zero blanks (fully worked, fadeLevel 0) → demonstrated on acknowledge.
+  if (blankCount === 0) {
+    return { outcome: "demonstrated", correctCount: 0, blankCount: 0 };
+  }
+
+  let correctCount = 0;
+  for (const i of blankIndexes) {
+    const filled = normText(filledAnswers[i] ?? "");
+    if (filled.length > 0 && filled === normText(card.steps[i].answer)) {
+      correctCount += 1;
+    }
+  }
+
+  const outcome: TutorAssessmentOutcome =
+    correctCount === blankCount
+      ? "demonstrated"
+      : correctCount > 0
+        ? "partial"
+        : "not_demonstrated";
+  return { outcome, correctCount, blankCount };
+}
+
+/**
+ * A3 Wave 5 — grade a `predictThenReveal` committed prediction LOCALLY (formative;
+ * the keys ride the card). The commit-before-reveal is the whole point — this is
+ * called only AFTER the learner commits.
+ *
+ * - normalize the prediction (trim/lowercase). If it CONTAINS or EQUALS any
+ *   `acceptedAnswer` (each normalized) → `demonstrated`, `matched: "accepted"`,
+ *   null misconception, empty feedback.
+ * - else the FIRST `nearMisses[i]` whose normalized `pattern` the prediction
+ *   CONTAINS → `not_demonstrated`, `matched: "nearMiss"`, that `misconceptionId` +
+ *   its `feedback`.
+ * - else `not_demonstrated`, `matched: "none"`, null misconception, empty feedback.
+ *
+ * An empty `pattern` never matches (guards against a degenerate near-miss). Never
+ * throws.
+ */
+export function scorePredictCard(
+  card: PredictCard,
+  prediction: string,
+): {
+  outcome: "demonstrated" | "not_demonstrated";
+  misconceptionId: string | null;
+  feedback: string;
+  matched: "accepted" | "nearMiss" | "none";
+} {
+  const guess = normText(prediction);
+
+  const accepted =
+    guess.length > 0 &&
+    card.acceptedAnswers.some((a) => {
+      const key = normText(a);
+      return key.length > 0 && guess.includes(key);
+    });
+  if (accepted) {
+    return { outcome: "demonstrated", misconceptionId: null, feedback: "", matched: "accepted" };
+  }
+
+  for (const nm of card.nearMisses) {
+    const pattern = normText(nm.pattern);
+    if (pattern.length > 0 && guess.includes(pattern)) {
+      return {
+        outcome: "not_demonstrated",
+        misconceptionId: nm.misconceptionId,
+        feedback: nm.feedback,
+        matched: "nearMiss",
+      };
+    }
+  }
+
+  return { outcome: "not_demonstrated", misconceptionId: null, feedback: "", matched: "none" };
+}
+
+/** One graded rubric criterion from the SERVER `explain_back_grade` response —
+ *  `present` = the idea was found (never wording), `note` names why. */
+export interface ExplainBackCriterionResult {
+  criterion: string;
+  present: boolean;
+  note: string;
+}
+
+/** The view row `TutorExplainBackCard` renders per criterion. `met` drives the
+ *  ✓ / ○ marker; `note` is the model's per-criterion note. There is deliberately
+ *  NO pass/fail verdict field (A3-17): the learner sees criterion-level met/unmet
+ *  only, never an overall grade. */
+export interface ExplainBackCriterionView {
+  criterion: string;
+  met: boolean;
+  note: string;
+}
+
+/**
+ * A3 Wave 5 (A3-17) — the PURE map from the server's graded criteria to the view
+ * rows the card renders. Each row carries `met` (the ✓/○ marker) + the note; the
+ * function NEVER yields a pass/fail verdict string — the whole point of A3-17 is
+ * that the learner sees criterion-level presence only, never an overall grade.
+ * Exported so the client suite can assert the no-verdict guarantee directly.
+ */
+export function explainBackCriteriaView(
+  criteria: ExplainBackCriterionResult[],
+): ExplainBackCriterionView[] {
+  return criteria.map((c) => ({
+    criterion: c.criterion,
+    met: c.present === true,
+    note: typeof c.note === "string" ? c.note : "",
+  }));
+}
+
+/** Referenced so the ExplainBackCard type is exported-in-spirit for the suite; a
+ *  no-op that keeps the alias from being unused while documenting the card shape. */
+export type { ExplainBackCard, FadedExampleCard, PredictCard };

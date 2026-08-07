@@ -87,7 +87,13 @@ import type { CourseDocument, SlideDeckBlock } from "@/lib/course/types";
 import { resolveLivePublicationBySlug, type PublicationRow } from "@/lib/learn/resolve";
 import { PublicationSnapshotSchema, type PublicationSnapshot } from "@/lib/course/publish/schemas";
 import { createMockModelClient } from "@/lib/ai/providers/mock";
-import { withPooledModel, poolFor } from "@/lib/ai/subagent";
+import { withPooledModel, poolFor, runStructuredCall } from "@/lib/ai/subagent";
+import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
+import {
+  ExplainBackGradeSchema,
+  outcomeFromExplainBackGrade,
+  type FadedExampleCard,
+} from "@/lib/tutor/runtime/toolsA3";
 import { refoldLearnerCourse } from "@/lib/tutor/mastery/loader";
 import { writeMastery } from "@/lib/tutor/mastery/writer";
 import {
@@ -896,6 +902,167 @@ async function main() {
     check("(g) NO assessment on a renderStructure turn", (turnW4g.turn?.assessments.length ?? -1) === 0);
     const evAfterG = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
     check("(g) renderStructure emits NO tool evidence", evAfterG - evBeforeG === 0, JSON.stringify({ before: evBeforeG, after: evAfterG }));
+
+    /* ═══════ A3 Wave 5 — fadedExample (mastery-derived fade) + explain_back_grade ═══ */
+    console.log("\n# A3 Wave 5 — fadedExample fadeLevel from seeded mastery; explain_back_grade → criteria + one tutor_evidence_recorded");
+
+    // (h) Seed HIGH mastery on the concept, then ACCEPT a fadedExample invitation:
+    //     the loop threads masteryByNode from learner_mastery → fadeLevel 3.
+    const nowIsoW5 = new Date().toISOString();
+    const seedMastery = await admin
+      .from("learner_mastery" as never)
+      .upsert(
+        [
+          {
+            user_id: learner4.userId,
+            course_id: courseId,
+            node_id: nodeId,
+            p_learned: 0.9,
+            decayed_p: 0.9,
+            evidence_count: 5,
+            last_positive_at: nowIsoW5,
+            computed_at: nowIsoW5,
+          },
+        ] as never,
+        { onConflict: "user_id,course_id,node_id" } as never
+      );
+    check("(h) seeded high mastery (decayed_p 0.9) on the concept", !(seedMastery as { error: unknown }).error, JSON.stringify((seedMastery as { error: { message?: string } }).error ?? null));
+
+    const fadedArgs = {
+      conceptSlug: nodeId,
+      title: "A worked wash",
+      problem: "Lay a graded wash from dark to light.",
+      steps: [
+        { text: "Load the brush", answer: "heavy pigment" },
+        { text: "First stroke at the top", answer: "darkest band" },
+        { text: "Dilute and continue", answer: "lighter bands" },
+        { text: "Finish at the bottom", answer: "near-clear" },
+      ],
+    };
+    const modelW5h = createMockModelClient(
+      [
+        { toolCalls: [{ name: "fadedExample", arguments: fadedArgs }] },
+        { text: groundedOutput() },
+      ],
+      {}
+    );
+    // Deliver via the practice_request path (a "let me try one" message the
+    // classifier catches) — a bare invitation_accepted CLAIM would be stale here
+    // (learner4 has no prior offered invitation in this thread), so it correctly
+    // falls to `question` and the Class-A call downgrades to an invitation. The
+    // practice_request path needs no prior offer (mirrors leg (c)/(f)).
+    const turnW5h = await runTutorTurnForRequest(
+      { learnerClient: learner4.client, admin, model: withPooledModel(modelW5h, { pool: poolFor("learner") }), loadSnapshot },
+      {
+        userId: learner4.userId,
+        envelope,
+        learnerMessage: "let me try one",
+      }
+    );
+    check("(h) fadedExample acceptance turn ok", turnW5h.turn?.ok === true, JSON.stringify({ ok: turnW5h.turn?.ok, err: turnW5h.turn?.error }));
+    const fadedCard = (turnW5h.turn?.assessments ?? [])[0] as FadedExampleCard | undefined;
+    check(
+      "(h) the fadedExample card rides turn.assessments with fadeLevel 3 (derived from seeded mastery, NOT the model)",
+      (turnW5h.turn?.assessments.length ?? 0) === 1 &&
+        fadedCard?.toolName === "fadedExample" &&
+        fadedCard?.conceptSlug === nodeId &&
+        fadedCard?.fadeLevel === 3 &&
+        (fadedCard?.steps.every((s) => s.blanked) ?? false),
+      JSON.stringify({ n: turnW5h.turn?.assessments.length, fade: fadedCard?.fadeLevel, blanked: fadedCard?.steps.map((s) => s.blanked) })
+    );
+    check("(h) every step ships its answer (blanked steps carry the key for local grading)", (fadedCard?.steps.every((s) => typeof s.answer === "string" && s.answer.length > 0) ?? false));
+
+    // (i) explain_back_grade — mirror the ROUTE handler exactly (the suite drives the
+    //     seam, not the HTTP layer): a POOLED structured model call (A3-20) grades
+    //     rubric-criterion presence; the outcome maps to evidence; recordToolEvidence
+    //     appends ONE tutor_evidence_recorded row (idempotent). The mock model returns
+    //     a criteria verdict via the structured seam keyed by the outputName.
+    const explainCardId = `explainback-${newRowId()}`;
+    const explainRubric = [
+      { criterion: "names supply and demand meeting", required: true },
+      { criterion: "explains surplus/shortage pressure", required: false },
+    ];
+    const gradeJson = JSON.stringify({
+      criteria: [
+        { criterion: "names supply and demand meeting", present: true, note: "Clearly identified the crossing point." },
+        { criterion: "explains surplus/shortage pressure", present: false, note: "Did not mention surplus or shortage." },
+      ],
+    });
+    const baseGradeModel = createMockModelClient([], { structured: { tutor_explain_back_grade: gradeJson } });
+    // A3-20 structural: the grade path uses withPooledModel (never a fresh unpooled
+    // client) — wrap the mock exactly as the route does. The base mock records every
+    // runTurn's params (getCalls), so we prove the pooled call carried the grading
+    // responseFormat through the pool wrapper.
+    const gradeModel = withPooledModel(baseGradeModel, { pool: poolFor("learner") });
+
+    const evBeforeI = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    const job = TUTOR_MODELS.practice_gen;
+    const grade = await runStructuredCall(gradeModel, {
+      system: "grade rubric presence",
+      input: "RUBRIC:\n1. [required] names supply and demand meeting\n2. [optional] explains surplus/shortage pressure\n\nLEARNER EXPLANATION:\nPrice settles where the supply and demand curves cross.",
+      outputName: "tutor_explain_back_grade",
+      outputSchema: ExplainBackGradeSchema,
+      model: job.model,
+      effort: job.effort,
+      timeoutMs: job.timeoutMs,
+      maxRetries: job.maxRetries,
+      maxOutputTokens: job.maxOutputTokens,
+    });
+    check(
+      "(i) A3-20: the grade path ran a POOLED structured call (tutor_explain_back_grade through withPooledModel)",
+      grade.ok === true && baseGradeModel.getCalls().some((c) => c.responseFormat?.name === "tutor_explain_back_grade"),
+      JSON.stringify({ ok: grade.ok, used: baseGradeModel.getCalls().map((c) => c.responseFormat?.name ?? "-") })
+    );
+    const outcomeI = grade.ok && grade.data ? outcomeFromExplainBackGrade(explainRubric, grade.data) : "not_demonstrated";
+    check("(i) outcome maps to demonstrated (the ONE required criterion present; a missing optional never blocks)", outcomeI === "demonstrated", outcomeI);
+
+    const recI = await recordToolEvidence(admin, {
+      courseId,
+      publicationId: publication.id,
+      version: publication.version,
+      lessonId: envelope.lessonId ?? null,
+      userId: learner4.userId,
+      conceptSlug: nodeId,
+      toolName: "explainBack",
+      outcome: outcomeI,
+      misconceptionSlug: null,
+      confidence: null,
+      fadeLevel: null,
+      initiation: "practice_request",
+      itemSource: "generated",
+      reviewedItemId: null,
+      latencyMs: 6100,
+      completionKey: `toolcard:${explainCardId}`,
+    });
+    check("(i) explain_back_grade recorded evidence", recI.recorded === true, JSON.stringify(recI));
+    const evAfterI = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    check("(i) exactly ONE tutor_evidence_recorded row appended", evAfterI - evBeforeI === 1, JSON.stringify({ before: evBeforeI, after: evAfterI }));
+    const explainRow = await admin
+      .from("learning_events")
+      .select("tool_name, outcome, misconception_slug, fade_level")
+      .eq("user_id", learner4.userId)
+      .eq("course_id", courseId)
+      .eq("event_type", "tutor_evidence_recorded")
+      .eq("tool_name", "explainBack")
+      .single();
+    check(
+      "(i) the row is explainBack + the mapped outcome + null misconception/fadeLevel",
+      !explainRow.error &&
+        explainRow.data?.tool_name === "explainBack" &&
+        explainRow.data?.outcome === outcomeI &&
+        explainRow.data?.misconception_slug === null &&
+        explainRow.data?.fade_level === null,
+      String(explainRow.error?.message ?? JSON.stringify(explainRow.data))
+    );
+    // Idempotent replay: same completionKey → no new row.
+    const recIDup = await recordToolEvidence(admin, {
+      courseId, publicationId: publication.id, version: publication.version, lessonId: envelope.lessonId ?? null,
+      userId: learner4.userId, conceptSlug: nodeId, toolName: "explainBack", outcome: outcomeI,
+      misconceptionSlug: null, confidence: null, fadeLevel: null, initiation: "practice_request",
+      itemSource: "generated", reviewedItemId: null, latencyMs: 6100, completionKey: `toolcard:${explainCardId}`,
+    });
+    const evAfterIDup = await countEvents(admin, learner4.userId, courseId, "tutor_evidence_recorded");
+    check("(i) explain_back_grade replay is a no-op (deterministic completionKey)", recIDup.recorded === true && evAfterIDup - evBeforeI === 1, JSON.stringify({ after: evAfterIDup }));
   } finally {
     await cleanup();
     console.log("\n# cleaned up course + tutor rows (throwaway users remain — clean in Supabase → Auth)");

@@ -41,16 +41,20 @@ import {
 import { createEngagementTracker, type EngagementSignal } from "@/lib/learn/engagement";
 import {
   dedupeCitations,
+  explainBackCriteriaView,
   gradePracticeAnswer,
   hasAttemptedFor,
   hashSeed,
   scoreCheckUnderstanding,
+  scoreFadedCard,
+  scorePredictCard,
   scoreSequenceCard,
   selfReportStableKey,
   shouldOfferEscapeHatch,
   shouldRenderInvitation,
   shuffleDeterministic,
   ttftRating,
+  type ExplainBackCriterionResult,
   type TutorAssessmentCard,
   type TutorCitation,
   type TutorInvitation,
@@ -1480,10 +1484,11 @@ async function main() {
       "structures map is not gated behind a hasPracticeItems / question conditional",
       /\{structures\.map\(/.test(body),
     );
-    // Assessments render, dispatched on toolName.
+    // Assessments render, dispatched on toolName (Wave 5 widened the binary
+    // ternary into a switch over card.toolName — the dispatch discriminant).
     check(
-      "assessments dispatch on toolName === checkUnderstanding",
-      body.includes('card.toolName === "checkUnderstanding"'),
+      "assessments dispatch on card.toolName (switch discriminant)",
+      body.includes("switch (card.toolName)") && body.includes('case "checkUnderstanding":'),
     );
     check("assessments render TutorCheckUnderstandingCard + TutorSequenceCard", body.includes("<TutorCheckUnderstandingCard") && body.includes("<TutorSequenceCard"));
 
@@ -1589,7 +1594,9 @@ async function main() {
       evidence.includes("initiation: input.initiation") &&
       evidence.includes("latencyMs: input.latencyMs ?? null"),
     );
-    check("evidence helper sends fadeLevel null (Wave 5 is fadedExample)", evidence.includes("fadeLevel: null"));
+    // Wave 5: fadeLevel now rides for a fadedExample card (the card's level),
+    // null otherwise — via `input.fadeLevel ?? null` (was a hard-coded null in W4).
+    check("evidence helper sends fadeLevel from the input (fadedExample carries it)", evidence.includes("fadeLevel: input.fadeLevel ?? null"));
     check("evidence helper imports no zod", evidence.includes('from "zod"') === false);
     check("evidence helper imports no lib/tutor/runtime", evidence.includes('from "@/lib/tutor/runtime') === false);
   }
@@ -1695,6 +1702,414 @@ async function main() {
     });
     check("structure with a bad kind / missing diagram is dropped", malformed?.structures.length === 0);
     check("assessment with an unknown tool / empty options is dropped", malformed?.assessments.length === 0);
+  }
+
+  /* ══════════════════════ A3 WAVE 5 · ADAPTIVE TOOLS (client) ═════════════ */
+
+  const fadedCard = (
+    steps: { text: string; blanked: boolean; answer: string }[],
+    fadeLevel: number,
+  ): Extract<TutorAssessmentCard, { toolName: "fadedExample" }> => ({
+    cardId: "faded-1",
+    toolName: "fadedExample",
+    conceptSlug: "node-faded",
+    initiation: "invitation_accepted",
+    fadeLevel,
+    problem: "Compute 3! by the recursive definition",
+    steps,
+  });
+
+  const predictCard = (
+    acceptedAnswers: string[],
+    nearMisses: { pattern: string; misconceptionId: string; feedback: string }[],
+  ): Extract<TutorAssessmentCard, { toolName: "predictThenReveal" }> => ({
+    cardId: "predict-1",
+    toolName: "predictThenReveal",
+    conceptSlug: "node-predict",
+    initiation: "practice_request",
+    setup: "We double the array size on every resize.",
+    prompt: "What is the amortized cost of n appends?",
+    acceptedAnswers,
+    nearMisses,
+    revealExplanation: "Doubling makes the total work geometric, so it's O(n) total — O(1) amortized.",
+  });
+
+  /* ─────── A3 Wave 5 · scoreFadedCard matrix (A3-16) ─────── */
+  console.log("\n— A3 Wave 5 · scoreFadedCard (all-right→demonstrated, partial, none; 0-blank→demonstrated) —");
+  {
+    // Two worked steps + two blanked steps.
+    const steps = [
+      { text: "base case: 0! = 1", blanked: false, answer: "1" },
+      { text: "recurse: 3! = 3 × 2!", blanked: true, answer: "3 × 2!" },
+      { text: "then 2! = 2 × 1!", blanked: true, answer: "2 × 1!" },
+    ];
+
+    // All blanks right → demonstrated.
+    {
+      const r = scoreFadedCard(fadedCard(steps, 2), { 1: "3 × 2!", 2: "2 × 1!" });
+      check(
+        "all blanks right → demonstrated (correctCount === blankCount === 2)",
+        r.outcome === "demonstrated" && r.correctCount === 2 && r.blankCount === 2,
+      );
+    }
+    // trim/lowercase tolerant on each blank.
+    {
+      const r = scoreFadedCard(fadedCard(steps, 2), { 1: "  3 × 2!  ", 2: "2 × 1!" });
+      check("blanks compared trim/lowercase → demonstrated", r.outcome === "demonstrated");
+    }
+    // Some right → partial.
+    {
+      const r = scoreFadedCard(fadedCard(steps, 2), { 1: "3 × 2!", 2: "wrong" });
+      check(
+        "some blanks right → partial (correctCount 1 of 2)",
+        r.outcome === "partial" && r.correctCount === 1 && r.blankCount === 2,
+      );
+    }
+    // None right (or missing) → not_demonstrated.
+    {
+      const r = scoreFadedCard(fadedCard(steps, 2), { 1: "nope" });
+      check(
+        "no blanks right (one missing) → not_demonstrated (correctCount 0)",
+        r.outcome === "not_demonstrated" && r.correctCount === 0 && r.blankCount === 2,
+      );
+    }
+    // Empty answers count as wrong (never as a match on an empty answer key).
+    {
+      const r = scoreFadedCard(fadedCard(steps, 2), { 1: "", 2: "" });
+      check("empty inputs → not_demonstrated", r.outcome === "not_demonstrated" && r.correctCount === 0);
+    }
+    // A fully-worked card (fadeLevel 0, zero blanks) → demonstrated on acknowledge.
+    {
+      const worked = [
+        { text: "0! = 1", blanked: false, answer: "1" },
+        { text: "1! = 1", blanked: false, answer: "1" },
+      ];
+      const r = scoreFadedCard(fadedCard(worked, 0), {});
+      check(
+        "fadeLevel 0, zero blanks → demonstrated on acknowledge (blankCount 0)",
+        r.outcome === "demonstrated" && r.blankCount === 0 && r.correctCount === 0,
+      );
+    }
+  }
+
+  /* ─────── A3 Wave 5 · scorePredictCard matrix ─────── */
+  console.log("\n— A3 Wave 5 · scorePredictCard (accepted→demonstrated, nearMiss→misconception, none) —");
+  {
+    const card = predictCard(
+      ["o(1)", "constant"],
+      [
+        { pattern: "o(n)", misconceptionId: "counts-worst-case-resize", feedback: "The resize is rare — averaged away." },
+        { pattern: "o(log", misconceptionId: "confuses-with-search", feedback: "That's search, not append." },
+      ],
+    );
+
+    // Accepted (contains) → demonstrated, matched accepted, null misconception.
+    {
+      const r = scorePredictCard(card, "I think it's amortized O(1) overall");
+      check(
+        "prediction contains an accepted answer → demonstrated + matched accepted + null misconception",
+        r.outcome === "demonstrated" && r.matched === "accepted" && r.misconceptionId === null && r.feedback === "",
+      );
+    }
+    // Accepted normalized (case-insensitive equality).
+    {
+      const r = scorePredictCard(card, "CONSTANT");
+      check("accepted match is case-insensitive → demonstrated", r.outcome === "demonstrated" && r.matched === "accepted");
+    }
+    // Near-miss (first matched pattern wins) → not_demonstrated + that misconception + feedback.
+    {
+      const r = scorePredictCard(card, "surely it's O(n) because of the copy");
+      check(
+        "prediction matches a near-miss → not_demonstrated + its misconceptionId + feedback",
+        r.outcome === "not_demonstrated" &&
+          r.matched === "nearMiss" &&
+          r.misconceptionId === "counts-worst-case-resize" &&
+          r.feedback === "The resize is rare — averaged away.",
+      );
+    }
+    // Ordered: the FIRST matched near-miss wins even if a later one also matches.
+    {
+      const both = predictCard(
+        ["never"],
+        [
+          { pattern: "slow", misconceptionId: "first", feedback: "f1" },
+          { pattern: "cost", misconceptionId: "second", feedback: "f2" },
+        ],
+      );
+      const r = scorePredictCard(both, "it is slow and costs a lot");
+      check("first matched near-miss wins the misconception", r.misconceptionId === "first" && r.matched === "nearMiss");
+    }
+    // No match at all → not_demonstrated, matched none, null misconception.
+    {
+      const r = scorePredictCard(card, "something totally unrelated");
+      check(
+        "no accepted / no near-miss → not_demonstrated + matched none + null misconception",
+        r.outcome === "not_demonstrated" && r.matched === "none" && r.misconceptionId === null && r.feedback === "",
+      );
+    }
+    // An empty prediction never matches (guards the contains() on an empty guess).
+    {
+      const r = scorePredictCard(card, "   ");
+      check("empty prediction → not_demonstrated + matched none", r.outcome === "not_demonstrated" && r.matched === "none");
+    }
+    // A degenerate empty accepted/near-miss key never matches an empty-ish guess.
+    {
+      const degenerate = predictCard([""], [{ pattern: "", misconceptionId: "x", feedback: "y" }]);
+      const r = scorePredictCard(degenerate, "anything");
+      check("empty accepted key + empty near-miss pattern never match", r.matched === "none");
+    }
+  }
+
+  /* ─────── A3 Wave 5 · explainBackCriteriaView (A3-17 · NO verdict) ─────── */
+  console.log("\n— A3 Wave 5 · explainBackCriteriaView (met/not-yet rows; NEVER a pass/fail verdict) —");
+  {
+    const criteria: ExplainBackCriterionResult[] = [
+      { criterion: "names the base case", present: true, note: "you said 0! = 1" },
+      { criterion: "explains the recursive step", present: false, note: "the multiply-down step is missing" },
+      { criterion: "connects to termination", present: true, note: "" },
+    ];
+    const rows = explainBackCriteriaView(criteria);
+    check("one view row per criterion", rows.length === 3);
+    check("present → met true; absent → met false", rows[0].met === true && rows[1].met === false && rows[2].met === true);
+    check("each row carries the criterion text", rows[0].criterion === "names the base case" && rows[1].criterion === "explains the recursive step");
+    check("each row carries the model note (empty note stays empty string)", rows[0].note === "you said 0! = 1" && rows[2].note === "");
+
+    // THE A3-17 guarantee: the view NEVER yields a pass/fail verdict string.
+    const flat = JSON.stringify(rows).toLowerCase();
+    const verdictWords = ["pass", "fail", "passed", "failed", "correct", "incorrect", "score", "grade", "verdict"];
+    check(
+      "explainBackCriteriaView produces NO pass/fail verdict token (A3-17)",
+      verdictWords.every((w) => flat.includes(w) === false),
+      `flat=${flat}`,
+    );
+    // A row is (criterion, met, note) ONLY — no overall/outcome/verdict field.
+    check(
+      "a view row has exactly {criterion, met, note} keys (no verdict field)",
+      rows.every((r) => Object.keys(r).sort().join(",") === "criterion,met,note"),
+    );
+    // Tolerant: a non-string note coerces to "".
+    {
+      const weird = explainBackCriteriaView([
+        { criterion: "c", present: true, note: undefined as unknown as string },
+      ]);
+      check("non-string note coerces to empty string", weird[0].note === "");
+    }
+  }
+
+  /* ─────── A3 Wave 5 · TutorBody dispatch + card imports ─────── */
+  console.log("\n— A3 Wave 5 · TutorBody dispatches the three new cards on toolName —");
+  {
+    const body = readSource("components/learn/tutor/TutorBody.tsx");
+    check("TutorBody imports TutorFadedExampleCard", body.includes("TutorFadedExampleCard"));
+    check("TutorBody imports TutorPredictCard", body.includes("TutorPredictCard"));
+    check("TutorBody imports TutorExplainBackCard", body.includes("TutorExplainBackCard"));
+    check("dispatch has a fadedExample case", body.includes('case "fadedExample":'));
+    check("dispatch has a predictThenReveal case", body.includes('case "predictThenReveal":'));
+    check("dispatch has an explainBack case", body.includes('case "explainBack":'));
+    check("dispatch renders all three new cards", body.includes("<TutorFadedExampleCard") && body.includes("<TutorPredictCard") && body.includes("<TutorExplainBackCard"));
+  }
+
+  /* ─────── A3 Wave 5 · explain_back_grade client flow (awaited, criteria, no verdict) ─────── */
+  console.log("\n— A3 Wave 5 · gradeExplainBack (awaited helper; fail-closed; no verdict field) —");
+  {
+    const evidence = readSource("lib/learn/tutorEvidence.ts");
+    check("evidence exports gradeExplainBack", evidence.includes("export async function gradeExplainBack"));
+    check("gradeExplainBack POSTs the explain_back_grade action", evidence.includes('action: "explain_back_grade"'));
+    check("gradeExplainBack AWAITS the response (not fire-and-forget)", /await fetch\("\/api\/learn\/tutor"/.test(evidence));
+    check("gradeExplainBack returns { ok, criteria, outcome } (no verdict field)", evidence.includes("ok: true; criteria:") && evidence.includes("outcome: TutorAssessmentOutcome"));
+    check("gradeExplainBack fails closed on error / non-2xx / bad body", evidence.includes("return { ok: false }") && evidence.includes("if (!res.ok) return { ok: false }"));
+    check("gradeExplainBack sends rubric + conceptSlug + text", evidence.includes("rubric: input.rubric") && evidence.includes("conceptSlug: input.conceptSlug") && evidence.includes("text: input.text"));
+
+    // The explainBack CARD awaits + renders criteria WITHOUT a verdict, and shows
+    // a plain retry on ok:false (fail closed, no fake result).
+    const card = readSource("components/learn/tutor/TutorExplainBackCard.tsx");
+    check("explainBack card calls gradeExplainBack", card.includes("gradeExplainBack("));
+    check("explainBack card renders via explainBackCriteriaView (no verdict)", card.includes("explainBackCriteriaView("));
+    check("explainBack card shows a plain retry on failure (no fabricated grade)", card.includes('kind: "failed"') && card.includes("Try again"));
+    check("explainBack card disables the button while grading + shows a pending line", card.includes("Reading your explanation") && card.includes('phase.kind === "grading"'));
+    check("explainBack card records a session attempt on a graded result only", card.includes("recordSessionAttempt(userId, card.conceptSlug)"));
+    // No pass/fail verdict text in the card's RENDERED strings (code lines only).
+    const cardCode = card
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .filter((line) => !/^\s*\*/.test(line) && !/^\s*\/\//.test(line))
+      .join("\n");
+    check(
+      "explainBack card renders no pass/fail verdict word (A3-17)",
+      /\b(passed|failed|verdict)\b/i.test(cardCode) === false ||
+        // "failed" as a Phase.kind literal is allowed; ban the learner-visible verdict prose.
+        /you (passed|failed)|overall (score|grade)/i.test(cardCode) === false,
+    );
+  }
+
+  /* ─────── A3 Wave 5 · card components a11y + house-style (A3-25) ─────── */
+  console.log("\n— A3 Wave 5 · new cards a11y (labelled inputs/textarea, no positive tabindex, no framer/Date.now-in-render) —");
+  {
+    const faded = readSource("components/learn/tutor/TutorFadedExampleCard.tsx");
+    const predict = readSource("components/learn/tutor/TutorPredictCard.tsx");
+    const explain = readSource("components/learn/tutor/TutorExplainBackCard.tsx");
+    const all = [faded, predict, explain];
+
+    // fadedExample: blanked steps are labelled inputs (label htmlFor → input id).
+    check("faded card labels each blank input (htmlFor + matching id)", faded.includes("htmlFor={inputId}") && faded.includes("id={inputId}"));
+    check("faded card uses an ordered list for steps", faded.includes("<ol"));
+    check("faded card renders worked steps inline + blanked steps as inputs", faded.includes("step.blanked") && faded.includes("<input"));
+
+    // predictThenReveal: single labelled prediction input; commit-before-reveal.
+    check("predict card labels the prediction input", predict.includes("htmlFor={inputId}") && predict.includes("id={inputId}"));
+    check("predict card gates the reveal behind commit (nothing revealed before)", predict.includes("!committed ?") && predict.includes("revealExplanation"));
+    check("predict card commit button is 'Commit prediction'", predict.includes("Commit prediction"));
+
+    // explainBack: labelled textarea.
+    check("explain card labels the textarea", explain.includes("htmlFor={inputId}") && explain.includes("<textarea"));
+
+    // A3-25 structural: NO positive tabindex anywhere in the three components.
+    for (const [i, src] of all.entries()) {
+      check(
+        `wave-5 component ${i} has no positive tabindex (only 0 / -1)`,
+        /tabindex=\{?["']?[1-9]/i.test(src) === false && /tabIndex=\{[1-9]/.test(src) === false,
+      );
+    }
+
+    // No framer-motion, no Math.random anywhere in CODE (strip prose comments).
+    const stripComments = (src: string): string =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter((line) => !/^\s*\*/.test(line) && !/^\s*\/\//.test(line))
+        .join("\n");
+    for (const [i, src] of all.entries()) {
+      const code = stripComments(src);
+      check(`wave-5 file ${i} imports no framer-motion`, code.includes("framer-motion") === false);
+      check(`wave-5 file ${i} contains no Math.random`, code.includes("Math.random") === false);
+      // No Date.now / performance.now INLINE in JSX/render — the clock is only in
+      // a `now()` helper called from handlers/effects (faded/predict), or absent
+      // entirely (explain measures no latency). Assert the helper form when present.
+      const hasClock = code.includes("performance.now()") || code.includes("Date.now()");
+      if (hasClock) {
+        check(`wave-5 file ${i} clock lives in a now() helper (not inline in render)`, /function now\(\)/.test(src));
+      } else {
+        check(`wave-5 file ${i} has no clock at all (fine)`, true);
+      }
+    }
+
+    // The latency clock is captured in a mount EFFECT (never in render) in the two
+    // locally-graded cards; explainBack measures no latency (server-graded).
+    check(
+      "faded card captures mount time in an effect (not render)",
+      faded.includes("mountedAtRef.current = now()") && faded.includes("useEffect(() => {"),
+    );
+    check(
+      "predict card captures mount time in an effect (not render)",
+      predict.includes("mountedAtRef.current = now()") && predict.includes("useEffect(() => {"),
+    );
+
+    // postToolEvidence carries fadeLevel for the faded card (Wave-5 field).
+    check("faded card POSTs tool_evidence with fadeLevel: card.fadeLevel", faded.includes("fadeLevel: card.fadeLevel"));
+    check("predict card POSTs tool_evidence with the matched misconceptionId", predict.includes("misconceptionId: scored.misconceptionId"));
+  }
+
+  /* ─────── A3 Wave 5 · zod-free / runtime-free fence (new Wave-5 files) ─────── */
+  console.log("\n— A3 Wave 5 · zod-free / runtime-free fence (new Wave-5 files) —");
+  {
+    const files = [
+      "components/learn/tutor/TutorFadedExampleCard.tsx",
+      "components/learn/tutor/TutorPredictCard.tsx",
+      "components/learn/tutor/TutorExplainBackCard.tsx",
+    ];
+    const importSpecifiers = (src: string): string =>
+      src
+        .split("\n")
+        .filter((line) => /^\s*import\b/.test(line) || /(?:import|require)\s*\(/.test(line))
+        .join("\n");
+    const banned = ['from "zod"', 'from "@/lib/tutor/runtime', 'from "@/lib/analytics/events"', "diagram/schemas"];
+    for (const file of files) {
+      const imports = importSpecifiers(readSource(file));
+      for (const needle of banned) {
+        check(`${file} does not import ${needle}`, imports.includes(needle) === false);
+      }
+    }
+  }
+
+  /* ─────── A3 Wave 5 · history coercion of the three new variants ─────── */
+  console.log("\n— A3 Wave 5 · coerceGrounding fadedExample/predictThenReveal/explainBack (tolerant) —");
+  {
+    const g = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      rung: 3,
+      assessments: [
+        {
+          cardId: "f1",
+          toolName: "fadedExample",
+          conceptSlug: "n1",
+          initiation: "invitation_accepted",
+          fadeLevel: 2,
+          problem: "solve it",
+          steps: [
+            { text: "step one", blanked: false, answer: "a" },
+            { text: "step two", blanked: true, answer: "b" },
+          ],
+        },
+        {
+          cardId: "p1",
+          toolName: "predictThenReveal",
+          conceptSlug: "n2",
+          initiation: "practice_request",
+          setup: "setup",
+          prompt: "predict",
+          acceptedAnswers: ["yes"],
+          nearMisses: [{ pattern: "no", misconceptionId: "m", feedback: "f" }],
+          revealExplanation: "reveal",
+        },
+        {
+          cardId: "e1",
+          toolName: "explainBack",
+          conceptSlug: "n3",
+          initiation: "invitation_accepted",
+          prompt: "explain it",
+          rubric: [
+            { criterion: "names X", required: true },
+            { criterion: "explains Y", required: false },
+          ],
+        },
+      ],
+    });
+    check("all three Wave-5 variants survive coercion", g?.assessments.length === 3);
+    check(
+      "fadedExample coerces with fadeLevel + steps",
+      g?.assessments[0].toolName === "fadedExample" &&
+        (g.assessments[0] as Extract<TutorAssessmentCard, { toolName: "fadedExample" }>).fadeLevel === 2 &&
+        (g.assessments[0] as Extract<TutorAssessmentCard, { toolName: "fadedExample" }>).steps.length === 2,
+    );
+    check(
+      "predictThenReveal coerces with accepted + nearMisses + reveal",
+      g?.assessments[1].toolName === "predictThenReveal" &&
+        (g.assessments[1] as Extract<TutorAssessmentCard, { toolName: "predictThenReveal" }>).acceptedAnswers.join(",") === "yes" &&
+        (g.assessments[1] as Extract<TutorAssessmentCard, { toolName: "predictThenReveal" }>).nearMisses.length === 1,
+    );
+    check(
+      "explainBack coerces with a 2-criterion rubric",
+      g?.assessments[2].toolName === "explainBack" &&
+        (g.assessments[2] as Extract<TutorAssessmentCard, { toolName: "explainBack" }>).rubric.length === 2,
+    );
+
+    // Malformed Wave-5 entries are DROPPED (never rendered broken).
+    const bad = coerceGrounding({
+      citations: [],
+      spans: [],
+      flags: [],
+      assessments: [
+        // fadedExample with no steps → dropped.
+        { cardId: "f", toolName: "fadedExample", conceptSlug: "n", initiation: "practice_request", fadeLevel: 1, problem: "p", steps: [] },
+        // predictThenReveal missing revealExplanation → dropped.
+        { cardId: "p", toolName: "predictThenReveal", conceptSlug: "n", initiation: "practice_request", setup: "s", prompt: "q", acceptedAnswers: [], nearMisses: [] },
+        // explainBack with an empty rubric → dropped.
+        { cardId: "e", toolName: "explainBack", conceptSlug: "n", initiation: "practice_request", prompt: "p", rubric: [] },
+      ],
+    });
+    check("malformed Wave-5 cards are all dropped (empty steps / missing reveal / empty rubric)", bad?.assessments.length === 0);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

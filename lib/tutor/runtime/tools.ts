@@ -52,10 +52,10 @@ import {
 import { rootCause, type EdgeLike } from "@/lib/tutor/mastery/queries";
 import { TUTOR_MASTERY_THRESHOLD } from "@/lib/tutor/mastery/config";
 import type { TutorCharter } from "./charter";
-// A3 Wave 4 — the structure + assessment tools live in toolsA3.ts (it imports
+// A3 Wave 4/5 — the structure + assessment tools live in toolsA3.ts (it imports
 // ONLY the TutorTool/TutorToolResult TYPES from here, so the value dependency is
-// one-directional: tools.ts consumes A3_WAVE4_TOOLS, never the reverse).
-import { A3_WAVE4_TOOLS } from "./toolsA3";
+// one-directional: tools.ts consumes A3_WAVE4_TOOLS / A3_WAVE5_TOOLS, never the reverse).
+import { A3_WAVE4_TOOLS, A3_WAVE5_TOOLS } from "./toolsA3";
 
 /* ─────────────────────────────── tool names ─────────────────────────────── */
 
@@ -72,6 +72,10 @@ export const TUTOR_TOOL_NAMES = [
   "renderStructure",
   "checkUnderstanding",
   "sequenceTask",
+  // A3 Wave 5 — the adaptive assessment tools (all tier `read`, all Class A).
+  "fadedExample",
+  "predictThenReveal",
+  "explainBack",
 ] as const;
 
 export type TutorToolName = (typeof TUTOR_TOOL_NAMES)[number];
@@ -116,6 +120,15 @@ export interface TutorToolDeps {
   ctx: TutorToolCtx;
   /** Pooled ModelClient (the caller passes an already-wrapped model). */
   model: ModelClient;
+  /** A3 Wave 5 — the learner's DECAYED mastery keyed by concept node id (R-1:
+   *  conceptSlug IS the node uuid). The loop threads it from
+   *  gatherLearnerState().masteryRows after L3; `fadedExample` reads it to derive
+   *  the fade level (A3-16). Absent ⇒ every concept reads undefined ⇒ fade 0. */
+  masteryByNode?: Map<string, number>;
+  /** A3 Wave 5 — the resolved concept node ids already explainBacked THIS session
+   *  window (the loop derives them from history grounding). `explainBack` DROPS a
+   *  duplicate (at most once per concept per session). Absent ⇒ none seen. */
+  explainBackConcepts?: Set<string>;
 }
 
 /** A tool's return: a human-readable summary (rides the tool_result event) plus
@@ -509,6 +522,9 @@ export const TUTOR_TOOLS: Record<TutorToolName, TutorTool> = {
   renderStructure: A3_WAVE4_TOOLS.renderStructure,
   checkUnderstanding: A3_WAVE4_TOOLS.checkUnderstanding,
   sequenceTask: A3_WAVE4_TOOLS.sequenceTask,
+  fadedExample: A3_WAVE5_TOOLS.fadedExample,
+  predictThenReveal: A3_WAVE5_TOOLS.predictThenReveal,
+  explainBack: A3_WAVE5_TOOLS.explainBack,
 };
 
 /** Re-export the snapshot-index builder so a caller wiring deps has one import. */

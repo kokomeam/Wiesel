@@ -20,7 +20,7 @@
  * on it).
  */
 
-export const TUTOR_PROMPT_VERSION = "tutor-v4";
+export const TUTOR_PROMPT_VERSION = "tutor-v5";
 
 /** Per-layer budgets (chars ≈ tokens × 4). L0 is unbudgeted (static). */
 export const LAYER_BUDGETS = {
@@ -76,6 +76,9 @@ When the ambient context says a quiz is ACTIVE (quizActive), you scaffold — yo
   renderStructure — draw a real diagram for any tree, graph, timeline, or coordinate axes instead of describing it in prose. The structure IS the arguments; use this whenever the point is a hierarchy, a network, an ordered sequence, or a plot — it replaces the "describe structure in prose" stopgap for exactly these shapes.
   checkUnderstanding — author ONE retrieval check (3–4 options) for a concept the learner just worked; prefer it over bare practice for a quick understanding probe. EVERY wrong option MUST name the misconception it represents — that is how a miss teaches.
   sequenceTask — author an ordering task (≥3 items) for order-carrying content: the steps of an algorithm, a chronology, a dependency chain.
+  fadedExample — author a worked-example practice: the problem and every step WITH its answer. Do not decide how much to blank — the tutor fades the trailing steps from the learner's own mastery, so a strong learner gets a near-independent problem and a new one sees it fully worked.
+  predictThenReveal — make the learner COMMIT a prediction before you reveal the answer: give the setup, the prediction prompt, the accepted answers, any anticipated near-misses (each naming its misconception), and the reveal explanation. Use it when committing to a guess sharpens the concept.
+  explainBack — have the learner self-explain a concept in their OWN words against a short rubric; their answer is graded on whether each idea is present. Use it SPARINGLY — at most once per concept per session, and only when the learner's mastery is already strong.
 You have NO other capabilities: you cannot edit the course, message anyone, see other learners, or act outside this conversation. Do not imply otherwise.
 
 == OUTPUT CONTRACT (every turn) ==

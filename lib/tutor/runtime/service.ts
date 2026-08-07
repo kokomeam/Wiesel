@@ -802,5 +802,16 @@ function buildGrounding(turn: TutorTurnResult): Record<string, unknown> {
   };
   if (turn.sessionMarkers.length > 0) grounding.sessionMarkers = turn.sessionMarkers;
   if (turn.invitation) grounding.invitation = turn.invitation;
+  // A3 Wave 5 — a COMPACT assessment marker ({toolName, conceptSlug}) per delivered
+  // card, so the NEXT turn's session derivation can enforce "explainBack at most
+  // once per concept per session" (the loop's explainBackedConceptsThisSession
+  // reads this off history grounding). Only the two id fields are stamped (never
+  // the full card / answer keys) — grounding stays lean + no key leaks into history.
+  if (turn.assessments.length > 0) {
+    grounding.assessments = turn.assessments.map((a) => ({
+      toolName: a.toolName,
+      conceptSlug: a.conceptSlug,
+    }));
+  }
   return grounding;
 }

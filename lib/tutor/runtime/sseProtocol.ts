@@ -115,10 +115,59 @@ export const SequenceTaskCardSchema = z.object({
   partialCreditRule: z.enum(["exact", "adjacent-pairs"]),
 });
 
+/** A3 Wave 5 — Class A — a fadedExample card. Each step ships its `answer` (shown
+ *  steps render it inline; blanked steps ship it for local grading). `fadeLevel`
+ *  is derived by the runtime from mastery (A3-16) and fixed at authoring. */
+export const FadedExampleCardSchema = z.object({
+  cardId: z.string(),
+  toolName: z.literal("fadedExample"),
+  conceptSlug: z.string(),
+  initiation: z.enum(["practice_request", "invitation_accepted"]),
+  fadeLevel: z.number().int().min(0).max(3),
+  title: z.string().nullable(),
+  problem: z.string(),
+  steps: z
+    .array(z.object({ text: z.string(), blanked: z.boolean(), answer: z.string() }))
+    .min(2),
+});
+
+/** A3 Wave 5 — Class A — a predictThenReveal card. The answer key + near-miss
+ *  matchers + the reveal ship (formative, client-graded). */
+export const PredictThenRevealCardSchema = z.object({
+  cardId: z.string(),
+  toolName: z.literal("predictThenReveal"),
+  conceptSlug: z.string(),
+  initiation: z.enum(["practice_request", "invitation_accepted"]),
+  title: z.string().nullable(),
+  setup: z.string(),
+  prompt: z.string(),
+  acceptedAnswers: z.array(z.string()).min(1),
+  nearMisses: z.array(
+    z.object({ pattern: z.string(), misconceptionId: z.string(), feedback: z.string() })
+  ),
+  revealExplanation: z.string(),
+});
+
+/** A3 Wave 5 — Class A — an explainBack card. The rubric ships so the client
+ *  renders the criterion list; grading is SERVER-side (the explain_back_grade
+ *  route action) — NO answer key on the card. */
+export const ExplainBackCardSchema = z.object({
+  cardId: z.string(),
+  toolName: z.literal("explainBack"),
+  conceptSlug: z.string(),
+  initiation: z.enum(["practice_request", "invitation_accepted"]),
+  title: z.string().nullable(),
+  prompt: z.string(),
+  rubric: z.array(z.object({ criterion: z.string(), required: z.boolean() })).min(2),
+});
+
 /** The assessment-card union — discriminated on `toolName`. */
 export const AssessmentCardSchema = z.discriminatedUnion("toolName", [
   CheckUnderstandingCardSchema,
   SequenceTaskCardSchema,
+  FadedExampleCardSchema,
+  PredictThenRevealCardSchema,
+  ExplainBackCardSchema,
 ]);
 export type AssessmentCard = z.infer<typeof AssessmentCardSchema>;
 
