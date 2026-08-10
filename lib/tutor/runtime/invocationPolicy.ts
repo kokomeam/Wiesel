@@ -340,11 +340,29 @@ export function applyInvocationPolicy<T extends PolicyableOutput>(args: {
   initiation: TurnInitiation;
   pendingDowngrade: { toolName: string; nodeId: string } | null;
   cooldownActive: boolean;
+  /** A3-18 — a DELIVERY turn (Path 1/2) attempted a Class-A tool but produced
+   *  NO valid card (the generated item failed validation / dropped). Re-offer
+   *  the invitation so the learner gets a retry rather than silence. Null on a
+   *  clean delivery (a card landed) or a question turn. */
+  failedDeliveryReoffer?: { toolName: string; nodeId: string } | null;
 }): { output: T; invitation: TurnInvitation | null } {
-  const { output, initiation, pendingDowngrade, cooldownActive } = args;
+  const { output, initiation, pendingDowngrade, cooldownActive, failedDeliveryReoffer } = args;
 
-  // Paths 1/2 — the learner initiated: items render, never an invitation.
+  // Paths 1/2 — the learner initiated: items render, never an invitation —
+  // EXCEPT A3-18: a delivery whose item generation produced nothing re-offers
+  // the invitation (a malformed item is discarded; the learner retries, no
+  // partial widget). The cooldown never suppresses a retry the learner asked for.
   if (initiation.kind !== "question") {
+    if (failedDeliveryReoffer) {
+      return {
+        output,
+        invitation: {
+          toolName: failedDeliveryReoffer.toolName,
+          nodeId: failedDeliveryReoffer.nodeId,
+          label: INVITATION_LABELS[failedDeliveryReoffer.toolName] ?? INVITATION_LABELS.generate_practice,
+        },
+      };
+    }
     return { output, invitation: null };
   }
 

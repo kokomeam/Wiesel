@@ -520,6 +520,9 @@ export async function runTutorTurn(
     // A3 Wave 3 — the FIRST downgraded Class-A tool call this turn (question turns
     // only); applyInvocationPolicy converts it into the at-most-one invitation.
     let pendingDowngrade: { toolName: string; nodeId: string } | null = null;
+    // A3-18 — the LAST Class-A tool attempted on a DELIVERY turn; if the turn
+    // then carries no assessment card the invitation is re-offered (a retry).
+    let deliveryToolAttempt: { toolName: string; nodeId: string } | null = null;
     // Seed with the chaining anchor (if any); the main call's `started` event / final
     // result overwrite it. Assigns to the hoisted binding so the catch can read it.
     lastResponseId = chained?.previousResponseId ?? null;
@@ -644,6 +647,13 @@ export async function runTutorTurn(
             }),
           });
           continue;
+        }
+
+        // A3-18 — on a DELIVERY turn (Path 1/2) record that a Class-A tool was
+        // ATTEMPTED, so if it produces no valid card (invalid args → dropped) the
+        // settled turn can re-offer the invitation (a retry) instead of silence.
+        if (assessmentInitiation !== null && CLASS_A_TOOL_NAMES.has(call.name)) {
+          deliveryToolAttempt = { toolName: call.name, nodeId: firstNodeIdFromArgs(call.arguments) };
         }
 
         conversation.push({ type: "function_call", callId: call.callId, name: call.name, arguments: call.arguments });
@@ -831,12 +841,26 @@ export async function runTutorTurn(
      * On a QUESTION turn the settled output NEVER carries practiceItems: model-
      * emitted items are stripped and (with any tool-call downgrade) collapse to
      * AT MOST ONE quiet invitation; the two-ignore cooldown suppresses even
-     * that. Paths 1/2 pass through untouched, invitation null (A3-8). */
+     * that. Paths 1/2 pass through untouched, invitation null (A3-8) — EXCEPT
+     * A3-18: a delivery turn that attempted a Class-A tool but produced no card
+     * re-offers the invitation so the learner retries (a malformed item is
+     * discarded, never a partial widget). */
+    // "Produced nothing" spans BOTH deliverable sinks — a legacy generate_practice
+    // delivery lands in `practiceItems`, the A3 assessment tools in `assessments`;
+    // a re-offer fires only when NEITHER produced anything.
+    const failedDeliveryReoffer =
+      assessmentInitiation !== null &&
+      assessments.length === 0 &&
+      practiceItems.length === 0 &&
+      deliveryToolAttempt
+        ? deliveryToolAttempt
+        : null;
     const policy = applyInvocationPolicy({
       output: cleaned,
       initiation,
       pendingDowngrade,
       cooldownActive,
+      failedDeliveryReoffer,
     });
     cleaned = policy.output;
 

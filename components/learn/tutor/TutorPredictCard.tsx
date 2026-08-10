@@ -128,7 +128,7 @@ export function TutorPredictCard({
           >
             Commit prediction
           </button>
-          <p className="mt-1.5 text-[11px] text-stone-400">
+          <p className="mt-1.5 text-[11px] text-stone-500">
             Commit your guess before you see the answer
           </p>
         </div>
@@ -136,7 +136,7 @@ export function TutorPredictCard({
         // AFTER commit — echo the committed prediction, then reveal.
         <div className="mt-1.5">
           <p className="rounded-lg border border-stone-200/80 bg-stone-50/60 px-2.5 py-1.5 text-stone-700">
-            <span className="text-[11px] text-stone-400">You predicted: </span>
+            <span className="text-[11px] text-stone-500">You predicted: </span>
             {prediction.trim()}
           </p>
 
@@ -155,7 +155,7 @@ export function TutorPredictCard({
                 <p className="text-xs leading-relaxed text-stone-600">{result.feedback}</p>
               ) : null}
               <div className="border-t border-stone-100 pt-2 text-xs leading-relaxed text-stone-700">
-                <span className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-stone-400">
+                <span className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-stone-500">
                   What actually happens
                 </span>
                 {card.revealExplanation}

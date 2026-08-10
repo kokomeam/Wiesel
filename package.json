@@ -104,7 +104,8 @@
     "seed:tutor-console-demo": "tsx scripts/seed-tutor-console-demo.ts",
     "seed:tutor-escalation-demo": "tsx scripts/seed-tutor-escalation-demo.ts",
     "smoke:tutor": "tsx scripts/smoke-tutor-models.ts",
-    "verify:tutor:browser:stream": "tsx scripts/verify-tutor-stream-browser.ts"
+    "verify:tutor:browser:stream": "tsx scripts/verify-tutor-stream-browser.ts",
+    "verify:tutor:browser:cards": "tsx scripts/verify-tutor-cards-browser.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

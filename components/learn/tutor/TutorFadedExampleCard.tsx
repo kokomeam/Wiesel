@@ -123,7 +123,7 @@ export function TutorFadedExampleCard({
     >
       <div className="flex items-baseline justify-between gap-2">
         <p className="font-medium text-stone-800">{card.problem}</p>
-        <span className="shrink-0 whitespace-nowrap text-[11px] text-stone-400">
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-stone-500">
           {fadeLabel(card.fadeLevel)}
           <span className="sr-only"> — step level {card.fadeLevel} of 3</span>
         </span>
@@ -136,7 +136,7 @@ export function TutorFadedExampleCard({
             return (
               <li key={i} className="rounded-xl border border-stone-200/80 bg-stone-50/60 px-2.5 py-1.5">
                 <p className="text-stone-700">
-                  <span aria-hidden className="mr-1.5 text-[11px] font-medium text-stone-400">
+                  <span aria-hidden className="mr-1.5 text-[11px] font-medium text-stone-500">
                     {i + 1}
                   </span>
                   {step.text}
@@ -154,7 +154,7 @@ export function TutorFadedExampleCard({
           return (
             <li key={i} className="rounded-xl border border-stone-200/80 bg-white px-2.5 py-1.5">
               <label htmlFor={inputId} className="block text-stone-700">
-                <span aria-hidden className="mr-1.5 text-[11px] font-medium text-stone-400">
+                <span aria-hidden className="mr-1.5 text-[11px] font-medium text-stone-500">
                   {i + 1}
                 </span>
                 {step.text}

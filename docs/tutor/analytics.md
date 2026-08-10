@@ -66,7 +66,9 @@ and a teaching-slide deep link — **ranked by first-attempt error desc**.
 
 Amendment A3 Wave 2 (evidence spine). Every completed assessment-tool
 interaction persists ONE event on the same `learning_events` stream, and
-recurring wrong ideas roll up per concept for the console.
+recurring wrong ideas roll up per concept for the console. The tool side of this
+— the six pedagogy tools, the invocation policy, and how each card emits its
+evidence — lives in the companion `pedagogy-tools.md`.
 
 - **Event**: `tutor_evidence_recorded` (server-emitted; the ingest RPC's
   `tutor_%` arm rejects any client submission) with typed columns

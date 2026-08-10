@@ -176,7 +176,7 @@ export function TutorCheckUnderstandingCard({
       {/* Confidence read — BEFORE reveal only, when the card asks for it. */}
       {card.collectConfidence && !graded ? (
         <div className="mt-3">
-          <p className="mb-1.5 text-[11px] text-stone-400">How sure are you?</p>
+          <p className="mb-1.5 text-[11px] text-stone-500">How sure are you?</p>
           <div role="radiogroup" aria-label="Confidence" className="flex gap-2">
             {(["sure", "unsure"] as const).map((c, i) => {
               const isSel = confidence === c;

@@ -148,7 +148,7 @@ export function TutorSequenceCard({
       className="w-[92%] rounded-2xl border border-stone-200/80 bg-white p-3 text-sm shadow-[0_1px_2px_rgba(68,48,28,0.05)]"
     >
       <p className="font-medium text-stone-800">{card.prompt}</p>
-      <p className="mt-0.5 text-[11px] text-stone-400">Put these in the right order</p>
+      <p className="mt-0.5 text-[11px] text-stone-500">Put these in the right order</p>
 
       <ol className="mt-2.5 space-y-1.5">
         {order.map((id, i) => (
@@ -156,7 +156,7 @@ export function TutorSequenceCard({
             key={id}
             className="flex items-center gap-2 rounded-xl border border-stone-200/80 bg-white px-2.5 py-1.5"
           >
-            <span aria-hidden className="text-[11px] font-medium text-stone-400">
+            <span aria-hidden className="text-[11px] font-medium text-stone-500">
               {i + 1}
             </span>
             <span className="min-w-0 flex-1 text-stone-700">{textById.get(id) ?? id}</span>
@@ -205,7 +205,7 @@ export function TutorSequenceCard({
               <ol className="mt-1 space-y-0.5">
                 {card.correctOrder.map((id, i) => (
                   <li key={id} className="flex gap-1.5">
-                    <span aria-hidden className="text-stone-400">
+                    <span aria-hidden className="text-stone-500">
                       {i + 1}.
                     </span>
                     <span>{textById.get(id) ?? id}</span>

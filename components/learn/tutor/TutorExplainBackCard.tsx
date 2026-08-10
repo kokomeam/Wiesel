@@ -133,7 +133,7 @@ export function TutorExplainBackCard({
             Explain
           </button>
           {grading ? (
-            <p role="status" className="mt-1.5 text-[11px] text-stone-400">
+            <p role="status" className="mt-1.5 text-[11px] text-stone-500">
               Reading your explanation…
             </p>
           ) : null}
@@ -149,7 +149,7 @@ export function TutorExplainBackCard({
                 aria-hidden
                 className={[
                   "mt-0.5 grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-bold",
-                  row.met ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-400",
+                  row.met ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500",
                 ].join(" ")}
               >
                 {row.met ? "✓" : "○"}

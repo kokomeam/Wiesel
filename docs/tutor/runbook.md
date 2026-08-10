@@ -3,7 +3,9 @@
 > How to run the AI tutor in production: what the flags do, where the money goes,
 > how to watch it, and how to recover safely. Companion docs: `architecture.md`
 > (the model/cost pipeline), `escalation.md`, `analytics.md`, `mastery.md`,
-> `streaming.md` (A2 — streamed turns, status phases, resume, tool tiers).
+> `streaming.md` (A2 — streamed turns, status phases, resume, tool tiers),
+> `pedagogy-tools.md` (A3 — the six assessment tools, invocation policy, evidence
+> spine).
 
 ## Flag inventory
 

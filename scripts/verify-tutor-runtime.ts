@@ -55,6 +55,7 @@
 // Deterministic env BEFORE any tutor import reads it.
 delete process.env.TUTOR_ENABLE_CHAINING;
 
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { createMockModelClient, type MockTurn } from "@/lib/ai/providers/mock";
 import type {
@@ -602,6 +603,22 @@ async function main() {
   }
   check("all eleven tool param schemas convert to strict JSON schema", schemaOk);
   check("every tool's params is a top-level type:object (OpenAI-valid)", topTypeOk);
+
+  /* ── A3-20 (structural) · the explain_back_grade route action grades through a
+   *    POOLED model client — NEVER a fresh unpooled createOpenAIModelClient(). The
+   *    A3 tools have no internal model call (authoring rides the one pooled
+   *    tutor_turn), so the ONLY separate learner-facing model call is this grade,
+   *    and it must not escape the pool ceiling. ── */
+  {
+    const routeSrc = readFileSync(new URL("../app/api/learn/tutor/route.ts", import.meta.url), "utf8");
+    const gradeIdx = routeSrc.indexOf('action === "explain_back_grade"');
+    const gradeBlock = gradeIdx >= 0 ? routeSrc.slice(gradeIdx, gradeIdx + 1400) : "";
+    check(
+      "A3-20: explain_back_grade grades through withPooledModel(createOpenAIModelClient()) — never a bare unpooled client",
+      /withPooledModel\(\s*createOpenAIModelClient\(\)/.test(gradeBlock),
+      "expected withPooledModel(createOpenAIModelClient()) in the grade action"
+    );
+  }
 
   // emit_evidence with a CAPTURING stub performs ZERO writes.
   {
@@ -1548,6 +1565,44 @@ async function main() {
       cooldownActive: true,
     });
     check("A3-8: Path 1 under cooldown — items STILL intact", p1cd.output.practiceItems?.length === 2 && p1cd.invitation === null);
+
+    /* ── A3-18 · a DELIVERY turn whose item generation produced nothing RE-OFFERS
+     *    the invitation (the learner retries; a malformed item is discarded, never
+     *    a partial widget). ── */
+    const reofferAccept = applyInvocationPolicy({
+      output: policyOutput({}),
+      initiation: { kind: "invitation_accepted", toolName: "checkUnderstanding", nodeId: "c1" },
+      pendingDowngrade: null,
+      cooldownActive: false,
+      failedDeliveryReoffer: { toolName: "checkUnderstanding", nodeId: "c1" },
+    });
+    check(
+      "A3-18: a failed accepted delivery RE-OFFERS the invitation (retry)",
+      reofferAccept.invitation?.toolName === "checkUnderstanding" &&
+        reofferAccept.invitation?.nodeId === "c1" &&
+        reofferAccept.invitation?.label === "Try a practice problem",
+      JSON.stringify(reofferAccept.invitation)
+    );
+    const reofferReq = applyInvocationPolicy({
+      output: policyOutput({}),
+      initiation: { kind: "practice_request" },
+      pendingDowngrade: null,
+      cooldownActive: true, // cooldown NEVER suppresses a retry the learner asked for
+      failedDeliveryReoffer: { toolName: "sequenceTask", nodeId: "s1" },
+    });
+    check(
+      "A3-18: a failed practice_request delivery re-offers even under cooldown",
+      reofferReq.invitation?.toolName === "sequenceTask" && reofferReq.invitation?.nodeId === "s1"
+    );
+    // A CLEAN delivery (a card landed, so no reoffer) still shows NO invitation.
+    const cleanDelivery = applyInvocationPolicy({
+      output: policyOutput({}),
+      initiation: { kind: "invitation_accepted", toolName: "checkUnderstanding", nodeId: "c1" },
+      pendingDowngrade: null,
+      cooldownActive: false,
+      failedDeliveryReoffer: null,
+    });
+    check("A3-18: a clean delivery (card landed) shows NO invitation", cleanDelivery.invitation === null);
   }
 
   /* ───────── A3-7 · downgrade-to-invitation (pure + loop-level) ─────────── */
@@ -2284,6 +2339,68 @@ async function main() {
       );
       check("downgrade: the turn still settles ok (downgraded, never blocked)", res.ok === true && !res.approvalRequired, `ok=${res.ok} err=${res.error ?? ""}`);
       check("downgrade: tutor_tool_downgraded logged for checkUnderstanding", logsDG.some((l) => l.includes('"tag":"tutor_tool_downgraded"') && l.includes('"toolName":"checkUnderstanding"')));
+    }
+
+    /* ── A3-18 (loop-level) · a DELIVERY turn whose checkUnderstanding args are
+     *    INVALID (a wrong option missing misconceptionId → the A3-13 superRefine
+     *    rejects → invalid_args → no card) produces NO assessment AND re-offers
+     *    the invitation (the learner retries; no partial widget). ── */
+    {
+      const snapshotFx = buildSnapshot();
+      const script: MockTurn[] = [
+        {
+          toolCalls: [
+            {
+              name: "checkUnderstanding",
+              arguments: {
+                conceptSlug: NODE_1,
+                stem: "Where does price settle?",
+                options: [
+                  { id: "a", text: "At equilibrium", correct: true, feedback: "Right." },
+                  // A wrong option with NO misconceptionId → A3-13 superRefine rejects the whole item.
+                  { id: "b", text: "Above", correct: false, feedback: "No." },
+                  { id: "c", text: "Below", correct: false, misconceptionId: "m2", feedback: "No." },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: turnOutputJson({
+            proseWithSpanMarkers: `${GROUNDED_OPEN}Let me get you a fresh question to try.${GROUNDED_CLOSE}`,
+            citations: [{ lessonId: L1, blockId: B1, slideId: null }],
+            rung: 2,
+          }),
+        },
+      ];
+      const res = await runTutorTurn(
+        {
+          learnerClient: emptyLearnerClient(),
+          serviceClient: capturingServiceClient().client,
+          model: createMockModelClient(script, { model: LUNA }),
+          loadSnapshot: async () => ({ snapshot: snapshotFx }),
+          conceptNodes: CONCEPT_NODES,
+          conceptEdges: CONCEPT_EDGES,
+        },
+        {
+          userId: USER_A,
+          courseId: COURSE,
+          publicationId: PUB,
+          version: 1,
+          lessonId: L1,
+          charterRow: CHARTER_ROW("guided_default"),
+          historyTurns: [{ role: "learner", content: "prior" }],
+          learnerMessage: "let me try one",
+          initiation: { kind: "practice_request" },
+        }
+      );
+      check("A3-18 (loop): an invalid checkUnderstanding on a delivery turn yields NO assessment card", res.assessments.length === 0);
+      check("A3-18 (loop): the turn still settles ok (no partial widget, no crash)", res.ok === true && !res.approvalRequired, `ok=${res.ok} err=${res.error ?? ""}`);
+      check(
+        "A3-18 (loop): the invitation is RE-OFFERED (checkUnderstanding + node) so the learner retries",
+        res.invitation?.toolName === "checkUnderstanding" && res.invitation?.nodeId === NODE_1,
+        JSON.stringify(res.invitation ?? null)
+      );
     }
 
     /* ── acceptance path: an invitation_accepted turn EXECUTES checkUnderstanding →

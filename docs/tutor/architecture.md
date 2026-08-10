@@ -263,3 +263,16 @@ added surfaces, not systems.
 
 TUTOR-1 is complete. See `TUTOR-1-completion-report.md` for the consolidated
 Waves 1–6 acceptance ledger, the final privacy proof, and the cost economics.
+
+## Amendment A3 — the pedagogy tools (appended 2026-08-08)
+
+A3 layered the tutor's assessment surface onto the runtime above: six
+generative-UI tools (renderStructure + five Class-A assessment tools), the
+code-enforced invocation policy (invite-don't-impose), and the
+`tutor_evidence_recorded` evidence spine (the 23rd event type on the one
+analytics stream, folded into mastery, rolled up per misconception on the
+creator console). No new systems — it reused the layered prompt, the settled
+`turn` payload, the `learning_events` append-only stream, the `withPooledModel`
+cost/concurrency point, and the change-set-free evidence discipline. Full
+design: **`docs/tutor/pedagogy-tools.md`** (companion: `analytics.md` § Tool
+evidence (A3)).
