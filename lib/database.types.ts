@@ -4333,6 +4333,75 @@ export type Database = {
           },
         ]
       }
+      tutor_chunks: {
+        Row: {
+          block_id: string
+          chunk_ordinal: number
+          content_hash: string
+          course_id: string
+          created_at: string
+          display_anchor: Json
+          embedding: string
+          id: string
+          lesson_id: string
+          publication_id: string
+          slide_id: string | null
+          source_tier: string
+          text: string
+          tsv: unknown | null
+          version: number
+        }
+        Insert: {
+          block_id: string
+          chunk_ordinal: number
+          content_hash: string
+          course_id: string
+          created_at?: string
+          display_anchor: Json
+          embedding: string
+          id?: string
+          lesson_id: string
+          publication_id: string
+          slide_id?: string | null
+          source_tier?: string
+          text: string
+          tsv?: unknown | null
+          version: number
+        }
+        Update: {
+          block_id?: string
+          chunk_ordinal?: number
+          content_hash?: string
+          course_id?: string
+          created_at?: string
+          display_anchor?: Json
+          embedding?: string
+          id?: string
+          lesson_id?: string
+          publication_id?: string
+          slide_id?: string | null
+          source_tier?: string
+          text?: string
+          tsv?: unknown | null
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_chunks_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tutor_chunks_publication_id_fkey"
+            columns: ["publication_id"]
+            isOneToOne: false
+            referencedRelation: "course_publications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tutor_course_settings: {
         Row: {
           assessment_help: string
@@ -4501,27 +4570,39 @@ export type Database = {
         Row: {
           active_response_id: string | null
           active_stream_id: string | null
+          archived_at: string | null
+          compacted_through_turn: number | null
+          compaction_summary: string | null
           course_id: string
           created_at: string
           id: string
+          lesson_id: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
           active_response_id?: string | null
           active_stream_id?: string | null
+          archived_at?: string | null
+          compacted_through_turn?: number | null
+          compaction_summary?: string | null
           course_id: string
           created_at?: string
           id?: string
+          lesson_id?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
           active_response_id?: string | null
           active_stream_id?: string | null
+          archived_at?: string | null
+          compacted_through_turn?: number | null
+          compaction_summary?: string | null
           course_id?: string
           created_at?: string
           id?: string
+          lesson_id?: string | null
           updated_at?: string
           user_id?: string
         }
@@ -4939,6 +5020,35 @@ export type Database = {
           node_id: string
           node_title: string
         }[]
+      }
+      tutor_retrieve_chunks: {
+        Args: {
+          p_lesson_ids: string[]
+          p_lexical_limit?: number
+          p_publication_id: string
+          p_query_embedding: string
+          p_query_text: string
+          p_result_limit?: number
+          p_vector_limit?: number
+        }
+        Returns: {
+          block_id: string
+          chunk_ordinal: number
+          display_anchor: Json
+          id: string
+          lesson_id: string
+          lexical_rank: number | null
+          score: number
+          similarity: number | null
+          slide_id: string | null
+          source_tier: string
+          text: string
+          vector_rank: number | null
+        }[]
+      }
+      tutor_store_chunks: {
+        Args: { p_chunks: Json; p_publication_id: string }
+        Returns: number
       }
       tutor_upsert_concept_edge: {
         Args: {

@@ -8,6 +8,7 @@ import { serve } from "inngest/next";
 import { inngest } from "@/lib/inngest/client";
 import { publishFire, publishSweep } from "@/lib/inngest/functions/publish";
 import { tutorGraphExtract, tutorGraphReconcile } from "@/lib/inngest/functions/tutorGraph";
+import { tutorChunksEmbed } from "@/lib/inngest/functions/tutorChunks";
 import { tutorMasteryRefold, tutorMasteryNightly } from "@/lib/inngest/functions/tutorMastery";
 import { tutorLessonHealthNightly } from "@/lib/inngest/functions/tutorLessonHealth";
 import {
@@ -25,6 +26,7 @@ export const { GET, POST, PUT } = serve({
     publishSweep,
     tutorGraphExtract,
     tutorGraphReconcile,
+    tutorChunksEmbed,
     tutorMasteryRefold,
     tutorMasteryNightly,
     tutorLessonHealthNightly,

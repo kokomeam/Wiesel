@@ -101,6 +101,10 @@ export interface UseTutorStreamOptions {
   publicationId: string;
   version: number;
   slug: string;
+  /** A4 — the lesson the tutor is currently docked on (null on the course
+   *  landing). Threads are lesson-scoped: history loads for THIS lesson's thread,
+   *  and switching lessons reloads the new lesson's transcript (A4-2). */
+  lessonId: string | null;
 }
 
 export interface UseTutorStreamResult {
@@ -119,6 +123,11 @@ export interface UseTutorStreamResult {
   ) => void;
   retry: () => void;
   abort: () => void;
+  /** A4-7 — "Start fresh": archive the current lesson thread (server-side, never
+   *  deletes) and clear the transcript locally. The next send opens a new thread.
+   *  This is the ONLY thread-reset path — it fires from an explicit control, never
+   *  from navigation / refresh / tab lifecycle (A4-6). */
+  startFresh: () => void;
 }
 
 /* ─────────────────────────────── internals ──────────────────────────────── */
@@ -290,7 +299,7 @@ export function processTutorFrame(
 export function useTutorStream(
   opts: UseTutorStreamOptions
 ): UseTutorStreamResult {
-  const { userId, courseId, publicationId, version } = opts;
+  const { userId, courseId, publicationId, version, lessonId } = opts;
 
   const [turns, setTurns] = useState<TutorChatTurn[]>([]);
   const [status, setStatus] = useState<TutorStreamStatus>(IDLE);
@@ -430,15 +439,31 @@ export function useTutorStream(
     [makeCallbacks]
   );
 
-  /* ── history: load once on mount ── */
+  /* ── history: load for the CURRENT lesson's thread (A4) ── */
   const loadHistory = useCallback(async (): Promise<TutorChatTurn[]> => {
     const supabase = createClient();
-    const history = await loadTutorHistory(supabase, userId, courseId);
+    const history = await loadTutorHistory(supabase, userId, courseId, lessonId);
     return history.map((row): TutorChatTurn => ({ ...row, payload: null }));
-  }, [userId, courseId]);
+  }, [userId, courseId, lessonId]);
 
+  // A4-2 — load history for the docked lesson, and RELOAD when the learner
+  // switches lessons (the persistent mount survives navigation). A lesson switch
+  // cancels any in-flight stream + clears transient state and shows the NEW
+  // lesson's thread. This is NOT a thread reset — the old thread is untouched
+  // (A4-6: navigation never archives/deletes a thread).
+  const prevLessonRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
+    const switched = prevLessonRef.current !== undefined && prevLessonRef.current !== lessonId;
+    prevLessonRef.current = lessonId;
+    if (switched) {
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+      floorRef.current?.reset();
+      setStreamingText(null);
+      setStatus(IDLE);
+      setHistoryLoaded(false);
+    }
     loadHistory()
       .then((rows) => {
         if (!cancelled) setTurns(rows);
@@ -452,7 +477,7 @@ export function useTutorStream(
     return () => {
       cancelled = true;
     };
-  }, [loadHistory]);
+  }, [loadHistory, lessonId]);
 
   /* ── dangling-question fallback: schedule ONE delayed history re-load ──
    *
@@ -636,6 +661,40 @@ export function useTutorStream(
     setStatus(IDLE);
   }, []);
 
+  /** A4-7 · "Start fresh": archive the current lesson thread server-side (never
+   *  deletes — the archived thread stays queryable) and clear the transcript
+   *  locally, so the next send opens a brand-new thread for this lesson. Cancels
+   *  any in-flight stream + pending dangling reload first. Best-effort on the
+   *  archive POST — even if it fails, the local reset stands and the next send
+   *  still lands on the (unchanged) active thread. This fires ONLY from the
+   *  explicit header control — never from navigation/refresh/tab lifecycle. */
+  const startFresh = useCallback(() => {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    if (danglingTimerRef.current !== null) {
+      clearTimeout(danglingTimerRef.current);
+      danglingTimerRef.current = null;
+    }
+    floorRef.current?.reset();
+    lastSendRef.current = null;
+    setTurns([]);
+    setStreamingText(null);
+    setStatus(IDLE);
+    void fetch("/api/learn/tutor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "archive_thread",
+        courseId,
+        publicationId,
+        version,
+        lessonId,
+      }),
+    }).catch(() => {
+      /* best-effort — the local reset stands regardless */
+    });
+  }, [courseId, publicationId, version, lessonId]);
+
   // Abort any in-flight stream on unmount so a settle can't fire post-teardown,
   // and cancel the phase floor + the dangling reload timer.
   useEffect(() => {
@@ -650,5 +709,5 @@ export function useTutorStream(
     };
   }, []);
 
-  return { turns, status, streamingText, historyLoaded, send, retry, abort };
+  return { turns, status, streamingText, historyLoaded, send, retry, abort, startFresh };
 }

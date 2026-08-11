@@ -97,6 +97,7 @@ function resetStore() {
       publicationId: null,
       version: null,
       lessonId: null,
+      lessonTitle: null,
       blockId: null,
       slideId: null,
       positionPct: null,

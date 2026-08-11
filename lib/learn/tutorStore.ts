@@ -53,6 +53,9 @@ export interface TutorAmbient {
   publicationId: string | null;
   version: number | null;
   lessonId: string | null;
+  /** A4 Wave 4 — the active lesson's TITLE (drives derived suggestion chips; the
+   *  lesson view sets it alongside lessonId). Never surfaces a lesson id. */
+  lessonTitle: string | null;
   blockId: string | null;
   slideId: string | null;
   positionPct: number | null;
@@ -64,6 +67,7 @@ const EMPTY_AMBIENT: TutorAmbient = {
   publicationId: null,
   version: null,
   lessonId: null,
+  lessonTitle: null,
   blockId: null,
   slideId: null,
   positionPct: null,

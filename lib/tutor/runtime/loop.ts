@@ -45,11 +45,25 @@ import { resolveCharter, serializeCharter, type TutorCharter } from "./charter";
 import { assembleLessonContext, type LessonConceptNode } from "./lessonContext";
 import { assembleLearnerState } from "./learnerState";
 import {
-  serializeHistory,
   collapseToChaining,
   HISTORY_MAX_TURNS,
   type HistoryTurn,
 } from "./history";
+import { assembleReplayWithSummary } from "./compaction";
+import {
+  emitTutorRuntimeEvent,
+  type TutorRuntimeEventSink,
+} from "./runtimeEvents";
+import {
+  runScopedRetrieval,
+  buildRetrievalContext,
+  buildScopeInstructions,
+  routeContradiction,
+  type ScopeRetrieveFn,
+  type ScopeDecision,
+} from "@/lib/tutor/retrieval/scopePolicy";
+import { resolveCitationLabels, type LabeledCitation } from "@/lib/tutor/retrieval/citationLabels";
+import { redactInternalIds } from "@/lib/learn/tutorNav";
 import {
   assembleTutorPrompt,
   LAYER_BUDGETS,
@@ -133,6 +147,14 @@ export interface RunTutorTurnDeps {
    *  chain-id capture; Wave 2 forwards deltas to the wire. Best-effort — a hook
    *  throw is swallowed and never kills the turn. */
   onModelEvent?: (ev: ModelStreamEvent) => void;
+  /** A4: the runtime-event sink (tutor.chain.rebuilt etc.). Best-effort; the
+   *  default logs. Tests inject it to observe the emission + its reason. */
+  onRuntimeEvent?: TutorRuntimeEventSink;
+  /** A4 Wave 3: the injected retriever (query embed UN-POOLED, §2/A4-21). When
+   *  present, the loop runs the scope policy (eligibility + tiered expansion) and
+   *  grounds the turn on retrieved passages + policy instructions. Absent ⇒ the
+   *  pre-A4 whole-lesson grounding stands (tests / direct callers). */
+  retrieve?: ScopeRetrieveFn;
 }
 
 export interface RunTutorTurnCtx {
@@ -149,6 +171,14 @@ export interface RunTutorTurnCtx {
   charterRow: Database["public"]["Tables"]["tutor_course_settings"]["Row"] | null;
   /** The replayed thread tail (oldest → newest). */
   historyTurns: HistoryTurn[];
+  /** A4 — the thread's rolling compaction summary (null when it never compacted).
+   *  Prepended to the L4 textual replay so turns folded out of the window aren't
+   *  forgotten. Absent ⇒ null (direct callers / tests). */
+  compactionSummary?: string | null;
+  /** A4 Wave 3 — the lessons the learner has COMPLETED (the Tier-2 eligibility
+   *  pool; the active lesson is always eligible). Loaded by the service. Absent ⇒
+   *  only the active lesson is eligible. */
+  completedLessonIds?: string[];
   /** THIS turn's learner message. */
   learnerMessage: string;
   /** Opaque session flags (reserved — carried through, not interpreted). */
@@ -210,6 +240,35 @@ export interface TutorTurnResult {
    *  (Class A). Forced [] on a question turn (mirrors practiceItems). The sink
    *  stamps each card's `initiation` from the turn ctx. Default []. */
   assessments: AssessmentCard[];
+  /** A4-5 — set when a stale/rejected `previous_response_id` was recovered this
+   *  turn by rebuilding the chain from the compaction summary + textual replay
+   *  (the turn then succeeds transparently). Null/absent on every normal turn. */
+  chainRebuilt?: { reason: string } | null;
+  /** A4 Wave 3 — the scope-policy outcome this turn (null when retrieval wasn't
+   *  wired). Surfaced for telemetry + tests. */
+  scope?: {
+    expansionCode: string | null;
+    tier1Count: number;
+    tier2Count: number;
+    forwardLessonId: string | null;
+    retrievalFailure: boolean;
+    eligibleLessonIds: string[];
+  } | null;
+  /** A4-19 — the model-flagged contradiction routed into the escalation loop this
+   *  turn (null when none). */
+  contradiction?: { note: string } | null;
+  /** A4-26 — the per-turn token delta from replacing the whole-lesson L2 dump with
+   *  retrieved passages (null when retrieval wasn't wired / no chunks). Negative
+   *  deltaTokens = tokens SAVED. */
+  tokenDelta?: {
+    l2TokensBefore: number;
+    retrievalTokensAfter: number;
+    deltaTokens: number;
+  } | null;
+  /** A4-22/23 — the turn's citations with a human LABEL (destination name) resolved
+   *  from the snapshot. The route + grounding persist these so the "Go there"
+   *  affordance always names where it goes. Empty on a turn with no citations. */
+  labeledCitations?: LabeledCitation[];
   error?: string;
 }
 
@@ -273,6 +332,20 @@ export async function runTutorTurn(
   // (A2-3): the `started` event of the main call sets it BEFORE any output token, so
   // an aborted/thrown turn still surfaces the id it got — the chain stays coherent.
   let lastResponseId: string | null = null;
+  // A4-5 — set the first time a stale/rejected previous_response_id is recovered
+  // by rebuilding the chain from the textual replay; surfaced on every result.
+  let chainRebuilt: { reason: string } | null = null;
+  // A4 Wave 3 — the scope-policy outcome + a routed contradiction, surfaced on
+  // the result (set during the turn; null on a turn with no retrieval / no flag).
+  let scopeResult: TutorTurnResult["scope"] = null;
+  let contradiction: { note: string } | null = null;
+  // A4-26 — set when the whole-lesson L2 was replaced by retrieved passages.
+  let tokenDeltaResult: TutorTurnResult["tokenDelta"] = null;
+  // A4 Wave 4 — when retrieval grounds the turn, the developer message carries a
+  // SHORT lesson header instead of the whole-lesson dump; null keeps the full L2.
+  let effectiveLessonContext: string | null = null;
+  // A4-22/23 — the turn's citations with resolved human labels (set at cleaning).
+  let labeledCitations: LabeledCitation[] = [];
   const empty = (error: string): TutorTurnResult => ({
     ok: false,
     output: null,
@@ -287,6 +360,10 @@ export async function runTutorTurn(
     sessionMarkers: [],
     structures: [],
     assessments: [],
+    chainRebuilt,
+    scope: scopeResult,
+    contradiction,
+    tokenDelta: tokenDeltaResult,
     error,
   });
 
@@ -463,16 +540,90 @@ export async function runTutorTurn(
       extraInstructions.push("Do not offer or attach practice this turn.");
     }
 
-    /* ── L4: textual history, OR provider-side chaining when the flag is on. ── */
-    const chained = collapseToChaining(ctx.historyTurns);
+    /* ── A4 Wave 3 · SCOPE POLICY (eligibility + tiered retrieval + behaviors). ──
+     *  Runs only when a retriever is wired (deps.retrieve). Grounds the turn on
+     *  retrieved passages (every retrieval ⊆ eligible lessons — A4-14) and injects
+     *  the forward-decline / failure-escalation / provenance instructions; emits
+     *  tutor.retrieval.expanded on expansion. The query embed is UN-POOLED inside
+     *  the injected retriever (A4-21). The whole-lesson L2 stays for now — Wave 4
+     *  replaces it and measures the token delta. */
+    if (deps.retrieve) {
+      const lessonTitleById = new Map<string, string>();
+      for (const m of snapshot.modules) for (const l of m.lessons) lessonTitleById.set(l.id, l.title);
+      const scope: ScopeDecision = await runScopedRetrieval(
+        { retrieve: deps.retrieve, onRuntimeEvent: deps.onRuntimeEvent },
+        {
+          courseId: ctx.courseId,
+          activeLessonId: ctx.lessonId ?? null,
+          completedLessonIds: new Set(ctx.completedLessonIds ?? []),
+          message: ctx.learnerMessage,
+          nodes: deps.conceptNodes,
+          edges: deps.conceptEdges,
+          mastery: state.masteryRows.map((r) => ({ nodeId: r.nodeId, decayedP: r.decayedP })),
+          lessonTitleById,
+        }
+      );
+      const retrievalContext = buildRetrievalContext(scope.chunks);
+      if (retrievalContext) extraInstructions.push(retrievalContext);
+      for (const line of buildScopeInstructions(scope, lessonTitleById)) extraInstructions.push(line);
+      scopeResult = {
+        expansionCode: scope.expansion.code,
+        tier1Count: scope.tier1.length,
+        tier2Count: scope.tier2.length,
+        forwardLessonId: scope.forwardMaterial?.lessonId ?? null,
+        retrievalFailure: scope.retrievalFailure,
+        eligibleLessonIds: [...scope.eligible.eligible],
+      };
+
+      /* ── A4-26 · replace the whole-lesson L2 dump with the retrieved passages. ──
+       *  When retrieval grounded the turn (≥1 chunk), the developer message carries
+       *  only a SHORT lesson header (title + objective); the retrieved passages (in
+       *  the input) are the content. Measure + log the per-turn token delta (L2
+       *  before vs short-header + retrieval after; ≈ chars/4). A retrieval-empty
+       *  turn keeps the full L2 (no regression). */
+      if (scope.chunks.length > 0) {
+        const active = ctx.lessonId
+          ? snapshot.modules.flatMap((m) => m.lessons).find((l) => l.id === ctx.lessonId)
+          : undefined;
+        effectiveLessonContext = active
+          ? `Active lesson: ${active.title}${active.objective ? ` — ${active.objective}` : ""}`
+          : "";
+        const l2Tokens = Math.ceil(lessonContext.length / 4);
+        const afterTokens = Math.ceil((effectiveLessonContext.length + retrievalContext.length) / 4);
+        tokenDeltaResult = {
+          l2TokensBefore: l2Tokens,
+          retrievalTokensAfter: afterTokens,
+          deltaTokens: afterTokens - l2Tokens,
+        };
+        console.log(
+          JSON.stringify({
+            tag: "tutor_token_delta",
+            courseId: ctx.courseId,
+            lessonId: ctx.lessonId ?? null,
+            l2TokensBefore: l2Tokens,
+            retrievalTokensAfter: afterTokens,
+            deltaTokens: afterTokens - l2Tokens,
+          })
+        );
+      }
+    }
+
+    /* ── L4: textual history, OR provider-side chaining when the flag is on.
+     *    A4: the textual replay prepends the thread's rolling COMPACTION SUMMARY
+     *    (when present) so folded turns aren't forgotten. `chained` is `let` — the
+     *    A4-5 chain-rebuild path drops it and re-materializes the textual replay
+     *    when a stale previous_response_id is rejected. */
+    let chained = collapseToChaining(ctx.historyTurns);
     const historyText = chained
       ? "" // chaining collapses the textual replay
-      : serializeHistory(ctx.historyTurns, LAYER_BUDGETS.l4Chars);
+      : assembleReplayWithSummary(ctx.historyTurns, ctx.compactionSummary ?? null, LAYER_BUDGETS.l4Chars);
 
-    /* ── Assemble the prompt (system + developer + input). ── */
+    /* ── Assemble the prompt (system + developer + input). A4-26: when retrieval
+     *    grounded the turn, the developer message carries the SHORT lesson header
+     *    (effectiveLessonContext) instead of the whole-lesson L2 dump. ── */
     const basePrompt = assembleTutorPrompt({
       charterSerialized,
-      lessonContext,
+      lessonContext: effectiveLessonContext ?? lessonContext,
       learnerState,
       historyText,
       learnerMessage: ctx.learnerMessage,
@@ -500,8 +651,10 @@ export async function runTutorTurn(
      *    events are executed locally, their compact JSON results fed back as
      *    function_call/function_call_output items; after MAX_TOOL_ROUNDS or when
      *    the model answers (structured final, no tool calls) we parse. ── */
-    const developerItem: ModelInputItem = { role: "developer", content: prompt.developer };
-    const userItem: ModelInputItem = { role: "user", content: prompt.input };
+    // `let` (not const): the A4-5 chain-rebuild path re-materializes these with the
+    // textual replay when a stale previous_response_id is rejected.
+    let developerItem: ModelInputItem = { role: "developer", content: prompt.developer };
+    let userItem: ModelInputItem = { role: "user", content: prompt.input };
     const conversation: ModelInputItem[] = [developerItem, userItem];
 
     const toolTrace: { tool: string; summary: string }[] = [];
@@ -546,35 +699,82 @@ export async function runTutorTurn(
           }
         }
       };
-      const result = await deps.model.runTurn(
-        {
-          system: prompt.system,
-          input: conversation,
-          tools,
-          responseFormat,
-          stream: true,
-          signal: deps.signal,
-          model: job.model,
-          effort: job.effort,
-          timeoutMs: job.timeoutMs,
-          maxRetries: job.maxRetries,
-          maxOutputTokens: job.maxOutputTokens,
-          // R-2 (approved ruling) — P-3 UPDATE: the MAIN foreground tutor turn is
-          // stored provider-side (store:true), so `previous_response_id` chaining is
-          // a LIVE seam (there is now something to chain onto). This is scoped to
-          // the tutor_turn foreground call only — the item-gen / repair sub-calls
-          // keep their per-path default. It ENABLES the seam; it does NOT turn
-          // chaining on: TUTOR_ENABLE_CHAINING stays OFF by default (L4 textual
-          // replay is unchanged), and the A2 chain-id capture already reads the
-          // response id off the `started` event.
-          store: true,
-          ...(chained ? { previousResponseId: chained.previousResponseId } : {}),
-        },
-        onEvent
-      );
+      // The main streamed call, as a closure so the A4-5 rebuild can re-issue it
+      // after mutating `conversation` + dropping `chained`.
+      const callMain = () =>
+        deps.model.runTurn(
+          {
+            system: prompt.system,
+            input: conversation,
+            tools,
+            responseFormat,
+            stream: true,
+            signal: deps.signal,
+            model: job.model,
+            effort: job.effort,
+            timeoutMs: job.timeoutMs,
+            maxRetries: job.maxRetries,
+            maxOutputTokens: job.maxOutputTokens,
+            // R-2 (approved ruling) — P-3 UPDATE: the MAIN foreground tutor turn is
+            // stored provider-side (store:true), so `previous_response_id` chaining is
+            // a LIVE seam (there is now something to chain onto). This is scoped to
+            // the tutor_turn foreground call only — the item-gen / repair sub-calls
+            // keep their per-path default. It ENABLES the seam; it does NOT turn
+            // chaining on: TUTOR_ENABLE_CHAINING stays OFF by default (L4 textual
+            // replay is unchanged), and the A2 chain-id capture already reads the
+            // response id off the `started` event.
+            store: true,
+            ...(chained ? { previousResponseId: chained.previousResponseId } : {}),
+          },
+          onEvent
+        );
+      let result = await callMain();
       addUsage(usage, result.usage);
       lastResponseId = result.responseId ?? lastResponseId;
       finalText = result.text;
+
+      // ── A4-5 · CHAIN REBUILD ────────────────────────────────────────────────
+      // A model_error while we SENT a previous_response_id (chaining on) is almost
+      // always a stale/expired anchor (OpenAI retains stored responses ~30 days).
+      // Recover TRANSPARENTLY: rebuild the input from the textual replay (+ the
+      // compaction summary) the chained path had dropped, drop the anchor, and
+      // retry ONCE. No learner-visible error; emit tutor.chain.rebuilt (A4-5). Only
+      // fires when we actually chained and haven't rebuilt yet this turn.
+      if (result.finishReason === "error" && result.errorKind === "model_error" && chained && !chainRebuilt) {
+        const reason = result.errorKind;
+        chainRebuilt = { reason };
+        emitTutorRuntimeEvent(
+          {
+            name: "tutor.chain.rebuilt",
+            fields: { reason, courseId: ctx.courseId, lessonId: ctx.lessonId ?? null, round },
+          },
+          deps.onRuntimeEvent
+        );
+        const rebuiltHistory = assembleReplayWithSummary(
+          ctx.historyTurns,
+          ctx.compactionSummary ?? null,
+          LAYER_BUDGETS.l4Chars
+        );
+        const rebuiltPrompt = assembleTutorPrompt({
+          charterSerialized,
+          lessonContext,
+          learnerState,
+          historyText: rebuiltHistory,
+          learnerMessage: ctx.learnerMessage,
+        });
+        const rebuiltInput = extraInstructions.length
+          ? `${rebuiltPrompt.input}\n\n${extraInstructions.join("\n")}`
+          : rebuiltPrompt.input;
+        developerItem = { role: "developer", content: rebuiltPrompt.developer };
+        userItem = { role: "user", content: rebuiltInput };
+        conversation[0] = developerItem;
+        conversation[1] = userItem;
+        chained = null; // subsequent calls omit previous_response_id
+        result = await callMain();
+        addUsage(usage, result.usage);
+        lastResponseId = result.responseId ?? lastResponseId;
+        finalText = result.text;
+      }
 
       if (result.finishReason === "error") {
         return { ...empty(result.errorKind ?? "model_error"), usage, responseId: lastResponseId };
@@ -749,6 +949,18 @@ export async function runTutorTurn(
 
     void finalText;
 
+    /* ── A4-19 · CONTRADICTION ROUTING. The model flags a course-vs-knowledge
+     *  conflict on the RAW output; the runtime FOLLOWS the course (the grounding
+     *  rule already does) and routes the note into the escalation loop for creator
+     *  review (tutor.contradiction.detected). Evidence, not a failure. ── */
+    if (parsedOutput.contradiction && parsedOutput.contradiction.note.trim()) {
+      contradiction = { note: parsedOutput.contradiction.note };
+      routeContradiction(
+        { onRuntimeEvent: deps.onRuntimeEvent },
+        { courseId: ctx.courseId, note: contradiction.note, lessonId: ctx.lessonId ?? null }
+      );
+    }
+
     /* ── Scaffolding overrides on the RAW output (needs marker prose + rung). ── */
     let scaffolded = applyScaffolding(parsedOutput, {
       style,
@@ -800,6 +1012,12 @@ export async function runTutorTurn(
      * resolved anchors stamped), and surfaces the proposal on the cleaned output
      * so the consent card renders. The model's own proposal always wins if present. */
     let cleaned = validated.cleaned;
+    // A4-22 · D-7 — scrub any internal id the model echoed into the prose BEFORE
+    // it flows anywhere learner-facing (incl. the escalation proposal below). A4-23
+    // — resolve the human LABEL for each surviving citation (the "Go there"
+    // destination name; the grounding validator already dropped unresolvable ones).
+    cleaned = { ...cleaned, prose: redactInternalIds(cleaned.prose) };
+    labeledCitations = resolveCitationLabels(snapshot, cleaned.citations);
     if (!escalation) {
       const trigger = evaluateEscalationTrigger({
         groundingFlags: validated.flags,
@@ -888,6 +1106,11 @@ export async function runTutorTurn(
       // on a question turn.
       structures,
       assessments: initiation.kind === "question" ? [] : assessments,
+      chainRebuilt,
+      scope: scopeResult,
+      contradiction,
+      tokenDelta: tokenDeltaResult,
+      labeledCitations,
     };
   } catch (err) {
     return empty(err instanceof Error ? err.message : String(err));

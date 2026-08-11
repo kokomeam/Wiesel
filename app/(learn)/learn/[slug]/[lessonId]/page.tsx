@@ -31,6 +31,7 @@ import { getCachedSnapshot, resolveLivePublicationMeta } from "@/lib/learn/publi
 import { parseReviewPromptState, type ReviewPromptState } from "@/lib/learn/reviews";
 import { ProgressStateSchema, type ProgressState } from "@/lib/learn/schemas";
 import { buildCourseProgressSummary } from "@/lib/learn/summary";
+import { loadTutoredLessonIds } from "@/lib/learn/tutorHistory";
 import { createClient, getSessionUser } from "@/lib/supabase/server";
 import { AnalyticsProvider } from "@/components/learn/AnalyticsProvider";
 import { CourseNavSidebar, type NavModule } from "@/components/learn/CourseNavSidebar";
@@ -154,6 +155,14 @@ export default async function LessonPlayerPage({
       ? { blockId: focusBlockId, slideId: focusSlideId }
       : undefined;
 
+  // A4-8 · the set of lessons the learner has an existing tutor conversation for
+  // (distinct lesson_ids in tutor_turns, RLS-scoped to this user; never throws →
+  // empty on any error). The caller is already past the enrollment/authorship
+  // gate above, so `user`/`meta` are resolved. Serialized as a plain string[].
+  const tutoredLessonIds = [
+    ...(await loadTutoredLessonIds(supabase, user.id, meta.course_id)),
+  ];
+
   const navModules: NavModule[] = snapshot.modules.map((m) => ({
     id: m.id,
     title: m.title,
@@ -183,6 +192,7 @@ export default async function LessonPlayerPage({
         totalCount={summary.totalLessons}
         pct={summary.pct}
         authorPreview={authorPreview}
+        tutoredLessonIds={tutoredLessonIds}
       />
 
       <div className="min-w-0 flex-1">

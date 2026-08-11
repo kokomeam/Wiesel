@@ -226,6 +226,10 @@ export async function publishCourse(
   if (fresh) {
     const { enqueueGraphRunForPublish } = await import("@/lib/tutor/graph/publishHook");
     await enqueueGraphRunForPublish(client, { courseId: doc.id, publicationId: fresh.id });
+    // A4 Wave 2: chunk + embed the new immutable publication for tutor retrieval
+    // (best-effort; idempotent per publication).
+    const { enqueueChunkEmbedForPublish } = await import("@/lib/tutor/retrieval/publishHook");
+    await enqueueChunkEmbedForPublish({ courseId: doc.id, publicationId: fresh.id });
   }
 
   return {

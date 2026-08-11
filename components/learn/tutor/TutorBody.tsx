@@ -22,10 +22,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, RotateCw, Send, X } from "lucide-react";
+import { ArrowRight, RotateCw, Send, SquarePen, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useMediaQuery } from "@/lib/ui/useMediaQuery";
 import { useTutorStore, type TutorAmbient } from "@/lib/learn/tutorStore";
+import { primaryNavAffordance } from "@/lib/learn/tutorNav";
+import { deriveSuggestionChips, type TutorSuggestionChip } from "@/lib/learn/tutorChips";
 import {
   dedupeCitations,
   gradePracticeAnswer,
@@ -80,14 +82,6 @@ type SendAmbient = {
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 const DESKTOP = "(min-width: 1024px)";
 
-/** The four static suggestion chips. The "review next" chip's label is a
- *  constant; its SENT message is prefilled from the review queue when available. */
-const SUGGESTIONS = [
-  { key: "explain", label: "Explain this simply", message: "Explain this simply" },
-  { key: "quiz", label: "Quiz me on this lesson", message: "Quiz me on this lesson" },
-  { key: "review", label: "What should I review next?", message: "What should I review next?" },
-  { key: "plan", label: "Make me a study plan", message: "Make me a study plan" },
-] as const;
 
 /* ─────────────────────────────── the body ───────────────────────────────── */
 
@@ -112,20 +106,23 @@ export function TutorBody({
   const setUserSlice = useTutorStore((s) => s.setUserSlice);
   const scrollPos = useTutorStore((s) => s.byUser[userId]?.scrollPos ?? 0);
 
-  const { turns, status, streamingText, historyLoaded, send, retry } = useTutorStream({
+  const { turns, status, streamingText, historyLoaded, send, retry, startFresh } = useTutorStream({
     userId,
     courseId,
     publicationId,
     version,
     slug,
+    // A4 — the docked lesson (null on the course landing). Threads are
+    // lesson-scoped: history loads for this lesson's thread and reloads on switch.
+    lessonId: ambient.lessonId,
   });
 
   // Consume any pending store seed as the INITIAL composer value (lazy init, so
   // there's no setState-in-effect). The effect below only tells the store the
   // seed was consumed (an external-store update, not a React setState).
   const [draft, setDraft] = useState(() => useTutorStore.getState().seed ?? "");
-  // The "review next" message, prefilled from my_review_queue top titles.
-  const reviewMessageRef = useRef<string>("What should I review next?");
+  // A4 Wave 4 — the learner's flagged concepts (my_review_queue) → derived chips.
+  const [reviewTitles, setReviewTitles] = useState<string[]>([]);
 
   /* ── the ambient envelope every `send` carries ── */
   const sendAmbient: SendAmbient = useMemo(
@@ -136,6 +133,20 @@ export function TutorBody({
       quizActive: ambient.quizActive ?? false,
     }),
     [ambient.lessonId, ambient.blockId, ambient.slideId, ambient.quizActive]
+  );
+
+  // A4 Wave 4 (D-9) — the suggestion chips, DERIVED from the active lesson, the
+  // learner's weakest flagged concept (review queue), and whether the conversation
+  // has started. Re-derives as those change; deduped by action.
+  const chips: TutorSuggestionChip[] = useMemo(
+    () =>
+      deriveSuggestionChips({
+        lessonTitle: ambient.lessonTitle,
+        weakestConceptTitle: reviewTitles[0] ?? null,
+        reviewCount: reviewTitles.length,
+        hasHistory: turns.length > 0,
+      }),
+    [ambient.lessonTitle, reviewTitles, turns.length]
   );
 
   // A send is in flight through every pre-answer phase (the hook floors each) and
@@ -191,7 +202,7 @@ export function TutorBody({
           .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
           .slice(0, 3);
         if (titles.length > 0) {
-          reviewMessageRef.current = `What should I review next? I've been flagged on: ${titles.join(", ")}.`;
+          setReviewTitles(titles);
           setSuggestionDot(true);
         }
       } catch {
@@ -288,15 +299,32 @@ export function TutorBody({
 
       <header className="flex items-center justify-between border-b border-stone-200/80 px-4 py-3">
         <h2 className="text-sm font-medium text-stone-800">Course tutor</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close tutor"
-          data-ai-tool="tutor-close"
-          className="grid size-8 place-items-center rounded-full text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-        >
-          <X className="size-4" aria-hidden />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* A4-7 · Start fresh — archives THIS lesson's thread (never deletes; it
+              stays queryable) and opens a new one. Shown only when there's a
+              conversation to set aside. */}
+          {turns.length > 0 ? (
+            <button
+              type="button"
+              onClick={startFresh}
+              aria-label="Start a fresh conversation"
+              title="Start fresh — set this conversation aside and begin a new one"
+              data-ai-tool="tutor-start-fresh"
+              className="grid size-8 place-items-center rounded-full text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+            >
+              <SquarePen className="size-4" aria-hidden />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close tutor"
+            data-ai-tool="tutor-close"
+            className="grid size-8 place-items-center rounded-full text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </div>
       </header>
 
       <div
@@ -385,13 +413,13 @@ export function TutorBody({
       {/* Suggestion chips + composer */}
       <div className="border-t border-stone-200/80 px-4 py-3">
         <div className="mb-2.5 flex flex-wrap gap-1.5">
-          {SUGGESTIONS.map((s) => (
+          {chips.map((s) => (
             <button
               key={s.key}
               type="button"
               data-ai-tool="tutor-suggestion"
               disabled={busy}
-              onClick={() => doSend(s.key === "review" ? reviewMessageRef.current : s.message)}
+              onClick={() => doSend(s.message)}
               className="rounded-full border border-stone-200/80 bg-white px-3 py-1 text-xs text-stone-600 transition-colors hover:border-brand-300 hover:text-brand-700 disabled:opacity-50"
             >
               {s.label}
@@ -767,26 +795,22 @@ function CitationChips({
       router.push(`/learn/${slug}/${c.lessonId}?block=${encodeURIComponent(c.blockId)}${slidePart}`);
     }
   }
-  // A3 D-3: collapse duplicate jump targets (legacy persisted rows still carry
-  // duplicates; the server dedups new turns). Post-dedup the target key is
-  // unique, so the React key needs no index suffix.
+  // A4-24 · AT MOST ONE navigation affordance per message. A4-23 · it names its
+  // destination (the server-resolved label) and only renders with a real anchor;
+  // A4-22 · the label is never an id. (dedupeCitations keeps the primary stable.)
+  const nav = primaryNavAffordance(dedupeCitations(citations), { activeLessonId: ambient.lessonId });
+  if (!nav) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
-      {dedupeCitations(citations).map((c) => {
-        const sameLesson = ambient.lessonId != null && c.lessonId === ambient.lessonId;
-        return (
-          <button
-            key={`${c.lessonId}|${c.blockId}|${c.slideId ?? ""}`}
-            type="button"
-            data-ai-tool="tutor-citation"
-            onClick={() => jump(c)}
-            className="inline-flex items-center gap-1 rounded-full border border-stone-200/80 bg-white px-2.5 py-0.5 text-[11px] font-medium text-stone-600 transition-colors hover:border-brand-300 hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-          >
-            <ArrowRight className="size-3" aria-hidden />
-            {sameLesson ? "Show me" : "Go there"}
-          </button>
-        );
-      })}
+      <button
+        type="button"
+        data-ai-tool="tutor-citation"
+        onClick={() => jump(nav.citation)}
+        className="inline-flex items-center gap-1 rounded-full border border-stone-200/80 bg-white px-2.5 py-0.5 text-[11px] font-medium text-stone-600 transition-colors hover:border-brand-300 hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+      >
+        <ArrowRight className="size-3" aria-hidden />
+        {nav.sameLesson ? `Show me: ${nav.label}` : `Go to ${nav.label}`}
+      </button>
     </div>
   );
 }

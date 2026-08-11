@@ -64,6 +64,7 @@
     "scripts/verify-tutor-escalation-queue-browser.ts",
     "scripts/verify-tutor-stream-browser.ts",
     "scripts/verify-tutor-cards-browser.ts",
+    "scripts/verify-tutor-a4-browser.ts",
     "scripts/verify-bundle-budgets.ts",
     "scripts/verify-lighthouse-budgets.ts"
   ]

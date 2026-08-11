@@ -87,9 +87,15 @@ export async function clearActiveStream(admin: DB, args: { threadId: string }): 
 }
 
 /**
- * Read the in-flight stream state for a (user, course) thread — the resume-check
- * read. Returns null when there is no thread OR on ANY error (best-effort — a
- * failed read must never fail the turn; the caller degrades to a fresh stream).
+ * Read the IN-FLIGHT stream state for a (user, course) — the resume-check read.
+ *
+ * A4: a course now has MANY threads (one per lesson), so this no longer keys by
+ * (user, course) alone (that would multi-row). Instead it finds the ONE thread
+ * that actually has an in-flight turn (`active_stream_id is not null`). A learner
+ * has at most one turn streaming at a time, so this resolves it regardless of
+ * which lesson it belongs to. Returns null when nothing is in flight OR on ANY
+ * error (best-effort — a failed read must never fail the turn; the caller degrades
+ * to a fresh stream).
  */
 export async function readActiveStream(
   admin: DB,
@@ -101,6 +107,9 @@ export async function readActiveStream(
       .select("id, active_stream_id, active_response_id")
       .eq("user_id", args.userId)
       .eq("course_id", args.courseId)
+      .not("active_stream_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
     if (error) {
       logStreamStateError("readActiveStream", error);

@@ -337,13 +337,15 @@ export function LearnLessonView({
       publicationId: tutorEnvelope?.publicationId ?? publicationId,
       version: tutorEnvelope?.version ?? null,
       lessonId: lesson.id,
+      // A4 Wave 4 — the lesson TITLE drives the derived suggestion chips.
+      lessonTitle: lesson.title,
       // A new lesson clears the last-interacted block context.
       blockId: null,
       slideId: null,
       positionPct: null,
       quizActive: null,
     });
-  }, [setAmbient, tutorEnvelope, courseId, publicationId, lesson.id]);
+  }, [setAmbient, tutorEnvelope, courseId, publicationId, lesson.id, lesson.title]);
 
   // Scroll to a block + (for a slide deck) steer it to the cited slide. Shared
   // by the sidebar citation subscription and the initial deep-link focus.

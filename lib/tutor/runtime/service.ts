@@ -10,7 +10,9 @@
  *   • resolveTutorAccess  — the ONE gate. 'ok' | 'not_enrolled' |
  *     'author_preview' | 'disabled'. AUTHOR_PREVIEW NEVER EMITS EVIDENCE — every
  *     evidence fn takes the access kind and no-ops unless 'ok'.
- *   • ensureThread        — race-safe get-or-create (insert ignoreDuplicates → select).
+ *   • resolveThread       — race-safe get-or-create of the ACTIVE (learner, LESSON)
+ *     thread (or the general null-lesson thread); archiveThread flips archived_at
+ *     for "Start fresh"; maybeCompactThread folds old turns into a rolling summary.
  *   • persistLearnerTurn / persistAssistantTurn — the append-only transcript
  *     (assistant rows are admin-only; only COMPLETED turns persist — an abort
  *     writes nothing assistant-side).
@@ -45,6 +47,21 @@ import { createHash } from "node:crypto";
 
 import type { Database } from "@/lib/database.types";
 import type { ModelClient, ModelStreamEvent } from "@/lib/ai/modelClient";
+import { runStructuredCall } from "@/lib/ai/subagent";
+import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
+import {
+  CompactionSummarySchema,
+  COMPACTION_SYSTEM_PROMPT,
+  buildCompactionInput,
+  clampSummary,
+  compactionConfig,
+  compactionPlan,
+  shouldCompact,
+} from "@/lib/tutor/runtime/compaction";
+import type { TutorRuntimeEventSink } from "@/lib/tutor/runtime/runtimeEvents";
+import { retrieveChunks } from "@/lib/tutor/retrieval/retrieve";
+import { loadCompletedLessonIds } from "@/lib/tutor/retrieval/eligibility";
+import type { ScopeRetrieveFn } from "@/lib/tutor/retrieval/scopePolicy";
 import {
   captureActiveResponseId,
   clearActiveStream,
@@ -135,34 +152,190 @@ export async function resolveTutorAccess(
 
 /* ─────────────────────────────── thread ─────────────────────────────────── */
 
-/**
- * Get-or-create the (learner, course) thread, race-safe: insert with
- * ignoreDuplicates (the unique (user_id, course_id) makes a concurrent create a
- * no-op) THEN select. Admin-scoped — the route already gated access. Returns the
- * thread id.
- */
-export async function ensureThread(
-  admin: DB,
-  args: { userId: string; courseId: string }
-): Promise<string> {
-  const { userId, courseId } = args;
-  // Insert ignoring a duplicate (unique user+course); a concurrent create no-ops.
-  const { error: insertErr } = await admin
-    .from("tutor_threads")
-    .upsert({ user_id: userId, course_id: courseId }, {
-      onConflict: "user_id,course_id",
-      ignoreDuplicates: true,
-    });
-  if (insertErr) throw new Error(`ensureThread(insert): ${insertErr.message}`);
+/** A resolved ACTIVE thread + its compaction cursor (A4). */
+export interface ResolvedThread {
+  id: string;
+  /** The rolling compaction summary (null until the thread first compacts). */
+  compactionSummary: string | null;
+  /** Count of oldest turns already folded into the summary (0 when none). */
+  compactedThroughTurn: number;
+}
 
-  const { data, error } = await admin
+/** Select the ACTIVE (non-archived) thread for a (learner, lesson) — or the
+ *  general (null-lesson) thread for a (learner, course) when lessonId is null.
+ *  A fresh query each call (PostgREST builders are single-use). */
+function selectActiveThread(
+  admin: DB,
+  args: { userId: string; courseId: string; lessonId: string | null }
+) {
+  const base = admin
     .from("tutor_threads")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("course_id", courseId)
+    .select("id, compaction_summary, compacted_through_turn")
+    .eq("user_id", args.userId)
+    .is("archived_at", null);
+  return args.lessonId
+    ? base.eq("lesson_id", args.lessonId).maybeSingle()
+    : base.eq("course_id", args.courseId).is("lesson_id", null).maybeSingle();
+}
+
+/**
+ * Get-or-create the ACTIVE thread for a (learner, LESSON) — or the general
+ * (null-lesson) thread for a (learner, course) when lessonId is null (a turn sent
+ * outside a lesson). Race-safe WITHOUT relying on `onConflict` (the uniqueness is
+ * a PARTIAL index PostgREST can't target as a conflict arbiter): SELECT the active
+ * row; if absent INSERT; on a unique-violation race (23505) a concurrent create
+ * won → re-SELECT and use it. Admin-scoped — the route already gated access.
+ * Returns the thread id + its compaction cursor.
+ */
+export async function resolveThread(
+  admin: DB,
+  args: { userId: string; courseId: string; lessonId: string | null }
+): Promise<ResolvedThread> {
+  const toResolved = (row: {
+    id: string;
+    compaction_summary: string | null;
+    compacted_through_turn: number | null;
+  }): ResolvedThread => ({
+    id: row.id,
+    compactionSummary: row.compaction_summary,
+    compactedThroughTurn: row.compacted_through_turn ?? 0,
+  });
+
+  const existing = await selectActiveThread(admin, args);
+  if (existing.error) throw new Error(`resolveThread(select): ${existing.error.message}`);
+  if (existing.data) return toResolved(existing.data);
+
+  const insert = await admin
+    .from("tutor_threads")
+    .insert({ user_id: args.userId, course_id: args.courseId, lesson_id: args.lessonId ?? null })
+    .select("id, compaction_summary, compacted_through_turn")
     .single();
-  if (error || !data) throw new Error(`ensureThread(select): ${error?.message ?? "not found"}`);
-  return data.id;
+  if (!insert.error && insert.data) return toResolved(insert.data);
+
+  // A concurrent create won the partial-unique race — re-select the active row.
+  if (insert.error?.code === "23505") {
+    const retry = await selectActiveThread(admin, args);
+    if (!retry.error && retry.data) return toResolved(retry.data);
+    throw new Error(`resolveThread(retry): ${retry.error?.message ?? "not found after 23505"}`);
+  }
+  throw new Error(`resolveThread(insert): ${insert.error?.message ?? "no row"}`);
+}
+
+/**
+ * Archive the ACTIVE thread for a (learner, lesson)/(learner, course-general) —
+ * the "Start fresh" control (A4-7). Sets `archived_at` (never deletes); the
+ * archived thread stays queryable and the next `resolveThread` mints a fresh one
+ * (the partial uniques exclude archived rows). Returns the archived thread id, or
+ * null when there was no active thread to archive. Admin-scoped.
+ */
+export async function archiveThread(
+  admin: DB,
+  args: { userId: string; courseId: string; lessonId: string | null; nowIso?: string }
+): Promise<{ archivedThreadId: string | null }> {
+  const existing = await selectActiveThread(admin, args);
+  if (existing.error) throw new Error(`archiveThread(select): ${existing.error.message}`);
+  if (!existing.data) return { archivedThreadId: null };
+
+  const { error } = await admin
+    .from("tutor_threads")
+    .update({ archived_at: args.nowIso ?? new Date().toISOString() })
+    .eq("id", existing.data.id)
+    .is("archived_at", null); // idempotent: a concurrent archive already set it
+  if (error) throw new Error(`archiveThread(update): ${error.message}`);
+  return { archivedThreadId: existing.data.id };
+}
+
+/**
+ * COMPACTION (A4-4). When a thread's turn count/size crosses the threshold, fold
+ * the turns older than the keep window into the rolling `compaction_summary` and
+ * advance `compacted_through_turn`. The FULL transcript stays in `tutor_turns`
+ * for display — only the model's L4 changes. BEST-EFFORT: any read/model/persist
+ * failure leaves the thread's compaction state unchanged and the turn proceeds
+ * (the model just replays its verbatim window). Returns the (possibly updated)
+ * compaction state the caller threads into the loop ctx.
+ *
+ * Runs at turn START so the summary is always persisted before it is used and the
+ * whole path is int-testable with the mock model. The summarizer uses the small
+ * `practice_gen` tier through the pooled client (so it can't be a premium call).
+ */
+export async function maybeCompactThread(
+  deps: { admin: DB; model: ModelClient; signal?: AbortSignal },
+  args: { threadId: string; compactionSummary: string | null; compactedThroughTurn: number }
+): Promise<ResolvedThread & { compacted: boolean }> {
+  const unchanged = {
+    id: args.threadId,
+    compactionSummary: args.compactionSummary,
+    compactedThroughTurn: args.compactedThroughTurn,
+    compacted: false,
+  };
+  try {
+    const cfg = compactionConfig();
+    const cursor = Math.max(0, args.compactedThroughTurn);
+
+    // Exact total count (cheap, index-covered) drives the turn threshold + plan.
+    const countRes = await deps.admin
+      .from("tutor_turns")
+      .select("id", { count: "exact", head: true })
+      .eq("thread_id", args.threadId);
+    const totalTurns = countRes.count ?? 0;
+    if (countRes.error) return unchanged;
+
+    // The unfolded turns (cursor → end) — bounded (cursor tracks total-keepRecent),
+    // so this stays ~keepRecent + recent arrivals. They carry the fold slice + the
+    // char trigger's size.
+    const unfoldedRes = await deps.admin
+      .from("tutor_turns")
+      .select("id, role, content, created_at")
+      .eq("thread_id", args.threadId)
+      .order("created_at", { ascending: true })
+      .range(cursor, cursor + 999);
+    if (unfoldedRes.error || !unfoldedRes.data) return unchanged;
+    const unfolded: HistoryTurn[] = unfoldedRes.data.map((r) => ({
+      id: r.id,
+      role: r.role as HistoryTurn["role"],
+      content: r.content,
+    }));
+    const totalChars = unfolded.reduce((n, t) => n + t.content.length, 0);
+
+    const state = { totalTurns, totalChars, compactedThroughTurn: cursor };
+    if (!shouldCompact(state, cfg)) return unchanged;
+    const plan = compactionPlan(state, cfg);
+    if (!plan) return unchanged;
+    const foldedTurns = unfolded.slice(0, plan.foldTo - cursor);
+    if (foldedTurns.length === 0) return unchanged;
+
+    const input = buildCompactionInput({
+      existingSummary: args.compactionSummary,
+      foldedTurns,
+      summaryMaxChars: cfg.summaryMaxChars,
+    });
+    const job = TUTOR_MODELS.practice_gen;
+    const res = await runStructuredCall(deps.model, {
+      system: COMPACTION_SYSTEM_PROMPT,
+      input,
+      outputName: "tutor_compaction_summary",
+      outputSchema: CompactionSummarySchema,
+      model: job.model,
+      effort: job.effort,
+      timeoutMs: job.timeoutMs,
+      maxRetries: job.maxRetries,
+      maxOutputTokens: job.maxOutputTokens,
+      signal: deps.signal,
+    });
+    if (!res.ok || !res.data || !res.data.summary.trim()) return unchanged;
+
+    const summary = clampSummary(res.data.summary, cfg.summaryMaxChars);
+    const { error: updErr } = await deps.admin
+      .from("tutor_threads")
+      .update({ compaction_summary: summary, compacted_through_turn: plan.foldTo })
+      .eq("id", args.threadId);
+    if (updErr) return unchanged;
+
+    return { id: args.threadId, compactionSummary: summary, compactedThroughTurn: plan.foldTo, compacted: true };
+  } catch {
+    // Best-effort: compaction must never fail a turn.
+    return unchanged;
+  }
 }
 
 /* ─────────────────────────────── envelope ───────────────────────────────── */
@@ -558,6 +731,14 @@ export interface RunTutorTurnForRequestDeps {
    *  main call is forwarded here (a hook throw is swallowed — it never kills the
    *  turn). The route feeds these to the prose extractor + the wire tee. */
   onModelEvent?: (ev: ModelStreamEvent) => void;
+  /** A4 — the runtime-event sink (tutor.chain.rebuilt etc.). Threaded into the
+   *  loop; the default logs one JSON line. Tests inject it to observe emissions. */
+  onRuntimeEvent?: TutorRuntimeEventSink;
+  /** A4 Wave 3 — an UN-POOLED embed client for scoped retrieval (query embeds must
+   *  stay off the learner chat pool — §2/A4-21). When present, the turn runs the
+   *  scope policy over `tutor_chunks`; absent ⇒ the pre-A4 whole-lesson grounding
+   *  stands. The route passes `createOpenAIModelClient()`; tests pass the mock. */
+  embedModel?: ModelClient;
 }
 
 export interface RunTutorTurnForRequestArgs {
@@ -618,11 +799,30 @@ export async function runTutorTurnForRequest(
   // non-enrolled caller is refused. This keeps evidence + persistence gated.
   if (access.kind !== "ok") return empty();
 
-  // (1) thread (race-safe get-or-create).
-  const threadId = await ensureThread(deps.admin, {
+  // (1) thread (race-safe get-or-create) — LESSON-SCOPED (A4): the ACTIVE thread
+  //     for (learner, lesson), or the general (null-lesson) thread when the turn
+  //     was sent outside a lesson. Opening a different lesson resolves a different
+  //     thread (A4-2).
+  const lessonId = args.envelope.lessonId ?? null;
+  const resolved = await resolveThread(deps.admin, {
     userId: args.userId,
     courseId: args.envelope.courseId,
+    lessonId,
   });
+  const threadId = resolved.id;
+
+  // (1a) COMPACTION (A4-4) — at turn START so the summary is persisted before it
+  //      is used. Best-effort: a failure leaves the summary untouched and the turn
+  //      proceeds on its verbatim window. Runs the small-tier summarizer through
+  //      the same pooled model.
+  const compaction = await maybeCompactThread(
+    { admin: deps.admin, model: deps.model, signal: deps.signal },
+    {
+      threadId,
+      compactionSummary: resolved.compactionSummary,
+      compactedThroughTurn: resolved.compactedThroughTurn,
+    }
+  );
 
   // (1a) A2 Wave 2 — record the in-flight stream id BEFORE the model dispatch, so a
   //      client that refreshes right after send can read active_stream_id and rejoin.
@@ -675,6 +875,31 @@ export async function runTutorTurnForRequest(
   const context =
     args.context ?? (await loadTutorContext(deps.admin, args.envelope.courseId));
 
+  // (4a) A4 Wave 3 — SCOPE POLICY inputs: an un-pooled retriever over tutor_chunks
+  //      (query embeds off the learner chat pool — §2/A4-21) + the learner's
+  //      completed lessons (the Tier-2 eligibility pool). Only when an embed model
+  //      is wired; otherwise the loop keeps the pre-A4 whole-lesson grounding.
+  let retrieve: ScopeRetrieveFn | undefined;
+  let completedLessonIds: string[] | undefined;
+  if (deps.embedModel) {
+    const embedModel = deps.embedModel;
+    retrieve = (a) =>
+      retrieveChunks(deps.admin, embedModel, {
+        publicationId: args.envelope.publicationId,
+        queryText: args.learnerMessage,
+        eligibleLessonIds: a.lessonIds,
+        vectorLimit: a.limit,
+        lexicalLimit: a.limit,
+        resultLimit: a.limit,
+      });
+    const completed = await loadCompletedLessonIds(
+      deps.learnerClient,
+      args.userId,
+      args.envelope.courseId
+    );
+    completedLessonIds = [...completed];
+  }
+
   // (5) run the pure loop.
   const ctx: RunTutorTurnCtx = {
     userId: args.userId,
@@ -687,6 +912,11 @@ export async function runTutorTurnForRequest(
     quizActive: args.quizActive,
     charterRow: context.charterRow,
     historyTurns,
+    // A4 — the rolling compaction summary (null when the thread never compacted);
+    // the loop prepends it to the L4 replay so folded turns aren't forgotten.
+    compactionSummary: compaction.compactionSummary,
+    // A4 Wave 3 — the learner's completed lessons (Tier-2 eligibility pool).
+    completedLessonIds,
     learnerMessage: args.learnerMessage,
     sessionFlags: args.sessionFlags,
     // A3 Wave 3 — the resolved initiation + derived invitation state (the loop's
@@ -718,6 +948,8 @@ export async function runTutorTurnForRequest(
         conceptEdges: context.conceptEdges,
         nowIso: deps.nowIso,
         signal: deps.signal,
+        onRuntimeEvent: deps.onRuntimeEvent,
+        retrieve,
         onModelEvent: (ev) => {
           // Capture the provider response id the moment it opens (before any output
           // token). A null id (provider didn't surface one) has nothing to persist.
@@ -796,7 +1028,9 @@ export async function runTutorTurnForRequest(
 function buildGrounding(turn: TutorTurnResult): Record<string, unknown> {
   const out = turn.output;
   const grounding: Record<string, unknown> = {
-    citations: out?.citations ?? [],
+    // A4-22/23 — persist the LABELED citations (destination names) when present, so
+    // history turns render a real "Go there" destination too.
+    citations: turn.labeledCitations && turn.labeledCitations.length > 0 ? turn.labeledCitations : (out?.citations ?? []),
     spans: out?.spans ?? [],
     flags: turn.groundingFlags,
   };

@@ -140,5 +140,11 @@ export const TurnOutputSchema = z.object({
   //   every turn failed schema_parse on exactly this field).
   practiceItems: z.array(TurnPracticeItemSchema).max(3).nullable().optional(),
   escalationProposal: TurnEscalationProposalSchema.nullable().optional(),
+  // A4-19 (Wave 3) — set when the RETRIEVED course content asserts something the
+  // model would assert differently: the tutor FOLLOWS the course, and the runtime
+  // routes this note into the escalation loop (tutor.contradiction.detected) for
+  // creator review. Evidence, not a failure. `.nullable().optional()` — same wire
+  // caveat as the fields above.
+  contradiction: z.object({ note: z.string() }).nullable().optional(),
 });
 export type TurnOutput = z.infer<typeof TurnOutputSchema>;

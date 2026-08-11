@@ -37,6 +37,10 @@ export interface TutorCitation {
   lessonId: string;
   blockId: string;
   slideId: string | null;
+  /** A4-22/23 (Wave 4) — the server-resolved destination NAME (a lesson/slide
+   *  title, never an id). Present on live + newly-persisted turns; absent on
+   *  pre-Wave-4 history (the nav affordance then falls back to a neutral name). */
+  label?: string;
 }
 
 /** A classified run of reply text: `grounded` (backed by course material) or

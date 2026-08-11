@@ -47,6 +47,7 @@ import {
   recordPracticeAnswer,
   recordSelfReport,
   recordHintRequest,
+  archiveThread,
   type TurnEnvelope,
   type TutorAccessKind,
 } from "@/lib/tutor/runtime/service";
@@ -109,7 +110,8 @@ interface TutorRequestBody {
     | "hint_request"
     | "escalate_consent"
     | "tool_evidence"
-    | "explain_back_grade";
+    | "explain_back_grade"
+    | "archive_thread";
   courseId?: string;
   publicationId?: string;
   version?: number;
@@ -467,6 +469,25 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: true, access: access.kind, consented: true });
   }
 
+  /* ── Start fresh: ARCHIVE the current lesson thread (A4-7, plain JSON) ──
+   *
+   * Archives the ACTIVE thread for (learner, lesson) — or the general
+   * (null-lesson) thread when no lesson is open — so the next turn opens a fresh
+   * one. NEVER deletes: the archived thread stays queryable. Access-gated (only an
+   * enrolled learner has a thread to archive); author preview / not-enrolled /
+   * disabled no-op. Idempotent — no active thread ⇒ archivedThreadId null. */
+  if (action === "archive_thread") {
+    if (access.kind !== "ok") {
+      return Response.json({ ok: true, access: access.kind, archivedThreadId: null });
+    }
+    const res = await archiveThread(admin, {
+      userId: user.id,
+      courseId,
+      lessonId: body.lessonId ?? null,
+    });
+    return Response.json({ ok: true, access: access.kind, archivedThreadId: res.archivedThreadId });
+  }
+
   /* ── the interactive turn (SSE) ── */
   if (!body.message || !body.message.trim()) {
     return errorJson("missing_message", "message is required for a turn.", 400);
@@ -618,7 +639,17 @@ export async function POST(req: Request): Promise<Response> {
 
       try {
         const result = await runTutorTurnForRequest(
-          { learnerClient, admin, model, signal: composed, streamId, onModelEvent },
+          {
+            learnerClient,
+            admin,
+            model,
+            signal: composed,
+            streamId,
+            onModelEvent,
+            // A4 Wave 3 — an UN-POOLED embed client for scoped retrieval (query
+            // embeds stay off the learner chat pool — §2/A4-21).
+            embedModel: createOpenAIModelClient(),
+          },
           {
             userId: user.id,
             envelope: { ...envelope, version },
@@ -669,7 +700,11 @@ export async function POST(req: Request): Promise<Response> {
             payload: {
               prose: out.prose,
               spans: out.spans,
-              citations: out.citations,
+              // A4-22/23 — labeled citations (destination names) when present.
+              citations:
+                result.turn.labeledCitations && result.turn.labeledCitations.length > 0
+                  ? result.turn.labeledCitations
+                  : out.citations,
               rung: result.turn.rung,
               practiceItems: out.practiceItems ?? [],
               escalationProposal: out.escalationProposal ?? null,

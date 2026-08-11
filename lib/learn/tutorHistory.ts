@@ -38,6 +38,7 @@ type QueryResult = { data: unknown; error: { message: string } | null };
 interface QueryBuilder extends PromiseLike<QueryResult> {
   select: (cols: string) => QueryBuilder;
   eq: (col: string, val: string) => QueryBuilder;
+  is: (col: string, val: null) => QueryBuilder;
   order: (col: string, opts: { ascending: boolean }) => QueryBuilder;
   maybeSingle: () => PromiseLike<QueryResult>;
 }
@@ -272,16 +273,21 @@ export function coerceGrounding(raw: unknown): TutorHistoryTurn["grounding"] {
 }
 
 /**
- * Load the learner's tutor transcript for a course, newest-thread-first order.
+ * Load the learner's tutor transcript for the ACTIVE thread of a LESSON (A4).
  *
- * Selects the (user_id, course_id) thread via `maybeSingle` — no thread ⇒ `[]`.
- * Then reads its `tutor_turns` ordered `created_at asc` and maps rows tolerantly.
- * RLS does the gating (own + enrolled). NEVER throws: any error path returns `[]`.
+ * A4 scopes threads to lessons: this resolves the ACTIVE (non-archived) thread
+ * for (user_id, lesson_id) — or the general (null-lesson) thread for
+ * (user_id, course_id) when `lessonId` is null — via `maybeSingle` (no thread ⇒
+ * `[]`), then reads its `tutor_turns` ordered `created_at asc`. Opening a
+ * different lesson resolves a different thread (A4-2); an archived thread is not
+ * shown here (Start fresh opens a new one). RLS gates (own + enrolled). NEVER
+ * throws: any error path returns `[]`.
  */
 export async function loadTutorHistory(
   supabase: SupabaseClient<never> | SupabaseClient,
   userId: string,
   courseId: string,
+  lessonId: string | null = null,
 ): Promise<TutorHistoryTurn[]> {
   // The `SupabaseClient<never> | SupabaseClient` union (the house param type —
   // see lessonState.ts / rpcJson.ts) has an un-callable `.from()` on the union;
@@ -293,12 +299,17 @@ export async function loadTutorHistory(
     from: (table: string) => QueryBuilder;
   };
   try {
-    const { data: thread, error: threadError } = await db
+    // Resolve the ACTIVE thread: (user, lesson) when a lesson is open, else the
+    // general (null-lesson) thread for the course. archived_at is null = active.
+    const threadBase = db
       .from("tutor_threads")
       .select("id")
       .eq("user_id", userId)
-      .eq("course_id", courseId)
-      .maybeSingle();
+      .is("archived_at", null);
+    const threadQuery = lessonId
+      ? threadBase.eq("lesson_id", lessonId).maybeSingle()
+      : threadBase.eq("course_id", courseId).is("lesson_id", null).maybeSingle();
+    const { data: thread, error: threadError } = await threadQuery;
     if (threadError || !thread) return [];
 
     const threadId = (thread as { id: string }).id;
@@ -327,5 +338,37 @@ export async function loadTutorHistory(
     });
   } catch {
     return [];
+  }
+}
+
+/**
+ * The set of lesson ids the learner has a non-empty tutor conversation for (A4-8)
+ * — the course-outline "has a conversation here" indicators. Derived from
+ * `tutor_turns` (a turn is denormalized with its lesson_id), so it counts a
+ * lesson iff ≥1 turn was ever sent from it — independent of whether the current
+ * thread is active or archived (a conversation the learner started still exists).
+ * RLS scopes to the learner's own+enrolled rows. NEVER throws: any error ⇒ empty.
+ */
+export async function loadTutoredLessonIds(
+  supabase: SupabaseClient<never> | SupabaseClient,
+  userId: string,
+  courseId: string,
+): Promise<Set<string>> {
+  const db = supabase as unknown as { from: (table: string) => QueryBuilder };
+  try {
+    const { data, error } = await db
+      .from("tutor_turns")
+      .select("lesson_id")
+      .eq("user_id", userId)
+      .eq("course_id", courseId);
+    if (error || !Array.isArray(data)) return new Set();
+    const ids = new Set<string>();
+    for (const raw of data) {
+      const lessonId = (raw as { lesson_id?: unknown }).lesson_id;
+      if (typeof lessonId === "string" && lessonId) ids.add(lessonId);
+    }
+    return ids;
+  } catch {
+    return new Set();
   }
 }

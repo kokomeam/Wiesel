@@ -85,7 +85,7 @@ const IGNORE_KEYS = new Set([
   "textColor",
 ]);
 
-function collectStrings(value: unknown, out: string[], depth = 0): void {
+export function collectStrings(value: unknown, out: string[], depth = 0): void {
   if (depth > 12 || value == null) return;
   if (typeof value === "string") {
     const s = value.trim();

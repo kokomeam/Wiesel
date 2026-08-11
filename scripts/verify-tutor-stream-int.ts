@@ -66,7 +66,7 @@ import type {
 import { TUTOR_MODELS } from "@/lib/ai/modelConfig";
 import {
   runTutorTurnForRequest,
-  ensureThread,
+  resolveThread,
   type TurnEnvelope,
 } from "@/lib/tutor/runtime/service";
 import {
@@ -377,8 +377,9 @@ async function main() {
     const turnJson = validTurnText(citation);
 
     // Pre-create the thread so we can poll it while the FIRST turn is still blocked
-    // (runTutorTurnForRequest reuses this exact row — same (user, course) unique key).
-    const threadId = await ensureThread(admin, { userId: learner.userId, courseId });
+    // (runTutorTurnForRequest reuses this exact row — same (user, LESSON) active key
+    // since the envelope carries this lessonId).
+    const { id: threadId } = await resolveThread(admin, { userId: learner.userId, courseId, lessonId });
     const stateBefore = await readThreadState(admin, threadId);
     check(
       "fresh thread starts with NULL in-flight state",

@@ -47,6 +47,10 @@ interface Props {
   pct: number;
   /** Author preview → progress is meaningless; show a lighter framing. */
   authorPreview?: boolean;
+  /** A4-8 · lesson ids the learner has an existing tutor conversation for.
+   *  Each such lesson gets a small "saved tutor conversation" dot. Optional +
+   *  defaults to empty, so the sidebar renders unchanged when absent. */
+  tutoredLessonIds?: string[];
 }
 
 export function CourseNavSidebar(props: Props) {
@@ -148,6 +152,7 @@ function NavContent({
   totalCount,
   pct,
   authorPreview,
+  tutoredLessonIds,
   openModules,
   toggleModule,
   onCollapse,
@@ -158,6 +163,9 @@ function NavContent({
   onCollapse?: () => void;
   onClose?: () => void;
 }) {
+  // A4-8 · O(1) membership for the "saved tutor conversation" dot. Derived from
+  // the (already-serializable) prop each render — cheap, no state, SSR-stable.
+  const tutored = new Set(tutoredLessonIds ?? []);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* header */}
@@ -246,12 +254,14 @@ function NavContent({
                 <ul className="mb-1 ml-3.5 space-y-0.5 border-l border-stone-100 pl-2">
                   {mod.lessons.map((lesson) => {
                     const active = lesson.id === currentLessonId;
+                    const hasTutorThread = tutored.has(lesson.id);
                     return (
                       <li key={lesson.id}>
                         <IntentLink
                           href={`/learn/${slug}/${lesson.id}`}
                           aria-current={active ? "page" : undefined}
                           onClick={onClose}
+                          data-ai-tutor-thread={hasTutorThread ? "1" : undefined}
                           className={cn(
                             "relative flex items-center gap-2.5 rounded-lg py-1.5 pl-3 pr-2 text-[13px] transition-colors",
                             active
@@ -264,6 +274,18 @@ function NavContent({
                           )}
                           <StatusDot status={lesson.status} />
                           <span className="min-w-0 flex-1 truncate">{lesson.title}</span>
+                          {hasTutorThread ? (
+                            <span
+                              className="shrink-0 grid place-items-center"
+                              title="Has a saved tutor conversation"
+                            >
+                              <span
+                                aria-hidden
+                                className="block size-1.5 rounded-full bg-learn-400"
+                              />
+                              <span className="sr-only">Has a saved tutor conversation</span>
+                            </span>
+                          ) : null}
                           {lesson.status === "in_progress" && lesson.pct > 0 ? (
                             <span className="shrink-0 text-[10px] font-medium tabular-nums text-learn-700">
                               {lesson.pct}%

@@ -1,5 +1,180 @@
 # Changelog — Course Studio editor upgrade
 
+## TUTOR-1 Amendment A4 — calibration + docs (Wave 5), 2026-08-11 — AMENDMENT COMPLETE
+
+The final wave: τ calibration, docs, Playwright. A4 (lesson-scoped threads +
+course retrieval) is now fully shipped (Wave 0 audit + Waves 1–5).
+
+- **τ calibration (+ a signal fix).** `scripts/calibrate-tutor-tau.ts` ran a
+  32-query labeled corpus through REAL hybrid retrieval over cs61b (259 chunks,
+  real embeddings). The calibration REVEALED that the RRF fused-rank score cannot
+  separate relevant from irrelevant queries (both cluster at ~1/61 — the vector arm
+  always returns a rank-1 nearest, the lexical arm rarely stacks on the same
+  chunk). Fixed: the retrieve RPC now returns the top chunk's raw **cosine
+  similarity** (migration `20260811100000`), and `insufficient_local_context` +
+  the provenance gate compare THAT to τ. Re-calibrated: sufficient queries score
+  0.51–0.68, insufficient 0.02–0.33 — τ ∈ [0.33, 0.50] gives **0% false-expansion
+  AND 0% missed-expansion**; default **τ = 0.40** (mid-band, robust).
+- **Docs (no stubs):** `docs/tutor/retrieval.md` (eligibility, the four expansion
+  codes, τ + its calibration, the `[FWD]` source_tier seam + what enabling
+  'adjacent' requires, the metrics table) + `docs/tutor/threading.md` (thread
+  resolution, compaction, chain-expiry recovery, why no automatic reset).
+- **Metrics (real):** lesson-grounding tokens/turn ~2,000 → ~900 (instrumented
+  875→74 on a synthetic lesson); embedding cost cs61b ≈ $0.002 (measured);
+  expansion/cross-lesson rates instrumented for production measurement.
+- **Playwright (`verify-tutor-a4-browser.ts`, 11 checks, ran green vs a prod
+  server):** open the tutor on two lessons → SEPARATE threads (A4-2); a seeded
+  cross-lesson citation renders a single "Go to {label}" link that names its
+  destination + resolves (D-8/A4-23/24); no UUID in the tutor panel (A4-22);
+  derived chips render + vary with the active lesson (D-9). Deterministic (seeded,
+  no live model); the model-generated flows are int-covered.
+- **Test coverage** (the directive's unit + int requirements, shipped across
+  Waves 1–4): eligibility + each expansion condition + compaction thresholds
+  (`verify-tutor-scope.ts` / `verify-tutor-threading.ts`); thread resolution +
+  chain rebuild + hybrid retrieval (`verify-tutor-threading-int.ts` /
+  `verify-tutor-retrieval-int.ts` / `verify-tutor-scope-int.ts`).
+
+## TUTOR-1 Amendment A4 — tutor integration + UI (Wave 4), 2026-08-11
+
+Retrieval replaces the whole-lesson prompt dump; D-7/D-8/D-9 fixed. HARD STOP
+after Wave 4 (τ calibration + docs + Playwright = Wave 5).
+
+- **A4-26 · L2 → retrieval:** when a turn is retrieval-grounded, the developer
+  message drops the whole-lesson L2 dump for a SHORT lesson header (title +
+  objective); the retrieved passages carry the content. The per-turn token delta
+  (L2 before vs header+retrieval after, ≈chars/4) is logged (`tutor_token_delta`)
+  and surfaced on the result. Measured: **875 → 74 tokens (−801)** on a real
+  lesson. A retrieval-empty turn keeps the full L2 (no regression).
+- **D-7 · no learner-facing IDs (A4-22):** `lib/learn/tutorNav.ts`
+  `redactInternalIds` scrubs any UUID the model echoed from the cleaned prose
+  (before it reaches the escalation proposal too); labels + chips are id-free by
+  construction.
+- **D-8 · real "Go there" destinations (A4-23/24):** the server resolves a human
+  LABEL (lesson title · "slide N") for every citation
+  (`lib/tutor/retrieval/citationLabels.ts`), rides the turn payload, and is
+  persisted into the grounding jsonb (history too). The chip renders **at most one**
+  nav affordance per message (`primaryNavAffordance`), NAMES its destination, and
+  never renders without a resolvable anchor.
+- **D-9 · derived chips (A4-25):** `lib/learn/tutorChips.ts` `deriveSuggestionChips`
+  replaces the static 4-chip array — chips vary with the active lesson title
+  (new `ambient.lessonTitle`), the weakest flagged concept (review queue), and
+  conversation state; deduped by action; the "Quiz me on this lesson" string
+  stays pinned (the practice classifier depends on it).
+- **Tests:** `verify-tutor-wave4.ts` (29 pure/loop — chip snapshots ×3 states,
+  UUID redaction/detection, label resolution, ≤1 nav affordance, and the loop
+  L2-replacement + token-delta + prose-redaction). runtime (270) / client (436) /
+  route-int (77) re-ran green. Build/tsc/lint clean.
+
+## TUTOR-1 Amendment A4 — scope policy (Wave 3), 2026-08-11
+
+Eligibility + tiered expansion + forward/failure/contradiction behaviors, wired
+into the tutor turn. HARD STOP after Wave 3 (full prompt-layer replacement + UI =
+Wave 4).
+
+- **Engine (`lib/tutor/retrieval/{scopeConfig,conceptLessons,eligibility,expansion,forward,scopePolicy}.ts`, pure):**
+  eligibility = active ∪ **completed** (`learn_progress.status='completed'`) —
+  never ordinal (A4-14). `conceptLessons` is the packaged concept↔lesson resolver
+  the Wave-0 audit found missing (anchors→lessons, question→concepts,
+  prereq→covering-lessons via `rootCause`). `runScopedRetrieval` retrieves Tier 1
+  (active, 6) always and Tier 2 (completed, 4) ONLY under one recorded expansion
+  code — **explicit_request / multi_concept_span / prerequisite_gap /
+  insufficient_local_context** (priority-fused; never fires into an empty pool) —
+  emitting `tutor.retrieval.expanded`. Forward material (a concept only in an
+  incomplete lesson) → name it + decline (A4-17); total failure → offer creator
+  escalation (A4-18); provenance gate (no course attribution without a hit,
+  A4-20). τ is env-configurable + flagged PROVISIONAL (calibrated in Wave 5).
+- **Loop integration:** the turn runs the scope policy over an **un-pooled**
+  retriever (query embeds off the learner chat pool — §2/A4-21), injects the
+  retrieved passages + forward-decline/failure-escalation/provenance instructions,
+  and routes a model-flagged `contradiction` (new output-contract field) into the
+  escalation loop (`tutor.contradiction.detected`, A4-19). The whole-lesson L2
+  stays for now — Wave 4 replaces it + measures the token delta. The service
+  builds the retriever over `deps.embedModel` (route passes an un-pooled
+  `createOpenAIModelClient()`; tests inject the mock) + loads completed lessons.
+- **Tests:** `verify-tutor-scope.ts` (40 pure/loop — the 100-query eligibility
+  property test, all four codes independently, forward/failure/contradiction/
+  provenance, no-extra-chat-call + un-pooled-embed source assertions, loop
+  injection + surfacing) + `verify-tutor-scope-int.ts` (12 int — real completion→
+  eligibility, real chunks retrieved in a real turn, expansion + event,
+  incomplete-never-eligible, one chat call vs N embed calls). Build/tsc/lint clean.
+
+## TUTOR-1 Amendment A4 — retrieval index (Wave 2), 2026-08-10
+
+The pgvector chunk store + hybrid retrieval, embedded at publish. Not yet wired
+into the tutor (that is Wave 4). HARD STOP after Wave 2.
+
+- **Schema (migration `20260810140000`):** `create extension vector` + `tutor_chunks`
+  (publication_id/version/content_hash/lesson_id/block_id/slide_id/chunk_ordinal/
+  text/`embedding vector(1536)`/`tsv` GENERATED tsvector/`source_tier` CHECK=`'canon'`
+  [FWD `'adjacent'` reserved, unreachable]/`display_anchor` jsonb). Indexes: **hnsw**
+  (cosine) + **gin**(tsv) + (publication_id, lesson_id). RLS: enrolled-or-author
+  select; writes only via the definer RPCs. Two SECURITY DEFINER RPCs:
+  `tutor_store_chunks` (idempotent replace) + `tutor_retrieve_chunks` (hybrid).
+- **Hybrid retrieval:** the retrieve RPC fuses a pgvector cosine (`<=>`) arm with a
+  lexical `websearch_to_tsquery`/`ts_rank` arm by **reciprocal rank fusion**, so a
+  lexical-only hit ("LLRB", "2-3 tree") a pure-vector search misses is still
+  surfaced (A4-10). The eligible-lesson filter (`lesson_id = any(p_lesson_ids)`)
+  runs INSIDE both arms (A4-11), never as a post-filter.
+- **Chunker (`lib/tutor/retrieval/chunker.ts`, pure):** one chunk per SLIDE (the
+  deep-linkable unit) / per non-deck text block; imported_deck + video skipped
+  (no snapshot prose); reuses the concept-graph `collectStrings` walker; every
+  chunk carries a resolvable `{lessonId, blockId, slideId?}` anchor (fixes D-8).
+- **Embed at publish (`embedStore.ts` + Inngest `tutorChunksEmbed`):** the publish
+  hook fires `tutor/chunks.embed.requested`; the durable worker embeds via a
+  CREATOR-pooled client (never the LEARNER pool — Wave-0 §2) and stores. IDEMPOTENT
+  by publication id: an unchanged republish makes ZERO embed calls (A4-9).
+  `TUTOR_EMBEDDING_DIMS`/`padToDims` (zero-padding is cosine-preserving, so the
+  32-dim test mock ranks identically to a real 1536-vector).
+- **Tests:** `verify-tutor-retrieval.ts` (26 pure — chunker grain/anchors,
+  padToDims cosine-preservation, the A4-11 lesson-filter + A4-13 CHECK source
+  assertions, publish→embed wiring) + `verify-tutor-retrieval-int.ts` (24 int —
+  embed-every-lesson, idempotent zero-re-embed, hybrid lexical-only match,
+  in-query lesson filter, resolvable anchors, `source_tier='adjacent'` rejected).
+  Build + tsc + lint clean.
+
+## TUTOR-1 Amendment A4 — lesson-scoped threads + compaction (Wave 0 audit + Wave 1), 2026-08-10
+
+Milestone-gated. Wave 0 = the read-only audit (`docs/audits/TUT-A4-audit.md`,
+11/11 questions answered live). Wave 1 = LESSON-SCOPED tutor threads. HARD STOP
+after Wave 1 (retrieval index is Wave 2).
+
+- **Schema (migration `20260810120000`):** `tutor_threads` gains `lesson_id`
+  (snapshot node id, **NO FK** — the tutor no-FK-to-draft convention),
+  `archived_at` (Start-fresh marker), `compaction_summary` + `compacted_through_turn`.
+  The old `UNIQUE(user_id, course_id)` is DROPPED and replaced by TWO PARTIAL
+  uniques that exclude archived rows — one ACTIVE thread per (user, lesson) and
+  one general (null-lesson) thread per (user, course). Backfill attributes a
+  legacy thread to a lesson only when its turns name exactly one (2 of 24 live);
+  the rest stay readable null-lesson general threads. Rollback proven clean.
+- **Resolution:** `ensureThread` → **`resolveThread({userId, courseId, lessonId})`**
+  (race-safe get-or-create without `onConflict` — the partial unique can't be a
+  conflict arbiter; SELECT-active → INSERT → on-23505 re-SELECT). `archiveThread`
+  flips `archived_at` (never deletes). Opening a different lesson resolves a
+  different thread; the persistent client mount reloads history on lesson switch
+  (never archiving — A4-6). Every `(user,course)`-keyed read fixed for
+  multi-thread-per-course: `readActiveStream` (in-flight thread), `loadTutorHomeEntries`
+  (latest turn per course_id), `loadTutorHistory` (lesson param), plus the
+  `apply_escalation_reply` RPC (migration `20260810130000` — its `ON CONFLICT
+  (user_id, course_id)` targeted the dropped constraint).
+- **Compaction (A4-4):** `lib/tutor/runtime/compaction.ts` (pure thresholds +
+  fold plan + summarizer prompt + L4 assembly) + `maybeCompactThread` (small-tier
+  rolling summary, best-effort, at turn start). The model's L4 prepends the summary
+  + a bounded verbatim window; the FULL transcript stays in `tutor_turns` for
+  display. No summary ⇒ byte-identical to the pre-A4 replay.
+- **Chain recovery (A4-5):** a rejected/stale `previous_response_id` (30-day
+  OpenAI retention) is recovered TRANSPARENTLY — the loop rebuilds the textual
+  replay + retries once without the anchor, emitting `tutor.chain.rebuilt`
+  (`lib/tutor/runtime/runtimeEvents.ts` seam). No learner-visible error.
+- **UI:** a "Start fresh" header control (`data-ai-tool=tutor-start-fresh`) archives
+  the lesson thread; course-outline dots (`data-ai-tutor-thread`, `CourseNavSidebar`)
+  mark lessons with an existing conversation (`loadTutoredLessonIds`).
+- **Tests:** `verify:tutor` += `verify-tutor-threading.ts` (32 pure — thresholds,
+  L4 assembly, chain-rebuild through the loop, the no-auto-reset source assertion);
+  `verify:tutor:int` += `verify-tutor-threading-int.ts` (40 — per-lesson resolution,
+  legacy survival, archive-not-delete, compaction persist+fold, outline exactness).
+  stream-int (36) + route-int (77) re-ran green on the changed turn path. Build +
+  tsc + lint clean.
+
 ## TUTOR-1 Wave 2 — learner mastery model (BKT · evidence contract · strict regime), 2026-08-03
 
 Deterministic math and SQL only — ZERO model calls (grep-guarded + proven by

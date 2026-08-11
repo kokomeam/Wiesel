@@ -106,13 +106,8 @@ export function learnHrefSlug(href: string): string | null {
 
 /* ─────────────────────────── The server load ───────────────────────────── */
 
-interface ThreadRowLike {
-  id: string;
+interface CourseTurnRowLike {
   course_id: string;
-}
-
-interface TurnRowLike {
-  thread_id: string;
   role: string;
   content: string;
   created_at: string;
@@ -185,53 +180,35 @@ export async function loadTutorHomeEntries(
   const enabled = courses.filter((c) => !disabledIds.has(c.courseId));
   if (enabled.length === 0) return [];
 
-  // 2. Own threads (RLS learner-own + enrollment-gated; the eq is belt and
-  //    braces). One thread per (user, course) by unique constraint.
-  let threads: ThreadRowLike[] = [];
+  // 2. Latest turn PER COURSE — A4: a course now has MANY threads (one per
+  //    lesson), so we can't key on a single thread. tutor_turns is denormalized
+  //    with course_id, so read the learner's turns across all their (enrolled)
+  //    courses newest-first and keep the first (newest) per course. RLS scopes
+  //    to own+enrolled rows; the last-turn card is thread-agnostic (it shows the
+  //    learner's most recent tutor exchange in that course, across lessons).
+  const latestByCourse = new Map<string, CourseTurnRowLike>();
   try {
-    const threadsRes = await supabase
-      .from("tutor_threads")
-      .select("id, course_id")
+    const turnsRes = await supabase
+      .from("tutor_turns")
+      .select("course_id, role, content, created_at")
       .eq("user_id", userId)
       .in(
         "course_id",
         enabled.map((c) => c.courseId)
-      );
-    threads = (threadsRes.data ?? []) as ThreadRowLike[];
-  } catch {
-    threads = [];
-  }
-  const threadIdByCourse = new Map(threads.map((t) => [t.course_id, t.id]));
-
-  // 3. Latest turns — ONE query with in() on thread ids, newest first,
-  //    limit 2×threads (the card needs only the latest per thread; a course
-  //    whose turns all fall outside the window degrades to lastTurn null).
-  const latestByThread = new Map<string, TurnRowLike>();
-  if (threads.length > 0) {
-    try {
-      const turnsRes = await supabase
-        .from("tutor_turns")
-        .select("thread_id, role, content, created_at")
-        .eq("user_id", userId)
-        .in(
-          "thread_id",
-          threads.map((t) => t.id)
-        )
-        .order("created_at", { ascending: false })
-        .limit(threads.length * 2);
-      for (const row of (turnsRes.data ?? []) as TurnRowLike[]) {
-        // Rows arrive newest-first: first row per thread wins.
-        if (!latestByThread.has(row.thread_id)) latestByThread.set(row.thread_id, row);
-      }
-    } catch {
-      // Degrade: every course renders the first-question invitation.
+      )
+      .order("created_at", { ascending: false })
+      .limit(enabled.length * 4);
+    for (const row of (turnsRes.data ?? []) as CourseTurnRowLike[]) {
+      // Rows arrive newest-first: first row per course wins.
+      if (!latestByCourse.has(row.course_id)) latestByCourse.set(row.course_id, row);
     }
+  } catch {
+    // Degrade: every course renders the first-question invitation.
   }
 
-  // 4. Entries — EVERY enabled enrolled course returns, thread or not.
+  // 3. Entries — EVERY enabled enrolled course returns, thread or not.
   return enabled.map((course) => {
-    const threadId = threadIdByCourse.get(course.courseId);
-    const turn = threadId ? latestByThread.get(threadId) : undefined;
+    const turn = latestByCourse.get(course.courseId);
     return {
       courseId: course.courseId,
       slug: course.slug,
